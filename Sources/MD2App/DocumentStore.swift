@@ -8,11 +8,15 @@ final class DocumentStore: ObservableObject {
     @Published var text: String {
         didSet {
             guard text != oldValue else { return }
-            rendered = renderer.render(text)
-            if !isLoading {
-                isDirty = true
-                scheduleAutosaveIfNeeded()
-            }
+            // The expensive full-document render that feeds the preview/stats is
+            // coalesced off the keystroke path (see `scheduleRender`) so sustained
+            // typing is never blocked by a whole-document re-render on every
+            // character. The load path (`setDocumentText`) renders synchronously
+            // itself, so skip scheduling while loading.
+            guard !isLoading else { return }
+            isDirty = true
+            scheduleRender()
+            scheduleAutosaveIfNeeded()
         }
     }
 
@@ -38,6 +42,12 @@ final class DocumentStore: ObservableObject {
     private var isLoading = false
     private var autosaveWorkItem: DispatchWorkItem?
     private let autosaveDelay: TimeInterval = 5
+    /// Coalesces the full-document render that feeds the preview/stats so a burst
+    /// of typing renders once when the user pauses instead of synchronously on
+    /// every keystroke. Bumped on each schedule so only the latest one fires.
+    private var renderGeneration = 0
+    private var hasPendingRender = false
+    private let renderDebounce: TimeInterval = 0.12
 
     var baseURL: URL? {
         fileURL?.deletingLastPathComponent()
@@ -113,6 +123,9 @@ final class DocumentStore: ObservableObject {
             return false
         }
         text = text.replacingCharacters(in: lineRange, with: updated)
+        // A checkbox click is a discrete action, not sustained typing: render
+        // immediately so the preview reflects the toggle without debounce lag.
+        flushPendingRender()
         return true
     }
 
@@ -191,6 +204,9 @@ final class DocumentStore: ObservableObject {
 
     @discardableResult
     private func write(to url: URL) -> Bool {
+        // Persisting reads `text` directly (always current), but flush so the
+        // rendered state/stats match what was just saved.
+        flushPendingRender()
         do {
             autosaveWorkItem?.cancel()
             autosaveWorkItem = nil
@@ -211,9 +227,38 @@ final class DocumentStore: ObservableObject {
         text = newText
         fileURL = newFileURL
         isDirty = dirty
-        rendered = renderer.render(newText)
+        renderNow()
         documentIdentity = UUID()
         isLoading = false
+    }
+
+    /// Schedules a debounced render; only the most recently scheduled one runs.
+    private func scheduleRender() {
+        renderGeneration &+= 1
+        hasPendingRender = true
+        let generation = renderGeneration
+        let work = DispatchWorkItem { [weak self] in
+            Task { @MainActor in
+                guard let self, generation == self.renderGeneration else { return }
+                self.renderNow()
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + renderDebounce, execute: work)
+    }
+
+    /// Renders synchronously now and cancels any pending debounced render.
+    private func renderNow() {
+        renderGeneration &+= 1
+        hasPendingRender = false
+        rendered = renderer.render(text)
+    }
+
+    /// Forces a pending debounced render to complete immediately, so a caller
+    /// that then reads `rendered` (a mode switch, a save, the stats bar) sees
+    /// content matching the current `text`. A no-op when no render is pending.
+    func flushPendingRender() {
+        guard hasPendingRender else { return }
+        renderNow()
     }
 
     private func scheduleAutosaveIfNeeded() {

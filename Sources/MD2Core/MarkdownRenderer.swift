@@ -69,6 +69,23 @@ public struct MarkdownRenderer: Sendable {
                 continue
             }
 
+            // Checked before indented code: a line that begins with `>` (after
+            // its leading indentation) is a blockquote, not an indented code
+            // block. This matters for quotes nested under a list item, which are
+            // indented four spaces and would otherwise render as `<pre>` showing
+            // the literal `>` with a horizontal scrollbar.
+            if trimmed.hasPrefix(">") {
+                let blockquote = blockquoteBlock(
+                    from: lines,
+                    startIndex: index,
+                    footnotes: footnotes,
+                    lineOffset: lineOffset
+                )
+                appendBlock(blockquote.html, from: index, to: blockquote.nextIndex)
+                index = blockquote.nextIndex
+                continue
+            }
+
             if let indentedCode = indentedCodeBlock(from: lines, startIndex: index) {
                 appendBlock(indentedCode.html, from: index, to: indentedCode.nextIndex)
                 index = indentedCode.nextIndex
@@ -112,18 +129,6 @@ public struct MarkdownRenderer: Sendable {
             if MarkdownLine.isHorizontalRule(line) {
                 appendBlock("<hr>", from: index, to: index + 1)
                 index += 1
-                continue
-            }
-
-            if trimmed.hasPrefix(">") {
-                let blockquote = blockquoteBlock(
-                    from: lines,
-                    startIndex: index,
-                    footnotes: footnotes,
-                    lineOffset: lineOffset
-                )
-                appendBlock(blockquote.html, from: index, to: blockquote.nextIndex)
-                index = blockquote.nextIndex
                 continue
             }
 
@@ -1173,6 +1178,20 @@ public struct MarkdownRenderer: Sendable {
             background: var(--quote-bg);
             border-left: 4px solid var(--border);
             padding: 0.45em 1em;
+            /* Quotes soft-wrap to the pane width instead of running off as one
+               long line with a horizontal scrollbar. `overflow-wrap: anywhere`
+               also breaks long unbreakable tokens (paths/URLs). Fenced code
+               blocks are unaffected: `pre code` is `white-space: pre`, which
+               ignores these properties and keeps its own horizontal scroll. */
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+
+        /* Long inline code in a quote (e.g. `openspec/specs/plugin-load-safety`)
+           wraps rather than forcing the quote to scroll horizontally. */
+        blockquote code {
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
 
         table {

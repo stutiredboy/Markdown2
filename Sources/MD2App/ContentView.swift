@@ -49,9 +49,10 @@ struct ContentView: View {
     /// Re-armed every time a pane drives the sync; the matching delayed reset is
     /// the only one that clears `splitSyncSource`.
     @State private var splitSyncToken = UUID()
-    /// Coalesces the editor's per-tick scroll reports into one preview drive, so
-    /// fast scrolling does not flood the preview with scroll commands.
-    @State private var editorSyncWork: DispatchWorkItem?
+    /// Re-armed while the user is editing in Side by Side. Render/layout anchor
+    /// reports from the preview during this window are consequences of editing,
+    /// not preview scroll gestures, so they must never move the editor.
+    @State private var suppressPreviewDrivenEditorSyncUntil = Date.distantPast
     /// Per-pane minimum width in Side by Side so neither side collapses.
     private let splitPaneMinWidth: CGFloat = 340
     private let onOpen: () -> Void
@@ -249,6 +250,9 @@ struct ContentView: View {
     /// heavy diagram/math engines are inlined.
     private func requestMode(_ newMode: EditorMode) {
         guard newMode != mode else { return }
+        // The destination surface reads `rendered` (outline, body) as it mounts;
+        // make sure any debounced edit render has landed so it opens current.
+        document.flushPendingRender()
 
         switch mode {
         case .write, .split:
@@ -262,6 +266,7 @@ struct ContentView: View {
             isCapturingPreviewAnchor = true
             previewViewport.currentAnchor { fresh in
                 isCapturingPreviewAnchor = false
+                NSLog("MD2DBG capture fresh=\(fresh?.sourceLine ?? -1) freshFrac=\(fresh?.scrollFraction ?? -1) cachedPreviewAnchor=\(previewAnchor?.sourceLine ?? -1) cachedFrac=\(previewAnchor?.scrollFraction ?? -1)")
                 guard mode == .read else { return }
                 deliver(anchor: previewAnchorForEditor(fresh: fresh), to: newMode)
             }
@@ -274,6 +279,7 @@ struct ContentView: View {
     /// own anchor binding: the outgoing surface's final `updateNSView` pass
     /// must not be able to consume the incoming surface's target.
     private func deliver(anchor: ViewportAnchor, to newMode: EditorMode) {
+        NSLog("MD2DBG deliver to=\(newMode) line=\(anchor.sourceLine ?? -1) endLine=\(anchor.sourceEndLine ?? -1) frac=\(anchor.scrollFraction) heading=\(anchor.fallbackHeadingID ?? "nil") progress=\(anchor.intraBlockProgress)")
         document.jumpLine = nil
         document.jumpHeadingID = nil
         document.jumpFraction = nil
@@ -293,6 +299,26 @@ struct ContentView: View {
         // A mode change starts a clean sync slate.
         splitSyncSource = nil
         mode = newMode
+        if newMode == .split {
+            realignPreviewToEditorAfterEntry()
+        }
+    }
+
+    /// Entering Side by Side rebuilds the preview web view; its reload can land
+    /// the page at the top before the handed-off `previewJumpAnchor` settles
+    /// (notably Preview→Split, where the binding is consumed by the outgoing web
+    /// view and never reaches the rebuilt one). Once both panes are up, re-drive
+    /// the preview from the editor — the reliable source of truth, already landed
+    /// on the target line — through `previewJumpAnchor` so it re-pins via the
+    /// mode-switch settle loop and survives async math/diagram reflow. Retried so
+    /// the realignment lands whether the preview finishes loading early or late.
+    private func realignPreviewToEditorAfterEntry() {
+        for delay in [0.5, 1.2] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard mode == .split, splitSyncSource == nil else { return }
+                document.previewJumpAnchor = editorAnchorForPreview()
+            }
+        }
     }
 
     /// The editor's live viewport anchor (falling back to the last reported
@@ -361,9 +387,15 @@ struct ContentView: View {
                 jumpFraction: $document.jumpFraction,
                 jumpAnchor: $document.editorJumpAnchor,
                 viewportReader: editorViewport,
-                onAnchorLineChange: { line in
+                onAnchorLineChange: { line, drivesPreviewSync in
                     editorAnchorLine = line
-                    if inSplit { syncEditorToPreview(line: line) }
+                    // A genuine user scroll or the mode-switch settle aligns the
+                    // preview; an edit-induced caret-reveal scroll must not (the
+                    // edit-follow keeps the caret visible instead).
+                    if inSplit, drivesPreviewSync { syncEditorToPreview(line: line) }
+                },
+                onTextEdit: { caretLine in
+                    if inSplit { markEditorEditInSplit(caretLine: caretLine) }
                 },
                 onEnterPreview: { if !inSplit { requestMode(.read) } },
                 findQuery: $editorFindQuery,
@@ -416,9 +448,10 @@ struct ContentView: View {
                 jumpFraction: $document.jumpFraction,
                 jumpAnchor: $document.previewJumpAnchor,
                 viewportReader: previewViewport,
-                onAnchorChange: { anchor in
+                onAnchorChange: { anchor, isUserInitiated in
                     previewAnchor = anchor
-                    if inSplit { syncPreviewToEditor(anchor: anchor) }
+                    NSLog("MD2DBG onAnchorChange line=\(anchor.sourceLine ?? -1) frac=\(anchor.scrollFraction) user=\(isUserInitiated) inSplit=\(inSplit)")
+                    if inSplit, isUserInitiated { syncPreviewToEditor(anchor: anchor) }
                 },
                 onEnterEdit: { if !inSplit { requestMode(.write) } },
                 onToggleTask: { line, checked in
@@ -459,52 +492,77 @@ struct ContentView: View {
 
     // MARK: Side by Side scroll synchronization
 
-    /// Editor scrolled: drive the preview to the matching source line. Ignored
+    /// Editor scrolled: drive the preview to the matching source position with a
+    /// lightweight, continuous follow (no mode-switch pinning), so the preview
+    /// tracks the drag smoothly instead of snapping between block tops. Ignored
     /// while the editor is itself following the preview, so the two cannot
-    /// oscillate. The editor only reports a line, so a fresh viewport anchor is
-    /// built around it with the section-heading fallback the preview can use.
+    /// oscillate. The editor reports a fractional top line so sub-line scrolling
+    /// is reflected continuously.
     private func syncEditorToPreview(line: Int) {
         guard mode == .split, splitSyncSource != .preview else { return }
         markSyncSource(.editor)
         focusedPane = .editor
-        let anchor = ViewportAnchor(
-            sourceLine: line,
-            scrollFraction: fraction(forLine: line, totalLines: totalLineCount),
-            fallbackHeadingID: document.rendered.outline.heading(atOrAbove: line)?.id
-        )
-        editorSyncWork?.cancel()
-        let work = DispatchWorkItem { document.previewJumpAnchor = anchor }
-        editorSyncWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
+        let fractionalLine = editorViewport.currentTopFractionalLine() ?? Double(line)
+        NSLog("MD2DBG E2P line=\(line) fractionalLine=\(fractionalLine)")
+        previewViewport.scrollToFollowLine(fractionalLine)
     }
 
-    /// Preview scrolled: drive the editor to the matching source line. Ignored
-    /// while the preview is itself following the editor. A heading-only anchor
-    /// is resolved to its source line here, where the outline is known.
+    /// Preview scrolled: drive the editor to the matching source position with a
+    /// lightweight, continuous follow. Ignored while the preview is itself
+    /// following the editor.
     private func syncPreviewToEditor(anchor: ViewportAnchor) {
-        guard mode == .split, splitSyncSource != .editor else { return }
+        NSLog("MD2DBG P2E? line=\(anchor.sourceLine ?? -1) src=\(String(describing: splitSyncSource)) frac=\(anchor.scrollFraction)")
+        guard mode == .split,
+              splitSyncSource != .editor,
+              Date() >= suppressPreviewDrivenEditorSyncUntil else { return }
         markSyncSource(.preview)
         focusedPane = .preview
-        var resolved = anchor
-        if resolved.sourceLine == nil,
-           let headingID = resolved.fallbackHeadingID,
-           let heading = document.rendered.outline.heading(forID: headingID) {
-            resolved.sourceLine = heading.line
-            resolved.sourceEndLine = nil
-            resolved.intraBlockProgress = 0
+        editorViewport.scrollToFollowLine(fractionalSourceLine(from: anchor))
+    }
+
+    /// Text edits are the editor's strongest ownership signal. While the render
+    /// pipeline catches up, preview anchor reports are layout fallout, not user
+    /// intent, so keep the editor as the sync driver for a short grace window.
+    /// The preview is told to keep the caret's source line in view: each coalesced
+    /// live re-render applies the follow right after it swaps the content (so the
+    /// DOM is current and no `keepPinned` loop competes), and only moves the
+    /// preview when that line is off-screen. Edit-induced editor scrolls do not
+    /// drive the preview (only genuine user scrolls do — see `onAnchorLineChange`),
+    /// and the editor pane is never driven, so this cannot bounce the editor.
+    private func markEditorEditInSplit(caretLine: Int) {
+        guard mode == .split else { return }
+        focusedPane = .editor
+        suppressPreviewDrivenEditorSyncUntil = Date().addingTimeInterval(0.85)
+        markSyncSource(.editor, cooldown: 0.85)
+        previewViewport.setPendingEditFollow(caretLine)
+    }
+
+    /// Converts a preview viewport anchor into a fractional source line for the
+    /// editor to follow: the block's start line advanced by intra-block progress
+    /// across its span, with heading and proportional fallbacks resolved here
+    /// where the outline is known.
+    private func fractionalSourceLine(from anchor: ViewportAnchor) -> Double {
+        if let line = anchor.sourceLine {
+            let end = anchor.sourceEndLine ?? line
+            let span = Double(max(0, end - line))
+            return Double(line) + clampedUnitProgress(anchor.intraBlockProgress) * span
         }
-        document.editorJumpAnchor = resolved
+        if let headingID = anchor.fallbackHeadingID,
+           let heading = document.rendered.outline.heading(forID: headingID) {
+            return Double(heading.line)
+        }
+        return clampedUnitProgress(anchor.scrollFraction) * Double(max(1, totalLineCount))
     }
 
     /// Marks `pane` as the current sync driver and arms a short cooldown. The
     /// follower's programmatic scroll suppresses its own anchor reporting, and
     /// this guard ignores the single settle-time report that still arrives, so a
     /// drive in one direction cannot bounce back as a drive in the other.
-    private func markSyncSource(_ pane: SplitPane) {
+    private func markSyncSource(_ pane: SplitPane, cooldown: TimeInterval = 0.25) {
         splitSyncSource = pane
         let token = UUID()
         splitSyncToken = token
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + cooldown) {
             if splitSyncToken == token {
                 splitSyncSource = nil
             }

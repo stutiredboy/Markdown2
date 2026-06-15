@@ -9,6 +9,14 @@ import WebKit
 @MainActor
 final class PreviewViewportReader {
     fileprivate var capture: ((_ completion: @escaping (ViewportAnchor?) -> Void) -> Void)?
+    /// Scrolls the live preview directly to a (possibly fractional) source line
+    /// for continuous Side by Side follow — lighter than a mode-switch anchor and
+    /// without the pinning settle loop, so the preview tracks the editor smoothly.
+    fileprivate var follow: ((Double) -> Void)?
+    /// Records the caret's source line so the next live-content swap keeps its
+    /// rendered output in view, nudging the preview only when that line is
+    /// off-screen so an edit in the middle of the viewport never yanks the preview.
+    fileprivate var setEditFollow: ((Int?) -> Void)?
 
     /// Asks the live web view for its current anchor. Completes with `nil`
     /// when the preview is not mounted or does not answer within the capture
@@ -19,6 +27,18 @@ final class PreviewViewportReader {
             return
         }
         capture(completion)
+    }
+
+    /// Drives the preview to follow the editor to `line` (continuous sync).
+    func scrollToFollowLine(_ line: Double) {
+        follow?(line)
+    }
+
+    /// Marks the caret's source `line` (or `nil` to clear) so the next live
+    /// re-render keeps its rendered output visible without disturbing the preview
+    /// when the line is already on screen.
+    func setPendingEditFollow(_ line: Int?) {
+        setEditFollow?(line)
     }
 }
 
@@ -42,7 +62,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
     var viewportReader: PreviewViewportReader?
     /// Reports the viewport-context anchor at the top of the viewport
     /// (debounced) on scroll, so a mode switch can fall back to it.
-    var onAnchorChange: (_ anchor: ViewportAnchor) -> Void = { _ in }
+    var onAnchorChange: (_ anchor: ViewportAnchor, _ isUserInitiated: Bool) -> Void = { _, _ in }
     /// Called on a Cmd+double-click, requesting a switch to edit mode.
     var onEnterEdit: () -> Void = {}
     /// Called when a task checkbox is clicked, carrying the 1-based source
@@ -90,6 +110,17 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 window.webkit.messageHandlers.\(Self.enterEditMessageName).postMessage(null);
             }
         });
+        var lastUserScrollIntentAt = 0;
+        function markUserScrollIntent() {
+            lastUserScrollIntentAt = Date.now();
+        }
+        window.addEventListener('wheel', markUserScrollIntent, { passive: true });
+        window.addEventListener('touchmove', markUserScrollIntent, { passive: true });
+        window.addEventListener('mousedown', markUserScrollIntent, { passive: true });
+        window.addEventListener('keydown', function(event) {
+            var keys = ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '];
+            if (keys.indexOf(event.key) >= 0) { markUserScrollIntent(); }
+        }, true);
         // Task checkboxes are the preview's one interactive element: the click
         // toggles the box optimistically, and native rewrites the source line
         // (the re-render that follows is the authoritative state).
@@ -142,7 +173,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 var fraction = max > 0 ? Math.min(1, Math.max(0, window.scrollY / max)) : 0;
                 var anchor = {
                     line: null, endLine: null, progress: 0, inset: 0,
-                    fraction: fraction, id: headingAtTop()
+                    fraction: fraction, id: headingAtTop(),
+                    user: Date.now() - lastUserScrollIntentAt < 1200
                 };
 
                 var nodes = document.querySelectorAll('[data-md2-source-line]');
@@ -193,7 +225,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             // the anchor reflows. Content below the anchor changing the total
             // height does not move the target, so we don't scroll (avoiding a
             // pointless late jump). We stop on a user scroll or once stable.
-            function keepPinned(getTargetY) {
+            function keepPinned(getTargetY, silent) {
                 suppressUntil = Date.now() + 2600;
                 var cancelled = false;
                 function onUser() { cancelled = true; }
@@ -213,8 +245,11 @@ struct MarkdownPreviewView: NSViewRepresentable {
                     suppressUntil = 0;
                     // Report the final resting position so the captured anchor
                     // reflects where we actually landed (e.g. after an outline
-                    // click programmatically scrolled the preview).
-                    topAnchor();
+                    // click programmatically scrolled the preview). A *silent*
+                    // pin (the live-edit content swap) must NOT report: the edit
+                    // originated in the editor, so a settle-time report here would
+                    // drive the editor pane and yank it away from the caret.
+                    if (!silent) { topAnchor(); }
                 }
                 function step() {
                     if (cancelled) { return; }
@@ -303,7 +338,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             // The block target is re-resolved on every pinning frame so async
             // math/diagram reflow above it is tracked; the fraction fallback
             // pins once because it chases the still-changing total height.
-            window.__md2ScrollToViewportAnchor = function (payload) {
+            window.__md2ScrollToViewportAnchor = function (payload, silent) {
                 var fractionPinned = false;
                 keepPinned(function () {
                     var targetY = sourceLineTargetY(payload.line);
@@ -317,7 +352,48 @@ struct MarkdownPreviewView: NSViewRepresentable {
                     var max = document.documentElement.scrollHeight - window.innerHeight;
                     var f = Math.min(1, Math.max(0, payload.fraction || 0));
                     return max > 0 ? max * f : 0;
-                });
+                }, silent);
+            };
+
+            // Continuous Side by Side follow: scroll directly to the rendered
+            // position of a (possibly fractional) source line, WITHOUT the
+            // keepPinned settle loop or its multi-second suppression, so the
+            // preview tracks the editor's drag smoothly instead of snapping
+            // between block tops. A fractional line interpolates inside the
+            // block via sourceLineTargetY's intra-block offset. A brief
+            // suppression keeps the resulting scroll from echoing back as a user
+            // anchor while the editor is the active driver.
+            window.__md2FollowToAnchor = function (line) {
+                var targetY = sourceLineTargetY(line);
+                if (targetY === null) { return; }
+                var maxY = document.documentElement.scrollHeight - window.innerHeight;
+                suppressUntil = Date.now() + 200;
+                window.scrollTo(0, Math.min(Math.max(0, targetY), Math.max(0, maxY)));
+            };
+
+            // Side by Side edit-follow: while the user types, keep the rendered
+            // output of the caret's source line in view WITHOUT disturbing the
+            // preview when that line is already on screen. Only when the line has
+            // scrolled off the top or below the fold do we move, placing it in the
+            // lower-middle of the viewport so freshly typed content is revealed
+            // with its preceding context still visible. Suppressed briefly so this
+            // scroll does not echo back as a user anchor while the editor drives.
+            window.__md2FollowEditLine = function (line) {
+                var targetY = sourceLineTargetY(line);
+                if (targetY === null) { return; }
+                var viewportH = window.innerHeight;
+                var scrollTop = window.scrollY;
+                var topMargin = viewportH * 0.12;
+                var bottomMargin = viewportH * 0.18;
+                // Already comfortably visible: leave the preview untouched.
+                if (targetY >= scrollTop + topMargin
+                    && targetY <= scrollTop + viewportH - bottomMargin) {
+                    return;
+                }
+                var maxY = document.documentElement.scrollHeight - viewportH;
+                var desired = targetY - viewportH * 0.62;
+                suppressUntil = Date.now() + 200;
+                window.scrollTo(0, Math.min(Math.max(0, desired), Math.max(0, maxY)));
             };
 
             // Live preview content swap: replaces the rendered content inside
@@ -470,6 +546,19 @@ struct MarkdownPreviewView: NSViewRepresentable {
             }
             coordinator.captureAnchor(in: webView, completion: completion)
         }
+        viewportReader?.follow = { [weak webView, weak coordinator] line in
+            guard let webView, let coordinator, coordinator.isLoaded else { return }
+            webView.evaluateJavaScript(
+                String(format: "window.__md2FollowToAnchor ? window.__md2FollowToAnchor(%.3f) : null;", line)
+            )
+        }
+        viewportReader?.setEditFollow = { [weak coordinator] line in
+            guard let coordinator else { return }
+            coordinator.editFollowLine = line
+            coordinator.editFollowDeadline = line == nil
+                ? .distantPast
+                : Date().addingTimeInterval(Coordinator.editFollowWindow)
+        }
 
         return webView
     }
@@ -495,6 +584,19 @@ struct MarkdownPreviewView: NSViewRepresentable {
             }
             coordinator.captureAnchor(in: webView, completion: completion)
         }
+        viewportReader?.follow = { [weak webView, weak coordinator] line in
+            guard let webView, let coordinator, coordinator.isLoaded else { return }
+            webView.evaluateJavaScript(
+                String(format: "window.__md2FollowToAnchor ? window.__md2FollowToAnchor(%.3f) : null;", line)
+            )
+        }
+        viewportReader?.setEditFollow = { [weak coordinator] line in
+            guard let coordinator else { return }
+            coordinator.editFollowLine = line
+            coordinator.editFollowDeadline = line == nil
+                ? .distantPast
+                : Date().addingTimeInterval(Coordinator.editFollowWindow)
+        }
 
         let htmlChanged = context.coordinator.lastHTML != html
         let baseURLChanged = context.coordinator.lastBaseURL != baseURL
@@ -504,6 +606,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
             // reload the page or reset the preview's scroll. Everything else —
             // the initial load, a base-URL/document change, or a new diagram
             // engine that must be inlined into <head> — goes through a full load.
+            let isLoadedContentUpdate = liveUpdate
+                && context.coordinator.isLoaded
+                && !baseURLChanged
+                && !context.coordinator.lastHTML.isEmpty
             let canLiveUpdate = liveUpdate
                 && context.coordinator.isLoaded
                 && !baseURLChanged
@@ -517,6 +623,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
             if canLiveUpdate {
                 context.coordinator.applyLiveContent(bodyHTML, in: webView)
             } else {
+                if isLoadedContentUpdate {
+                    context.coordinator.suppressNextAnchorMessage()
+                }
                 context.coordinator.beginLoading()
                 // Load with the pending heading as a URL fragment so WebKit scrolls
                 // to it natively during parsing. This is the only thing that can
@@ -710,15 +819,21 @@ struct MarkdownPreviewView: NSViewRepresentable {
         var previewFileURL: URL?
         var onEnterEdit: () -> Void = {}
         var onToggleTask: (_ line: Int, _ checked: Bool) -> Void = { _, _ in }
-        var onAnchorChange: (_ anchor: ViewportAnchor) -> Void = { _ in }
+        var onAnchorChange: (_ anchor: ViewportAnchor, _ isUserInitiated: Bool) -> Void = { _, _ in }
         var onFindShortcut: (_ action: FindCommand.Action) -> Void = { _ in }
         var onFindResult: (_ total: Int, _ index: Int) -> Void = { _, _ in }
         var lastFindQuery: String?
         var lastFocusToken: UUID?
 
         private(set) var isLoaded = false
+        /// The mode-switch scroll target. Retained across an immediate apply so a
+        /// reload that fires right after entering Side by Side (the preview view
+        /// is rebuilt, resetting scroll to the top) re-applies it on `didFinish`
+        /// instead of leaving the preview stuck at the top. Consumed by the
+        /// post-load apply and cleared once the user scrolls.
         private var pendingScroll: ModeSwitchAnchor?
         private var pendingFindQuery: String?
+        private var ignoreNextAnchorMessage = false
 
         /// Coalesces rapid live content swaps (one per keystroke) into a single
         /// JS push, keeping typing smooth. The latest body wins.
@@ -726,6 +841,16 @@ struct MarkdownPreviewView: NSViewRepresentable {
         private var liveUpdateWorkItem: DispatchWorkItem?
         private var liveUpdateGeneration = 0
         private static let liveUpdateDebounce: TimeInterval = 0.09
+        /// The caret's source line to keep in view while editing, and the instant
+        /// after which it lapses. While the window is live EVERY live swap follows
+        /// this line and the capture + `keepPinned` re-affirm is disabled — so no
+        /// stray swap in an edit burst can pin a drifted position. Re-armed by the
+        /// editor on every keystroke; ignored once the window passes.
+        var editFollowLine: Int?
+        var editFollowDeadline = Date.distantPast
+        /// How long after the last edit the preview keeps following the caret.
+        /// Matches `ContentView`'s edit-window suppression so the two agree.
+        static let editFollowWindow: TimeInterval = 0.85
 
         /// Replaces the rendered content in place (debounced), preserving the
         /// preview's current source anchor. Called only when the page is loaded
@@ -739,6 +864,26 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 guard let self, let webView, let body = self.pendingLiveBody else { return }
                 guard generation == self.liveUpdateGeneration else { return }
                 self.pendingLiveBody = nil
+
+                // An edit is in flight: keep the caret's rendered line in view
+                // (only if it scrolled off-screen) rather than re-affirming the
+                // preview's previous position. While the edit window is live this
+                // is the SOLE authority on the preview's position — the capture +
+                // `keepPinned` re-affirm below is skipped, so no stray swap in an
+                // edit burst (e.g. a multi-key delete) can pin a drifted position,
+                // and the editor is never driven.
+                if let followLine = self.editFollowLine, Date() < self.editFollowDeadline {
+                    let script = "window.__md2ApplyContent(\(Self.jsStringLiteral(body)));"
+                        + "window.__md2FollowEditLine ? window.__md2FollowEditLine(\(followLine)) : null;"
+                    webView.evaluateJavaScript(script) { [weak self, weak webView] _, _ in
+                        guard let self, let webView else { return }
+                        if let query = self.lastFindQuery, !query.isEmpty {
+                            self.runFindWhenReady(query, in: webView)
+                        }
+                    }
+                    return
+                }
+                self.editFollowLine = nil
 
                 webView.evaluateJavaScript(
                     "window.__md2CaptureAnchor ? window.__md2CaptureAnchor() : null;"
@@ -761,7 +906,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
         private static func liveContentScript(bodyHTML: String, anchor: ViewportAnchor?) -> String {
             var script = "window.__md2ApplyContent(\(jsStringLiteral(bodyHTML)));"
             if let anchor {
-                script += "window.__md2ScrollToViewportAnchor(\(viewportAnchorJS(anchor)));"
+                // `true` = silent: re-affirm the preview's own position as async
+                // math/diagrams reflow, but do NOT report an anchor — an edit
+                // must never drive the editor pane (it would jump to the bottom).
+                script += "window.__md2ScrollToViewportAnchor(\(viewportAnchorJS(anchor)), true);"
             }
             return script
         }
@@ -837,6 +985,13 @@ struct MarkdownPreviewView: NSViewRepresentable {
             isLoaded = false
         }
 
+        /// A full reload caused by an edit can emit one load-position anchor
+        /// before the user touches the preview. That report describes WebKit's
+        /// reload settle, so it must not drive the editor pane.
+        func suppressNextAnchorMessage() {
+            ignoreNextAnchorMessage = true
+        }
+
         /// Runs a preview search immediately when the page is ready, otherwise
         /// remembers the latest query and applies it after `didFinish`.
         func runFindWhenReady(_ query: String, in webView: WKWebView) {
@@ -872,7 +1027,15 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 onToggleTask(line, checked)
             case MarkdownPreviewView.anchorMessageName:
                 guard let body = message.body as? [String: Any] else { return }
-                onAnchorChange(Self.viewportAnchor(fromMessage: body))
+                if ignoreNextAnchorMessage {
+                    ignoreNextAnchorMessage = false
+                    return
+                }
+                let isUserInitiated = (body["user"] as? NSNumber)?.boolValue ?? false
+                // Once the user scrolls the preview themselves, a retained
+                // mode-switch target must not snap them back on a later reload.
+                if isUserInitiated { pendingScroll = nil }
+                onAnchorChange(Self.viewportAnchor(fromMessage: body), isUserInitiated)
             default:
                 break
             }
@@ -883,15 +1046,21 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// Records a scroll target and applies it now if the page has finished
         /// loading, otherwise defers it to `didFinish`.
         func setPendingScroll(_ anchor: ModeSwitchAnchor, in webView: WKWebView) {
+            NSLog("MD2DBG preview setPendingScroll isLoaded=\(isLoaded) anchor=\(anchor)")
             pendingScroll = anchor
             if isLoaded {
-                applyPendingScroll(in: webView)
+                // Apply now, but KEEP the target: entering Side by Side rebuilds
+                // the preview view, triggering a reload that resets scroll to the
+                // top right after this. Retaining `pendingScroll` lets the
+                // post-reload `didFinish` re-apply it.
+                applyPendingScroll(in: webView, consume: false)
             }
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             isLoaded = true
-            applyPendingScroll(in: webView)
+            NSLog("MD2DBG preview didFinish pendingScroll=\(String(describing: pendingScroll))")
+            applyPendingScroll(in: webView, consume: true)
             applyPendingFind(in: webView)
         }
 
@@ -900,12 +1069,13 @@ struct MarkdownPreviewView: NSViewRepresentable {
             isLoaded = false
         }
 
-        private func applyPendingScroll(in webView: WKWebView) {
+        private func applyPendingScroll(in webView: WKWebView, consume: Bool = true) {
             guard let anchor = pendingScroll else { return }
-            pendingScroll = nil
+            if consume { pendingScroll = nil }
 
             switch anchor {
             case let .viewport(viewport):
+                NSLog("MD2DBG preview applyPendingScroll.viewport line=\(viewport.sourceLine ?? -1) frac=\(viewport.scrollFraction)")
                 webView.evaluateJavaScript(
                     "window.__md2ScrollToViewportAnchor(\(Self.viewportAnchorJS(viewport)));"
                 )

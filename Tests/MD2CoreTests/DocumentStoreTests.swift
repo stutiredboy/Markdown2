@@ -34,6 +34,9 @@ struct DocumentStoreTests {
     @Test func renderedDocumentTracksTextChanges() {
         let store = DocumentStore()
         store.text = "# Heading One\n\nSome words here."
+        // The render that feeds the preview/stats is debounced off the keystroke
+        // path; flush it so the synchronous assertions below see current content.
+        store.flushPendingRender()
 
         #expect(store.rendered.outline.first?.title == "Heading One")
         #expect(store.rendered.html.contains("Heading One"))
@@ -103,6 +106,7 @@ struct DocumentStoreTests {
         // edits: round-trip one through the other.
         let store = DocumentStore()
         store.text = "# Title\n\n> note\n> - [ ] quoted\n\n- [ ] plain"
+        store.flushPendingRender()
 
         #expect(store.rendered.html.contains(#"data-md2-task-line="4""#))
         #expect(store.rendered.html.contains(#"data-md2-task-line="6""#))

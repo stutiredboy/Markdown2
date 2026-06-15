@@ -8,11 +8,28 @@ import SwiftUI
 @MainActor
 final class EditorViewportReader {
     fileprivate var capture: (() -> ViewportAnchor?)?
+    /// Reads the editor's top-of-viewport position as a fractional source line
+    /// (the integer top line plus progress through that line's height) for smooth
+    /// Side by Side follow.
+    fileprivate var fractionalLine: (() -> Double?)?
+    /// Scrolls the editor directly to a (possibly fractional) source line so it
+    /// can follow the preview continuously, without a settle loop.
+    fileprivate var scrollToLine: ((Double) -> Void)?
 
     /// The current top-of-viewport anchor from the live text view, or `nil`
     /// when the editor is not mounted or has no measurable geometry yet.
     func currentAnchor() -> ViewportAnchor? {
         capture?()
+    }
+
+    /// The editor's current top-of-viewport position as a fractional source line.
+    func currentTopFractionalLine() -> Double? {
+        fractionalLine?()
+    }
+
+    /// Drives the editor to follow the preview to `line` (continuous sync).
+    func scrollToFollowLine(_ line: Double) {
+        scrollToLine?(line)
     }
 }
 
@@ -26,9 +43,17 @@ struct MarkdownEditorView: NSViewRepresentable {
     @Binding var jumpAnchor: ViewportAnchor?
     /// Exposes on-demand capture of the live viewport anchor for mode switches.
     var viewportReader: EditorViewportReader?
-    /// Reports the source line at the top of the visible rect whenever the user
-    /// scrolls, so the surrounding view can anchor a mode switch to it.
-    var onAnchorLineChange: (Int) -> Void = { _ in }
+    /// Reports the source line at the top of the visible rect whenever the
+    /// viewport changes, so the surrounding view can anchor a mode switch to it.
+    /// `drivesPreviewSync` is true when this change should pull the Side by Side
+    /// preview into alignment — a genuine user scroll (wheel/drag) or the
+    /// once-per-mode-switch settle — and false for edit-induced caret-reveal
+    /// scrolls and follow-scroll settles, which must not drive the preview.
+    var onAnchorLineChange: (_ line: Int, _ drivesPreviewSync: Bool) -> Void = { _, _ in }
+    /// Called immediately when the user edits text, before the binding update
+    /// triggers markdown rendering. Reports the 1-based source line of the caret
+    /// after the edit so Side by Side can follow the editing position.
+    var onTextEdit: (_ caretLine: Int) -> Void = { _ in }
     /// Called when the user presses Esc, requesting a switch to preview mode.
     var onEnterPreview: () -> Void = {}
     /// The current edit-mode find query.
@@ -109,6 +134,14 @@ struct MarkdownEditorView: NSViewRepresentable {
             guard let scrollView else { return nil }
             return Coordinator.viewportAnchor(in: scrollView)
         }
+        viewportReader?.fractionalLine = { [weak scrollView] in
+            guard let scrollView else { return nil }
+            return Coordinator.topVisibleFractionalLine(in: scrollView)
+        }
+        viewportReader?.scrollToLine = { [weak scrollView, weak coord = context.coordinator] line in
+            guard let scrollView, let coord else { return }
+            coord.followScroll(toFractionalLine: line, in: scrollView)
+        }
 
         DispatchQueue.main.async {
             textView.window?.makeFirstResponder(textView)
@@ -120,11 +153,20 @@ struct MarkdownEditorView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.onEnterPreview = onEnterPreview
         context.coordinator.onAnchorLineChange = onAnchorLineChange
+        context.coordinator.onTextEdit = onTextEdit
         context.coordinator.onFindShortcut = onFindShortcut
         context.coordinator.onFindResult = onFindResult
         viewportReader?.capture = { [weak scrollView] in
             guard let scrollView else { return nil }
             return Coordinator.viewportAnchor(in: scrollView)
+        }
+        viewportReader?.fractionalLine = { [weak scrollView] in
+            guard let scrollView else { return nil }
+            return Coordinator.topVisibleFractionalLine(in: scrollView)
+        }
+        viewportReader?.scrollToLine = { [weak scrollView, weak coord = context.coordinator] line in
+            guard let scrollView, let coord else { return }
+            coord.followScroll(toFractionalLine: line, in: scrollView)
         }
         guard let textView = scrollView.documentView as? NSTextView else { return }
         if let sourceTextView = textView as? MarkdownSourceTextView {
@@ -233,6 +275,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         let coordinator = Coordinator(text: $text)
         coordinator.onEnterPreview = onEnterPreview
         coordinator.onAnchorLineChange = onAnchorLineChange
+        coordinator.onTextEdit = onTextEdit
         coordinator.onFindShortcut = onFindShortcut
         coordinator.onFindResult = onFindResult
         return coordinator
@@ -342,7 +385,8 @@ struct MarkdownEditorView: NSViewRepresentable {
         @Binding var text: String
         var isApplyingStyle = false
         var onEnterPreview: () -> Void = {}
-        var onAnchorLineChange: (Int) -> Void = { _ in }
+        var onAnchorLineChange: (_ line: Int, _ drivesPreviewSync: Bool) -> Void = { _, _ in }
+        var onTextEdit: (_ caretLine: Int) -> Void = { _ in }
         var onFindShortcut: (_ action: FindCommand.Action) -> Void = { _ in }
         var onFindResult: (_ total: Int, _ index: Int) -> Void = { _, _ in }
         var lastFocusToken: UUID?
@@ -356,6 +400,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         private var matches: [NSRange] = []
         private var currentMatchIndex = -1
         private var highlightedRanges: [NSRange] = []
+        private var editViewportRestoreToken = UUID()
 
         init(text: Binding<String>) {
             _text = text
@@ -521,7 +566,20 @@ struct MarkdownEditorView: NSViewRepresentable {
             guard !isProgrammaticScroll,
                   let scrollView,
                   let line = Self.topVisibleLine(in: scrollView) else { return }
-            onAnchorLineChange(line)
+            let isUserScroll = Self.isUserScrollEvent(NSApp.currentEvent)
+            if isUserScroll {
+                editViewportRestoreToken = UUID()
+            }
+            onAnchorLineChange(line, isUserScroll)
+        }
+
+        private static func isUserScrollEvent(_ event: NSEvent?) -> Bool {
+            switch event?.type {
+            case .scrollWheel, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
+                return true
+            default:
+                return false
+            }
         }
 
         /// The mode-switch anchor currently being settled, used to dedupe
@@ -576,7 +634,9 @@ struct MarkdownEditorView: NSViewRepresentable {
                     self.settlingAnchor = nil
                     self.isProgrammaticScroll = false
                     if let line = Self.topVisibleLine(in: scrollView) {
-                        self.onAnchorLineChange(line)
+                        // The once-per-mode-switch settle: drive the preview so
+                        // the two panes open in alignment in Side by Side.
+                        self.onAnchorLineChange(line, true)
                     }
                 } else {
                     DispatchQueue.main.async(execute: step)
@@ -599,7 +659,8 @@ struct MarkdownEditorView: NSViewRepresentable {
                 self.isProgrammaticScroll = false
                 guard let scrollView,
                       let line = Self.topVisibleLine(in: scrollView) else { return }
-                self.onAnchorLineChange(line)
+                // A programmatic follow's settle report, not a user scroll.
+                self.onAnchorLineChange(line, false)
             }
             return applied
         }
@@ -628,6 +689,25 @@ struct MarkdownEditorView: NSViewRepresentable {
 
         /// Computes the 1-based source line at the top of the visible rect using
         /// the layout manager (bounding rect → glyph range → character → line).
+        /// The 1-based source line containing the character at `index`, counting
+        /// newlines before it — the same numbering `topVisibleLine` reports.
+        static func lineNumber(forCharacterIndex index: Int, in string: NSString) -> Int {
+            let clamped = max(0, min(index, string.length))
+            var line = 1
+            var location = 0
+            while location < clamped {
+                let range = string.range(
+                    of: "\n",
+                    options: [],
+                    range: NSRange(location: location, length: clamped - location)
+                )
+                if range.location == NSNotFound { break }
+                line += 1
+                location = range.location + 1
+            }
+            return line
+        }
+
         @MainActor static func topVisibleLine(in scrollView: NSScrollView) -> Int? {
             guard let textView = scrollView.documentView as? NSTextView,
                   let layoutManager = textView.layoutManager,
@@ -662,6 +742,118 @@ struct MarkdownEditorView: NSViewRepresentable {
             return line
         }
 
+        /// Smoothly scrolls the editor so a fractional source `line` sits at the
+        /// top of the viewport, for continuous Side by Side follow. Unlike a
+        /// mode-switch jump it runs no settle loop and does not steal focus;
+        /// anchor reporting is suppressed only briefly so this follow scroll
+        /// cannot echo back and drive the preview into an oscillation.
+        @MainActor func followScroll(toFractionalLine line: Double, in scrollView: NSScrollView) {
+            guard let targetY = Self.clipTargetY(forFractionalLine: line, in: scrollView) else { return }
+            isProgrammaticScroll = true
+            scrollView.contentView.scroll(to: NSPoint(x: 0, y: targetY))
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+            DispatchQueue.main.async { [weak self] in
+                self?.isProgrammaticScroll = false
+            }
+        }
+
+        /// The editor's top-of-viewport position as a fractional source line: the
+        /// integer top visible line plus how far the viewport top has scrolled
+        /// through that line's vertical extent (0...1). Continuous across a line's
+        /// wrapped fragments, so a follower can track it smoothly instead of in
+        /// line-sized steps.
+        @MainActor static func topVisibleFractionalLine(in scrollView: NSScrollView) -> Double? {
+            guard let textView = scrollView.documentView as? NSTextView,
+                  let line = topVisibleLine(in: scrollView) else { return nil }
+            var rect = textView.visibleRect
+            let origin = textView.textContainerOrigin
+            rect.origin.y -= origin.y
+            let topY = rect.origin.y
+            guard let lineRect = lineBoundingRect(line: line, in: textView), lineRect.height > 0 else {
+                return Double(line)
+            }
+            let progress = min(max(Double((topY - lineRect.minY) / lineRect.height), 0), 1)
+            return Double(line) + progress
+        }
+
+        /// The clip-view Y offset that places a fractional source `line` at the
+        /// top of the viewport (with the standard top inset), clamped to the
+        /// scrollable range. Mirrors `scrollLineToTop`'s placement. `nil` when the
+        /// geometry is not measurable yet.
+        @MainActor static func clipTargetY(forFractionalLine value: Double, in scrollView: NSScrollView) -> CGFloat? {
+            guard let textView = scrollView.documentView as? NSTextView,
+                  let layoutManager = textView.layoutManager,
+                  let textContainer = textView.textContainer else { return nil }
+            let line = max(1, Int(value.rounded(.down)))
+            let progress = CGFloat(min(max(value - Double(line), 0), 1))
+            layoutManager.ensureLayout(for: textContainer)
+            guard let rect = lineBoundingRect(line: line, in: textView) else { return nil }
+            let visibleHeight = scrollView.contentView.bounds.height
+            guard visibleHeight > 0 else { return nil }
+            let documentHeight = scrollableContentHeight(for: textView)
+            // The line rect is in container coordinates; placing its top at the
+            // clip origin leaves the container inset as the top margin (same rule
+            // as `scrollLineToTop`). Advance by the intra-line progress.
+            let containerTargetY = rect.minY + progress * rect.height
+            let clamped = clampedScrollOffset(
+                targetY: Double(containerTargetY),
+                contentHeight: Double(documentHeight),
+                viewportHeight: Double(visibleHeight)
+            )
+            return CGFloat(clamped)
+        }
+
+        /// The bounding rect (in text-container coordinates) of the glyphs for a
+        /// 1-based source `line`, falling back to the line fragment rect for an
+        /// empty line so blank lines still yield a usable height.
+        @MainActor static func lineBoundingRect(line: Int, in textView: NSTextView) -> NSRect? {
+            guard let layoutManager = textView.layoutManager,
+                  let textContainer = textView.textContainer else { return nil }
+            let nsString = textView.string as NSString
+            let charRange = characterRange(ofLine: line, in: nsString)
+            let glyphRange = layoutManager.glyphRange(forCharacterRange: charRange, actualCharacterRange: nil)
+            var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+            if rect.height <= 0.5, layoutManager.numberOfGlyphs > 0 {
+                let charIndex = max(0, min(charRange.location, nsString.length - 1))
+                let glyphIndex = min(
+                    layoutManager.glyphIndexForCharacter(at: charIndex),
+                    layoutManager.numberOfGlyphs - 1
+                )
+                rect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+            }
+            return rect
+        }
+
+        /// The character range (excluding the terminator) of a 1-based source
+        /// `line`, counting `\n` as the separator — matching `scroll(to:)` and the
+        /// renderer's source-line numbering.
+        static func characterRange(ofLine line: Int, in string: NSString) -> NSRange {
+            let target = max(1, line)
+            var currentLine = 1
+            var location = 0
+            while currentLine < target, location < string.length {
+                let range = string.range(
+                    of: "\n",
+                    options: [],
+                    range: NSRange(location: location, length: string.length - location)
+                )
+                if range.location == NSNotFound {
+                    location = string.length
+                    break
+                }
+                location = range.location + 1
+                currentLine += 1
+            }
+            let lineStart = min(location, string.length)
+            let nl = string.range(
+                of: "\n",
+                options: [],
+                range: NSRange(location: lineStart, length: string.length - lineStart)
+            )
+            let lineEnd = (nl.location == NSNotFound) ? string.length : nl.location
+            return NSRange(location: lineStart, length: max(0, lineEnd - lineStart))
+        }
+
         deinit {
             NotificationCenter.default.removeObserver(self)
         }
@@ -677,8 +869,17 @@ struct MarkdownEditorView: NSViewRepresentable {
             return false
         }
 
-        func textDidChange(_ notification: Notification) {
+        @MainActor func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
+            let visibleOrigin = scrollView?.contentView.bounds.origin
+            // The caret reflects the post-edit position (textDidChange fires after
+            // the change), so its source line is where the user is writing — the
+            // line Side by Side should keep visible in the preview.
+            let caretLine = Self.lineNumber(
+                forCharacterIndex: textView.selectedRange().location,
+                in: textView.string as NSString
+            )
+            onTextEdit(caretLine)
             text = textView.string
 
             let selectedRanges = textView.selectedRanges
@@ -686,6 +887,34 @@ struct MarkdownEditorView: NSViewRepresentable {
             MarkdownTextStyler.apply(to: textView)
             isApplyingStyle = false
             textView.selectedRanges = selectedRanges
+            preserveVisibleOriginAfterEdit(visibleOrigin)
+        }
+
+        @MainActor private func preserveVisibleOriginAfterEdit(_ origin: CGPoint?) {
+            guard let origin else { return }
+            let token = UUID()
+            editViewportRestoreToken = token
+            restoreVisibleOrigin(origin)
+
+            for delay in [0.05, 0.16, 0.35, 0.65, 1.0, 1.5, 2.2] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    guard let self, self.editViewportRestoreToken == token else { return }
+                    self.restoreVisibleOrigin(origin)
+                }
+            }
+        }
+
+        @MainActor private func restoreVisibleOrigin(_ origin: CGPoint?) {
+            guard let origin, let scrollView else { return }
+            let clipView = scrollView.contentView
+            let current = clipView.bounds.origin
+            guard abs(current.y - origin.y) > 1 || abs(current.x - origin.x) > 1 else { return }
+            isProgrammaticScroll = true
+            clipView.scroll(to: origin)
+            scrollView.reflectScrolledClipView(clipView)
+            DispatchQueue.main.async { [weak self] in
+                self?.isProgrammaticScroll = false
+            }
         }
     }
 }
