@@ -184,18 +184,25 @@ struct MarkdownEditorView: NSViewRepresentable {
 
         context.coordinator.updateFind(query: findQuery, in: textView)
 
-        if let findNavigation {
+        // Consume navigation/replace commands by their token, not by clearing the
+        // binding here. Mutating an observed binding inside `updateNSView` does not
+        // reliably take effect before the next update, so a `self.findNavigation =
+        // nil` here can be re-read as non-nil on the immediately following pass that
+        // the command's own side effects (a match-count change) trigger — replaying
+        // the action forever. Tracking the last-consumed token in the coordinator
+        // (the same pattern as `lastFocusToken`) runs each command exactly once.
+        if let findNavigation, context.coordinator.lastFindNavigationToken != findNavigation.token {
+            context.coordinator.lastFindNavigationToken = findNavigation.token
             context.coordinator.navigateFind(forward: findNavigation.action != .previous, in: textView)
-            self.findNavigation = nil
         }
 
-        if let replaceCommand {
+        if let replaceCommand, context.coordinator.lastReplaceCommandToken != replaceCommand.token {
+            context.coordinator.lastReplaceCommandToken = replaceCommand.token
             context.coordinator.replace(
                 replaceCommand.action,
                 replacement: findReplacement,
                 in: textView
             )
-            self.replaceCommand = nil
         }
 
         if context.coordinator.lastFocusToken != focusToken {
@@ -390,6 +397,11 @@ struct MarkdownEditorView: NSViewRepresentable {
         var onFindShortcut: (_ action: FindCommand.Action) -> Void = { _ in }
         var onFindResult: (_ total: Int, _ index: Int) -> Void = { _, _ in }
         var lastFocusToken: UUID?
+        /// Tokens of the most recently consumed find/replace commands, so a command
+        /// is acted on exactly once even if `updateNSView` re-runs while the same
+        /// command value is still held by the binding. See the consumption site.
+        var lastFindNavigationToken: UUID?
+        var lastReplaceCommandToken: UUID?
         private weak var scrollView: NSScrollView?
         /// True while a programmatic scroll (mode-switch jump, outline jump,
         /// find reveal) is in flight, so its transient positions are never

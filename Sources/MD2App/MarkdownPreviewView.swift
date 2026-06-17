@@ -669,9 +669,14 @@ struct MarkdownPreviewView: NSViewRepresentable {
             context.coordinator.runFindWhenReady(findQuery, in: webView)
         }
 
-        if let navigation = findNavigation {
+        // Consume by token rather than clearing the binding here: mutating an
+        // observed binding inside `updateNSView` is not reliably visible to the
+        // next pass, so `self.findNavigation = nil` can be re-read as non-nil on a
+        // follow-up update and replay the navigation indefinitely.
+        if let navigation = findNavigation,
+           context.coordinator.lastFindNavigationToken != navigation.token {
+            context.coordinator.lastFindNavigationToken = navigation.token
             navigateFind(navigation, in: webView, coordinator: context.coordinator)
-            self.findNavigation = nil
         }
 
         if context.coordinator.lastFocusToken != focusToken {
@@ -824,6 +829,11 @@ struct MarkdownPreviewView: NSViewRepresentable {
         var onFindResult: (_ total: Int, _ index: Int) -> Void = { _, _ in }
         var lastFindQuery: String?
         var lastFocusToken: UUID?
+        /// Token of the most recently consumed find-navigation command, so it runs
+        /// exactly once even if `updateNSView` re-runs while the binding still holds
+        /// the same command. See the consumption site for why clearing the binding
+        /// inside `updateNSView` is not reliable.
+        var lastFindNavigationToken: UUID?
 
         private(set) var isLoaded = false
         /// The mode-switch scroll target. Retained across an immediate apply so a
