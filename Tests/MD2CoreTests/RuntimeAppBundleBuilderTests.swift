@@ -3,6 +3,24 @@ import Testing
 @testable import MD2App
 
 struct RuntimeAppBundleBuilderTests {
+    @Test func relaunchArgumentsConvertRelativeDocumentPathsToAbsolute() {
+        let arguments = DirectLaunchBootstrap.normalizedRelaunchArguments(
+            ["--ignored-flag", "Examples/Sample.md"],
+            currentDirectoryPath: "/tmp/Markdown2"
+        )
+
+        #expect(arguments == ["--ignored-flag", "/tmp/Markdown2/Examples/Sample.md"])
+    }
+
+    @Test func relaunchArgumentsPreserveAbsoluteDocumentPaths() {
+        let arguments = DirectLaunchBootstrap.normalizedRelaunchArguments(
+            ["/Users/example/Notes.md"],
+            currentDirectoryPath: "/tmp/Markdown2"
+        )
+
+        #expect(arguments == ["/Users/example/Notes.md"])
+    }
+
     @Test func buildCopiesCompanionResourceBundles() throws {
         let fileManager = FileManager.default
         let root = fileManager.temporaryDirectory

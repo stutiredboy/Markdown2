@@ -56,6 +56,14 @@ struct ContentView: View {
     /// Per-pane minimum width in Side by Side so neither side collapses.
     private let splitPaneMinWidth: CGFloat = 340
     private let onOpen: () -> Void
+    private var findDialogEntranceAnimation: Animation { .easeOut(duration: 0.20) }
+    private var findDialogExitAnimation: Animation { .easeIn(duration: 0.15) }
+    private var findDialogTransition: AnyTransition {
+        .asymmetric(
+            insertion: .move(edge: .top).combined(with: .opacity),
+            removal: .move(edge: .top).combined(with: .opacity)
+        )
+    }
 
     init(document: DocumentStore, settings: AppSettings, onOpen: @escaping () -> Void) {
         self.document = document
@@ -105,6 +113,7 @@ struct ContentView: View {
                 } label: {
                     Image(systemName: "sidebar.left")
                 }
+                .accessibilityLabel(showsOutline ? settings.text(.hideOutline) : settings.text(.showOutline))
                 .help(showsOutline ? settings.text(.hideOutline) : settings.text(.showOutline))
             }
 
@@ -114,6 +123,7 @@ struct ContentView: View {
                 } label: {
                     Image(systemName: "folder")
                 }
+                .accessibilityLabel(settings.text(.open))
                 .help(settings.text(.open))
 
                 Button {
@@ -121,15 +131,22 @@ struct ContentView: View {
                 } label: {
                     Image(systemName: "square.and.arrow.down")
                 }
+                .accessibilityLabel(settings.text(.save))
                 .help(settings.text(.save))
 
                 Picker(
                     settings.text(.mode),
                     selection: Binding(get: { mode }, set: { requestMode($0) })
                 ) {
-                    Image(systemName: "pencil").tag(EditorMode.write)
-                    Image(systemName: "rectangle.split.2x1").tag(EditorMode.split)
-                    Image(systemName: "doc.richtext").tag(EditorMode.read)
+                    Label(settings.text(.write), systemImage: "pencil")
+                        .labelStyle(.iconOnly)
+                        .tag(EditorMode.write)
+                    Label(settings.text(.sideBySide), systemImage: "rectangle.split.2x1")
+                        .labelStyle(.iconOnly)
+                        .tag(EditorMode.split)
+                    Label(settings.text(.read), systemImage: "doc.richtext")
+                        .labelStyle(.iconOnly)
+                        .tag(EditorMode.read)
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 132)
@@ -173,25 +190,32 @@ struct ContentView: View {
     private func handleEditorFindAction(_ action: FindCommand.Action) {
         switch action {
         case .show:
-            editorFindVisible = true
-            editorFindShowsReplace = false
-            editorFindFocusToken = UUID()
+            showEditorFind(showsReplace: false)
         case .showReplace:
-            editorFindVisible = true
-            editorFindShowsReplace = true
-            editorFindFocusToken = UUID()
+            showEditorFind(showsReplace: true)
         case .next, .previous:
             if editorFindVisible {
                 editorFindNavigation = FindCommand(action)
             } else {
-                editorFindVisible = true
-                editorFindFocusToken = UUID()
+                showEditorFind(showsReplace: editorFindShowsReplace)
             }
         }
     }
 
+    private func showEditorFind(showsReplace: Bool) {
+        withAnimation(findDialogEntranceAnimation) {
+            editorFindVisible = true
+            editorFindShowsReplace = showsReplace
+        }
+        editorFindFocusToken = UUID()
+    }
+
     private func dismissEditorFind(refocusEditor: Bool = false) {
-        editorFindVisible = false
+        if editorFindVisible {
+            withAnimation(findDialogExitAnimation) {
+                editorFindVisible = false
+            }
+        }
         editorFindQuery = ""
         editorFindNavigation = nil
         editorReplaceCommand = nil
@@ -206,8 +230,7 @@ struct ContentView: View {
         switch action {
         case .show, .showReplace:
             // Replace is unavailable in preview; both just open the find bar.
-            previewFindVisible = true
-            previewFindFocusToken = UUID()
+            showPreviewFind()
         case .next, .previous:
             if previewFindVisible {
                 previewFindNavigation = FindCommand(action)
@@ -215,8 +238,19 @@ struct ContentView: View {
         }
     }
 
+    private func showPreviewFind() {
+        withAnimation(findDialogEntranceAnimation) {
+            previewFindVisible = true
+        }
+        previewFindFocusToken = UUID()
+    }
+
     private func dismissPreviewFind(refocusPreview: Bool = false) {
-        previewFindVisible = false
+        if previewFindVisible {
+            withAnimation(findDialogExitAnimation) {
+                previewFindVisible = false
+            }
+        }
         previewFindQuery = ""
         previewFindNavigation = nil
         previewMatchTotal = 0
@@ -428,6 +462,8 @@ struct ContentView: View {
                     onReplaceAll: { editorReplaceCommand = FindReplaceCommand(.all) },
                     onClose: { dismissEditorFind(refocusEditor: true) }
                 )
+                .transition(findDialogTransition)
+                .zIndex(1)
             }
         }
     }
@@ -486,6 +522,8 @@ struct ContentView: View {
                     onPrevious: { previewFindNavigation = FindCommand(.previous) },
                     onClose: { dismissPreviewFind(refocusPreview: true) }
                 )
+                .transition(findDialogTransition)
+                .zIndex(1)
             }
         }
     }

@@ -40,18 +40,21 @@ struct PreviewFindBar: View {
             Button(action: onPrevious) {
                 Image(systemName: "chevron.up")
             }
+            .accessibilityLabel(settings.text(.findPrevious))
             .help(settings.text(.findPrevious))
             .disabled(query.isEmpty)
 
             Button(action: onNext) {
                 Image(systemName: "chevron.down")
             }
+            .accessibilityLabel(settings.text(.findNext))
             .help(settings.text(.findNext))
             .disabled(query.isEmpty)
 
             Button(action: onClose) {
                 Image(systemName: "xmark")
             }
+            .accessibilityLabel(settings.text(.closeFind))
             .help(settings.text(.closeFind))
         }
         .buttonStyle(.borderless)

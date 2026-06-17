@@ -542,11 +542,19 @@ struct MarkdownEditorView: NSViewRepresentable {
             ((index % count) + count) % count
         }
 
-        private func reportFindResult() {
+        @MainActor private func reportFindResult() {
+            let total: Int
+            let index: Int
             if matches.isEmpty {
-                onFindResult(0, 0)
+                total = 0
+                index = 0
             } else {
-                onFindResult(matches.count, currentMatchIndex + 1)
+                total = matches.count
+                index = currentMatchIndex + 1
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                self?.onFindResult(total, index)
             }
         }
 

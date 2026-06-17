@@ -51,7 +51,7 @@ enum DirectLaunchBootstrap {
     private static func openBundle(_ bundleURL: URL) throws {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
-        configuration.arguments = Array(CommandLine.arguments.dropFirst())
+        configuration.arguments = normalizedRelaunchArguments(Array(CommandLine.arguments.dropFirst()))
         var environment = ProcessInfo.processInfo.environment
         environment["MARKDOWN2_DISABLE_APP_BUNDLE_BOOTSTRAP"] = "1"
         configuration.environment = environment
@@ -73,6 +73,27 @@ enum DirectLaunchBootstrap {
 
         if let launchError = launchResult.error {
             throw launchError
+        }
+    }
+
+    static func normalizedRelaunchArguments(
+        _ arguments: [String],
+        currentDirectoryPath: String = FileManager.default.currentDirectoryPath
+    ) -> [String] {
+        let currentDirectoryURL = URL(fileURLWithPath: currentDirectoryPath, isDirectory: true)
+        return arguments.map { argument in
+            guard !argument.isEmpty, !argument.hasPrefix("-") else {
+                return argument
+            }
+
+            let expandedPath = (argument as NSString).expandingTildeInPath
+            let url: URL
+            if expandedPath.hasPrefix("/") {
+                url = URL(fileURLWithPath: expandedPath)
+            } else {
+                url = currentDirectoryURL.appendingPathComponent(expandedPath)
+            }
+            return url.standardizedFileURL.path
         }
     }
 }
