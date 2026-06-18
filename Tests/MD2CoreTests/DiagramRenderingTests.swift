@@ -177,4 +177,33 @@ struct DiagramRenderingTests {
         #expect(document.html.contains(#"if (typeof Diagram === "undefined") { reveal(sel); continue; }"#))
         #expect(document.html.contains(#"if (typeof mermaid === "undefined")"#))
     }
+
+    // MARK: Legibility override is scoped away from Mermaid
+
+    @Test func legibilityOverrideExcludesMermaidAndDropsRevert() {
+        // Mermaid manages its own theme — and colors some geometry (e.g.
+        // xychart-beta plot lines) via SVG presentation attributes. The preview's
+        // legibility override must not touch Mermaid: forcing var(--text) and then
+        // reverting it resolves those strokes to the SVG initial `none`, blanking
+        // the series. So the override is scoped with :not(.diagram-mermaid), and
+        // the old `revert` counter-rules are gone.
+        let html = MarkdownRenderer().render("""
+        ```mermaid
+        graph TD; A-->B;
+        ```
+        """).html
+
+        // The override is scoped to exclude Mermaid.
+        #expect(html.contains(".diagram:not(.diagram-mermaid) text"))
+        #expect(html.contains(".diagram:not(.diagram-mermaid) path"))
+        // The unscoped override no longer recolors Mermaid geometry: the bare
+        // `.diagram text {` / `.diagram path` selectors are gone (the scoped
+        // `.diagram:not(.diagram-mermaid) …` form contains neither substring).
+        #expect(!html.contains(".diagram text {"))
+        #expect(!html.contains(".diagram path,"))
+        // The `revert` counter-rules that blanked presentation-attribute strokes
+        // are removed entirely.
+        #expect(!html.contains("stroke: revert"))
+        #expect(!html.contains("fill: revert"))
+    }
 }

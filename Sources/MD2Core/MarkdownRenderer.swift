@@ -1296,24 +1296,21 @@ public struct MarkdownRenderer: Sendable {
             max-width: 100%;
             height: auto;
         }
-        /* Keep diagram text/connectors legible against the preview background. */
-        .diagram text {
+        /* Keep diagram text/connectors legible against the preview background.
+           Scoped away from Mermaid: it ships its own light/dark theme and colors
+           some geometry (e.g. xychart-beta plot lines/bars) via SVG presentation
+           attributes — forcing var(--text) here and reverting it back would
+           resolve those strokes to the SVG initial `none`, blanking the series. */
+        .diagram:not(.diagram-mermaid) text {
             fill: var(--text);
         }
-        .diagram path,
-        .diagram line,
-        .diagram rect,
-        .diagram ellipse,
-        .diagram polygon {
+        .diagram:not(.diagram-mermaid) path,
+        .diagram:not(.diagram-mermaid) line,
+        .diagram:not(.diagram-mermaid) rect,
+        .diagram:not(.diagram-mermaid) ellipse,
+        .diagram:not(.diagram-mermaid) polygon {
             stroke: var(--text);
         }
-        /* Mermaid ships its own light/dark theme; let it manage its own colors. */
-        .diagram-mermaid text { fill: revert; }
-        .diagram-mermaid path,
-        .diagram-mermaid line,
-        .diagram-mermaid rect,
-        .diagram-mermaid ellipse,
-        .diagram-mermaid polygon { stroke: revert; }
         /* While its engine has not rendered yet, a diagram hides its raw source
            (collapsed + transparent) so it never flashes as visible code, and
            reserves a little height to dampen the jump to the final SVG. */
