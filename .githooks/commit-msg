@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Reject commits whose message mentions Claude in authorship/signature trailers.
+msg_file="$1"
+
+if grep -qiE 'co-authored-by:.*claude' "$msg_file"; then
+  echo "ERROR: commit message contains a 'Co-authored-by: Claude' trailer." >&2
+  echo "Repository policy (CLAUDE.md) forbids Claude from appearing as a contributor." >&2
+  exit 1
+fi
+
+if grep -qiE 'generated (with|by):.*claude' "$msg_file"; then
+  echo "ERROR: commit message contains a 'Generated with/by: Claude' trailer." >&2
+  echo "Repository policy (CLAUDE.md) forbids Claude attribution in git history." >&2
+  exit 1
+fi
+
+exit 0
