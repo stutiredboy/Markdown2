@@ -94,6 +94,7 @@ enum L10nKey: String {
     case open
     case save
     case saveAs
+    case exportPDF
     case close
     case outline
     case noHeadings
@@ -151,6 +152,7 @@ enum L10n {
         .open: "Open...",
         .save: "Save",
         .saveAs: "Save As...",
+        .exportPDF: "Export as PDF…",
         .close: "Close",
         .outline: "Outline",
         .noHeadings: "No headings",
@@ -198,6 +200,7 @@ enum L10n {
         .open: "打开...",
         .save: "保存",
         .saveAs: "另存为...",
+        .exportPDF: "导出为 PDF…",
         .close: "关闭",
         .outline: "大纲",
         .noHeadings: "没有标题",

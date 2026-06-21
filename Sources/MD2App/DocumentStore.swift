@@ -4,6 +4,11 @@ import MD2Core
 import UniformTypeIdentifiers
 
 @MainActor
+protocol PDFExporting: AnyObject {
+    func export(html: String, baseURL: URL?, completion: @escaping (Result<Void, Error>) -> Void)
+}
+
+@MainActor
 final class DocumentStore: ObservableObject {
     @Published var text: String {
         didSet {
@@ -39,6 +44,12 @@ final class DocumentStore: ObservableObject {
     @Published var findCommand: FindCommand?
 
     private let renderer = MarkdownRenderer()
+    /// Retains the in-flight PDF export for its (asynchronous) lifetime; cleared
+    /// when the export completes. PDF is a derived artifact — exporting never
+    /// touches `fileURL`, `isDirty`, or autosave.
+    private var pdfExporter: PDFExporting?
+    private let pdfDestinationPicker: @MainActor (String) -> URL?
+    private let pdfExporterFactory: @MainActor (URL) -> PDFExporting
     private var isLoading = false
     private var autosaveWorkItem: DispatchWorkItem?
     private let autosaveDelay: TimeInterval = 5
@@ -58,7 +69,13 @@ final class DocumentStore: ObservableObject {
         return isDirty ? "\(name) *" : name
     }
 
-    init() {
+    init(
+        pdfDestinationPicker: @escaping @MainActor (String) -> URL? = DocumentStore.presentPDFDestination,
+        pdfExporterFactory: @escaping @MainActor (URL) -> PDFExporting = { PDFExporter(destinationURL: $0) }
+    ) {
+        self.pdfDestinationPicker = pdfDestinationPicker
+        self.pdfExporterFactory = pdfExporterFactory
+
         let starterText = Self.starterMarkdown
         text = starterText
         rendered = renderer.render(starterText)
@@ -92,6 +109,53 @@ final class DocumentStore: ObservableObject {
         }
 
         return write(to: url)
+    }
+
+    /// Exports the rendered preview to a paginated PDF chosen by the user. This
+    /// is a derived artifact, not the document's on-disk form: it does NOT change
+    /// `fileURL` or `isDirty`, and Save As… still writes Markdown source. The
+    /// pending render is flushed first so the PDF reflects the latest text, then
+    /// an offscreen `PDFExporter` renders and writes the file; failures surface
+    /// through the normal `alert` path.
+    func exportPDF() {
+        // Ignore a second request while one export is still in flight; otherwise
+        // the new exporter would replace the retained one and abandon the first.
+        guard pdfExporter == nil else { return }
+
+        flushPendingRender()
+
+        guard let url = pdfDestinationPicker(pdfFileName) else {
+            return
+        }
+
+        let exporter = pdfExporterFactory(url)
+        pdfExporter = exporter
+        exporter.export(html: rendered.html, baseURL: baseURL) { [weak self] result in
+            guard let self else { return }
+            self.pdfExporter = nil
+            if case let .failure(error) = result {
+                self.alert = DocumentAlert(
+                    message: "Could not export \(url.lastPathComponent).",
+                    detail: error.localizedDescription
+                )
+            }
+        }
+    }
+
+    /// Default PDF file name: the document's name with a `.pdf` extension, or
+    /// `Untitled.pdf` for a document that has never been saved.
+    private var pdfFileName: String {
+        guard let fileURL else { return "Untitled.pdf" }
+        return fileURL.deletingPathExtension().lastPathComponent + ".pdf"
+    }
+
+    private static func presentPDFDestination(defaultName: String) -> URL? {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.pdf]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = defaultName
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
     }
 
     /// Relays a find action from a menu command to the active document surface.

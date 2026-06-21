@@ -43,6 +43,74 @@ struct DocumentStoreTests {
         #expect(store.rendered.stats.words > 0)
     }
 
+    @Test func cancellingPDFExportLeavesDocumentStateUnchanged() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("md2-export-cancel-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let sourceURL = directory.appendingPathComponent("notes.md")
+        let destinationURL = directory.appendingPathComponent("notes.pdf")
+        try "# Original\n".write(to: sourceURL, atomically: true, encoding: .utf8)
+
+        var exporterCreated = false
+        let store = DocumentStore(
+            pdfDestinationPicker: { defaultName in
+                #expect(defaultName == "notes.pdf")
+                return nil
+            },
+            pdfExporterFactory: { _ in
+                exporterCreated = true
+                return FakePDFExporter()
+            }
+        )
+        store.open(sourceURL)
+        store.text = "# Dirty\n\nUnsaved edit."
+
+        let fileURLBefore = store.fileURL
+        let dirtyBefore = store.isDirty
+        store.exportPDF()
+
+        #expect(!exporterCreated)
+        #expect(!FileManager.default.fileExists(atPath: destinationURL.path))
+        #expect(store.fileURL == fileURLBefore)
+        #expect(store.isDirty == dirtyBefore)
+    }
+
+    @Test func successfulPDFExportLeavesDirtyDocumentStateUnchanged() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("md2-export-success-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let sourceURL = directory.appendingPathComponent("notes.md")
+        let destinationURL = directory.appendingPathComponent("notes.pdf")
+        try "# Original\n".write(to: sourceURL, atomically: true, encoding: .utf8)
+
+        let exporter = FakePDFExporter()
+        let store = DocumentStore(
+            pdfDestinationPicker: { defaultName in
+                #expect(defaultName == "notes.pdf")
+                return destinationURL
+            },
+            pdfExporterFactory: { url in
+                #expect(url == destinationURL)
+                return exporter
+            }
+        )
+        store.open(sourceURL)
+        store.text = "# Dirty Export\n\nThis should be flushed into rendered HTML."
+
+        let fileURLBefore = store.fileURL
+        store.exportPDF()
+
+        #expect(exporter.exportCallCount == 1)
+        #expect(exporter.html?.contains("Dirty Export") == true)
+        #expect(exporter.baseURL == directory)
+        #expect(store.fileURL == fileURLBefore)
+        #expect(store.isDirty)
+    }
+
     @Test func toggleTaskChecksAndUnchecksMarker() {
         let store = DocumentStore()
         store.text = "# Title\n\n- [ ] Draft\n- [x] Review"
@@ -115,5 +183,19 @@ struct DocumentStoreTests {
         store.toggleTask(atLine: 6, to: true)
 
         #expect(store.text == "# Title\n\n> note\n> - [x] quoted\n\n- [x] plain")
+    }
+}
+
+@MainActor
+private final class FakePDFExporter: PDFExporting {
+    private(set) var exportCallCount = 0
+    private(set) var html: String?
+    private(set) var baseURL: URL?
+
+    func export(html: String, baseURL: URL?, completion: @escaping (Result<Void, Error>) -> Void) {
+        exportCallCount += 1
+        self.html = html
+        self.baseURL = baseURL
+        completion(.success(()))
     }
 }
