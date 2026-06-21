@@ -423,28 +423,80 @@ public struct MarkdownRenderer: Sendable {
     private func listBlock(from lines: [String], startIndex: Int, footnotes: FootnoteContext, lineOffset: Int = 0) -> (html: String, nextIndex: Int)? {
         guard parseListItem(lines[startIndex]) != nil else { return nil }
 
-        // Collect the run of consecutive list lines; indented continuation lines
-        // are included so they can become nested child lists. Each item records
-        // its absolute source line (`lineOffset` keeps blockquote-nested lists
-        // absolute, matching the block-level source-line spans).
+        // Collect the run of list lines; indented continuation lines are included
+        // so they can become nested child lists. A blank line does not terminate
+        // the list as long as it is followed (after any run of blank lines) by
+        // another list item — that keeps a loose, blank-line-separated list (e.g.
+        // numbered points spaced apart) as one continuously numbered list rather
+        // than restarting the count at each item. Each item records its absolute
+        // source line (`lineOffset` keeps blockquote-nested lists absolute) and
+        // its raw `lines` index (so `built.next` can map back to a source line).
         var items: [ListItem] = []
         var index = startIndex
-        while index < lines.count, let item = parseListItem(lines[index], sourceLine: lineOffset + index + 1) {
-            items.append(item)
-            index += 1
+        while index < lines.count {
+            if let item = parseListItem(lines[index], sourceLine: lineOffset + index + 1, lineIndex: index) {
+                items.append(item)
+                index += 1
+                continue
+            }
+
+            if lines[index].trimmedMarkdownLine.isEmpty {
+                var lookahead = index + 1
+                while lookahead < lines.count, lines[lookahead].trimmedMarkdownLine.isEmpty {
+                    lookahead += 1
+                }
+                if lookahead < lines.count, parseListItem(lines[lookahead]) != nil {
+                    index = lookahead
+                    continue
+                }
+            }
+
+            break
         }
 
-        // A tab or four spaces represents one nesting level.
         let levels = nestingLevels(for: items)
 
         let built = buildList(items: items, levels: levels, start: 0, level: levels[0], footnotes: footnotes)
-        return (built.html, startIndex + built.next)
+        // `built.next` is an index into `items`; map it back to a raw line index
+        // so the body walk resumes correctly even when blank lines were absorbed.
+        // When every item was consumed, resume at the line that ended collection.
+        let nextIndex = built.next < items.count ? items[built.next].lineIndex : index
+        return (built.html, nextIndex)
     }
 
-    /// Derives each item's nesting level from indentation columns, using four
-    /// columns per level and integer division for partial indentation.
+    /// Derives each item's nesting level from indentation. A deeper level opens
+    /// only when an item is indented at least three columns past the indentation
+    /// at which the enclosing level began; a smaller increase keeps the current
+    /// level, and dropping below a level's opening indent closes that level.
+    ///
+    /// Three columns is the smallest step that keeps a two-space indent a sibling
+    /// (preserving the existing convention) while letting bullets aligned to an
+    /// ordered marker's content column nest (`1. ` is three columns, `10. ` four),
+    /// alongside the established four-space / one-tab step.
     private func nestingLevels(for items: [ListItem]) -> [Int] {
-        items.map { $0.indent / 4 }
+        let nestStep = 3
+        // Stack of the indentation at which each currently-open level began; the
+        // stack depth minus one is the current nesting level.
+        var levelIndents: [Int] = []
+        var levels: [Int] = []
+
+        for item in items {
+            while let top = levelIndents.last, item.indent < top {
+                levelIndents.removeLast()
+            }
+
+            if let top = levelIndents.last {
+                if item.indent >= top + nestStep {
+                    levelIndents.append(item.indent)
+                }
+            } else {
+                levelIndents.append(item.indent)
+            }
+
+            levels.append(levelIndents.count - 1)
+        }
+
+        return levels
     }
 
     /// Recursively builds a (possibly nested) `<ul>`/`<ol>` starting at `start`.
@@ -700,9 +752,10 @@ public struct MarkdownRenderer: Sendable {
     }
 
     /// Parses one source line as a list item. `sourceLine` is the absolute
-    /// 1-based line number recorded on the item; callers that only test
-    /// whether a line is a list item can omit it.
-    private func parseListItem(_ line: String, sourceLine: Int = 0) -> ListItem? {
+    /// 1-based line number recorded on the item; `lineIndex` is its raw index
+    /// in the `lines` array. Callers that only test whether a line is a list
+    /// item can omit both.
+    private func parseListItem(_ line: String, sourceLine: Int = 0, lineIndex: Int = 0) -> ListItem? {
         let trimmed = line.trimmedMarkdownLine
         let indent = leadingIndentWidth(line)
 
@@ -718,7 +771,7 @@ public struct MarkdownRenderer: Sendable {
                 text = String(text.dropFirst(4))
             }
 
-            return ListItem(kind: .unordered, checked: checked, text: text, indent: indent, line: sourceLine)
+            return ListItem(kind: .unordered, checked: checked, text: text, indent: indent, line: sourceLine, lineIndex: lineIndex)
         }
 
         guard let match = firstMatch(in: trimmed, pattern: #"^\d+[\.)]\s+(.+)$"#),
@@ -726,7 +779,7 @@ public struct MarkdownRenderer: Sendable {
             return nil
         }
 
-        return ListItem(kind: .ordered, checked: nil, text: String(trimmed[textRange]), indent: indent, line: sourceLine)
+        return ListItem(kind: .ordered, checked: nil, text: String(trimmed[textRange]), indent: indent, line: sourceLine, lineIndex: lineIndex)
     }
 
     /// Counts the leading whitespace of a line in columns, treating a tab as 4
@@ -1659,6 +1712,10 @@ private struct ListItem {
     /// Absolute 1-based source line of the item, so a task checkbox can carry
     /// the line a preview click must toggle (`data-md2-task-line`).
     let line: Int
+    /// Raw index into the `lines` array the item was collected from. Lets
+    /// `listBlock` map an `items` index back to a source line after blank lines
+    /// between items have been absorbed into a single (loose) list.
+    let lineIndex: Int
 }
 
 private enum ListKind: Equatable {

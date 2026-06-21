@@ -158,6 +158,54 @@ struct MarkdownRendererTests {
         #expect(document.html.contains("<li>parent\n<ol>\n<li>step one</li>\n<li>step two</li>\n</ol></li>"))
     }
 
+    @Test func blankLineSeparatedOrderedListKeepsContinuousNumbering() {
+        let markdown = """
+        1. first
+
+        2. second
+
+        3. third
+        """
+
+        let html = MarkdownRenderer().render(markdown).html.withoutSourceLineMetadata
+
+        // One <ol> spanning all three items, not three lists each restarting at 1.
+        #expect(html.contains("<ol>\n<li>first</li>\n<li>second</li>\n<li>third</li>\n</ol>"))
+    }
+
+    @Test func markerAlignedBulletsNestUnderOrderedItem() {
+        let markdown = """
+        1. first
+           - detail a
+           - detail b
+        2. second
+        """
+
+        let html = MarkdownRenderer().render(markdown).html.withoutSourceLineMetadata
+
+        // The 3-space bullets align to the `1. ` content column and nest under
+        // `first`; `second` continues the same ordered list as its second item.
+        #expect(html.contains("<ol>\n<li>first\n<ul>\n<li>detail a</li>\n<li>detail b</li>\n</ul></li>\n<li>second</li>\n</ol>"))
+    }
+
+    @Test func mixedOrderedListWithBlankLinesAndNestedBulletsStaysOneList() {
+        let markdown = """
+        1. **first point**
+           - supporting detail
+           - another detail
+
+        2. **second point**
+           - supporting detail
+        """
+
+        let html = MarkdownRenderer().render(markdown).html.withoutSourceLineMetadata
+
+        // Mirrors the `## 6. 管理启示` shape: blank-line-separated numbered items
+        // with marker-aligned nested bullets render as one continuously numbered
+        // <ol>, each item owning its nested <ul>.
+        #expect(html.contains("<ol>\n<li><strong>first point</strong>\n<ul>\n<li>supporting detail</li>\n<li>another detail</li>\n</ul></li>\n<li><strong>second point</strong>\n<ul>\n<li>supporting detail</li>\n</ul></li>\n</ol>"))
+    }
+
     @Test func standaloneIndentedDashRendersAsCodeNotList() {
         let markdown = """
         Some paragraph.
