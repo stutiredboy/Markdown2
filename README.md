@@ -25,8 +25,10 @@
 - **Math typesetting** — inline `$...$` and display `$$...$$` TeX rendered offline with bundled [KaTeX](https://katex.org/) (no network required), including the mhchem extension for chemistry (`\ce{...}`).
 - **Diagrams** — `mermaid`, `flow` ([flowchart.js](https://flowchart.js.org/)), and `sequence` ([js-sequence-diagrams](https://bramp.github.io/js-sequence-diagrams/)) code blocks rendered offline with bundled engines (no network required).
 - **Footnotes** — `[^id]` inline references rendered as numbered superscript links; `[^id]: text` definitions collected into a trailing footnotes section with back-references. Supports named labels, multi-line definitions, duplicate references, and graceful fallback for undefined labels. Offline-rendered, legible in both light and dark modes.
+- **Export as PDF** — export the rendered document as a paginated A4 PDF with narrow (~0.5") margins and a navigable heading outline (bookmark tree).
 - **Quick mode switching** — press `Esc` in the editor to switch to preview; `Cmd+double-click` in preview to jump back to edit; or select Side by Side from the toolbar to see both at once.
 - **Bidirectional scroll sync** — in Side by Side mode, scrolling either pane keeps the other aligned to the same content.
+- **Find and Replace** — `Cmd+F` opens the find bar in editor or preview; navigate matches with next/previous, replace single or all occurrences.
 - **App settings** for language, default open mode (Edit / Side by Side / Preview), and default outline visibility.
 - **Markdown file type declaration** for `.md` and `.markdown` files when packaged.
 
