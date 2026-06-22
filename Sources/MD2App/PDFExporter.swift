@@ -1,6 +1,8 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import MD2Core
+import PDFKit
 import WebKit
 
 /// Renders a document's preview HTML into a paginated PDF using a dedicated
@@ -49,7 +51,7 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
     /// Overall guard so a page that never finishes loading cannot hang export.
     private static let overallTimeout: TimeInterval = 30
 
-    /// Output page geometry: A4 with compact, document-like margins. The system
+    /// Output page geometry: A4 with narrow, document-like margins. The system
     /// default print margins are large (~1.5"), which — together with the
     /// preview's reading-oriented styles — wastes most of the page, so the
     /// exporter fixes its own print geometry instead.
@@ -58,8 +60,9 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
 
     /// A4 at 72 dpi (210mm × 297mm).
     static let a4PageSize = CGSize(width: 595.28, height: 841.89)
-    /// Compact print margin on every side (~0.67").
-    static let printMargin: CGFloat = 48
+    /// Narrow print margin on every side (0.5"), matching the familiar "Narrow"
+    /// preset so more content fits per page while keeping a clean border.
+    static let printMargin: CGFloat = 36
     /// Clearance kept below the last line on a page (~one print line at 14px ×
     /// 1.55). Page bands are capped at the printable height *minus* this cushion
     /// so a band never fills the page to the pixel; otherwise `createPDF` rounding
@@ -75,6 +78,13 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
     private let hostWindow: NSWindow
     private let destinationURL: URL
     private var temporaryHTMLURL: URL?
+    /// Document headings (whose slug `id`s match the rendered heading elements),
+    /// used to build the PDF outline. Empty when the document has no headings, in
+    /// which case the PDF is written without an outline.
+    private var outline: [Heading] = []
+    /// Per-heading document-Y offset (CSS px from the top of the document), keyed by
+    /// heading `id`, collected from the rendered page during the break-probe.
+    private var headingOffsets: [String: CGFloat] = [:]
     private var completion: ((Result<Void, Error>) -> Void)?
     private var timeoutWorkItem: DispatchWorkItem?
     private var hasFinished = false
@@ -133,9 +143,16 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
 
     /// Loads `html` (resolving relative resources under `baseURL`) and, once it
     /// settles, writes a paginated PDF to the destination, reporting the outcome
-    /// on the main actor exactly once.
-    func export(html: String, baseURL: URL?, completion: @escaping (Result<Void, Error>) -> Void) {
+    /// on the main actor exactly once. `outline` is the document's headings; when
+    /// non-empty, a matching bookmark/outline tree is written into the PDF.
+    func export(
+        html: String,
+        outline: [Heading],
+        baseURL: URL?,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
         self.completion = completion
+        self.outline = outline
 
         // Arm the overall timeout first so a load that never finishes still fails.
         let timeout = DispatchWorkItem { [weak self] in
@@ -206,6 +223,7 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
                 let payload = result as? [String: Any]
                 let contentHeight = CGFloat((payload?["height"] as? NSNumber)?.doubleValue ?? 0)
                 let breaks = (payload?["breaks"] as? [NSNumber])?.map { CGFloat($0.doubleValue) } ?? []
+                self.headingOffsets = Self.parseHeadingOffsets(payload?["headings"])
                 self.capturePDF(breaks: breaks, contentHeight: contentHeight)
             }
         }
@@ -240,8 +258,20 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
                 finish(.failure(ExportError.renderFailed))
                 return
             }
+            // Attach the heading outline (bookmarks) when the document has
+            // headings. A failure to build/serialize the outline surfaces as an
+            // export failure rather than silently writing a PDF without it.
+            let finalData: Data
+            if outline.isEmpty {
+                finalData = paginated
+            } else if let withOutline = applyOutline(to: paginated, bands: bands) {
+                finalData = withOutline
+            } else {
+                finish(.failure(ExportError.writeFailed))
+                return
+            }
             do {
-                try paginated.write(to: destinationURL, options: .atomic)
+                try finalData.write(to: destinationURL, options: .atomic)
                 finish(.success(()))
             } catch {
                 finish(.failure(ExportError.writeFailed))
@@ -313,6 +343,66 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
 
         context.closePDF()
         return output as Data
+    }
+
+    /// Parses the break-probe's `headings` payload into a map of heading `id` →
+    /// document-Y offset (CSS px from the top). Entries without a usable id/top are
+    /// dropped so a malformed payload cannot break the outline.
+    private static func parseHeadingOffsets(_ payload: Any?) -> [String: CGFloat] {
+        guard let entries = payload as? [[String: Any]] else { return [:] }
+        var offsets: [String: CGFloat] = [:]
+        for entry in entries {
+            guard let id = entry["id"] as? String, !id.isEmpty,
+                  let top = (entry["top"] as? NSNumber)?.doubleValue, top.isFinite else {
+                continue
+            }
+            offsets[id] = CGFloat(top)
+        }
+        return offsets
+    }
+
+    /// Builds a hierarchical PDF outline (bookmarks) from the document headings and
+    /// writes it into the composed `data`. Each heading is mapped to the page band
+    /// it falls in (via its probed document-Y offset) and nested by heading level.
+    /// Returns the re-serialized PDF data, or `nil` if PDFKit cannot load/serialize
+    /// the document. A non-empty `outline` must resolve every heading to a probed
+    /// DOM offset; otherwise the export fails instead of silently omitting
+    /// bookmarks.
+    private func applyOutline(to data: Data, bands: [(top: CGFloat, height: CGFloat)]) -> Data? {
+        guard let document = PDFDocument(data: data), document.pageCount > 0 else { return nil }
+        guard let entries = PDFPaginator.outlineEntries(
+            for: outline,
+            headingOffsets: headingOffsets,
+            bands: bands
+        ) else { return nil }
+        guard !entries.isEmpty else { return data }
+
+        let root = PDFOutline()
+        attach(nodes: PDFPaginator.outlineTree(from: entries), to: root, in: document)
+        document.outlineRoot = root
+        return document.dataRepresentation()
+    }
+
+    /// Recursively attaches outline `nodes` as children of `parent`, each with a
+    /// destination at its mapped page and a best-effort top-of-heading point.
+    private func attach(
+        nodes: [PDFPaginator.OutlineNode],
+        to parent: PDFOutline,
+        in document: PDFDocument
+    ) {
+        for node in nodes {
+            let item = PDFOutline()
+            item.label = node.title
+            let pageIndex = min(max(node.pageIndex, 0), document.pageCount - 1)
+            if let page = document.page(at: pageIndex) {
+                // PDF origin is bottom-left; the heading sits `offsetInPage` below the
+                // top of the printable area, which begins at `pageSize.height - top`.
+                let y = min(max(pageSize.height - margins.top - node.offsetInPage, 0), pageSize.height)
+                item.destination = PDFDestination(page: page, at: CGPoint(x: margins.left, y: y))
+            }
+            parent.insertChild(item, at: parent.numberOfChildren)
+            attach(nodes: node.children, to: item, in: document)
+        }
     }
 
     private func logPaginationDiagnostics(
@@ -531,9 +621,21 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
             breaks.push(y);
           }
         }
-        return { height: height, breaks: breaks };
+
+        // Heading positions for the PDF outline: record each heading's document-Y
+        // offset keyed by its slug `id` (which matches the document outline). The
+        // Swift side maps each offset to the page band it falls in.
+        var headings = [];
+        var hEls = body.querySelectorAll('h1,h2,h3,h4,h5,h6');
+        for (var hi = 0; hi < hEls.length; hi++) {
+          var hel = hEls[hi];
+          if (!hel.id) { continue; }
+          var hrect = hel.getBoundingClientRect();
+          headings.push({ id: hel.id, top: hrect.top + scrollY });
+        }
+        return { height: height, breaks: breaks, headings: headings };
       } catch (e) {
-        return { height: 0, breaks: [] };
+        return { height: 0, breaks: [], headings: [] };
       }
     })();
     """

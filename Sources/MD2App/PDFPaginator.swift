@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import MD2Core
 
 /// Computes print page bands for the PDF exporter. Given the document height and
 /// the safe break offsets discovered in the rendered page, it splits the content
@@ -78,5 +79,116 @@ enum PDFPaginator {
     static func fitScale(source: CGSize, into box: CGSize) -> CGFloat {
         guard source.width > 0, source.height > 0, box.width > 0, box.height > 0 else { return 1 }
         return min(box.width / source.width, box.height / source.height)
+    }
+
+    // MARK: - Outline (PDF bookmarks)
+
+    /// A single heading resolved to its output page, ready to be nested into an
+    /// outline tree. `pageIndex` is 0-based; `offsetInPage` is the heading's Y
+    /// offset (CSS px) below the top of that page's printable area.
+    struct OutlineEntry: Equatable {
+        let title: String
+        let level: Int
+        let pageIndex: Int
+        let offsetInPage: CGFloat
+
+        init(title: String, level: Int, pageIndex: Int, offsetInPage: CGFloat) {
+            self.title = title
+            self.level = level
+            self.pageIndex = pageIndex
+            self.offsetInPage = offsetInPage
+        }
+    }
+
+    /// A node in the hierarchical outline tree. A reference type so the tree can be
+    /// assembled by appending children to ancestors while building.
+    final class OutlineNode {
+        let title: String
+        let pageIndex: Int
+        let offsetInPage: CGFloat
+        var children: [OutlineNode]
+
+        init(title: String, pageIndex: Int, offsetInPage: CGFloat, children: [OutlineNode] = []) {
+            self.title = title
+            self.pageIndex = pageIndex
+            self.offsetInPage = offsetInPage
+            self.children = children
+        }
+    }
+
+    /// Returns the 0-based index of the page band whose half-open range
+    /// `[top, top + height)` contains `offset`. An offset before the first band maps
+    /// to page 0 and one at or past the last band maps to the last page, so a
+    /// heading always resolves to a valid page. Returns 0 for an empty band list.
+    static func pageIndex(forOffset offset: CGFloat, in bands: [(top: CGFloat, height: CGFloat)]) -> Int {
+        guard !bands.isEmpty else { return 0 }
+        if offset < bands[0].top { return 0 }
+        for index in bands.indices {
+            let band = bands[index]
+            if offset >= band.top, offset < band.top + band.height {
+                return index
+            }
+        }
+        return bands.count - 1
+    }
+
+    /// Resolves document headings into outline entries, preserving heading order
+    /// and requiring every heading to have a probed DOM offset. A missing offset
+    /// means the PDF outline would be incomplete, so callers should fail export
+    /// rather than silently write a PDF that violates the bookmark guarantee.
+    static func outlineEntries(
+        for headings: [Heading],
+        headingOffsets: [String: CGFloat],
+        bands: [(top: CGFloat, height: CGFloat)]
+    ) -> [OutlineEntry]? {
+        guard !headings.isEmpty else { return [] }
+        guard !bands.isEmpty else { return nil }
+
+        var entries: [OutlineEntry] = []
+        entries.reserveCapacity(headings.count)
+        for heading in headings {
+            guard let offset = headingOffsets[heading.id], offset.isFinite else {
+                return nil
+            }
+            let pageIndex = pageIndex(forOffset: offset, in: bands)
+            let offsetInPage = max(0, offset - bands[pageIndex].top)
+            entries.append(
+                OutlineEntry(
+                    title: heading.title,
+                    level: heading.level,
+                    pageIndex: pageIndex,
+                    offsetInPage: offsetInPage
+                )
+            )
+        }
+        return entries
+    }
+
+    /// Builds an outline tree from `entries` in document order, nesting each entry
+    /// under the nearest preceding entry of a *shallower* `level` (else as a root).
+    /// Equal- or higher-level entries close the current branch, so a level jump back
+    /// up (e.g. `3 → 1`) starts a new top-level node.
+    static func outlineTree(from entries: [OutlineEntry]) -> [OutlineNode] {
+        var roots: [OutlineNode] = []
+        // Ancestor path: nodes paired with their source level, deepest last.
+        var stack: [(node: OutlineNode, level: Int)] = []
+
+        for entry in entries {
+            let node = OutlineNode(
+                title: entry.title,
+                pageIndex: entry.pageIndex,
+                offsetInPage: entry.offsetInPage
+            )
+            while let last = stack.last, last.level >= entry.level {
+                stack.removeLast()
+            }
+            if let parent = stack.last?.node {
+                parent.children.append(node)
+            } else {
+                roots.append(node)
+            }
+            stack.append((node, entry.level))
+        }
+        return roots
     }
 }

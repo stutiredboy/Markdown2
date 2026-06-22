@@ -106,6 +106,7 @@ struct DocumentStoreTests {
 
         #expect(exporter.exportCallCount == 1)
         #expect(exporter.html?.contains("Dirty Export") == true)
+        #expect(exporter.outline?.map(\.title) == ["Dirty Export"])
         #expect(exporter.baseURL == directory)
         #expect(store.fileURL == fileURLBefore)
         #expect(store.isDirty)
@@ -190,11 +191,18 @@ struct DocumentStoreTests {
 private final class FakePDFExporter: PDFExporting {
     private(set) var exportCallCount = 0
     private(set) var html: String?
+    private(set) var outline: [Heading]?
     private(set) var baseURL: URL?
 
-    func export(html: String, baseURL: URL?, completion: @escaping (Result<Void, Error>) -> Void) {
+    func export(
+        html: String,
+        outline: [Heading],
+        baseURL: URL?,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
         exportCallCount += 1
         self.html = html
+        self.outline = outline
         self.baseURL = baseURL
         completion(.success(()))
     }

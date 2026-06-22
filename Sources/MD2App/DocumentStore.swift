@@ -5,7 +5,12 @@ import UniformTypeIdentifiers
 
 @MainActor
 protocol PDFExporting: AnyObject {
-    func export(html: String, baseURL: URL?, completion: @escaping (Result<Void, Error>) -> Void)
+    func export(
+        html: String,
+        outline: [Heading],
+        baseURL: URL?,
+        completion: @escaping (Result<Void, Error>) -> Void
+    )
 }
 
 @MainActor
@@ -130,7 +135,7 @@ final class DocumentStore: ObservableObject {
 
         let exporter = pdfExporterFactory(url)
         pdfExporter = exporter
-        exporter.export(html: rendered.html, baseURL: baseURL) { [weak self] result in
+        exporter.export(html: rendered.html, outline: rendered.outline, baseURL: baseURL) { [weak self] result in
             guard let self else { return }
             self.pdfExporter = nil
             if case let .failure(error) = result {

@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import PDFKit
 import XCTest
 import MD2Core
 @testable import MD2App
@@ -35,7 +36,13 @@ final class PDFExportEndToEndVerification: XCTestCase {
         markdown += "```swift\nlet x = 1\nprint(x)\n```\n\n"
         markdown += "![a picture](img.png)\n\n"
         markdown += "```mermaid\ngraph TD; A-->B; B-->C;\n```\n\n"
-        for i in 0..<120 { markdown += "Paragraph \(i): the quick brown fox jumps over the lazy dog.\n\n" }
+        for i in 0..<40 { markdown += "Paragraph \(i): the quick brown fox jumps over the lazy dog.\n\n" }
+        markdown += "## Section Two\n\n"
+        for i in 40..<80 { markdown += "Paragraph \(i): the quick brown fox jumps over the lazy dog.\n\n" }
+        markdown += "### Details\n\n"
+        for i in 80..<100 { markdown += "Paragraph \(i): the quick brown fox jumps over the lazy dog.\n\n" }
+        markdown += "# Heading Last\n\n"
+        for i in 100..<140 { markdown += "Paragraph \(i): the quick brown fox jumps over the lazy dog.\n\n" }
 
         let rendered = MarkdownRenderer().render(markdown)
         let destination = dir.appendingPathComponent("out.pdf")
@@ -43,7 +50,7 @@ final class PDFExportEndToEndVerification: XCTestCase {
         let exporter = PDFExporter(destinationURL: destination)
         let done = expectation(description: "export completes")
         var outcome: Result<Void, Error>?
-        exporter.export(html: rendered.html, baseURL: dir) { result in
+        exporter.export(html: rendered.html, outline: rendered.outline, baseURL: dir) { result in
             outcome = result
             done.fulfill()
         }
@@ -62,10 +69,61 @@ final class PDFExportEndToEndVerification: XCTestCase {
         XCTAssertNotNil(document)
         XCTAssertGreaterThan(document?.numberOfPages ?? 0, 1)
 
+        // The document headings must yield a nested PDF outline (bookmarks).
+        let outlineDoc = PDFDocument(url: destination)
+        let root = outlineDoc?.outlineRoot
+        XCTAssertNotNil(root, "exported PDF has no outline")
+        XCTAssertEqual(outlineLabels(root), ["Heading One", "Section Two", "Details", "Heading Last"])
+        let first = root?.child(at: 0)
+        XCTAssertEqual(first?.label, "Heading One")
+        XCTAssertEqual(first?.child(at: 0)?.label, "Section Two")
+        XCTAssertEqual(first?.child(at: 0)?.child(at: 0)?.label, "Details")
+        XCTAssertEqual(root?.child(at: 1)?.label, "Heading Last")
+
         let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
         XCTAssertFalse(leftovers.contains { $0.hasPrefix(".md2-preview-") }, "temp render file not cleaned up")
 
         print("E2E-RESULT pages=\(document?.numberOfPages ?? -1) bytes=\(size)")
+    }
+
+    @MainActor
+    func testRealExportWithoutHeadingsProducesValidPDFWithoutOutline() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed export test."
+        )
+        _ = NSApplication.shared
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("md2-e2e-no-headings-\(UUID().uuidString)")
+        try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        var markdown = "Plain opening paragraph with no Markdown heading.\n\n"
+        for i in 0..<20 { markdown += "Body paragraph \(i) stays navigable only by pages.\n\n" }
+
+        let rendered = MarkdownRenderer().render(markdown)
+        XCTAssertTrue(rendered.outline.isEmpty)
+
+        let destination = dir.appendingPathComponent("plain.pdf")
+        let exporter = PDFExporter(destinationURL: destination)
+        let done = expectation(description: "export without headings completes")
+        var outcome: Result<Void, Error>?
+        exporter.export(html: rendered.html, outline: rendered.outline, baseURL: dir) { result in
+            outcome = result
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 35)
+
+        guard case .success = outcome else {
+            XCTFail("export failed: \(String(describing: outcome))")
+            return
+        }
+
+        let document = PDFDocument(url: destination)
+        XCTAssertNotNil(document)
+        XCTAssertGreaterThan(document?.pageCount ?? 0, 0)
+        XCTAssertTrue(outlineLabels(document?.outlineRoot).isEmpty)
     }
 
     @MainActor
@@ -89,7 +147,7 @@ final class PDFExportEndToEndVerification: XCTestCase {
         let exporter = PDFExporter(destinationURL: outputURL)
         let done = expectation(description: "export provided markdown")
         var outcome: Result<Void, Error>?
-        exporter.export(html: rendered.html, baseURL: sourceURL.deletingLastPathComponent()) { result in
+        exporter.export(html: rendered.html, outline: rendered.outline, baseURL: sourceURL.deletingLastPathComponent()) { result in
             outcome = result
             done.fulfill()
         }
@@ -104,5 +162,23 @@ final class PDFExportEndToEndVerification: XCTestCase {
         XCTAssertNotNil(document)
         XCTAssertGreaterThan(document?.numberOfPages ?? 0, 1)
         print("VERIFY-RESULT path=\(outputURL.path) pages=\(document?.numberOfPages ?? -1)")
+    }
+
+    private func outlineLabels(_ root: PDFOutline?) -> [String] {
+        guard let root else { return [] }
+        var labels: [String] = []
+
+        func walk(_ node: PDFOutline) {
+            for index in 0..<node.numberOfChildren {
+                guard let child = node.child(at: index) else { continue }
+                if let label = child.label {
+                    labels.append(label)
+                }
+                walk(child)
+            }
+        }
+
+        walk(root)
+        return labels
     }
 }
