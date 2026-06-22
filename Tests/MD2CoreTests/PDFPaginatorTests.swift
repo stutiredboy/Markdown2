@@ -92,4 +92,80 @@ final class PDFPaginatorTests: XCTestCase {
         )
         XCTAssertNil(bands)
     }
+
+    // MARK: - Band height invariant
+
+    func testNoBandExceedsMaxBand() {
+        // The compose step draws each band top-aligned in a printable box and must
+        // never need to clip content away, so no band may be taller than `maxBand`.
+        let cases: [(CGFloat, CGFloat, [CGFloat])] = [
+            (2000, 720, []),
+            (2000, 720, [700, 1390]),
+            (2000, 720, [100]),
+            (1517.5, 723.89, [120.4, 500.2, 1300.9]), // non-integer, A4-like
+            (5000, 745.89, Array(stride(from: 30.0, to: 5000.0, by: 31.5)).map { CGFloat($0) }),
+        ]
+        for (height, maxBand, cuts) in cases {
+            guard let bands = PDFPaginator.bands(sourceHeight: height, maxBand: maxBand, cuts: cuts) else {
+                XCTFail("expected bands for height=\(height)")
+                continue
+            }
+            for band in bands {
+                XCTAssertLessThanOrEqual(
+                    band.height, maxBand + 0.01,
+                    "band height \(band.height) exceeds maxBand \(maxBand)"
+                )
+            }
+            // Bands must tile [0, height] exactly, with no gap or overlap.
+            XCTAssertEqual(bands.first?.top ?? -1, 0, accuracy: 0.01)
+            XCTAssertEqual((bands.last.map { $0.top + $0.height }) ?? -1, height, accuracy: 0.01)
+        }
+    }
+
+    // MARK: - Fit scale (width-fit, never exceed height)
+
+    func testFitScaleIsOneWhenBandFitsBox() {
+        // Normal band: width equals the printable width and height is below it
+        // (the exporter caps band height with a cushion) → no down-scaling.
+        let scale = PDFPaginator.fitScale(
+            source: CGSize(width: 499, height: 700),
+            into: CGSize(width: 499, height: 745)
+        )
+        XCTAssertEqual(scale, 1, accuracy: 0.0001)
+    }
+
+    func testFitScaleShrinksToFitHeight() {
+        // A single atomic block taller than a page scales down to fit the height.
+        let scale = PDFPaginator.fitScale(
+            source: CGSize(width: 499, height: 1490),
+            into: CGSize(width: 499, height: 745)
+        )
+        XCTAssertEqual(scale, 0.5, accuracy: 0.0001)
+    }
+
+    func testFitScaleShrinksToFitWidth() {
+        // A source wider than the box scales down so its width fits.
+        let scale = PDFPaginator.fitScale(
+            source: CGSize(width: 998, height: 700),
+            into: CGSize(width: 499, height: 745)
+        )
+        XCTAssertEqual(scale, 0.5, accuracy: 0.0001)
+    }
+
+    func testFitScaleNeverLeavesContentLargerThanBox() {
+        // Whatever the source, the scaled size must fit within the box.
+        let box = CGSize(width: 499, height: 745)
+        for source in [CGSize(width: 998, height: 300),
+                       CGSize(width: 300, height: 2000),
+                       CGSize(width: 1200, height: 1600)] {
+            let scale = PDFPaginator.fitScale(source: source, into: box)
+            XCTAssertLessThanOrEqual(source.width * scale, box.width + 0.01)
+            XCTAssertLessThanOrEqual(source.height * scale, box.height + 0.01)
+        }
+    }
+
+    func testFitScaleDegenerateInputReturnsOne() {
+        XCTAssertEqual(PDFPaginator.fitScale(source: .zero, into: CGSize(width: 499, height: 745)), 1)
+        XCTAssertEqual(PDFPaginator.fitScale(source: CGSize(width: 499, height: 700), into: .zero), 1)
+    }
 }

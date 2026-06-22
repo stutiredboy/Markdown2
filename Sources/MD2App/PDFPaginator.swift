@@ -67,4 +67,16 @@ enum PDFPaginator {
         }
         return bands
     }
+
+    /// The uniform scale that fits a captured `source` rect into the printable
+    /// `box`, fitting width and never exceeding height. For a normal band the
+    /// source width already equals the box width and the source height is below it
+    /// (the exporter caps bands with a cushion), so this returns ≈1 — content draws
+    /// at native size with no down-scaling. Only a degenerate source taller than
+    /// the box (a single atomic block taller than a page) scales below 1 to fit.
+    /// Returns 1 for an empty/degenerate input so a caller never divides by zero.
+    static func fitScale(source: CGSize, into box: CGSize) -> CGFloat {
+        guard source.width > 0, source.height > 0, box.width > 0, box.height > 0 else { return 1 }
+        return min(box.width / source.width, box.height / source.height)
+    }
 }

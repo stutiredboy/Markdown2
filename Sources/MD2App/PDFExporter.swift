@@ -60,6 +60,11 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
     static let a4PageSize = CGSize(width: 595.28, height: 841.89)
     /// Compact print margin on every side (~0.67").
     static let printMargin: CGFloat = 48
+    /// Clearance kept below the last line on a page (~one print line at 14px ×
+    /// 1.55). Page bands are capped at the printable height *minus* this cushion
+    /// so a band never fills the page to the pixel; otherwise `createPDF` rounding
+    /// at a maximal page could shave the bottom line's descenders.
+    static let boundaryCushion: CGFloat = 22
 
     private let webView: WKWebView
     /// Hosts `webView` off-screen. A WKWebView with no window is treated as
@@ -73,6 +78,14 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
     private var completion: ((Result<Void, Error>) -> Void)?
     private var timeoutWorkItem: DispatchWorkItem?
     private var hasFinished = false
+
+    /// The drawable area of a page, inside the margins.
+    private var printableWidth: CGFloat { pageSize.width - margins.left - margins.right }
+    private var printableHeight: CGFloat { pageSize.height - margins.top - margins.bottom }
+    /// The maximum height of page *content*: the printable height minus the
+    /// boundary cushion. Used for both the break-probe's "atomic block fits a
+    /// page" threshold and the band height cap, so the two stay consistent.
+    private var pageContentHeight: CGFloat { max(72, printableHeight - Self.boundaryCushion) }
 
     init(destinationURL: URL) {
         self.destinationURL = destinationURL
@@ -185,9 +198,9 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
 
         // Ask the rendered page where it is safe to split (gaps between line
         // boxes and blocks) so pagination never slices a line across two pages,
-        // then capture and paginate.
-        let printableHeight = pageSize.height - margins.top - margins.bottom
-        webView.evaluateJavaScript(Self.breakProbeScript(maxAtomicHeight: printableHeight)) { [weak self] result, _ in
+        // then capture and paginate. Probe with the cushioned content height so an
+        // atomic block is "kept whole" only when a band can actually hold it.
+        webView.evaluateJavaScript(Self.breakProbeScript(maxAtomicHeight: pageContentHeight)) { [weak self] result, _ in
             Task { @MainActor in
                 guard let self else { return }
                 let payload = result as? [String: Any]
@@ -201,12 +214,11 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
     private func capturePDF(breaks: [CGFloat], contentHeight: CGFloat) {
         guard !hasFinished else { return }
 
-        let printableHeight = pageSize.height - margins.top - margins.bottom
         guard contentHeight > 0,
-              printableHeight > 0,
+              pageContentHeight > 0,
               let bands = PDFPaginator.bands(
                 sourceHeight: contentHeight,
-                maxBand: printableHeight,
+                maxBand: pageContentHeight,
                 cuts: breaks
               ) else {
             finish(.failure(ExportError.renderFailed))
@@ -265,9 +277,8 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
         var mediaBox = CGRect(origin: .zero, size: pageSize)
         guard let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else { return nil }
 
-        let printableWidth = pageSize.width - margins.left - margins.right
-        let printableHeight = pageSize.height - margins.top - margins.bottom
         guard printableWidth > 0, printableHeight > 0 else { return nil }
+        let box = CGSize(width: printableWidth, height: printableHeight)
 
         for data in pages {
             guard let provider = CGDataProvider(data: data as CFData),
@@ -278,20 +289,23 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
 
             let sourceRect = page.getBoxRect(.mediaBox)
             guard sourceRect.width > 0, sourceRect.height > 0 else { return nil }
-            let scale = printableWidth / sourceRect.width
-            let drawnHeight = min(sourceRect.height * scale, printableHeight)
+            // Fit the captured band to the printable box: scale 1 for a normal band
+            // (its width already equals the printable width and, with the cushion,
+            // its height is below the printable height); only a single atomic block
+            // taller than a page scales down to fit height. No clamp slices content.
+            let scale = PDFPaginator.fitScale(source: sourceRect.size, into: box)
+            let drawnWidth = sourceRect.width * scale
+            let drawnHeight = sourceRect.height * scale
+            // Top-align inside the printable area (CG origin is bottom-left).
+            let originX = margins.left
+            let originY = margins.bottom + printableHeight - drawnHeight
 
             context.beginPDFPage(nil)
             context.saveGState()
-            context.clip(to: CGRect(
-                x: margins.left,
-                y: margins.bottom + printableHeight - drawnHeight,
-                width: printableWidth,
-                height: drawnHeight
-            ))
-            context.translateBy(x: margins.left, y: margins.bottom)
+            context.clip(to: CGRect(x: originX, y: originY, width: drawnWidth, height: drawnHeight))
+            context.translateBy(x: originX, y: originY)
             context.scaleBy(x: scale, y: scale)
-            context.translateBy(x: 0, y: printableHeight / scale - sourceRect.height)
+            context.translateBy(x: -sourceRect.minX, y: -sourceRect.minY)
             context.drawPDFPage(page)
             context.restoreGState()
             context.endPDFPage()
@@ -319,6 +333,15 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
     /// page, so neutralize the content padding/width (the PDF page margin supplies
     /// the whitespace) and tighten the base font. Headings use `rem`, so scaling
     /// the root font scales them too.
+    ///
+    /// Crucially, the preview lets wide blocks scroll horizontally
+    /// (`table`/`pre` are `overflow-x: auto`), but a PDF page has no scrollbar —
+    /// anything past the layout width would be clipped and lost. So the overrides
+    /// also force every block that can exceed the printable width to *wrap* within
+    /// it: tables become fixed-layout with wrapping cells, code wraps onto the next
+    /// line, long inline tokens break, and media/diagrams/math scale to 100% width.
+    /// With unbreakable tokens broken (`overflow-wrap: anywhere`), nothing exceeds
+    /// the layout width, so the capture maps 1:1 with no horizontal clipping.
     private static let printStyleScript = """
     (function () {
       if (!document.head) { return; }
@@ -328,17 +351,28 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
         'html { font-size: 14px; }' +
         'body { font-size: 14px; line-height: 1.55; }' +
         'main { max-width: none !important; width: 100% !important;' +
-        ' margin: 0 !important; padding: 0 !important; }';
+        ' margin: 0 !important; padding: 0 !important; }' +
+        'table { display: table !important; table-layout: fixed;' +
+        ' width: 100% !important; overflow-x: visible !important; }' +
+        'th, td { word-break: break-word; overflow-wrap: anywhere;' +
+        ' white-space: normal; }' +
+        'pre { overflow-x: visible !important; }' +
+        'pre code { white-space: pre-wrap !important; overflow-wrap: anywhere;' +
+        ' word-break: break-word; }' +
+        'code { overflow-wrap: anywhere; word-break: break-word; }' +
+        'svg, canvas, img { max-width: 100% !important; height: auto; }' +
+        '.math-display { overflow: visible !important; }';
       document.head.appendChild(style);
     })();
     """
 
     /// Collects safe page-break offsets (document Y, in CSS pixels from the top)
-    /// from the rendered page. Breaking *between* text lines is safe, so every
-    /// line box contributes its top and bottom edge (both sit in the inter-line
-    /// leading, clear of glyphs) — this stays dense regardless of line spacing.
-    /// Atomic blocks (code, images, diagrams, rules, and tables that fit on a
-    /// page) must not be split, so any candidate landing inside one is dropped.
+    /// from the rendered page. Breaking *between* text lines is safe, so adjacent
+    /// line boxes contribute the midpoint of their gap as a split candidate — this
+    /// keeps page edges clear of glyph antialiasing while staying dense regardless
+    /// of line spacing.
+    /// Atomic blocks (code, images, diagrams, math, rules, and tables that fit on
+    /// a page) must not be split, so any candidate landing inside one is dropped.
     /// Tables taller than a page are split at row edges instead: each row that
     /// fits on a page is atomic, while the table as a whole is allowed to span
     /// pages. `PDFPaginator.bands` then ends each page at the largest offset that
@@ -350,6 +384,27 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
       try {
         var body = document.body;
         if (!body) { return { height: 0, breaks: [] }; }
+
+        // Some blocks cannot wrap to fit the page width — display math is a single
+        // unbreakable KaTeX box, and a diagram is one SVG. Scale any that still
+        // overflow their available width down to fit (transform-origin top-left,
+        // reserving the scaled height) so wide math/diagrams are never clipped.
+        var fitTargets = body.querySelectorAll('.math-display, .diagram');
+        for (var fi = 0; fi < fitTargets.length; fi++) {
+          var fel = fitTargets[fi];
+          var avail = fel.clientWidth;
+          if (avail > 0 && fel.scrollWidth > avail + 1) {
+            var inner = fel.firstElementChild;
+            if (inner) {
+              var fs = avail / fel.scrollWidth;
+              inner.style.transformOrigin = 'left top';
+              inner.style.transform = 'scale(' + fs + ')';
+              fel.style.height = (inner.offsetHeight * fs) + 'px';
+              fel.style.overflow = 'hidden';
+            }
+          }
+        }
+
         var scrollY = window.scrollY || 0;
         var height = Math.max(document.documentElement.scrollHeight, body.scrollHeight);
         var cushion = 4;
@@ -391,7 +446,7 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
           }
         }
 
-        var atomicEls = body.querySelectorAll('pre,img,svg,canvas,figure,hr');
+        var atomicEls = body.querySelectorAll('pre,img,svg,canvas,figure,hr,.math-display,.diagram');
         for (var a = 0; a < atomicEls.length; a++) {
           var ar = rectFor(atomicEls[a]);
           if (!ar) { continue; }
@@ -408,16 +463,20 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
           return false;
         }
 
-        var seen = {};
+        var breakCandidates = [];
         function addBreak(y) {
           if (!valid(y) || y <= 0 || y >= height) { return; }
           if (insideAtomic(y)) { return; }
-          seen[Math.round(y)] = true;
+          breakCandidates.push(y);
         }
 
         for (var rb = 0; rb < rawBreaks.length; rb++) { addBreak(rawBreaks[rb]); }
 
-        // Between text lines: each line box edge is a safe candidate.
+        // Between text lines: collect line boxes first, then place breaks in the
+        // middle of the gap between adjacent lines. Using the exact top/bottom edge
+        // of a line is too tight for WebKit PDF capture and can leave a clipped
+        // antialiased sliver of the next line on the previous page.
+        var lineSpans = [];
         var walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT, null);
         var node;
         while ((node = walker.nextNode())) {
@@ -428,8 +487,30 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
           range.selectNodeContents(node);
           var rects = range.getClientRects();
           for (var i = 0; i < rects.length; i++) {
-            addBreak(rects[i].top + scrollY);
-            addBreak(rects[i].bottom + scrollY);
+            var top = rects[i].top + scrollY;
+            var bottom = rects[i].bottom + scrollY;
+            if (valid(top) && valid(bottom) && bottom > top) {
+              lineSpans.push({ top: top, bottom: bottom });
+            }
+          }
+        }
+
+        lineSpans.sort(function (p, q) { return p.top - q.top || p.bottom - q.bottom; });
+        var lines = [];
+        for (var li = 0; li < lineSpans.length; li++) {
+          var span = lineSpans[li];
+          var current = lines[lines.length - 1];
+          if (current && span.top <= current.bottom + 0.5) {
+            current.top = Math.min(current.top, span.top);
+            current.bottom = Math.max(current.bottom, span.bottom);
+          } else {
+            lines.push({ top: span.top, bottom: span.bottom });
+          }
+        }
+        for (var lj = 0; lj < lines.length - 1; lj++) {
+          var gap = lines[lj + 1].top - lines[lj].bottom;
+          if (gap > 0.5) {
+            addBreak(lines[lj].bottom + gap / 2);
           }
         }
 
@@ -442,7 +523,14 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
           addBreak(br.bottom + scrollY);
         }
 
-        var breaks = Object.keys(seen).map(Number).sort(function (x, y) { return x - y; });
+        breakCandidates.sort(function (x, y) { return x - y; });
+        var breaks = [];
+        for (var bi = 0; bi < breakCandidates.length; bi++) {
+          var y = breakCandidates[bi];
+          if (!breaks.length || y - breaks[breaks.length - 1] > 0.25) {
+            breaks.push(y);
+          }
+        }
         return { height: height, breaks: breaks };
       } catch (e) {
         return { height: 0, breaks: [] };
