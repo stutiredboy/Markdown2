@@ -1156,9 +1156,10 @@ public struct MarkdownRenderer: Sendable {
 
         main {
             box-sizing: border-box;
-            width: min(100%, 860px);
+            width: 100%;
+            max-width: 1280px;
             margin: 0 auto;
-            padding: 52px 58px 80px;
+            padding: 52px clamp(28px, 4vw, 64px) 80px;
         }
 
         h1, h2, h3, h4, h5, h6 {
