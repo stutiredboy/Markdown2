@@ -50,11 +50,8 @@ public final class NSApplicationActivationManager: AppActivationManaging {
         )
         TransformProcessType(&process, UInt32(kProcessTransformToForegroundApplication))
 
-        NSRunningApplication.current.activate(options: [
-            .activateAllWindows,
-            .activateIgnoringOtherApps
-        ])
-        application.activate(ignoringOtherApps: true)
+        NSRunningApplication.current.activate(options: .activateAllWindows)
+        application.activate()
     }
 }
 
