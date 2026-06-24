@@ -3,9 +3,12 @@ import Darwin
 import Foundation
 
 enum DirectLaunchBootstrap {
+    private static let disableAppBundleBootstrapEnv = "MARKDOWN2_DISABLE_APP_BUNDLE_BOOTSTRAP"
+    private static let languageRelayoutDoneEnv = "MARKDOWN2_LANGUAGE_RELAYOUT_DONE"
+
     static func relaunchFromAppBundleIfNeeded() -> Bool {
         guard Bundle.main.bundleURL.pathExtension != "app",
-              ProcessInfo.processInfo.environment["MARKDOWN2_DISABLE_APP_BUNDLE_BOOTSTRAP"] != "1" else {
+              ProcessInfo.processInfo.environment[disableAppBundleBootstrapEnv] != "1" else {
             return false
         }
 
@@ -20,10 +23,33 @@ enum DirectLaunchBootstrap {
                 executableURL: executableURL
             )
 
-            try openBundle(bundleURL)
+            try openBundle(
+                bundleURL,
+                environmentOverrides: [disableAppBundleBootstrapEnv: "1"]
+            )
             return true
         } catch {
             fputs("Markdown2 could not start as a macOS app: \(error.localizedDescription)\n", stderr)
+            return false
+        }
+    }
+
+    static func relaunchForLanguageOverrideIfNeeded(_ overrideNeedsRelaunch: Bool) -> Bool {
+        guard overrideNeedsRelaunch,
+              Bundle.main.bundleURL.pathExtension == "app",
+              ProcessInfo.processInfo.environment[languageRelayoutDoneEnv] != "1" else {
+            return false
+        }
+
+        do {
+            try openBundle(
+                Bundle.main.bundleURL,
+                createsNewApplicationInstance: true,
+                environmentOverrides: [languageRelayoutDoneEnv: "1"]
+            )
+            return true
+        } catch {
+            fputs("Markdown2 could not restart to apply language settings: \(error.localizedDescription)\n", stderr)
             return false
         }
     }
@@ -48,12 +74,19 @@ enum DirectLaunchBootstrap {
             .resolvingSymlinksInPath()
     }
 
-    private static func openBundle(_ bundleURL: URL) throws {
+    private static func openBundle(
+        _ bundleURL: URL,
+        createsNewApplicationInstance: Bool = false,
+        environmentOverrides: [String: String]
+    ) throws {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
+        configuration.createsNewApplicationInstance = createsNewApplicationInstance
         configuration.arguments = normalizedRelaunchArguments(Array(CommandLine.arguments.dropFirst()))
         var environment = ProcessInfo.processInfo.environment
-        environment["MARKDOWN2_DISABLE_APP_BUNDLE_BOOTSTRAP"] = "1"
+        for (key, value) in environmentOverrides {
+            environment[key] = value
+        }
         configuration.environment = environment
 
         let semaphore = DispatchSemaphore(value: 0)
@@ -192,6 +225,11 @@ struct RuntimeAppBundleBuilder {
         <dict>
             <key>CFBundleDevelopmentRegion</key>
             <string>en</string>
+            <key>CFBundleLocalizations</key>
+            <array>
+                <string>en</string>
+                <string>zh-Hans</string>
+            </array>
             <key>CFBundleDocumentTypes</key>
             <array>
                 <dict>

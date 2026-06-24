@@ -50,6 +50,11 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 <dict>
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
+    <key>CFBundleLocalizations</key>
+    <array>
+        <string>en</string>
+        <string>zh-Hans</string>
+    </array>
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>

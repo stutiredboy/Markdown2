@@ -14,6 +14,16 @@ protocol PDFExporting: AnyObject {
 }
 
 @MainActor
+protocol DocumentPrinting: AnyObject {
+    func print(
+        html: String,
+        outline: [Heading],
+        baseURL: URL?,
+        completion: @escaping (Result<Void, Error>) -> Void
+    )
+}
+
+@MainActor
 final class DocumentStore: ObservableObject {
     @Published var text: String {
         didSet {
@@ -55,6 +65,18 @@ final class DocumentStore: ObservableObject {
     private var pdfExporter: PDFExporting?
     private let pdfDestinationPicker: @MainActor (String) -> URL?
     private let pdfExporterFactory: @MainActor (URL) -> PDFExporting
+    /// Retains the in-flight print job for its (asynchronous) lifetime; cleared
+    /// when printing completes. Like PDF export, printing is a derived artifact —
+    /// it never touches `fileURL`, `isDirty`, or autosave.
+    private var documentPrinter: DocumentPrinting?
+    private let documentPrinterFactory: @MainActor () -> DocumentPrinting
+
+    /// True while a derived-artifact job (PDF export or print) is in flight.
+    /// Print and Export are mutually exclusive — both spin up an offscreen
+    /// `WKWebView` through the same pipeline — so each guards on this.
+    private var isProducingDerivedArtifact: Bool {
+        pdfExporter != nil || documentPrinter != nil
+    }
     private var isLoading = false
     private var autosaveWorkItem: DispatchWorkItem?
     private let autosaveDelay: TimeInterval = 5
@@ -76,10 +98,12 @@ final class DocumentStore: ObservableObject {
 
     init(
         pdfDestinationPicker: @escaping @MainActor (String) -> URL? = DocumentStore.presentPDFDestination,
-        pdfExporterFactory: @escaping @MainActor (URL) -> PDFExporting = { PDFExporter(destinationURL: $0) }
+        pdfExporterFactory: @escaping @MainActor (URL) -> PDFExporting = { PDFExporter(destinationURL: $0) },
+        documentPrinterFactory: @escaping @MainActor () -> DocumentPrinting = { DocumentPrinter() }
     ) {
         self.pdfDestinationPicker = pdfDestinationPicker
         self.pdfExporterFactory = pdfExporterFactory
+        self.documentPrinterFactory = documentPrinterFactory
 
         let starterText = Self.starterMarkdown
         text = starterText
@@ -98,12 +122,15 @@ final class DocumentStore: ObservableObject {
         if let fileURL {
             return write(to: fileURL)
         } else {
-            return saveAs()
+            return presentSaveLocationAndWrite()
         }
     }
 
+    /// Prompts for a destination and writes there. Backs the first save of an
+    /// untitled document (`save()` falls through to it). No longer exposed as a
+    /// menu command — relocating an existing file is left to the Finder.
     @discardableResult
-    func saveAs() -> Bool {
+    private func presentSaveLocationAndWrite() -> Bool {
         let panel = NSSavePanel()
         panel.allowedContentTypes = Self.markdownTypes
         panel.canCreateDirectories = true
@@ -123,9 +150,10 @@ final class DocumentStore: ObservableObject {
     /// an offscreen `PDFExporter` renders and writes the file; failures surface
     /// through the normal `alert` path.
     func exportPDF() {
-        // Ignore a second request while one export is still in flight; otherwise
-        // the new exporter would replace the retained one and abandon the first.
-        guard pdfExporter == nil else { return }
+        // Ignore a second request while an export or print is still in flight;
+        // otherwise the new exporter would replace the retained one and abandon
+        // the first. Print and Export are mutually exclusive.
+        guard !isProducingDerivedArtifact else { return }
 
         flushPendingRender()
 
@@ -141,6 +169,31 @@ final class DocumentStore: ObservableObject {
             if case let .failure(error) = result {
                 self.alert = DocumentAlert(
                     message: "Could not export \(url.lastPathComponent).",
+                    detail: error.localizedDescription
+                )
+            }
+        }
+    }
+
+    /// Prints the rendered preview through the system print dialog. Like
+    /// `exportPDF()`, this is a derived artifact: the pending render is flushed
+    /// first so the print reflects the latest text, and it never changes
+    /// `fileURL`, `isDirty`, or autosave. Print and Export share the
+    /// `isProducingDerivedArtifact` guard, so they are mutually exclusive.
+    /// Failures surface through the normal `alert` path.
+    func print() {
+        guard !isProducingDerivedArtifact else { return }
+
+        flushPendingRender()
+
+        let printer = documentPrinterFactory()
+        documentPrinter = printer
+        printer.print(html: rendered.html, outline: rendered.outline, baseURL: baseURL) { [weak self] result in
+            guard let self else { return }
+            self.documentPrinter = nil
+            if case let .failure(error) = result {
+                self.alert = DocumentAlert(
+                    message: "Could not print the document.",
                     detail: error.localizedDescription
                 )
             }

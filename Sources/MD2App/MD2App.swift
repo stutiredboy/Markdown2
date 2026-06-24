@@ -6,14 +6,25 @@ struct MD2Application: App {
     @NSApplicationDelegateAdaptor(MD2AppDelegate.self) private var appDelegate
 
     init() {
+        let languageOverrideNeedsRelaunch = AppSettings.storedLanguageOverrideNeedsStartupRelaunch()
+        // Apply the stored language to AppleLanguages before AppKit builds the
+        // menu (and before any relaunch), so the standard menu bar localizes to
+        // the app language rather than the system locale.
+        AppSettings.applyStoredLanguageOverride()
         if DirectLaunchBootstrap.relaunchFromAppBundleIfNeeded() {
+            exit(EXIT_SUCCESS)
+        }
+        if DirectLaunchBootstrap.relaunchForLanguageOverrideIfNeeded(languageOverrideNeedsRelaunch) {
             exit(EXIT_SUCCESS)
         }
     }
 
     var body: some Scene {
         Settings {
-            SettingsView(settings: appDelegate.settings)
+            SettingsView(
+                settings: appDelegate.settings,
+                onRequestRelaunch: { appDelegate.requestLanguageRelaunch() }
+            )
         }
         .commands {
             CommandGroup(replacing: .newItem) {
@@ -34,11 +45,6 @@ struct MD2Application: App {
                 }
                 .keyboardShortcut("s")
 
-                Button(appDelegate.settings.text(.saveAs)) {
-                    appDelegate.currentDocumentStore?.saveAs()
-                }
-                .keyboardShortcut("s", modifiers: [.command, .shift])
-
                 Button(appDelegate.settings.text(.exportPDF)) {
                     appDelegate.currentDocumentStore?.exportPDF()
                 }
@@ -49,6 +55,13 @@ struct MD2Application: App {
                     appDelegate.closeCurrentDocument()
                 }
                 .keyboardShortcut("w")
+            }
+
+            CommandGroup(replacing: .printItem) {
+                Button(appDelegate.settings.text(.print)) {
+                    appDelegate.currentDocumentStore?.print()
+                }
+                .keyboardShortcut("p")
             }
 
             CommandGroup(after: .textEditing) {

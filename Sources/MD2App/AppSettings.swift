@@ -5,6 +5,7 @@ final class AppSettings: ObservableObject {
     @Published var language: AppLanguage {
         didSet {
             defaults.set(language.rawValue, forKey: Keys.language)
+            Self.applyLanguageOverride(language, defaults: defaults)
         }
     }
 
@@ -30,6 +31,15 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    /// Whether launching the app directly (no file to open) creates a blank
+    /// starter document. Defaults to off so a plain launch opens nothing; the
+    /// user can still create one with New or open a file.
+    @Published var opensBlankDocumentOnLaunch: Bool {
+        didSet {
+            defaults.set(opensBlankDocumentOnLaunch, forKey: Keys.opensBlankDocumentOnLaunch)
+        }
+    }
+
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -49,6 +59,55 @@ final class AppSettings: ObservableObject {
         } else {
             showsOutlineByDefault = defaults.bool(forKey: Keys.showsOutlineByDefault)
         }
+
+        if defaults.object(forKey: Keys.opensBlankDocumentOnLaunch) == nil {
+            opensBlankDocumentOnLaunch = false
+        } else {
+            opensBlankDocumentOnLaunch = defaults.bool(forKey: Keys.opensBlankDocumentOnLaunch)
+        }
+    }
+
+    /// Applies the stored language preference to the process's `AppleLanguages`
+    /// override so AppKit localizes the *standard* menu bar (File/Edit/View/…
+    /// and system items) to match the app language, independent of the system
+    /// locale. Reads `UserDefaults` directly (no `AppSettings` instance) so it
+    /// can run at the very start of `init()` before the menu is built. A stored
+    /// `.system` removes the override so the process follows the system locale.
+    static func applyStoredLanguageOverride(defaults: UserDefaults = .standard) {
+        applyLanguageOverride(storedLanguage(defaults: defaults), defaults: defaults)
+    }
+
+    /// Returns true when the app-domain `AppleLanguages` override differs from
+    /// the stored language preference. Used at startup to decide whether the app
+    /// needs one guarded relaunch: AppKit reads process localization before
+    /// `App.init`, so an override written for the first time in `init()` cannot
+    /// affect the current process's already-selected standard menu localizations.
+    static func storedLanguageOverrideNeedsStartupRelaunch(defaults: UserDefaults = .standard) -> Bool {
+        appDomainAppleLanguagesOverride(defaults: defaults) != storedLanguage(defaults: defaults).appleLanguagesOverride
+    }
+
+    /// The `UserDefaults` key AppKit reads to pick the app's localization.
+    static let appleLanguagesKey = "AppleLanguages"
+
+    private static func storedLanguage(defaults: UserDefaults) -> AppLanguage {
+        let raw = defaults.string(forKey: Keys.language) ?? AppLanguage.system.rawValue
+        return AppLanguage(rawValue: raw) ?? .system
+    }
+
+    private static func applyLanguageOverride(_ language: AppLanguage, defaults: UserDefaults) {
+        if let override = language.appleLanguagesOverride {
+            defaults.set(override, forKey: appleLanguagesKey)
+        } else {
+            defaults.removeObject(forKey: appleLanguagesKey)
+        }
+    }
+
+    private static func appDomainAppleLanguagesOverride(defaults: UserDefaults) -> [String]? {
+        if defaults === UserDefaults.standard,
+           let bundleIdentifier = Bundle.main.bundleIdentifier {
+            return defaults.persistentDomain(forName: bundleIdentifier)?[appleLanguagesKey] as? [String]
+        }
+        return defaults.object(forKey: appleLanguagesKey) as? [String]
     }
 
     /// Resolves the initial editor mode for a document from whether it is backed
@@ -77,6 +136,7 @@ private enum Keys {
     static let defaultMode = "MD2.DefaultMode"
     static let newDocumentMode = "MD2.NewDocumentMode"
     static let showsOutlineByDefault = "MD2.ShowsOutlineByDefault"
+    static let opensBlankDocumentOnLaunch = "MD2.OpensBlankDocumentOnLaunch"
 }
 
 enum AppLanguage: String, CaseIterable, Identifiable {
@@ -87,13 +147,26 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     var id: String {
         rawValue
     }
+
+    /// `AppleLanguages` override codes for this *stored* language, or `nil` for
+    /// `.system` (no override → follow the system locale). Resolved from the raw
+    /// stored value, never from `effectiveLanguage`, so `.system` stays `nil`.
+    var appleLanguagesOverride: [String]? {
+        switch self {
+        case .system:
+            nil
+        case .english:
+            ["en"]
+        case .zhHans:
+            ["zh-Hans"]
+        }
+    }
 }
 
 enum L10nKey: String {
     case new
     case open
     case save
-    case saveAs
     case exportPDF
     case close
     case outline
@@ -135,6 +208,12 @@ enum L10nKey: String {
     case closeFind
     case matchStatus
     case noResults
+    case print
+    case openBlankOnLaunch
+    case languageChangedTitle
+    case languageChangedMessage
+    case restartNow
+    case restartLater
 }
 
 enum L10n {
@@ -151,7 +230,6 @@ enum L10n {
         .new: "New",
         .open: "Open...",
         .save: "Save",
-        .saveAs: "Save As...",
         .exportPDF: "Export as PDF…",
         .close: "Close",
         .outline: "Outline",
@@ -192,14 +270,19 @@ enum L10n {
         .replaceAll: "Replace All",
         .closeFind: "Close find bar",
         .matchStatus: "%d of %d",
-        .noResults: "No results"
+        .noResults: "No results",
+        .print: "Print…",
+        .openBlankOnLaunch: "Open a blank document on launch",
+        .languageChangedTitle: "Restart to apply the new language?",
+        .languageChangedMessage: "The menu bar updates to the new language after Markdown2 restarts.",
+        .restartNow: "Restart Now",
+        .restartLater: "Later"
     ]
 
     private static let zhHans: [L10nKey: String] = [
         .new: "新建",
         .open: "打开...",
         .save: "保存",
-        .saveAs: "另存为...",
         .exportPDF: "导出为 PDF…",
         .close: "关闭",
         .outline: "大纲",
@@ -240,6 +323,12 @@ enum L10n {
         .replaceAll: "全部替换",
         .closeFind: "关闭查找栏",
         .matchStatus: "第 %d 个，共 %d 个",
-        .noResults: "无结果"
+        .noResults: "无结果",
+        .print: "打印…",
+        .openBlankOnLaunch: "启动时打开空白文档",
+        .languageChangedTitle: "重启以应用新语言？",
+        .languageChangedMessage: "菜单栏将在 Markdown2 重启后切换到新语言。",
+        .restartNow: "立即重启",
+        .restartLater: "稍后"
     ]
 }

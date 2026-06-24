@@ -4,29 +4,50 @@ import MD2AppSupport
 import SwiftUI
 
 @MainActor
-final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, ObservableObject {
     let settings = AppSettings()
 
     private var documentWindows: [DocumentWindow] = []
     private let activationController = LaunchActivationController()
+    /// Set when the user asks to restart for a language change. Read in
+    /// `applicationWillTerminate` to arm the relaunch only once termination is
+    /// actually committed (a cancelled unsaved-changes prompt clears it).
+    private var pendingLanguageRelaunch = false
+    /// Republishes `settings` changes as our own, so SwiftUI — which observes
+    /// this delegate via `@NSApplicationDelegateAdaptor` — re-evaluates the
+    /// `.commands` menu when the language changes. This keeps the app's own menu
+    /// items (New, Open, Save, Print, …) localized immediately; only the standard
+    /// AppKit menu bar still needs a restart.
+    private var settingsObservation: AnyCancellable?
+
+    override init() {
+        super.init()
+        settingsObservation = settings.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+    }
 
     /// The document store backing the frontmost window. Menu commands such as
     /// Save act on whichever document the user is currently looking at.
     var currentDocumentStore: DocumentStore? {
-        if let keyWindow = NSApp.keyWindow,
-           let match = documentWindows.first(where: { $0.window == keyWindow }) {
+        if let keyWindow = NSApp.keyWindow {
+            return documentWindows.first(where: { $0.window == keyWindow })?.store
+        }
+        if let mainWindow = NSApp.mainWindow,
+           let match = documentWindows.first(where: { $0.window == mainWindow }) {
             return match.store
         }
-        return documentWindows.first?.store
+        return documentWindows.last?.store
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let url = fileURLFromLaunchArguments() {
             openInNewWindow(url)
-        } else if documentWindows.isEmpty {
-            // Only fall back to a blank document if nothing was already opened —
-            // e.g. `application(_:open:)` may have fired first when launched by
-            // double-clicking or right-clicking a file in Finder.
+        } else if documentWindows.isEmpty && settings.opensBlankDocumentOnLaunch {
+            // Direct launch with no file: open a blank document only when the
+            // user opted in. The `documentWindows.isEmpty` check still matters —
+            // `application(_:open:)` may have already opened a file window when
+            // launched via Finder, in which case we never want a blank one.
             newDocument()
         }
         activationController.activateAfterLaunch()
@@ -181,10 +202,48 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         for documentWindow in documentWindows where documentWindow.store.isDirty {
             documentWindow.window.makeKeyAndOrderFront(nil)
             if !confirmDiscardOrSaveIfNeeded(for: documentWindow.store) {
+                // User cancelled: abort any pending language relaunch so a later
+                // normal quit does not unexpectedly relaunch the app.
+                pendingLanguageRelaunch = false
                 return .terminateCancel
             }
         }
         return .terminateNow
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // Only reached once termination is committed (a cancelled unsaved-changes
+        // prompt returns `.terminateCancel` and clears the flag), so arming the
+        // relaunch here can never strand a second instance.
+        guard pendingLanguageRelaunch else { return }
+        relaunchAfterTermination()
+    }
+
+    /// Restarts the app so the standard menu bar rebuilds in the newly chosen
+    /// language. Terminates through `NSApp.terminate(_:)` — not `exit()` — so the
+    /// unsaved-changes prompt runs first; the relaunch itself is armed in
+    /// `applicationWillTerminate`.
+    func requestLanguageRelaunch() {
+        pendingLanguageRelaunch = true
+        NSApp.terminate(nil)
+    }
+
+    /// Spawns a detached shell that waits for this process to exit, then reopens
+    /// the app bundle. Launching before terminating would not start a new
+    /// process: `NSWorkspace` reactivates this still-running instance instead.
+    private func relaunchAfterTermination() {
+        let bundlePath = Bundle.main.bundleURL.path
+        let pid = ProcessInfo.processInfo.processIdentifier
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [
+            "-c",
+            "while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; /usr/bin/open \"$2\"",
+            "md2-language-relaunch",
+            "\(pid)",
+            bundlePath
+        ]
+        try? process.run()
     }
 
     private func confirmDiscardOrSaveIfNeeded(for store: DocumentStore) -> Bool {
