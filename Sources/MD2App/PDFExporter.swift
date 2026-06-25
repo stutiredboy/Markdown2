@@ -70,6 +70,7 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
     static let boundaryCushion: CGFloat = 22
 
     private let webView: WKWebView
+    private let localImageSchemeHandler = LocalImageSchemeHandler()
     /// Hosts `webView` off-screen. A WKWebView with no window is treated as
     /// non-visible, so WebKit throttles it: the first load can stall and
     /// `createPDF` can capture nothing — which is why the first export of a new
@@ -110,6 +111,10 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
 
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        configuration.setURLSchemeHandler(
+            localImageSchemeHandler,
+            forURLScheme: LocalImageSchemeHandler.scheme
+        )
         // The rendered HTML is styled for on-screen reading (wide content
         // padding, a large base font). Override those with print-density styles
         // so each page holds a normal amount of text and the page margins — not
@@ -170,14 +175,21 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
 
         // `loadHTMLString` grants no file-system read access, so relative images
         // never load. Mirror the preview: write the HTML into the document
-        // directory and load it via a file request that grants read access there.
+        // directory and load it via a file request. Absolute local images are
+        // rewritten to a local scheme whose handler serves only the image files
+        // referenced by this render.
+        let rewritten = LocalImageHTMLRewriter.rewrite(html)
+        localImageSchemeHandler.setAllowedImages(rewritten.allowedImages)
         let renderURL = baseURL.appendingPathComponent(
             "\(Self.renderFilePrefix)\(UUID().uuidString)\(Self.renderFileSuffix)"
         )
         do {
-            try html.write(to: renderURL, atomically: true, encoding: .utf8)
+            try rewritten.html.write(to: renderURL, atomically: true, encoding: .utf8)
             temporaryHTMLURL = renderURL
-            webView.loadFileRequest(URLRequest(url: renderURL), allowingReadAccessTo: baseURL)
+            webView.loadFileRequest(
+                URLRequest(url: renderURL),
+                allowingReadAccessTo: baseURL
+            )
         } catch {
             // A file-backed document may reference relative images that only
             // resolve via the granted read access of `loadFileRequest`. Falling

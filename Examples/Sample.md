@@ -4,7 +4,7 @@
 
 ## Writing
 
-Markdown2 keeps the page quiet while still showing Markdown structure in the editor.
+Markdown2 keeps the page quiet while  still showing Markdown structure in the editor.
 
 - [x] Native macOS window
 - [x] Outline

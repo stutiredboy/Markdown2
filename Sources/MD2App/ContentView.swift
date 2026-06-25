@@ -445,6 +445,9 @@ struct ContentView: View {
                 onFindResult: { total, index in
                     editorMatchTotal = total
                     editorMatchIndex = index
+                },
+                onInsertImageAttachments: { sources in
+                    document.insertImageAttachments(sources, folder: settings.attachmentFolder)
                 }
             )
 
@@ -509,7 +512,8 @@ struct ContentView: View {
                 onFindResult: { total, index in
                     previewMatchTotal = total
                     previewMatchIndex = index
-                }
+                },
+                brokenImageLabel: settings.text(.imageNotFound)
             )
 
             if previewFindVisible {

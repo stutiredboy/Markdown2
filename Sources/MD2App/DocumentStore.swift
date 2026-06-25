@@ -65,6 +65,10 @@ final class DocumentStore: ObservableObject {
     private var pdfExporter: PDFExporting?
     private let pdfDestinationPicker: @MainActor (String) -> URL?
     private let pdfExporterFactory: @MainActor (URL) -> PDFExporting
+    /// Resolves the destination for the first save of an untitled document.
+    /// Injected so the save-before-attachment flow can be tested without the
+    /// modal `NSSavePanel`.
+    private let saveLocationPicker: @MainActor (String) -> URL?
     /// Retains the in-flight print job for its (asynchronous) lifetime; cleared
     /// when printing completes. Like PDF export, printing is a derived artifact —
     /// it never touches `fileURL`, `isDirty`, or autosave.
@@ -99,11 +103,13 @@ final class DocumentStore: ObservableObject {
     init(
         pdfDestinationPicker: @escaping @MainActor (String) -> URL? = DocumentStore.presentPDFDestination,
         pdfExporterFactory: @escaping @MainActor (URL) -> PDFExporting = { PDFExporter(destinationURL: $0) },
-        documentPrinterFactory: @escaping @MainActor () -> DocumentPrinting = { DocumentPrinter() }
+        documentPrinterFactory: @escaping @MainActor () -> DocumentPrinting = { DocumentPrinter() },
+        saveLocationPicker: @escaping @MainActor (String) -> URL? = DocumentStore.presentSaveLocation
     ) {
         self.pdfDestinationPicker = pdfDestinationPicker
         self.pdfExporterFactory = pdfExporterFactory
         self.documentPrinterFactory = documentPrinterFactory
+        self.saveLocationPicker = saveLocationPicker
 
         let starterText = Self.starterMarkdown
         text = starterText
@@ -131,16 +137,71 @@ final class DocumentStore: ObservableObject {
     /// menu command — relocating an existing file is left to the Finder.
     @discardableResult
     private func presentSaveLocationAndWrite() -> Bool {
+        guard let url = saveLocationPicker(fileURL?.lastPathComponent ?? "Untitled.md") else {
+            return false
+        }
+        return write(to: url)
+    }
+
+    /// Default save-location picker: the standard `NSSavePanel` for Markdown.
+    private static func presentSaveLocation(defaultName: String) -> URL? {
         let panel = NSSavePanel()
         panel.allowedContentTypes = Self.markdownTypes
         panel.canCreateDirectories = true
-        panel.nameFieldStringValue = fileURL?.lastPathComponent ?? "Untitled.md"
+        panel.nameFieldStringValue = defaultName
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
+    }
 
-        guard panel.runModal() == .OK, let url = panel.url else {
+    /// Turns image sources into the Markdown to insert — one `![alt](path)`
+    /// reference per image, newline-joined — or `nil` when nothing should be
+    /// inserted.
+    ///
+    /// An existing file (dropped, or a pasted file URL) is linked in place at its
+    /// absolute path and needs no save. Raw clipboard data (a screenshot) has no
+    /// location, so it is written into `folder` (document-relative) as PNG, which
+    /// first requires saving an untitled document — prompting once; a cancelled
+    /// save inserts nothing and a write failure surfaces through `alert`.
+    func insertImageAttachments(_ sources: [ImageAttachmentSource], folder: String) -> String? {
+        guard !sources.isEmpty else { return nil }
+
+        // Only raw clipboard data must be written into the document-relative
+        // folder, which needs a file-backed document; linked files need no save.
+        let needsAttachmentFolder = sources.contains { source in
+            if case .imageData = source { return true }
             return false
         }
+        if needsAttachmentFolder, fileURL == nil {
+            guard save(), fileURL != nil else { return nil }
+        }
 
-        return write(to: url)
+        let manager = ImageAttachmentManager()
+        var references: [String] = []
+        for source in sources {
+            switch source {
+            case let .file(url):
+                references.append(ImageAttachmentManager.directImageReference(forFile: url))
+            case let .imageData(data):
+                guard let documentDirectory = baseURL else { continue }
+                do {
+                    let written = try manager.writeImageData(
+                        data,
+                        toFolder: folder,
+                        documentDirectory: documentDirectory
+                    )
+                    let linkPath = ImageAttachmentManager.markdownLinkPath(written.relativePath)
+                    references.append("![\(written.altText)](\(linkPath))")
+                } catch {
+                    alert = DocumentAlert(
+                        message: "Could not save the image attachment.",
+                        detail: error.localizedDescription
+                    )
+                }
+            }
+        }
+
+        guard !references.isEmpty else { return nil }
+        return references.joined(separator: "\n")
     }
 
     /// Exports the rendered preview to a paginated PDF chosen by the user. This

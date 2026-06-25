@@ -40,6 +40,17 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    /// Document-relative folder where raw clipboard images are stored, e.g.
+    /// `assets` or `images/screenshots`. Dropped/pasted image files are linked
+    /// in place. The raw user value is kept as-typed; it is normalized
+    /// (absolute/`..`/escaping paths rejected back to `assets`) at write time by
+    /// `ImageAttachmentManager`.
+    @Published var attachmentFolder: String {
+        didSet {
+            defaults.set(attachmentFolder, forKey: Keys.attachmentFolder)
+        }
+    }
+
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -65,6 +76,9 @@ final class AppSettings: ObservableObject {
         } else {
             opensBlankDocumentOnLaunch = defaults.bool(forKey: Keys.opensBlankDocumentOnLaunch)
         }
+
+        let storedFolder = defaults.string(forKey: Keys.attachmentFolder)
+        attachmentFolder = (storedFolder?.isEmpty == false) ? storedFolder! : "assets"
     }
 
     /// Applies the stored language preference to the process's `AppleLanguages`
@@ -137,6 +151,7 @@ private enum Keys {
     static let newDocumentMode = "MD2.NewDocumentMode"
     static let showsOutlineByDefault = "MD2.ShowsOutlineByDefault"
     static let opensBlankDocumentOnLaunch = "MD2.OpensBlankDocumentOnLaunch"
+    static let attachmentFolder = "MD2.AttachmentFolder"
 }
 
 enum AppLanguage: String, CaseIterable, Identifiable {
@@ -214,6 +229,9 @@ enum L10nKey: String {
     case languageChangedMessage
     case restartNow
     case restartLater
+    case attachmentFolder
+    case attachmentFolderHelp
+    case imageNotFound
 }
 
 enum L10n {
@@ -276,7 +294,10 @@ enum L10n {
         .languageChangedTitle: "Restart to apply the new language?",
         .languageChangedMessage: "The menu bar updates to the new language after Markdown2 restarts.",
         .restartNow: "Restart Now",
-        .restartLater: "Later"
+        .restartLater: "Later",
+        .attachmentFolder: "Image Attachment Folder",
+        .attachmentFolderHelp: "Screenshots pasted from the clipboard are saved in this document-relative folder. Dragged or pasted image files are linked in place. Defaults to assets.",
+        .imageNotFound: "Image not found"
     ]
 
     private static let zhHans: [L10nKey: String] = [
@@ -329,6 +350,9 @@ enum L10n {
         .languageChangedTitle: "重启以应用新语言？",
         .languageChangedMessage: "菜单栏将在 Markdown2 重启后切换到新语言。",
         .restartNow: "立即重启",
-        .restartLater: "稍后"
+        .restartLater: "稍后",
+        .attachmentFolder: "图片附件文件夹",
+        .attachmentFolderHelp: "从剪贴板粘贴的截图会保存到该相对文档的文件夹；拖入或粘贴的图片文件会直接链接原位置。默认为 assets。",
+        .imageNotFound: "找不到图片"
     ]
 }

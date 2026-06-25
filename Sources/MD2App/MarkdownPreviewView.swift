@@ -80,6 +80,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
     /// Reports match count and the 1-based index of the current match (0 when
     /// there are none) back to the find bar.
     var onFindResult: (_ total: Int, _ index: Int) -> Void = { _, _ in }
+    /// Localized label shown in the broken-image placeholder (e.g. "Image not
+    /// found"). The failed path is appended at runtime as text.
+    var brokenImageLabel: String = "Image not found"
 
     private static let enterEditMessageName = "enterEdit"
     private static let anchorMessageName = "anchorChange"
@@ -94,10 +97,13 @@ struct MarkdownPreviewView: NSViewRepresentable {
     /// session/crash and swept. The age gate keeps a live sibling window's file
     /// (rewritten on every render) safe.
     private static let stalePreviewAge: TimeInterval = 3600
-
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        configuration.setURLSchemeHandler(
+            context.coordinator.localImageSchemeHandler,
+            forURLScheme: LocalImageSchemeHandler.scheme
+        )
 
         // Forward Cmd+double-click in the rendered page back to native so the
         // surrounding view can switch into edit mode. Also report the heading at
@@ -518,6 +524,47 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 if (findMarks.length === 0) { return { total: 0, index: 0 }; }
                 return setCurrent(findCurrent + (forward ? 1 : -1));
             };
+
+            // --- Broken image diagnostics (preview only) ------------------
+            // This script is injected only into the preview web view, never into
+            // the shared rendered HTML, so exported PDFs/prints are unaffected.
+            // A single capture-phase listener catches <img> load failures even
+            // after a live innerHTML content swap, because error events do not
+            // bubble (capture is required) and a delegated listener outlives the
+            // per-keystroke <main> rebuild that replaces individual <img> nodes.
+            (function () {
+                var style = document.createElement('style');
+                style.textContent =
+                    '.md2-broken-image{display:inline-flex;align-items:baseline;gap:.4em;' +
+                    'max-width:100%;box-sizing:border-box;padding:.45em .7em;margin:1.1em auto;' +
+                    'border:1px dashed var(--border,#d8dee4);border-radius:6px;' +
+                    'background:var(--code-bg,#f6f8fa);color:var(--muted,#6b7280);' +
+                    'font:13px/1.5 -apple-system,BlinkMacSystemFont,sans-serif;}' +
+                    '.md2-broken-image .md2-broken-image-path{font-family:ui-monospace,' +
+                    'SFMono-Regular,Menlo,monospace;word-break:break-all;color:var(--text,#1f2328);}';
+                document.head.appendChild(style);
+
+                window.addEventListener('error', function (event) {
+                    var img = event.target;
+                    if (!img || img.tagName !== 'IMG') { return; }
+                    if (img.getAttribute('data-md2-broken') === '1') { return; }
+                    var placeholder = document.createElement('span');
+                    placeholder.className = 'md2-broken-image';
+                    placeholder.setAttribute('data-md2-broken', '1');
+                    var label = document.createElement('span');
+                    label.textContent = '\(Self.escapeForJS(brokenImageLabel))';
+                    var path = document.createElement('span');
+                    path.className = 'md2-broken-image-path';
+                    // textContent (never innerHTML) so a hostile/odd path is inert.
+                    path.textContent = img.getAttribute('src') || '';
+                    placeholder.appendChild(label);
+                    placeholder.appendChild(document.createTextNode(' '));
+                    placeholder.appendChild(path);
+                    if (img.parentNode) {
+                        img.parentNode.replaceChild(placeholder, img);
+                    }
+                }, true);
+            })();
         })();
         """
         let userScript = WKUserScript(
@@ -745,8 +792,11 @@ struct MarkdownPreviewView: NSViewRepresentable {
     /// inside the document's directory and load it via `loadFileURL`, granting read
     /// access to that directory so relative image paths resolve correctly.
     private func load(_ html: String, baseURL: URL?, fragment: String?, in webView: WKWebView, coordinator: Coordinator) {
+        let rewritten = LocalImageHTMLRewriter.rewrite(html)
+        coordinator.localImageSchemeHandler.setAllowedImages(rewritten.allowedImages)
+
         guard let baseURL, baseURL.isFileURL else {
-            webView.loadHTMLString(html, baseURL: baseURL)
+            webView.loadHTMLString(rewritten.html, baseURL: baseURL)
             return
         }
 
@@ -758,15 +808,18 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 try? FileManager.default.removeItem(at: previous)
             }
             sweepStalePreviewFiles(in: baseURL, keeping: previewURL)
-            try html.write(to: previewURL, atomically: true, encoding: .utf8)
+            try rewritten.html.write(to: previewURL, atomically: true, encoding: .utf8)
             coordinator.previewFileURL = previewURL
-            // `loadFileRequest(_:allowingReadAccessTo:)` grants read access to the
-            // document directory; the request URL carries the anchor fragment so
-            // the browser scrolls to it as the DOM is built.
+            // Relative images (`assets/foo.png`) resolve against the preview file
+            // in the document directory. Absolute local image paths are rewritten
+            // to a preview-local scheme whose handler serves only the image files
+            // referenced by this render, avoiding broad filesystem read access.
+            // The request URL carries the anchor fragment so the browser scrolls
+            // to it as the DOM is built.
             let request = URLRequest(url: fragmentURL(previewURL, fragment: fragment))
             webView.loadFileRequest(request, allowingReadAccessTo: baseURL)
         } catch {
-            webView.loadHTMLString(html, baseURL: baseURL)
+            webView.loadHTMLString(rewritten.html, baseURL: baseURL)
         }
     }
 
@@ -827,6 +880,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         var onAnchorChange: (_ anchor: ViewportAnchor, _ isUserInitiated: Bool) -> Void = { _, _ in }
         var onFindShortcut: (_ action: FindCommand.Action) -> Void = { _ in }
         var onFindResult: (_ total: Int, _ index: Int) -> Void = { _, _ in }
+        let localImageSchemeHandler = LocalImageSchemeHandler()
         var lastFindQuery: String?
         var lastFocusToken: UUID?
         /// Token of the most recently consumed find-navigation command, so it runs
@@ -866,7 +920,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// preview's current source anchor. Called only when the page is loaded
         /// and no new diagram engine is required (the caller guarantees this).
         func applyLiveContent(_ bodyHTML: String, in webView: WKWebView) {
-            pendingLiveBody = bodyHTML
+            let rewritten = LocalImageHTMLRewriter.rewrite(bodyHTML)
+            localImageSchemeHandler.setAllowedImages(rewritten.allowedImages)
+            pendingLiveBody = rewritten.html
             liveUpdateGeneration += 1
             let generation = liveUpdateGeneration
             liveUpdateWorkItem?.cancel()

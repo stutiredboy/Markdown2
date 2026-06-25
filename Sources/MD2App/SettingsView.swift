@@ -33,6 +33,14 @@ struct SettingsView: View {
                 Toggle(settings.text(.showOutlineByDefault), isOn: $settings.showsOutlineByDefault)
 
                 Toggle(settings.text(.openBlankOnLaunch), isOn: $settings.opensBlankDocumentOnLaunch)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    TextField(settings.text(.attachmentFolder), text: $settings.attachmentFolder)
+                        .textFieldStyle(.roundedBorder)
+                    Text(settings.text(.attachmentFolderHelp))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)

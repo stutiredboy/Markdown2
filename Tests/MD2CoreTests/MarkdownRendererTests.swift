@@ -70,6 +70,60 @@ struct MarkdownRendererTests {
         #expect(document.html.contains(#"<span class="image-frame" style="width: 200px; aspect-ratio: 200 / 100;"><img src="https://via.placeholder.com/200x100" alt="Sample" title="Placeholder image" width="200" height="100"></span>"#))
     }
 
+    @Test func rendersWidthAndHeightAttributesInFrame() {
+        let document = MarkdownRenderer().render("![photo](assets/photo.jpg){width=320 height=180}")
+
+        #expect(document.html.contains(#"<span class="image-frame" style="width: 320px; aspect-ratio: 320 / 180;"><img src="assets/photo.jpg" alt="photo" width="320" height="180"></span>"#))
+        #expect(!document.html.contains("{width=320 height=180}"))
+    }
+
+    @Test func rendersWidthOnlyWithoutFixedFrame() {
+        let document = MarkdownRenderer().render("![diagram](assets/diagram.png){width=480}")
+
+        #expect(document.html.contains(#"<img src="assets/diagram.png" alt="diagram" width="480">"#))
+        // Width-only must not wrap in a fixed-aspect frame (no known ratio).
+        #expect(!document.html.contains(#"<span class="image-frame" style="width: 480px"#))
+        #expect(!document.html.contains("{width=480}"))
+    }
+
+    @Test func explicitWidthOverridesURLInferredDimensions() {
+        let document = MarkdownRenderer().render("![photo](assets/photo-1200x800.png){width=480}")
+
+        #expect(document.html.contains(#"<img src="assets/photo-1200x800.png" alt="photo" width="480">"#))
+        #expect(!document.html.contains(#"width="1200""#))
+        #expect(!document.html.contains("aspect-ratio: 1200"))
+    }
+
+    @Test func ignoresInvalidSizeAttribute() {
+        let document = MarkdownRenderer().render("![photo](assets/photo.jpg){width=large}")
+
+        #expect(document.html.contains(#"<img src="assets/photo.jpg" alt="photo">"#))
+        #expect(!document.html.contains("width=large"))
+        #expect(!document.html.contains("{width=large}"))
+    }
+
+    @Test func preservesNonSizeBraceBlockAsLiteralText() {
+        let document = MarkdownRenderer().render("![x](a.png){.foo}")
+
+        #expect(document.html.contains(#"<img src="a.png" alt="x">{.foo}"#))
+    }
+
+    @Test func preservesTitledImageWithoutSizeAttributes() {
+        let document = MarkdownRenderer().render(#"![alt](images/existing.png "Title")"#)
+
+        #expect(document.html.contains(#"<img src="images/existing.png" alt="alt" title="Title">"#))
+    }
+
+    @Test func brokenImageDiagnosticIsNotInSharedRenderedShell() {
+        // The broken-image placeholder is injected into the preview web view only,
+        // never the shared `RenderedDocument.html` that PDF export and printing
+        // reuse, so a deliverable never shows a broken-image box.
+        let document = MarkdownRenderer().render("![missing](assets/missing.png)")
+
+        #expect(!document.html.contains("md2-broken-image"))
+        #expect(!document.html.contains("addEventListener('error'"))
+    }
+
     @Test func nestsIndentedUnorderedListItems() {
         let markdown = """
         - 空调

@@ -1,6 +1,7 @@
 import AppKit
 import MD2Core
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Hands the surrounding view a way to read the editor's *live* viewport
 /// anchor at the instant a mode switch is requested, instead of relying on
@@ -75,6 +76,12 @@ struct MarkdownEditorView: NSViewRepresentable {
     var onFindShortcut: (_ action: FindCommand.Action) -> Void = { _ in }
     /// Reports match count and the 1-based index of the current match.
     var onFindResult: (_ total: Int, _ index: Int) -> Void = { _, _ in }
+    /// Turns pasted/dropped image sources into stored attachments and returns the
+    /// Markdown text to insert (one `![alt](path)` per image, newline-joined), or
+    /// `nil` when nothing should be inserted (unsupported payload, cancelled save,
+    /// or a write failure). The editor inserts the returned text on the native
+    /// edit path so dirty marking, styling, autosave, selection, and undo apply.
+    var onInsertImageAttachments: (_ sources: [ImageAttachmentSource]) -> String? = { _ in nil }
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
@@ -98,6 +105,11 @@ struct MarkdownEditorView: NSViewRepresentable {
         textView.onFindAction = { action in
             context.coordinator.onFindShortcut(action)
         }
+        textView.onInsertImageAttachments = onInsertImageAttachments
+        // Accept image file drops on top of whatever the text view already takes
+        // (string drags for in-editor text move), so the drop handler can turn
+        // dropped images into attachments without disabling text drag-and-drop.
+        textView.registerForDraggedTypes(textView.registeredDraggedTypes + [.fileURL])
         textView.delegate = context.coordinator
         textView.string = text
         textView.isRichText = false
@@ -173,6 +185,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             sourceTextView.onFindAction = { action in
                 context.coordinator.onFindShortcut(action)
             }
+            sourceTextView.onInsertImageAttachments = onInsertImageAttachments
         }
 
         if textView.string != text, !context.coordinator.isApplyingStyle {
@@ -958,6 +971,9 @@ private func scrollableContentHeight(for documentView: NSView) -> CGFloat {
 
 private final class MarkdownSourceTextView: NSTextView {
     var onFindAction: ((FindCommand.Action) -> Void)?
+    /// Turns pasted/dropped image sources into stored attachments and returns the
+    /// Markdown to insert, or `nil` to insert nothing. Set by `MarkdownEditorView`.
+    var onInsertImageAttachments: (([ImageAttachmentSource]) -> String?)?
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if let action = findAction(for: event) {
@@ -965,6 +981,108 @@ private final class MarkdownSourceTextView: NSTextView {
             return true
         }
         return super.performKeyEquivalent(with: event)
+    }
+
+    // MARK: - Image paste / drop
+
+    /// Intercepts a paste that carries image file URLs or raw image data, routing
+    /// it through the attachment flow. Anything else falls back to normal text
+    /// paste. An image payload is never allowed to fall through, so a cancelled
+    /// save or write failure inserts nothing instead of dropping a path or raw
+    /// bytes into the Markdown source.
+    override func paste(_ sender: Any?) {
+        let sources = imageSources(fromPasteboard: NSPasteboard.general)
+        guard !sources.isEmpty else {
+            super.paste(sender)
+            return
+        }
+        if let snippet = onInsertImageAttachments?(sources), !snippet.isEmpty {
+            insertText(snippet, replacementRange: selectedRange())
+        }
+    }
+
+    /// Enables the Paste command when the clipboard holds image data or image file
+    /// URLs. A plain-text `NSTextView` (`isRichText == false`) otherwise reports
+    /// paste as invalid for an image-only clipboard — there is no string type — so
+    /// `Cmd+V` would be a no-op and `paste(_:)` above would never run.
+    override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(NSText.paste(_:)),
+           !imageSources(fromPasteboard: .general).isEmpty {
+            return true
+        }
+        return super.validateMenuItem(menuItem)
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if !imageFileSources(fromDrag: sender.draggingPasteboard).isEmpty {
+            return .copy
+        }
+        return super.draggingEntered(sender)
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if !imageFileSources(fromDrag: sender.draggingPasteboard).isEmpty {
+            return .copy
+        }
+        return super.draggingUpdated(sender)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if !imageFileSources(fromDrag: sender.draggingPasteboard).isEmpty {
+            return true
+        }
+        return super.prepareForDragOperation(sender)
+    }
+
+    /// Handles a drop of one or more image files: resolves the drop insertion
+    /// point immediately, then defers the attachment write so a modal save panel
+    /// (for an untitled document) never opens while the drag session is settling.
+    /// References are inserted in drop order at the drop point.
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let sources = imageFileSources(fromDrag: sender.draggingPasteboard)
+        guard !sources.isEmpty else {
+            return super.performDragOperation(sender)
+        }
+
+        let dropPoint = convert(sender.draggingLocation, from: nil)
+        let insertionIndex = characterIndexForInsertion(at: dropPoint)
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.window?.makeFirstResponder(self)
+            guard let snippet = self.onInsertImageAttachments?(sources), !snippet.isEmpty else {
+                return
+            }
+            let length = (self.string as NSString).length
+            let range = NSRange(location: min(insertionIndex, length), length: 0)
+            self.insertText(snippet, replacementRange: range)
+        }
+        return true
+    }
+
+    /// Image sources on the pasteboard, preferring image file URLs over raw
+    /// bitmap data (a screenshot). Returns an empty array when neither is present.
+    private func imageSources(fromPasteboard pasteboard: NSPasteboard) -> [ImageAttachmentSource] {
+        if let urls = imageFileURLs(from: pasteboard), !urls.isEmpty {
+            return urls.map { .file($0) }
+        }
+        if pasteboard.canReadObject(forClasses: [NSImage.self], options: nil),
+           let images = pasteboard.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage] {
+            return images.compactMap { $0.tiffRepresentation.map(ImageAttachmentSource.imageData) }
+        }
+        return []
+    }
+
+    private func imageFileSources(fromDrag pasteboard: NSPasteboard) -> [ImageAttachmentSource] {
+        (imageFileURLs(from: pasteboard) ?? []).map { .file($0) }
+    }
+
+    /// Image-typed file URLs on `pasteboard`, in order, or `nil` when there are none.
+    private func imageFileURLs(from pasteboard: NSPasteboard) -> [URL]? {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [
+            .urlReadingFileURLsOnly: true,
+            .urlReadingContentsConformToTypes: [UTType.image.identifier]
+        ]
+        return pasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL]
     }
 
     override func performFindPanelAction(_ sender: Any?) {

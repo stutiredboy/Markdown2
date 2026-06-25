@@ -26,6 +26,7 @@ configure_test_defaults() {
         defaults write "$domain" MD2.Language -string english
         defaults write "$domain" MD2.DefaultMode -string write
         defaults write "$domain" MD2.ShowsOutlineByDefault -bool true
+        defaults write "$domain" MD2.OpensBlankDocumentOnLaunch -bool true
     done
 }
 

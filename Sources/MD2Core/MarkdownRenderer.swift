@@ -1047,14 +1047,19 @@ public struct MarkdownRenderer: Sendable {
         return text
     }
 
-    /// Inline images `![alt](src "title")`, optionally wrapped in a sized frame
-    /// when the URL encodes dimensions so the browser can reserve space.
+    /// Inline images `![alt](src "title")`, optionally followed by a Pandoc-style
+    /// size block `{width=480}` / `{width=320 height=180}`. Explicit sizes win
+    /// over dimensions inferred from the URL; both-dimension sizes reserve layout
+    /// space through `.image-frame`.
     private func renderImages(_ text: String) -> String {
-        replaceMatches(in: text, pattern: #"!\[([^\]]*)\]\((\S+?)(?:\s+&quot;(.+?)&quot;)?\)"#) { match, source in
+        replaceMatches(in: text, pattern: #"!\[([^\]]*)\]\((\S+?)(?:\s+&quot;(.+?)&quot;)?\)(?:\{([^}]*)\})?"#) { match, source in
             guard let altRange = Range(match.range(at: 1), in: source),
                   let srcRange = Range(match.range(at: 2), in: source) else {
                 return matchText(match, in: source)
             }
+
+            let alt = String(source[altRange])
+            let src = String(source[srcRange])
 
             let title: String
             if match.range(at: 3).location != NSNotFound, let titleRange = Range(match.range(at: 3), in: source) {
@@ -1063,15 +1068,79 @@ public struct MarkdownRenderer: Sendable {
                 title = ""
             }
 
-            let src = String(source[srcRange])
-            let image = "<img src=\"\(src)\" alt=\"\(source[altRange])\"\(title)>"
-            guard let dimensions = imageDimensions(from: src) else {
-                return image
+            // An optional `{…}` block immediately after the image. Only a block
+            // that names width/height is treated (and consumed) as a size
+            // attribute; any other `{…}` is preserved as literal text so unrelated
+            // braces after an image survive.
+            var explicit: (width: Int?, height: Int?) = (nil, nil)
+            var trailing = ""
+            if match.range(at: 4).location != NSNotFound, let attrRange = Range(match.range(at: 4), in: source) {
+                let attrText = String(source[attrRange])
+                if self.looksLikeSizeAttributes(attrText) {
+                    explicit = self.parseSizeAttributes(attrText)
+                } else {
+                    trailing = "{\(attrText)}"
+                }
             }
 
-            let sizedImage = "<img src=\"\(src)\" alt=\"\(source[altRange])\"\(title) width=\"\(dimensions.width)\" height=\"\(dimensions.height)\">"
-            return "<span class=\"image-frame\" style=\"width: \(dimensions.width)px; aspect-ratio: \(dimensions.width) / \(dimensions.height);\">\(sizedImage)</span>"
+            func img(_ extra: String) -> String {
+                "<img src=\"\(src)\" alt=\"\(alt)\"\(title)\(extra)>"
+            }
+
+            if let width = explicit.width, let height = explicit.height {
+                return self.imageFrame(width: width, height: height, image: img(" width=\"\(width)\" height=\"\(height)\"")) + trailing
+            }
+            if let width = explicit.width {
+                // Width only: the base `img` CSS keeps `height: auto`, so the
+                // intrinsic aspect ratio is preserved and the image is not stretched.
+                return img(" width=\"\(width)\"") + trailing
+            }
+            if let height = explicit.height {
+                // Height only is rare and the base `height: auto` would override a
+                // bare attribute, so pin it through an inline style instead.
+                return img(" style=\"height:\(height)px;\"") + trailing
+            }
+
+            // No explicit size: fall back to dimensions inferred from the URL.
+            guard let dimensions = self.imageDimensions(from: src) else {
+                return img("") + trailing
+            }
+            return self.imageFrame(
+                width: dimensions.width,
+                height: dimensions.height,
+                image: img(" width=\"\(dimensions.width)\" height=\"\(dimensions.height)\"")
+            ) + trailing
         }
+    }
+
+    /// Wraps a sized image in the layout-reserving frame: the span fixes the
+    /// width and aspect ratio so the browser holds space before the image loads.
+    private func imageFrame(width: Int, height: Int, image: String) -> String {
+        "<span class=\"image-frame\" style=\"width: \(width)px; aspect-ratio: \(width) / \(height);\">\(image)</span>"
+    }
+
+    /// Whether a trailing `{…}` block names an image size attribute (`width=` or
+    /// `height=`). Only such blocks are consumed as size specs.
+    private func looksLikeSizeAttributes(_ attributes: String) -> Bool {
+        firstMatch(in: attributes, pattern: #"(?i)(?:^|[\s,;])(?:width|height)\s*="#) != nil
+    }
+
+    /// Parses numeric `width`/`height` pixel values from a size block. Non-numeric
+    /// or out-of-range values yield `nil` for that dimension, so an invalid
+    /// attribute is ignored while the base image still renders.
+    private func parseSizeAttributes(_ attributes: String) -> (width: Int?, height: Int?) {
+        (width: sizeValue(named: "width", in: attributes),
+         height: sizeValue(named: "height", in: attributes))
+    }
+
+    private func sizeValue(named name: String, in attributes: String) -> Int? {
+        guard let match = firstMatch(in: attributes, pattern: "(?i)\\b\(name)\\s*=\\s*(\\d{1,5})\\b"),
+              let range = Range(match.range(at: 1), in: attributes),
+              let value = Int(attributes[range]),
+              (1...10000).contains(value) else {
+            return nil
+        }
+        return value
     }
 
     /// Inline links `[label](href "title")`. Links whose scheme could execute
