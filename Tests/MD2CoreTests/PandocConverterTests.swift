@@ -27,6 +27,56 @@ struct PandocReaderFormatTests {
     }
 }
 
+/// Pure unit tests for the `--citeproc` / `--bibliography` / `--csl` argument
+/// assembly (no binary required); only the filesystem is touched.
+struct PandocCitationArgumentsTests {
+    private func makeTempDirectory() -> URL {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    @Test func noArgumentsWhenNoBibliography() {
+        let directory = makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let arguments = PandocConverter.citationArguments(markdown: "# Doc\n\nNo citations.", resourceDirectory: directory)
+        #expect(arguments.isEmpty)
+    }
+
+    @Test func autoDetectedReferencesBibAddsCiteprocAndBibliography() throws {
+        let directory = makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try "@book{k, title={T}}".write(to: directory.appendingPathComponent("references.bib"), atomically: true, encoding: .utf8)
+
+        let arguments = PandocConverter.citationArguments(markdown: "# Doc", resourceDirectory: directory)
+        #expect(arguments.contains("--citeproc"))
+        #expect(arguments.contains("--bibliography=references.bib"))
+    }
+
+    @Test func frontMatterBibliographyAddsCiteprocOnly() throws {
+        let directory = makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try "@book{k, title={T}}".write(to: directory.appendingPathComponent("refs.bib"), atomically: true, encoding: .utf8)
+
+        let markdown = "---\nbibliography: refs.bib\n---\n\n# Doc"
+        let arguments = PandocConverter.citationArguments(markdown: markdown, resourceDirectory: directory)
+        #expect(arguments.contains("--citeproc"))
+        // Pandoc resolves the front-matter field itself, so no explicit --bibliography.
+        #expect(!arguments.contains(where: { $0.hasPrefix("--bibliography") }))
+    }
+
+    @Test func cslFieldIsForwardedWhenBibliographyPresent() throws {
+        let directory = makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try "@book{k, title={T}}".write(to: directory.appendingPathComponent("references.bib"), atomically: true, encoding: .utf8)
+
+        let markdown = "---\ncsl: ieee.csl\n---\n\n# Doc"
+        let arguments = PandocConverter.citationArguments(markdown: markdown, resourceDirectory: directory)
+        #expect(arguments.contains("--csl=ieee.csl"))
+    }
+}
+
 /// Exercises the real `PandocConverter` against an installed Pandoc binary. Each
 /// test skips when Pandoc is not available, so CI without Pandoc stays green.
 final class PandocConverterTests: XCTestCase {

@@ -8,8 +8,13 @@ import Testing
 struct MetadataInvariantTests {
     /// Structural wrappers whose source-line metadata lives on their children
     /// rather than the wrapper element itself (task 7.2 — a narrow, justified
-    /// exception list). The footnotes section carries metadata on each `<li>`.
-    private let wrapperExceptions = #"<section class="footnotes""#
+    /// exception list). The footnotes section carries metadata on each `<li>`;
+    /// the bibliography is a trailing generated section (entries come from a
+    /// `.bib` file, not document lines) and is exempt like the footnotes section.
+    private let wrapperExceptions = [
+        #"<section class="footnotes""#,
+        #"<section class="bibliography""#
+    ]
 
     @Test func everyTopLevelBlockInTheCorpusCarriesSourceLine() throws {
         let renderer = MarkdownRenderer()
@@ -23,7 +28,7 @@ struct MetadataInvariantTests {
                 // (e.g. a stray `</div>` that unbalances nesting) are not blocks.
                 guard isBlockLevel(tag) else { continue }
                 if tag.contains("data-md2-source-line=") { continue }
-                if tag.hasPrefix(wrapperExceptions) { continue }
+                if wrapperExceptions.contains(where: { tag.hasPrefix($0) }) { continue }
                 offenders.append("\(entry.id): \(tag.prefix(80))")
             }
         }
@@ -47,6 +52,41 @@ struct MetadataInvariantTests {
 
         let report = offenders.prefix(20).joined(separator: "\n")
         #expect(offenders.isEmpty, "task checkboxes missing data-md2-task-line:\n\(report)")
+    }
+
+    /// Task 14.9: figure and captioned-table blocks are emitted through the normal
+    /// block walk, so they carry `data-md2-source-line` like any other content
+    /// block; the trailing bibliography section is exempt (its entries come from a
+    /// `.bib`, not document lines), mirroring the footnotes section.
+    @Test func figureAndCaptionedTableBlocksCarrySourceLine() {
+        let markdown = """
+        ![A diagram](d.png){#fig:d}
+
+        | A | B |
+        | --- | --- |
+        | 1 | 2 |
+        : Caption {#tbl:t}
+        """
+        let body = MarkdownRenderer().render(markdown).body
+
+        for tag in topLevelOpeningTags(in: body) where tag.hasPrefix("<figure") || tag.hasPrefix("<table") {
+            #expect(tag.contains("data-md2-source-line="), "missing source line: \(tag)")
+        }
+        // Both block types are present in the output.
+        #expect(body.contains("<figure"))
+        #expect(body.contains("<table"))
+    }
+
+    @Test func bibliographySectionIsExemptLikeFootnotes() {
+        let bib = BibTeXParser.parse("@book{k, author = {A Author}, title = {T}, year = {2020} }")
+        let config = RenderConfig(bibliography: bib)
+        let body = MarkdownRenderer().render("Cite [@k].", config: config).body
+
+        // The bibliography is a trailing generated section with no source line.
+        #expect(body.contains(#"<section class="bibliography">"#))
+        for tag in topLevelOpeningTags(in: body) where tag.hasPrefix(#"<section class="bibliography""#) {
+            #expect(!tag.contains("data-md2-source-line="))
+        }
     }
 
     /// Opening tags of depth-0 (top-level) elements, in document order. Void

@@ -1,4 +1,5 @@
 import Foundation
+import MD2Core
 
 @MainActor
 final class AppSettings: ObservableObject {
@@ -62,6 +63,21 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    /// How inline citations render in the preview (author-year or numeric). The
+    /// renderer reads this through the document store's render config.
+    @Published var citationStyle: CitationStyle {
+        didSet {
+            defaults.set(citationStyle.rawValue, forKey: Keys.citationStyle)
+        }
+    }
+
+    /// Whether every display equation is numbered, or only those with a `\label{}`.
+    @Published var numberAllEquations: Bool {
+        didSet {
+            defaults.set(numberAllEquations, forKey: Keys.numberAllEquations)
+        }
+    }
+
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -96,6 +112,15 @@ final class AppSettings: ObservableObject {
             exportProfile = decoded
         } else {
             exportProfile = .default
+        }
+
+        let citationValue = defaults.string(forKey: Keys.citationStyle) ?? CitationStyle.authorYear.rawValue
+        citationStyle = CitationStyle(rawValue: citationValue) ?? .authorYear
+
+        if defaults.object(forKey: Keys.numberAllEquations) == nil {
+            numberAllEquations = false
+        } else {
+            numberAllEquations = defaults.bool(forKey: Keys.numberAllEquations)
         }
     }
 
@@ -171,6 +196,8 @@ private enum Keys {
     static let opensBlankDocumentOnLaunch = "MD2.OpensBlankDocumentOnLaunch"
     static let attachmentFolder = "MD2.AttachmentFolder"
     static let exportProfile = "MD2.ExportProfile"
+    static let citationStyle = "MD2.CitationStyle"
+    static let numberAllEquations = "MD2.NumberAllEquations"
 }
 
 enum AppLanguage: String, CaseIterable, Identifiable {
@@ -278,6 +305,12 @@ enum L10nKey: String {
     case zoneCenter
     case zoneRight
     case runningTextTokensHelp
+    case academic
+    case citationStyleLabel
+    case citationAuthorYear
+    case citationNumeric
+    case numberAllEquations
+    case academicHelp
 }
 
 enum L10n {
@@ -370,7 +403,13 @@ enum L10n {
         .zoneLeft: "Left",
         .zoneCenter: "Center",
         .zoneRight: "Right",
-        .runningTextTokensHelp: "Header and footer text can use {title}, {date}, {page}, and {pageCount}."
+        .runningTextTokensHelp: "Header and footer text can use {title}, {date}, {page}, and {pageCount}.",
+        .academic: "Academic",
+        .citationStyleLabel: "Citation Style",
+        .citationAuthorYear: "Author-Year",
+        .citationNumeric: "Numeric",
+        .numberAllEquations: "Number All Equations",
+        .academicHelp: "Citations load from a bibliography: front-matter field or a references.bib next to the document."
     ]
 
     private static let zhHans: [L10nKey: String] = [
@@ -453,6 +492,12 @@ enum L10n {
         .zoneLeft: "左",
         .zoneCenter: "中",
         .zoneRight: "右",
-        .runningTextTokensHelp: "页眉和页脚文本可使用 {title}、{date}、{page} 和 {pageCount}。"
+        .runningTextTokensHelp: "页眉和页脚文本可使用 {title}、{date}、{page} 和 {pageCount}。",
+        .academic: "学术",
+        .citationStyleLabel: "引用样式",
+        .citationAuthorYear: "作者-年份",
+        .citationNumeric: "数字编号",
+        .numberAllEquations: "为所有公式编号",
+        .academicHelp: "引用会从 front-matter 的 bibliography: 字段或文档同目录下的 references.bib 加载。"
     ]
 }

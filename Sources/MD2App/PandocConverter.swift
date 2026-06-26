@@ -1,4 +1,5 @@
 import Foundation
+import MD2Core
 
 /// Output formats produced by delegating to an external Pandoc binary.
 enum DocumentExportFormat: Sendable {
@@ -91,6 +92,10 @@ final class PandocConverter: DocumentConverting {
             return
         }
 
+        // Formal citation processing: enable `--citeproc` and point Pandoc at the
+        // associated `.bib` so `[@key]` citations get full CSL formatting.
+        let citationArguments = Self.citationArguments(markdown: markdown, resourceDirectory: resourceDirectory)
+
         pendingCompletion = completion
         // Run the blocking Pandoc invocation off the main actor; only a `Sendable`
         // outcome crosses back to the main actor to fire the completion.
@@ -99,7 +104,8 @@ final class PandocConverter: DocumentConverting {
                 pandoc: pandoc,
                 input: tempURL,
                 workingDirectory: resourceDirectory,
-                destination: destination
+                destination: destination,
+                extraArguments: citationArguments
             )
             try? FileManager.default.removeItem(at: tempURL)
             if failure != nil {
@@ -128,7 +134,8 @@ final class PandocConverter: DocumentConverting {
         pandoc: URL,
         input: URL,
         workingDirectory: URL,
-        destination: URL
+        destination: URL,
+        extraArguments: [String] = []
     ) -> ConversionError? {
         let process = Process()
         process.executableURL = pandoc
@@ -139,7 +146,7 @@ final class PandocConverter: DocumentConverting {
             input.lastPathComponent,
             "--from", Self.readerFormat(for: pandoc),
             "-o", destination.path
-        ]
+        ] + extraArguments
         let errorPipe = Pipe()
         process.standardError = errorPipe
         process.standardOutput = Pipe()
@@ -176,6 +183,36 @@ final class PandocConverter: DocumentConverting {
             return .conversionFailed(message)
         }
         return nil
+    }
+
+    /// Pandoc arguments for formal citation processing. When a bibliography is
+    /// associated — the front-matter `bibliography:` field (which Pandoc reads
+    /// itself) or an auto-detected `references.bib` next to the document — returns
+    /// `--citeproc` plus, for the auto-detected case, an explicit `--bibliography`.
+    /// A front-matter `csl:` style is forwarded as `--csl`. Returns no arguments
+    /// when no bibliography is found, so a citation-free document is unaffected.
+    nonisolated static func citationArguments(markdown: String, resourceDirectory: URL) -> [String] {
+        let fields = FrontMatterReader.fields(in: markdown)
+        var arguments: [String] = []
+        var hasBibliography = false
+
+        if let path = fields["bibliography"],
+           FileManager.default.fileExists(atPath: resourceDirectory.appendingPathComponent(path).path) {
+            // Pandoc resolves the front-matter `bibliography:` field itself.
+            hasBibliography = true
+        } else if FileManager.default.fileExists(
+            atPath: resourceDirectory.appendingPathComponent("references.bib").path
+        ) {
+            arguments.append("--bibliography=references.bib")
+            hasBibliography = true
+        }
+
+        guard hasBibliography else { return [] }
+        arguments.insert("--citeproc", at: 0)
+        if let csl = fields["csl"] {
+            arguments.append("--csl=\(csl)")
+        }
+        return arguments
     }
 
     // MARK: - Detection (cached, refreshable)

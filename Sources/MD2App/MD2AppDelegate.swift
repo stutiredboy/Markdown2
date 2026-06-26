@@ -23,7 +23,16 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
     override init() {
         super.init()
         settingsObservation = settings.objectWillChange.sink { [weak self] _ in
-            self?.objectWillChange.send()
+            guard let self else { return }
+            self.objectWillChange.send()
+            // `objectWillChange` fires before the new value commits, so re-render
+            // on the next runloop tick to pick up the changed citation/equation
+            // preferences and refresh every open preview.
+            DispatchQueue.main.async {
+                for documentWindow in self.documentWindows {
+                    documentWindow.store.reRenderForSettingsChange()
+                }
+            }
         }
     }
 
@@ -81,11 +90,15 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
         makeDocumentWindow(store: makeDocumentStore()).window.makeKeyAndOrderFront(nil)
     }
 
-    /// Creates a document store wired to read the live export profile from
-    /// settings, so PDF export and Print always use the user's current
-    /// configuration without each store holding its own copy.
+    /// Creates a document store wired to read the live export profile and
+    /// citation/equation preferences from settings, so export, print, and the
+    /// preview always use the user's current configuration without each store
+    /// holding its own copy.
     private func makeDocumentStore() -> DocumentStore {
-        DocumentStore(exportProfileProvider: { [settings] in settings.exportProfile })
+        DocumentStore(
+            exportProfileProvider: { [settings] in settings.exportProfile },
+            renderConfigProvider: { [settings] in (settings.citationStyle, settings.numberAllEquations) }
+        )
     }
 
     /// Closes the frontmost document window in response to ⌘W. Routing through

@@ -75,6 +75,9 @@ final class DocumentStore: ObservableObject {
     /// applied to PDF export and Print. Injected so tests can pin a profile; the
     /// app wires it to the live `AppSettings` value.
     private let exportProfileProvider: @MainActor () -> ExportProfile
+    /// Supplies the citation/equation-numbering preferences that feed the render
+    /// config. Injected so tests can pin them; the app wires it to live settings.
+    private let renderConfigProvider: @MainActor () -> (citationStyle: CitationStyle, numberAllEquations: Bool)
     /// Resolves the destination for the first save of an untitled document.
     /// Injected so the save-before-attachment flow can be tested without the
     /// modal `NSSavePanel`.
@@ -128,7 +131,8 @@ final class DocumentStore: ObservableObject {
         pandocAvailabilityProvider: @escaping @MainActor () -> Bool = { PandocConverter.isAvailable() },
         conversionDestinationPicker: @escaping @MainActor (DocumentExportFormat, String) -> URL? = DocumentStore.presentConversionDestination,
         saveLocationPicker: @escaping @MainActor (String) -> URL? = DocumentStore.presentSaveLocation,
-        exportProfileProvider: @escaping @MainActor () -> ExportProfile = { .default }
+        exportProfileProvider: @escaping @MainActor () -> ExportProfile = { .default },
+        renderConfigProvider: @escaping @MainActor () -> (citationStyle: CitationStyle, numberAllEquations: Bool) = { (.authorYear, false) }
     ) {
         self.pdfDestinationPicker = pdfDestinationPicker
         self.htmlDestinationPicker = htmlDestinationPicker
@@ -139,6 +143,7 @@ final class DocumentStore: ObservableObject {
         self.conversionDestinationPicker = conversionDestinationPicker
         self.saveLocationPicker = saveLocationPicker
         self.exportProfileProvider = exportProfileProvider
+        self.renderConfigProvider = renderConfigProvider
 
         let starterText = Self.starterMarkdown
         text = starterText
@@ -604,7 +609,40 @@ final class DocumentStore: ObservableObject {
     private func renderNow() {
         renderGeneration &+= 1
         hasPendingRender = false
-        rendered = renderer.render(text)
+        rendered = renderer.render(text, config: buildRenderConfig())
+    }
+
+    /// Re-renders the current document so a settings change (citation style,
+    /// equation numbering) is reflected in the preview without waiting for the
+    /// next edit. A no-op-friendly entry point the app calls on settings change.
+    func reRenderForSettingsChange() {
+        renderNow()
+    }
+
+    /// Builds the academic render config: citation/equation preferences from
+    /// settings, plus the document's front matter and associated bibliography.
+    /// File IO (locating and reading the `.bib`) is the app layer's responsibility;
+    /// the renderer stays pure and receives only parsed data.
+    private func buildRenderConfig() -> RenderConfig {
+        let fields = FrontMatterReader.fields(in: text)
+        let preferences = renderConfigProvider()
+        return RenderConfig(
+            bibliography: loadBibliography(fromFrontMatter: fields),
+            citationStyle: preferences.citationStyle,
+            numberAllEquations: preferences.numberAllEquations,
+            mathMacros: FrontMatterReader.parseMathMacros(fields["math-macros"])
+        )
+    }
+
+    /// Resolves the bibliography file — the front-matter `bibliography:` path or an
+    /// auto-detected `references.bib` next to the document — against `baseURL`, and
+    /// parses it. Returns an empty map when there is no document directory or the
+    /// file is missing/unreadable, so citations degrade gracefully to raw keys.
+    private func loadBibliography(fromFrontMatter fields: [String: String]) -> [String: BibEntry] {
+        guard let baseURL else { return [:] }
+        let candidate = baseURL.appendingPathComponent(fields["bibliography"] ?? "references.bib")
+        guard let contents = try? String(contentsOf: candidate, encoding: .utf8) else { return [:] }
+        return BibTeXParser.parse(contents)
     }
 
     /// Forces a pending debounced render to complete immediately, so a caller

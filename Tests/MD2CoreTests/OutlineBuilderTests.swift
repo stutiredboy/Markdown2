@@ -36,4 +36,27 @@ struct OutlineBuilderTests {
         #expect(headings.map(\.title) == ["Real", "Also Real"])
         #expect(headings.map(\.line) == [1, 7])
     }
+
+    @Test func skipsLeadingFrontMatterWhenBuildingOutline() {
+        let markdown = """
+        ---
+        title: Markdown2 Sample
+        bibliography: references.bib
+        math-macros: { "\\\\RR": "\\\\mathbb{R}" }
+        ---
+
+        [TOC]
+
+        # Markdown2 Sample
+        ## Citations & Bibliography
+        """
+
+        let headings = OutlineBuilder().build(from: markdown)
+
+        #expect(headings == [
+            Heading(id: "markdown2-sample", level: 1, title: "Markdown2 Sample", line: 9),
+            Heading(id: "citations-bibliography", level: 2, title: "Citations & Bibliography", line: 10)
+        ])
+        #expect(!headings.contains { $0.title.contains("math-macros") })
+    }
 }

@@ -8,7 +8,7 @@ public struct OutlineBuilder: Sendable {
         var headings: [Heading] = []
         var usedSlugs: [String: Int] = [:]
         var activeFence: String?
-        var index = 0
+        var index = leadingFrontMatterEndIndex(in: lines) ?? 0
 
         while index < lines.count {
             let line = lines[index]
@@ -61,6 +61,19 @@ public struct OutlineBuilder: Sendable {
         }
 
         return headings
+    }
+
+    private func leadingFrontMatterEndIndex(in lines: [String]) -> Int? {
+        guard lines.first?.trimmedMarkdownLine == "---" else { return nil }
+
+        var index = 1
+        while index < lines.count {
+            if lines[index].trimmedMarkdownLine == "---" {
+                return index + 1
+            }
+            index += 1
+        }
+        return nil
     }
 
     private func appendHeading(

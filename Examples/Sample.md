@@ -1,3 +1,9 @@
+---
+title: Markdown2 Sample
+bibliography: references.bib
+math-macros: { "\\RR": "\\mathbb{R}" }
+---
+
 # Markdown2 Sample
 
 [TOC]
@@ -35,6 +41,10 @@ Safe inline HTML: <u>underline</u>, <kbd>Cmd+S</kbd>, <mark>highlighted</mark>, 
 
 ![Sample](https://via.placeholder.com/200x100 "Placeholder image")
 
+A numbered figure carries a `{#fig:label}` id and an auto-generated caption — see \ref{fig:placeholder}:
+
+![A placeholder figure](https://via.placeholder.com/240x120){#fig:placeholder}
+
 ## Footnotes
 
 Footnotes let you add citations and asides without cluttering the prose.[^1] You can use numbered labels or named ones[^typora], and the same note can be referenced more than once.[^1]
@@ -42,6 +52,28 @@ Footnotes let you add citations and asides without cluttering the prose.[^1] You
 [^1]: This is the first footnote — referenced twice from the paragraph above.
 [^typora]: Named labels work too. See the Typora reference: <https://support.typora.io/Markdown-Reference/#footnotes>.
     Continuation lines are indented and become part of the same footnote.
+
+## Citations & Bibliography
+
+Pandoc-style citations are loaded from the `bibliography:` file named in the front matter (`references.bib` here). The renderer formats them in the preview and emits a bibliography section at the end of the document.
+
+- Parenthetical: information theory began with [@shannon1948].
+- In-text: @knuth1984 wrote the definitive guide to its typesetting system.
+- Author-suppressed: the transformer architecture [-@vaswani2017] reshaped the field.
+- Multiple: several works [@shannon1948; @knuth1984] are foundational.
+- With a locator: see [@knuth1984, p. 42] for the details.
+
+The citation style (author-year or numeric) is configurable in Settings → Academic.
+
+## Cross-References
+
+`\ref{}` resolves to the number of a labeled figure, table, or equation:
+
+- The mass–energy equation is \ref{eq:emc}.
+- The placeholder image is \ref{fig:placeholder}.
+- The status table is \ref{tbl:features}.
+
+An undefined reference such as `\ref{missing}` stays literal, and references inside `` `code` `` or `$math$` are left untouched.
 
 ## Block Elements
 
@@ -86,6 +118,14 @@ Task list:
 | Math | Done | High |
 | Diagrams | Done | Medium |
 | Export | Pending | Low |
+
+A caption line right after a pipe table numbers and labels it, so it can be cross-referenced (\ref{tbl:features}):
+
+| Feature | Status |
+| :--- | :---: |
+| Citations | Done |
+| Cross-references | Done |
+: Feature status overview {#tbl:features}
 
 ## Code Blocks
 
@@ -135,6 +175,30 @@ Maxwell's equations:
 $$
 \nabla \times \mathbf{E} = -\frac{\partial \mathbf{B}}{\partial t}
 $$
+
+A labeled display equation is auto-numbered and can be referenced with `\ref{}`:
+
+$$
+E = mc^2 \label{eq:emc}
+$$
+
+A manual `\tag{}` overrides the auto-number:
+
+$$
+a^2 + b^2 = c^2 \tag{P}
+$$
+
+Macros declared with `\newcommand` are available in later blocks (`globalGroup`):
+
+$$
+\newcommand{\abs}[1]{\left| #1 \right|} \abs{x}
+$$
+
+$$
+\abs{-5} = 5
+$$
+
+The front-matter `math-macros` field predefines macros for the whole document, so $x \in \RR$ uses `\RR` defined above.
 
 ## Chemistry Formulas
 

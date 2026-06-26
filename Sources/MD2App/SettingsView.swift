@@ -1,4 +1,5 @@
 import AppKit
+import MD2Core
 import SwiftUI
 
 struct SettingsView: View {
@@ -41,6 +42,20 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+            }
+
+            Section(settings.text(.academic)) {
+                Picker(settings.text(.citationStyleLabel), selection: $settings.citationStyle) {
+                    Text(settings.text(.citationAuthorYear)).tag(CitationStyle.authorYear)
+                    Text(settings.text(.citationNumeric)).tag(CitationStyle.numeric)
+                }
+                .pickerStyle(.segmented)
+
+                Toggle(settings.text(.numberAllEquations), isOn: $settings.numberAllEquations)
+
+                Text(settings.text(.academicHelp))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             ExportSettingsSection(settings: settings)

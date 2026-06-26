@@ -177,4 +177,66 @@ struct MathRenderingTests {
         #expect(document.html.contains("__mhchemParse") || document.html.contains("mhchem"))
         #expect(document.html.contains(#"<span class="math math-inline">\ce{CH4 + 2 O2}</span>"#))
     }
+
+    // MARK: Equation numbering (6.x)
+
+    @Test func labeledDisplayEquationIsNumbered() {
+        let body = MarkdownRenderer().render(#"$$E = mc^2 \label{eq:energy}$$"#).body.withoutSourceLineMetadata
+
+        #expect(body.contains(#"<span class="eq-number">(1)</span>"#))
+        #expect(body.contains(#"id="eq:energy""#))
+    }
+
+    @Test func labelCommandIsStrippedFromTypesetTeX() {
+        let body = MarkdownRenderer().render(#"$$E = mc^2 \label{eq:energy}$$"#).body
+
+        // The label command must not reach KaTeX (0.16 would typeset it as an error).
+        #expect(!body.contains(#"\label"#))
+        #expect(body.contains("E = mc^2"))
+    }
+
+    @Test func unlabeledEquationIsUnnumberedByDefault() {
+        let body = MarkdownRenderer().render("$$E = mc^2$$").body
+
+        #expect(!body.contains("eq-number"))
+    }
+
+    @Test func numberAllEquationsSettingNumbersUnlabeled() {
+        let config = RenderConfig(numberAllEquations: true)
+        let body = MarkdownRenderer().render("$$E = mc^2$$", config: config).body.withoutSourceLineMetadata
+
+        #expect(body.contains(#"<span class="eq-number">(1)</span>"#))
+    }
+
+    @Test func manualTagIsPassedThroughToKaTeX() {
+        let body = MarkdownRenderer().render(#"$$a = b \tag{3.1}$$"#).body
+
+        // The tag stays in the TeX for KaTeX to render; no separate eq-number.
+        #expect(body.contains(#"\tag{3.1}"#))
+        #expect(!body.contains("eq-number"))
+    }
+
+    // MARK: KaTeX macro configuration (10.x)
+
+    @Test func globalGroupAndMacrosAreConfigured() {
+        let html = MarkdownRenderer().render("$x$").html
+
+        #expect(html.contains("globalGroup: true"))
+        #expect(html.contains("macros: window.__md2MathMacros"))
+    }
+
+    @Test func frontMatterMacrosAreSerializedIntoKaTeXConfig() {
+        let config = RenderConfig(mathMacros: ["\\vec": "\\mathbf"])
+        let html = MarkdownRenderer().render(#"$\vec{x}$"#, config: config).html
+
+        // JSON `\\`-escaping yields the single backslashes KaTeX expects.
+        #expect(html.contains(#""\\vec""#))
+        #expect(html.contains(#""\\mathbf""#))
+    }
+
+    @Test func noMacrosSerializeToEmptyObject() {
+        let html = MarkdownRenderer().render("$x$").html
+
+        #expect(html.contains("window.__md2InitialMacros = {};"))
+    }
 }

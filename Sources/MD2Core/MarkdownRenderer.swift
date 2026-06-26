@@ -5,15 +5,40 @@ public struct MarkdownRenderer: Sendable {
 
     public init() {}
 
-    public func render(_ markdown: String) -> RenderedDocument {
+    /// Renders Markdown to a full preview document. `config` carries the
+    /// technical/academic inputs the pure renderer cannot discover on its own
+    /// (the parsed bibliography, citation style, equation-numbering flag, and math
+    /// macros); the default empty config reproduces the configuration-free
+    /// behavior for the many call sites and tests that need none of it.
+    public func render(_ markdown: String, config: RenderConfig = .init()) -> RenderedDocument {
+        let lines = markdown.normalizedMarkdownLines
         let outline = outlineBuilder.build(from: markdown)
+
         let footnotes = FootnoteContext()
-        collectFootnoteDefinitions(markdown.normalizedMarkdownLines, into: footnotes)
-        var body = renderBody(markdown, outline: outline, footnotes: footnotes)
+        collectFootnoteDefinitions(lines, into: footnotes)
+
+        let citations = CitationContext(entries: config.bibliography, style: config.citationStyle)
+        let crossReferences = CrossReferenceContext(numberAllEquations: config.numberAllEquations)
+        // Pre-scan labels so a `\ref{}` before its target resolves (mirroring the
+        // footnote pre-scan); the counters are then rewound so the render walk
+        // re-assigns identical numbers as it emits each element.
+        collectCrossReferenceLabels(lines, into: crossReferences, config: config)
+        crossReferences.resetCounters()
+
+        let context = InlineContext(
+            footnotes: footnotes,
+            citations: citations,
+            crossReferences: crossReferences
+        )
+
+        var body = renderBody(markdown, outline: outline, context: context)
         if let section = footnoteSectionHTML(footnotes) {
             body += "\n" + section
         }
-        let html = htmlDocument(body: body)
+        if let bibliography = bibliographySectionHTML(citations) {
+            body += "\n" + bibliography
+        }
+        let html = htmlDocument(body: body, config: config)
 
         return RenderedDocument(
             html: html,
@@ -26,7 +51,7 @@ public struct MarkdownRenderer: Sendable {
     private func renderBody(
         _ markdown: String,
         outline: [Heading],
-        footnotes: FootnoteContext,
+        context: InlineContext,
         lineOffset: Int = 0
     ) -> String {
         let lines = markdown.normalizedMarkdownLines
@@ -78,7 +103,7 @@ public struct MarkdownRenderer: Sendable {
                 let blockquote = blockquoteBlock(
                     from: lines,
                     startIndex: index,
-                    footnotes: footnotes,
+                    context: context,
                     lineOffset: lineOffset
                 )
                 appendBlock(blockquote.html, from: index, to: blockquote.nextIndex)
@@ -92,8 +117,12 @@ public struct MarkdownRenderer: Sendable {
                 continue
             }
 
-            if let math = mathBlock(from: lines, startIndex: index) {
-                appendBlock(math.html, from: index, to: math.nextIndex)
+            if let math = mathBlockContent(from: lines, startIndex: index) {
+                appendBlock(
+                    mathDisplayBlockHTML(tex: math.tex, context: context),
+                    from: index,
+                    to: math.nextIndex
+                )
                 index = math.nextIndex
                 continue
             }
@@ -104,13 +133,29 @@ public struct MarkdownRenderer: Sendable {
                 continue
             }
 
-            if let table = tableBlock(from: lines, startIndex: index, footnotes: footnotes) {
-                appendBlock(table.html, from: index, to: table.nextIndex)
-                index = table.nextIndex
+            if let table = tableBlock(from: lines, startIndex: index, context: context) {
+                // A Pandoc-style caption line (`: caption {#tbl:label}`) immediately
+                // after the table numbers and labels it, and is consumed from body flow.
+                if table.nextIndex < lines.count,
+                   let caption = parseTableCaption(lines[table.nextIndex]) {
+                    let number = context.crossReferences.assignTable(label: caption.label)
+                    let captioned = tableWithCaption(
+                        table.html,
+                        number: number,
+                        caption: caption.caption,
+                        label: caption.label,
+                        context: context
+                    )
+                    appendBlock(captioned, from: index, to: table.nextIndex + 1)
+                    index = table.nextIndex + 1
+                } else {
+                    appendBlock(table.html, from: index, to: table.nextIndex)
+                    index = table.nextIndex
+                }
                 continue
             }
 
-            if let setextHeading = setextHeadingBlock(from: lines, startIndex: index, headingsByLine: headingsByLine) {
+            if let setextHeading = setextHeadingBlock(from: lines, startIndex: index, headingsByLine: headingsByLine, context: context) {
                 appendBlock(setextHeading.html, from: index, to: setextHeading.nextIndex)
                 index = setextHeading.nextIndex
                 continue
@@ -118,7 +163,7 @@ public struct MarkdownRenderer: Sendable {
 
             if let heading = MarkdownLine.heading(in: line), let outlineHeading = headingsByLine[index + 1] {
                 appendBlock(
-                    "<h\(heading.level) id=\"\(escapeAttribute(outlineHeading.id))\">\(inlineHTML(heading.title))</h\(heading.level)>",
+                    "<h\(heading.level) id=\"\(escapeAttribute(outlineHeading.id))\">\(inlineHTML(heading.title, context: context))</h\(heading.level)>",
                     from: index,
                     to: index + 1
                 )
@@ -139,13 +184,21 @@ public struct MarkdownRenderer: Sendable {
                 continue
             }
 
-            if let list = listBlock(from: lines, startIndex: index, footnotes: footnotes, lineOffset: lineOffset) {
+            if let list = listBlock(from: lines, startIndex: index, context: context, lineOffset: lineOffset) {
                 appendBlock(list.html, from: index, to: list.nextIndex)
                 index = list.nextIndex
                 continue
             }
 
-            let paragraph = paragraphBlock(from: lines, startIndex: index, footnotes: footnotes)
+            // A line that is solely a labeled figure image renders as a block-level
+            // `<figure>` (with a numbered caption) rather than inside a paragraph.
+            if let figure = figureBlock(from: lines, startIndex: index, context: context) {
+                appendBlock(figure.html, from: index, to: figure.nextIndex)
+                index = figure.nextIndex
+                continue
+            }
+
+            let paragraph = paragraphBlock(from: lines, startIndex: index, context: context)
             appendBlock(paragraph.html, from: index, to: paragraph.nextIndex)
             index = paragraph.nextIndex
         }
@@ -262,13 +315,15 @@ public struct MarkdownRenderer: Sendable {
         return ("<pre><code>\(escapeHTML(code.joined(separator: "\n")))</code></pre>", index)
     }
 
-    /// Detects a display math block delimited by `$$`.
+    /// Detects a display math block delimited by `$$` and returns its raw TeX.
     ///
     /// Handles both a single line such as `$$a^2 + b^2 = c^2$$` and a multi-line
     /// block whose opening line starts with `$$` and whose content runs until a
     /// line ending in `$$`. Returns `nil` when there is no closing `$$`, so the
-    /// text falls through to normal paragraph handling.
-    private func mathBlock(from lines: [String], startIndex: Int) -> (html: String, nextIndex: Int)? {
+    /// text falls through to normal paragraph handling. The raw TeX is exposed
+    /// (rather than finished HTML) so both the label pre-scan and the render walk
+    /// can inspect it for `\label`/`\tag`.
+    private func mathBlockContent(from lines: [String], startIndex: Int) -> (tex: String, nextIndex: Int)? {
         let trimmed = lines[startIndex].trimmedMarkdownLine
         guard trimmed.hasPrefix("$$") else { return nil }
 
@@ -276,8 +331,7 @@ public struct MarkdownRenderer: Sendable {
 
         // Single-line block: `$$ ... $$`
         if afterOpen.hasSuffix("$$"), afterOpen.count >= 2 {
-            let inner = String(afterOpen.dropLast(2))
-            return (mathDisplayHTML(inner), startIndex + 1)
+            return (String(afterOpen.dropLast(2)), startIndex + 1)
         }
 
         // Multi-line block: collect lines until one ends with `$$`.
@@ -294,7 +348,7 @@ public struct MarkdownRenderer: Sendable {
                 if !beforeClose.isEmpty {
                     content.append(beforeClose)
                 }
-                return (mathDisplayHTML(content.joined(separator: "\n")), index + 1)
+                return (content.joined(separator: "\n"), index + 1)
             }
 
             content.append(lines[index])
@@ -304,16 +358,61 @@ public struct MarkdownRenderer: Sendable {
         return nil
     }
 
-    /// Emits a display-math wrapper carrying the raw TeX as HTML-escaped text
-    /// content so the math engine can read it verbatim from the DOM.
+    /// Thin wrapper kept for the paragraph-break and footnote-scan call sites that
+    /// only need to know a display-math block exists here and where it ends.
+    private func mathBlock(from lines: [String], startIndex: Int) -> (html: String, nextIndex: Int)? {
+        guard let content = mathBlockContent(from: lines, startIndex: startIndex) else { return nil }
+        return (mathDisplayHTML(content.tex), content.nextIndex)
+    }
+
+    /// Emits an unnumbered display-math wrapper carrying the raw TeX as
+    /// HTML-escaped text content so the math engine can read it verbatim from the DOM.
     private func mathDisplayHTML(_ tex: String) -> String {
         "<div class=\"\(PreviewClass.math) \(PreviewClass.mathDisplay)\">\(escapeHTML(tex.trimmingCharacters(in: .whitespacesAndNewlines)))</div>"
+    }
+
+    /// Emits a display-math block, applying equation numbering. A `\label{}` is
+    /// stripped from the TeX before it reaches KaTeX (0.16 has no `\label` and
+    /// would typeset it as a visible error) and recorded for `\ref{}`. An
+    /// auto-numbered equation is wrapped so a `(n)` sits to its right; a manual
+    /// `\tag{}` is left in the TeX for KaTeX to typeset natively.
+    private func mathDisplayBlockHTML(tex: String, context: InlineContext) -> String {
+        let info = equationLabelTag(in: tex)
+        let number = context.crossReferences.assignEquation(label: info.label, tag: info.tag)
+        let idAttribute = info.label.map { " id=\"\(escapeAttribute($0))\"" } ?? ""
+        let escaped = escapeHTML(info.stripped)
+
+        // A manual `\tag` stays in the TeX (kept by `equationLabelTag`) and KaTeX
+        // renders the number itself, so no separate `(n)` is added here.
+        if info.tag != nil {
+            return "<div class=\"\(PreviewClass.math) \(PreviewClass.mathDisplay)\"\(idAttribute)>\(escaped)</div>"
+        }
+
+        guard let number else {
+            return "<div class=\"\(PreviewClass.math) \(PreviewClass.mathDisplay)\">\(escaped)</div>"
+        }
+
+        return "<div class=\"numbered-equation\"\(idAttribute)>"
+            + "<div class=\"\(PreviewClass.math) \(PreviewClass.mathDisplay)\">\(escaped)</div>"
+            + "<span class=\"eq-number\">(\(escapeHTML(number)))</span></div>"
+    }
+
+    /// Extracts an equation's `\label{}` and `\tag{}`, and returns the TeX with
+    /// the `\label{}` removed (KaTeX cannot typeset it) while keeping `\tag{}` for
+    /// KaTeX to render natively.
+    private func equationLabelTag(in tex: String) -> (label: String?, tag: String?, stripped: String) {
+        let label = firstCapture(in: tex, pattern: #"\\label\s*\{([^}]*)\}"#)
+        let tag = firstCapture(in: tex, pattern: #"\\tag\*?\s*\{([^}]*)\}"#)
+        let stripped = replaceMatches(in: tex, pattern: #"\\label\s*\{[^}]*\}"#) { _, _ in "" }
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (label, tag, stripped)
     }
 
     private func setextHeadingBlock(
         from lines: [String],
         startIndex: Int,
-        headingsByLine: [Int: Heading]
+        headingsByLine: [Int: Heading],
+        context: InlineContext
     ) -> (html: String, nextIndex: Int)? {
         guard startIndex + 1 < lines.count,
               let level = MarkdownLine.setextHeadingLevel(in: lines[startIndex + 1]) else {
@@ -334,12 +433,12 @@ public struct MarkdownRenderer: Sendable {
         let heading = headingsByLine[startIndex + 1]
         let id = heading?.id ?? Slugger.uniqueSlug(for: title, usedSlugs: &fallbackSlugs)
         return (
-            "<h\(level) id=\"\(escapeAttribute(id))\">\(inlineHTML(title))</h\(level)>",
+            "<h\(level) id=\"\(escapeAttribute(id))\">\(inlineHTML(title, context: context))</h\(level)>",
             startIndex + 2
         )
     }
 
-    private func tableBlock(from lines: [String], startIndex: Int, footnotes: FootnoteContext? = nil) -> (html: String, nextIndex: Int)? {
+    private func tableBlock(from lines: [String], startIndex: Int, context: InlineContext? = nil) -> (html: String, nextIndex: Int)? {
         guard startIndex + 1 < lines.count,
               lines[startIndex].contains("|"),
               let alignments = tableAlignments(in: lines[startIndex + 1]) else {
@@ -360,7 +459,7 @@ public struct MarkdownRenderer: Sendable {
         let headerHTML = headers.enumerated()
             .map { index, header in
                 let style = alignments[safe: index]?.htmlAttribute ?? ""
-                return "<th\(style)>\(inlineHTML(header.trimmingCharacters(in: .whitespaces), footnotes: footnotes))</th>"
+                return "<th\(style)>\(inlineHTML(header.trimmingCharacters(in: .whitespaces), context: context))</th>"
             }
             .joined()
         let bodyHTML = rows
@@ -368,7 +467,7 @@ public struct MarkdownRenderer: Sendable {
                 let cells = row.enumerated()
                     .map { index, cell in
                         let style = alignments[safe: index]?.htmlAttribute ?? ""
-                        return "<td\(style)>\(inlineHTML(cell.trimmingCharacters(in: .whitespaces), footnotes: footnotes))</td>"
+                        return "<td\(style)>\(inlineHTML(cell.trimmingCharacters(in: .whitespaces), context: context))</td>"
                     }
                     .joined()
                 return "<tr>\(cells)</tr>"
@@ -391,7 +490,7 @@ public struct MarkdownRenderer: Sendable {
     private func blockquoteBlock(
         from lines: [String],
         startIndex: Int,
-        footnotes: FootnoteContext,
+        context: InlineContext,
         lineOffset: Int = 0
     ) -> (html: String, nextIndex: Int) {
         var quoteLines: [String] = []
@@ -413,14 +512,14 @@ public struct MarkdownRenderer: Sendable {
         let quote = renderBody(
             nestedMarkdown,
             outline: outlineBuilder.build(from: nestedMarkdown),
-            footnotes: footnotes,
+            context: context,
             lineOffset: lineOffset + startIndex
         )
 
         return ("<blockquote>\n\(quote)\n</blockquote>", index)
     }
 
-    private func listBlock(from lines: [String], startIndex: Int, footnotes: FootnoteContext, lineOffset: Int = 0) -> (html: String, nextIndex: Int)? {
+    private func listBlock(from lines: [String], startIndex: Int, context: InlineContext, lineOffset: Int = 0) -> (html: String, nextIndex: Int)? {
         guard parseListItem(lines[startIndex]) != nil else { return nil }
 
         // Collect the run of list lines; indented continuation lines are included
@@ -456,7 +555,7 @@ public struct MarkdownRenderer: Sendable {
 
         let levels = nestingLevels(for: items)
 
-        let built = buildList(items: items, levels: levels, start: 0, level: levels[0], footnotes: footnotes)
+        let built = buildList(items: items, levels: levels, start: 0, level: levels[0], context: context)
         // `built.next` is an index into `items`; map it back to a raw line index
         // so the body walk resumes correctly even when blank lines were absorbed.
         // When every item was consumed, resume at the line that ended collection.
@@ -509,7 +608,7 @@ public struct MarkdownRenderer: Sendable {
         levels: [Int],
         start: Int,
         level: Int,
-        footnotes: FootnoteContext
+        context: InlineContext
     ) -> (html: String, next: Int) {
         let kind = items[start].kind
         let tag = kind == .ordered ? "ol" : "ul"
@@ -533,7 +632,7 @@ public struct MarkdownRenderer: Sendable {
                 checkbox = ""
             }
 
-            var content = "\(checkbox)\(inlineHTML(item.text, footnotes: footnotes))"
+            var content = "\(checkbox)\(inlineHTML(item.text, context: context))"
             index += 1
 
             // Attach any deeper items as nested child lists of this item.
@@ -543,7 +642,7 @@ public struct MarkdownRenderer: Sendable {
                     levels: levels,
                     start: index,
                     level: levels[index],
-                    footnotes: footnotes
+                    context: context
                 )
                 content += "\n\(child.html)"
                 index = child.next
@@ -556,7 +655,7 @@ public struct MarkdownRenderer: Sendable {
         return ("<\(tag)\(className)>\n\(listItems.joined(separator: "\n"))\n</\(tag)>", index)
     }
 
-    private func paragraphBlock(from lines: [String], startIndex: Int, footnotes: FootnoteContext) -> (html: String, nextIndex: Int) {
+    private func paragraphBlock(from lines: [String], startIndex: Int, context: InlineContext) -> (html: String, nextIndex: Int) {
         var paragraphLines: [String] = []
         var index = startIndex
 
@@ -582,10 +681,10 @@ public struct MarkdownRenderer: Sendable {
             index += 1
         }
 
-        return ("<p>\(paragraphHTML(paragraphLines, footnotes: footnotes))</p>", max(index, startIndex + 1))
+        return ("<p>\(paragraphHTML(paragraphLines, context: context))</p>", max(index, startIndex + 1))
     }
 
-    private func paragraphHTML(_ lines: [String], footnotes: FootnoteContext) -> String {
+    private func paragraphHTML(_ lines: [String], context: InlineContext) -> String {
         lines.enumerated().map { index, line in
             let hasHardBreak = line.hasSuffix("  ") || line.hasSuffix("\\")
             let content: String
@@ -596,7 +695,7 @@ public struct MarkdownRenderer: Sendable {
                 content = line.trimmingCharacters(in: .whitespaces)
             }
 
-            let rendered = inlineHTML(content, footnotes: footnotes)
+            let rendered = inlineHTML(content, context: context)
 
             // A soft line break (a newline mid-paragraph) renders as a visible
             // <br>, matching the editor's WYSIWYG expectation; only the
@@ -876,7 +975,7 @@ public struct MarkdownRenderer: Sendable {
     /// emphasis/image/link passes then run on escaped text; finally the protected
     /// fragments are restored. Each pass is a named method below, so adding a new
     /// inline construct means inserting one entry at the right point in this list.
-    private func inlineHTML(_ markdown: String, footnotes: FootnoteContext? = nil) -> String {
+    private func inlineHTML(_ markdown: String, context: InlineContext? = nil) -> String {
         let protector = InlineProtector()
 
         let pipeline: [(String) -> String] = [
@@ -886,10 +985,12 @@ public struct MarkdownRenderer: Sendable {
             { protectHTMLEntities($0, protector: protector) },
             { protectAutolinks($0, protector: protector) },
             { protectRawHTML($0, protector: protector) },
-            { applyFootnoteReferences($0, protector: protector, footnotes: footnotes) },
+            { applyFootnoteReferences($0, protector: protector, footnotes: context?.footnotes) },
+            { applyCitations($0, protector: protector, citations: context?.citations) },
+            { applyCrossReferences($0, protector: protector, crossReferences: context?.crossReferences) },
             { escapeHTML($0) },
             { renderEmphasis($0) },
-            { renderImages($0) },
+            { renderImages($0, context: context) },
             { renderLinks($0) }
         ]
 
@@ -1004,6 +1105,251 @@ public struct MarkdownRenderer: Sendable {
         return rebuilt
     }
 
+    // MARK: Citations
+
+    /// Citation pass (after footnotes, before HTML-escaping). Renders Pandoc-style
+    /// `[@key]` parenthetical, `@key` in-text, `[-@key]` author-suppressed,
+    /// `[@a; @b]` multiple, and `[@key, p. 42]` locator forms via `CitationContext`,
+    /// protecting the produced HTML. Bare `@key` is recognized only when its key
+    /// has a bibliography entry and the `@` does not follow a word character (so an
+    /// email local part is never a citation).
+    private func applyCitations(_ text: String, protector: InlineProtector, citations: CitationContext?) -> String {
+        // Both forms (bracketed `[@…]` and bare `@key`) are matched in one pass and
+        // rebuilt left-to-right — like `applyFootnoteReferences` and unlike the
+        // reversed `replaceMatches` — so keys register in true first-citation order
+        // (which numeric numbering and bibliography ordering depend on). Bare `@key`
+        // is recognized only at a non-word boundary (not after a word char, `@`, or
+        // `/`), so an email local part is never a citation.
+        guard let citations,
+              let regex = try? NSRegularExpression(
+                pattern: #"(\[[^\[\]]*@[^\[\]]+\])|(?<![\w@/])@[A-Za-z0-9_][A-Za-z0-9_:\-]*"#
+              ) else {
+            return text
+        }
+
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        let matches = regex.matches(in: text, range: range)
+        guard !matches.isEmpty else { return text }
+
+        var rebuilt = ""
+        var cursor = text.startIndex
+        for match in matches {
+            guard let matchRange = Range(match.range, in: text) else { continue }
+            rebuilt += text[cursor..<matchRange.lowerBound]
+            let whole = String(text[matchRange])
+
+            if match.range(at: 1).location != NSNotFound {
+                // Bracketed citation; the interior is `whole` without `[` and `]`.
+                let inner = String(whole.dropFirst().dropLast())
+                rebuilt += renderBracketedCitation(inner, citations: citations, protector: protector) ?? whole
+            } else {
+                // Bare in-text citation `@key`; render only when the key is known.
+                let key = String(whole.dropFirst())
+                if citations.register(key) {
+                    let item = CitationItem(key: key, suppressAuthor: false, locator: nil)
+                    rebuilt += protector.protect("<span class=\"citation\">\(escapeHTML(citations.renderInText(item)))</span>")
+                } else {
+                    rebuilt += whole
+                }
+            }
+            cursor = matchRange.upperBound
+        }
+        rebuilt += text[cursor...]
+        return rebuilt
+    }
+
+    /// Renders the interior of a bracketed citation. Returns nil when the interior
+    /// does not parse as citation items (so the `[…]` is left literal); raw key
+    /// text when no item matches a bibliography entry (graceful fallback); or a
+    /// protected, formatted citation span otherwise.
+    private func renderBracketedCitation(_ inner: String, citations: CitationContext, protector: InlineProtector) -> String? {
+        let items = parseCitationItems(inner)
+        guard !items.isEmpty else { return nil }
+
+        let known = items.contains { citations.entries[$0.key] != nil }
+        guard known else {
+            // No matching entry (unknown key or no bibliography loaded): show the
+            // raw key(s) as plain text, dropping the `[@ ]` syntax.
+            return items.map { $0.key }.joined(separator: "; ")
+        }
+
+        for item in items where citations.entries[item.key] != nil {
+            citations.register(item.key)
+        }
+        let display = citations.renderParenthetical(items)
+        return protector.protect("<span class=\"citation\">\(escapeHTML(display))</span>")
+    }
+
+    /// Parses the interior of `[ … ]` into citation items, splitting multiple
+    /// citations on `;` and reading each item's author-suppression `-`, key, and
+    /// optional locator. Returns an empty array when nothing parses.
+    private func parseCitationItems(_ inner: String) -> [CitationItem] {
+        inner.split(separator: ";").map(String.init).compactMap { part -> CitationItem? in
+            let segment = part.trimmingCharacters(in: .whitespaces)
+            guard let match = firstMatch(in: segment, pattern: #"^(-)?@([A-Za-z0-9_][A-Za-z0-9_:.\-]*)(?:,\s*(.+))?$"#),
+                  let key = capture(match, 2, in: segment) else {
+                return nil
+            }
+            let suppress = match.range(at: 1).location != NSNotFound
+            let locator = capture(match, 3, in: segment)
+            return CitationItem(key: key, suppressAuthor: suppress, locator: locator)
+        }
+    }
+
+    /// The bibliography section, emitted when at least one citation was rendered
+    /// against a loaded bibliography. Entries are ordered by `CitationContext`
+    /// (alphabetical for author-year, citation order for numeric); a numbered
+    /// style uses an `<ol>` so the list markers match the `[n]` citations.
+    private func bibliographySectionHTML(_ citations: CitationContext) -> String? {
+        guard citations.hasCitations, citations.hasBibliography else { return nil }
+        let entries = citations.bibliographyEntries()
+        guard !entries.isEmpty else { return nil }
+
+        let listTag = citations.style == .numeric ? "ol" : "ul"
+        let items = entries.map { entry in
+            "<li id=\"bib-\(escapeAttribute(entry.key))\">\(formatBibliographyEntry(entry, citations: citations))</li>"
+        }.joined(separator: "\n")
+
+        return """
+        <section class="bibliography">
+        <\(listTag) class="bibliography-list">
+        \(items)
+        </\(listTag)>
+        </section>
+        """
+    }
+
+    /// Formats one bibliography entry: authors, year, italic title, then the
+    /// container (journal/booktitle) and publisher when present. All fields are
+    /// HTML-escaped; an entry with no usable fields falls back to its key.
+    private func formatBibliographyEntry(_ entry: BibEntry, citations: CitationContext) -> String {
+        var parts: [String] = []
+        let authors = citations.fullAuthorList(entry)
+        if !authors.isEmpty { parts.append(escapeHTML(authors)) }
+        if let year = entry.year { parts.append("(\(escapeHTML(year)))") }
+        if let title = entry.title { parts.append("<em>\(escapeHTML(title))</em>") }
+        if let journal = entry.journal {
+            parts.append(escapeHTML(journal))
+        } else if let booktitle = entry.booktitle {
+            parts.append("In \(escapeHTML(booktitle))")
+        }
+        if let publisher = entry.publisher { parts.append(escapeHTML(publisher)) }
+        return parts.isEmpty ? escapeHTML(entry.key) : parts.joined(separator: ". ") + "."
+    }
+
+    // MARK: Cross-references
+
+    /// Cross-reference pass (after citations, before HTML-escaping). Resolves
+    /// `\ref{label}` to the referenced element's number via `CrossReferenceContext`,
+    /// emitting a protected anchor; an undefined label is left literal.
+    private func applyCrossReferences(_ text: String, protector: InlineProtector, crossReferences: CrossReferenceContext?) -> String {
+        guard let crossReferences, crossReferences.hasLabels else { return text }
+        return replaceMatches(in: text, pattern: #"\\ref\{([^}]+)\}"#) { match, source in
+            guard let label = capture(match, 1, in: source),
+                  let number = crossReferences.number(for: label) else {
+                return matchText(match, in: source)
+            }
+            return protector.protect("<a class=\"cross-ref\" href=\"#\(escapeAttribute(label))\">\(escapeHTML(number))</a>")
+        }
+    }
+
+    /// Whole-document pre-scan that assigns figure/table/equation numbers and
+    /// registers labels, so a `\ref{}` that appears before its target resolves.
+    /// Walks the same block structure as the render walk (skipping code and
+    /// consuming math/table blocks), then `resetCounters()` rewinds so the render
+    /// walk re-derives identical numbers as it emits each element.
+    private func collectCrossReferenceLabels(_ lines: [String], into context: CrossReferenceContext, config: RenderConfig) {
+        var index = 0
+        while index < lines.count {
+            if index == 0, lines[index].trimmedMarkdownLine == "---",
+               let frontMatter = frontMatterBlock(from: lines, startIndex: index) {
+                index = frontMatter.nextIndex
+                continue
+            }
+            if let fence = fencedCodeBlock(from: lines, startIndex: index) {
+                index = fence.nextIndex
+                continue
+            }
+            if let code = indentedCodeBlock(from: lines, startIndex: index) {
+                index = code.nextIndex
+                continue
+            }
+            if let math = mathBlockContent(from: lines, startIndex: index) {
+                let info = equationLabelTag(in: math.tex)
+                context.assignEquation(label: info.label, tag: info.tag)
+                index = math.nextIndex
+                continue
+            }
+            if let table = tableBlock(from: lines, startIndex: index) {
+                for line in lines[index..<min(table.nextIndex, lines.count)] {
+                    for label in figureLabels(in: line) { context.assignFigure(label: label) }
+                }
+                var next = table.nextIndex
+                if next < lines.count, let caption = parseTableCaption(lines[next]) {
+                    context.assignTable(label: caption.label)
+                    next += 1
+                }
+                index = next
+                continue
+            }
+            for label in figureLabels(in: lines[index]) {
+                context.assignFigure(label: label)
+            }
+            index += 1
+        }
+    }
+
+    /// A line that is solely a labeled figure image renders as a block-level
+    /// `<figure>` (rather than wrapped in a `<p>`); the inline pass produces the
+    /// figure markup with its numbered caption.
+    private func figureBlock(from lines: [String], startIndex: Int, context: InlineContext) -> (html: String, nextIndex: Int)? {
+        let trimmed = lines[startIndex].trimmedMarkdownLine
+        guard firstMatch(in: trimmed, pattern: #"^!\[[^\]]*\]\(\S+?(?:\s+&quot;.+?&quot;)?\)\{[^}]*#fig:[^}]*\}$"#) != nil
+            || firstMatch(in: trimmed, pattern: #"^!\[[^\]]*\]\([^)]*\)\{[^}]*#fig:[^}]*\}$"#) != nil else {
+            return nil
+        }
+        return (inlineHTML(trimmed, context: context), startIndex + 1)
+    }
+
+    /// Extracts every `#fig:label` id from the images on a line, in order, for the
+    /// label pre-scan.
+    private func figureLabels(in line: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: #"!\[[^\]]*\]\([^)]*\)\{([^}]*)\}"#) else {
+            return []
+        }
+        let range = NSRange(line.startIndex..<line.endIndex, in: line)
+        return regex.matches(in: line, range: range).compactMap { match in
+            guard let attributes = capture(match, 1, in: line) else { return nil }
+            return figureLabel(in: attributes)
+        }
+    }
+
+    /// The `fig:…` id inside an image attribute block, e.g. `#fig:flow` → `fig:flow`.
+    private func figureLabel(in attributes: String) -> String? {
+        firstCapture(in: attributes, pattern: #"#(fig:[A-Za-z0-9_.\-]+)"#)
+    }
+
+    /// Parses a Pandoc-style table caption line `: caption {#tbl:label}`,
+    /// returning the caption text and label.
+    private func parseTableCaption(_ line: String) -> (caption: String, label: String)? {
+        guard let match = firstMatch(in: line, pattern: #"^\s*:\s+(.+?)\s*\{#(tbl:[A-Za-z0-9_.\-]+)\}\s*$"#),
+              let caption = capture(match, 1, in: line),
+              let label = capture(match, 2, in: line) else {
+            return nil
+        }
+        return (caption, label)
+    }
+
+    /// Injects an id and a numbered `<caption>` into a rendered table so it is
+    /// labeled and cross-referenceable.
+    private func tableWithCaption(_ tableHTML: String, number: String, caption: String, label: String, context: InlineContext) -> String {
+        let renderedCaption = inlineHTML(caption, context: context)
+        let captionTag = "<caption class=\"tbl-caption\">Table \(number): \(renderedCaption)</caption>"
+        let opening = "<table>"
+        guard tableHTML.hasPrefix(opening) else { return tableHTML }
+        return "<table id=\"\(escapeAttribute(label))\">\n\(captionTag)" + tableHTML.dropFirst(opening.count)
+    }
+
     /// Bold/italic/strikethrough in precedence order (triple before double before
     /// single, for both `*` and `_`, plus `~~`). Runs on already-escaped text.
     private func renderEmphasis(_ text: String) -> String {
@@ -1048,10 +1394,11 @@ public struct MarkdownRenderer: Sendable {
     }
 
     /// Inline images `![alt](src "title")`, optionally followed by a Pandoc-style
-    /// size block `{width=480}` / `{width=320 height=180}`. Explicit sizes win
-    /// over dimensions inferred from the URL; both-dimension sizes reserve layout
-    /// space through `.image-frame`.
-    private func renderImages(_ text: String) -> String {
+    /// attribute block `{width=480}` / `{width=320 height=180}` / `{#fig:label}`.
+    /// Explicit sizes win over dimensions inferred from the URL; both-dimension
+    /// sizes reserve layout space through `.image-frame`. An image carrying a
+    /// `#fig:label` id becomes a numbered, captioned `<figure>`.
+    private func renderImages(_ text: String, context: InlineContext? = nil) -> String {
         replaceMatches(in: text, pattern: #"!\[([^\]]*)\]\((\S+?)(?:\s+&quot;(.+?)&quot;)?\)(?:\{([^}]*)\})?"#) { match, source in
             guard let altRange = Range(match.range(at: 1), in: source),
                   let srcRange = Range(match.range(at: 2), in: source) else {
@@ -1068,17 +1415,19 @@ public struct MarkdownRenderer: Sendable {
                 title = ""
             }
 
-            // An optional `{…}` block immediately after the image. Only a block
-            // that names width/height is treated (and consumed) as a size
-            // attribute; any other `{…}` is preserved as literal text so unrelated
-            // braces after an image survive.
+            // An optional `{…}` block immediately after the image. A block that
+            // names width/height or a `#fig:` id is consumed; any other `{…}` is
+            // preserved as literal text so unrelated braces after an image survive.
             var explicit: (width: Int?, height: Int?) = (nil, nil)
+            var figLabel: String?
             var trailing = ""
             if match.range(at: 4).location != NSNotFound, let attrRange = Range(match.range(at: 4), in: source) {
                 let attrText = String(source[attrRange])
+                figLabel = self.figureLabel(in: attrText)
                 if self.looksLikeSizeAttributes(attrText) {
                     explicit = self.parseSizeAttributes(attrText)
-                } else {
+                }
+                if figLabel == nil, !self.looksLikeSizeAttributes(attrText) {
                     trailing = "{\(attrText)}"
                 }
             }
@@ -1087,29 +1436,39 @@ public struct MarkdownRenderer: Sendable {
                 "<img src=\"\(src)\" alt=\"\(alt)\"\(title)\(extra)>"
             }
 
+            // The image element, sized from explicit attributes or the URL.
+            let imageHTML: String
             if let width = explicit.width, let height = explicit.height {
-                return self.imageFrame(width: width, height: height, image: img(" width=\"\(width)\" height=\"\(height)\"")) + trailing
-            }
-            if let width = explicit.width {
+                imageHTML = self.imageFrame(width: width, height: height, image: img(" width=\"\(width)\" height=\"\(height)\""))
+            } else if let width = explicit.width {
                 // Width only: the base `img` CSS keeps `height: auto`, so the
                 // intrinsic aspect ratio is preserved and the image is not stretched.
-                return img(" width=\"\(width)\"") + trailing
-            }
-            if let height = explicit.height {
+                imageHTML = img(" width=\"\(width)\"")
+            } else if let height = explicit.height {
                 // Height only is rare and the base `height: auto` would override a
                 // bare attribute, so pin it through an inline style instead.
-                return img(" style=\"height:\(height)px;\"") + trailing
+                imageHTML = img(" style=\"height:\(height)px;\"")
+            } else if let dimensions = self.imageDimensions(from: src) {
+                imageHTML = self.imageFrame(
+                    width: dimensions.width,
+                    height: dimensions.height,
+                    image: img(" width=\"\(dimensions.width)\" height=\"\(dimensions.height)\"")
+                )
+            } else {
+                imageHTML = img("")
             }
 
-            // No explicit size: fall back to dimensions inferred from the URL.
-            guard let dimensions = self.imageDimensions(from: src) else {
-                return img("") + trailing
+            // A `#fig:label` (with an active context to number it) becomes a
+            // captioned, numbered figure; the caption inherits the already-escaped
+            // alt text so inline emphasis in the caption survives.
+            if let figLabel, let context {
+                let number = context.crossReferences.assignFigure(label: figLabel)
+                return "<figure class=\"figure\" id=\"\(self.escapeAttribute(figLabel))\">"
+                    + imageHTML
+                    + "<figcaption class=\"fig-caption\">Figure \(number): \(alt)</figcaption></figure>"
             }
-            return self.imageFrame(
-                width: dimensions.width,
-                height: dimensions.height,
-                image: img(" width=\"\(dimensions.width)\" height=\"\(dimensions.height)\"")
-            ) + trailing
+
+            return imageHTML + trailing
         }
     }
 
@@ -1190,7 +1549,22 @@ public struct MarkdownRenderer: Sendable {
         return (width, height)
     }
 
-    private func htmlDocument(body: String) -> String {
+    /// Serializes math macros to a JSON object literal for KaTeX's `macros`
+    /// option. JSON's `\\`-escaping yields the single backslashes KaTeX expects;
+    /// `<`/`>` are unicode-escaped so a macro value can never break out of the
+    /// surrounding `<script>`. An empty or unencodable map yields `{}`.
+    private func serializeMathMacros(_ macros: [String: String]) -> String {
+        guard !macros.isEmpty,
+              let data = try? JSONSerialization.data(withJSONObject: macros, options: [.sortedKeys]),
+              let json = String(data: data, encoding: .utf8) else {
+            return "{}"
+        }
+        return json
+            .replacingOccurrences(of: "<", with: "\\u003c")
+            .replacingOccurrences(of: ">", with: "\\u003e")
+    }
+
+    private func htmlDocument(body: String, config: RenderConfig) -> String {
         """
         <!doctype html>
         <html>
@@ -1487,6 +1861,75 @@ public struct MarkdownRenderer: Sendable {
             font-size: 0.92em;
         }
 
+        /* Inline citations inherit the body color; the bibliography sits below the
+           document like the footnotes section, separated by a quiet rule. */
+        .citation {
+            white-space: nowrap;
+        }
+        .cross-ref {
+            color: var(--accent);
+            text-decoration: none;
+        }
+        section.bibliography {
+            margin-top: 2.4em;
+            padding-top: 1em;
+            border-top: 1px solid var(--border);
+            font-size: 0.92em;
+        }
+        .bibliography-list {
+            padding-left: 1.6em;
+        }
+        ul.bibliography-list {
+            list-style: none;
+            padding-left: 0;
+        }
+        .bibliography-list li {
+            margin: 0.5em 0;
+            /* Hanging indent for author-year entries reads like a reference list. */
+            padding-left: 1.6em;
+            text-indent: -1.6em;
+        }
+        ol.bibliography-list li {
+            padding-left: 0;
+            text-indent: 0;
+        }
+
+        /* An auto-numbered display equation: the equation stays centered while its
+           `(n)` is pushed to the right edge via flexbox. */
+        .numbered-equation {
+            display: flex;
+            align-items: center;
+            gap: 0.5em;
+            margin: 1em 0;
+        }
+        .numbered-equation .math-display {
+            flex: 1 1 auto;
+            margin: 0;
+        }
+        .numbered-equation .eq-number {
+            flex: 0 0 auto;
+            color: var(--muted);
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* Numbered figures and table captions inherit the muted caption color. */
+        figure.figure {
+            margin: 1.1em 0;
+            text-align: center;
+        }
+        figure.figure img,
+        figure.figure .image-frame {
+            margin: 0 auto;
+        }
+        .fig-caption,
+        .tbl-caption {
+            margin-top: 0.5em;
+            color: var(--muted);
+            font-size: 0.92em;
+            text-align: center;
+            caption-side: bottom;
+        }
+
         @media (max-width: 720px) {
             main {
                 padding: 32px 24px 60px;
@@ -1505,6 +1948,11 @@ public struct MarkdownRenderer: Sendable {
         \(MathAssets.mhchem)
         </script>
         <script>
+        // Predefined macros from the math-macros front-matter field. The active
+        // macro object is shared across render calls so that, with globalGroup
+        // enabled, newcommand/def declared in one block persist into later blocks.
+        window.__md2InitialMacros = \(serializeMathMacros(config.mathMacros));
+        window.__md2MathMacros = JSON.parse(JSON.stringify(window.__md2InitialMacros));
         // Exposed as a re-runnable function (scoped to a root element) so the
         // live-preview content swap can re-render math over freshly injected
         // content without reloading the page. Called once over the whole
@@ -1512,13 +1960,22 @@ public struct MarkdownRenderer: Sendable {
         window.__md2RenderMath = function (root) {
             if (typeof katex === "undefined") { return; }
             root = root || document;
+            // Re-seed from the front-matter macros so each whole-document render
+            // (initial load or live content swap) starts fresh — globalGroup state
+            // accumulated from a prior edit's blocks must not linger.
+            window.__md2MathMacros = JSON.parse(JSON.stringify(window.__md2InitialMacros));
             var nodes = root.querySelectorAll(".\(PreviewClass.mathInline), .\(PreviewClass.mathDisplay)");
             for (var i = 0; i < nodes.length; i++) {
                 var el = nodes[i];
                 var tex = el.textContent;
                 var display = el.classList.contains("\(PreviewClass.mathDisplay)");
                 try {
-                    katex.render(tex, el, { displayMode: display, throwOnError: false });
+                    katex.render(tex, el, {
+                        displayMode: display,
+                        throwOnError: false,
+                        globalGroup: true,
+                        macros: window.__md2MathMacros
+                    });
                 } catch (err) {
                     el.classList.add("\(PreviewClass.mathError)");
                     el.textContent = tex;
@@ -1721,6 +2178,19 @@ public struct MarkdownRenderer: Sendable {
         return String(source[range])
     }
 
+    /// The string for a capture group, or nil when the group did not participate.
+    private func capture(_ match: NSTextCheckingResult, _ index: Int, in source: String) -> String? {
+        let nsRange = match.range(at: index)
+        guard nsRange.location != NSNotFound, let range = Range(nsRange, in: source) else { return nil }
+        return String(source[range])
+    }
+
+    /// The first capture group of the first match of `pattern` in `source`, if any.
+    private func firstCapture(in source: String, pattern: String) -> String? {
+        guard let match = firstMatch(in: source, pattern: pattern) else { return nil }
+        return capture(match, 1, in: source)
+    }
+
     /// Lowercased URL scheme prefixes that can execute script or smuggle active
     /// content; inline links using them are rendered as inert text instead of
     /// anchors. (Plain-prefix match — entity-obfuscated schemes are not
@@ -1739,6 +2209,15 @@ public struct MarkdownRenderer: Sendable {
     private func escapeAttribute(_ source: String) -> String {
         HTMLEscaping.escapeAttribute(source)
     }
+}
+
+/// Bundles the document-wide inline state threaded through block rendering into
+/// the inline pipeline: footnotes, citations, and cross-references. Carrying one
+/// value keeps the block-builder signatures stable as inline features are added.
+private struct InlineContext {
+    let footnotes: FootnoteContext
+    let citations: CitationContext
+    let crossReferences: CrossReferenceContext
 }
 
 /// A fenced code-block info string that should render as a diagram rather than
