@@ -164,6 +164,52 @@ final class PDFExportEndToEndVerification: XCTestCase {
         print("VERIFY-RESULT path=\(outputURL.path) pages=\(document?.numberOfPages ?? -1)")
     }
 
+    @MainActor
+    func testExportHonorsConfiguredPageSizeAndOrientation() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed export test."
+        )
+        _ = NSApplication.shared
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("md2-e2e-geometry-\(UUID().uuidString)")
+        try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        var markdown = "# Configured Geometry\n\n"
+        for i in 0..<12 { markdown += "Paragraph \(i): the quick brown fox jumps over the lazy dog.\n\n" }
+        let rendered = MarkdownRenderer().render(markdown)
+
+        let destination = dir.appendingPathComponent("letter-landscape.pdf")
+        let profile = ExportProfile(
+            pageSize: .letter,
+            orientation: .landscape,
+            margins: .preset(.normal)
+        )
+        let exporter = PDFExporter(destinationURL: destination, profile: profile)
+        let done = expectation(description: "configured-geometry export completes")
+        var outcome: Result<Void, Error>?
+        exporter.export(html: rendered.html, outline: rendered.outline, baseURL: dir) { result in
+            outcome = result
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 35)
+
+        guard case .success = outcome else {
+            XCTFail("export failed: \(String(describing: outcome))")
+            return
+        }
+
+        let document = try XCTUnwrap(PDFDocument(url: destination))
+        let page = try XCTUnwrap(document.page(at: 0))
+        let bounds = page.bounds(for: .mediaBox)
+        // Letter landscape is 11 × 8.5 in = 792 × 612 pt.
+        XCTAssertEqual(bounds.width, 792, accuracy: 1, "page width should be landscape Letter")
+        XCTAssertEqual(bounds.height, 612, accuracy: 1, "page height should be landscape Letter")
+        XCTAssertGreaterThan(bounds.width, bounds.height, "landscape pages are wider than tall")
+    }
+
     private func outlineLabels(_ root: PDFOutline?) -> [String] {
         guard let root else { return [] }
         var labels: [String] = []

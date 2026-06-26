@@ -9,6 +9,7 @@ protocol PDFExporting: AnyObject {
         html: String,
         outline: [Heading],
         baseURL: URL?,
+        documentTitle: String,
         completion: @escaping (Result<Void, Error>) -> Void
     )
 }
@@ -19,6 +20,8 @@ protocol DocumentPrinting: AnyObject {
         html: String,
         outline: [Heading],
         baseURL: URL?,
+        profile: ExportProfile,
+        documentTitle: String,
         completion: @escaping (Result<Void, Error>) -> Void
     )
 }
@@ -64,7 +67,14 @@ final class DocumentStore: ObservableObject {
     /// touches `fileURL`, `isDirty`, or autosave.
     private var pdfExporter: PDFExporting?
     private let pdfDestinationPicker: @MainActor (String) -> URL?
-    private let pdfExporterFactory: @MainActor (URL) -> PDFExporting
+    /// Resolves the destination for a self-contained HTML export. Injected so the
+    /// flow can be tested without the modal `NSSavePanel`.
+    private let htmlDestinationPicker: @MainActor (String) -> URL?
+    private let pdfExporterFactory: @MainActor (URL, ExportProfile) -> PDFExporting
+    /// Supplies the export profile (page geometry, page numbers, headers/footers)
+    /// applied to PDF export and Print. Injected so tests can pin a profile; the
+    /// app wires it to the live `AppSettings` value.
+    private let exportProfileProvider: @MainActor () -> ExportProfile
     /// Resolves the destination for the first save of an untitled document.
     /// Injected so the save-before-attachment flow can be tested without the
     /// modal `NSSavePanel`.
@@ -74,12 +84,21 @@ final class DocumentStore: ObservableObject {
     /// it never touches `fileURL`, `isDirty`, or autosave.
     private var documentPrinter: DocumentPrinting?
     private let documentPrinterFactory: @MainActor () -> DocumentPrinting
+    /// Retains the in-flight DOCX/EPUB conversion for its (asynchronous) lifetime;
+    /// cleared on completion. Like the others, a derived artifact.
+    private var documentConverter: DocumentConverting?
+    private let documentConverterFactory: @MainActor () -> DocumentConverting
+    /// Whether an external Pandoc binary is available (gates DOCX/EPUB export).
+    private let pandocAvailabilityProvider: @MainActor () -> Bool
+    /// Resolves the destination for a DOCX/EPUB export. Injected for testability.
+    private let conversionDestinationPicker: @MainActor (DocumentExportFormat, String) -> URL?
 
-    /// True while a derived-artifact job (PDF export or print) is in flight.
-    /// Print and Export are mutually exclusive — both spin up an offscreen
-    /// `WKWebView` through the same pipeline — so each guards on this.
+    /// True while any derived-artifact job (PDF export, Print, or DOCX/EPUB
+    /// conversion) is in flight. All export/print operations are mutually
+    /// exclusive — each produces a file from the document's current state — so each
+    /// guards on this. (HTML export is synchronous, so its start-guard suffices.)
     private var isProducingDerivedArtifact: Bool {
-        pdfExporter != nil || documentPrinter != nil
+        pdfExporter != nil || documentPrinter != nil || documentConverter != nil
     }
     private var isLoading = false
     private var autosaveWorkItem: DispatchWorkItem?
@@ -102,14 +121,24 @@ final class DocumentStore: ObservableObject {
 
     init(
         pdfDestinationPicker: @escaping @MainActor (String) -> URL? = DocumentStore.presentPDFDestination,
-        pdfExporterFactory: @escaping @MainActor (URL) -> PDFExporting = { PDFExporter(destinationURL: $0) },
+        htmlDestinationPicker: @escaping @MainActor (String) -> URL? = DocumentStore.presentHTMLDestination,
+        pdfExporterFactory: @escaping @MainActor (URL, ExportProfile) -> PDFExporting = { PDFExporter(destinationURL: $0, profile: $1) },
         documentPrinterFactory: @escaping @MainActor () -> DocumentPrinting = { DocumentPrinter() },
-        saveLocationPicker: @escaping @MainActor (String) -> URL? = DocumentStore.presentSaveLocation
+        documentConverterFactory: @escaping @MainActor () -> DocumentConverting = { PandocConverter() },
+        pandocAvailabilityProvider: @escaping @MainActor () -> Bool = { PandocConverter.isAvailable() },
+        conversionDestinationPicker: @escaping @MainActor (DocumentExportFormat, String) -> URL? = DocumentStore.presentConversionDestination,
+        saveLocationPicker: @escaping @MainActor (String) -> URL? = DocumentStore.presentSaveLocation,
+        exportProfileProvider: @escaping @MainActor () -> ExportProfile = { .default }
     ) {
         self.pdfDestinationPicker = pdfDestinationPicker
+        self.htmlDestinationPicker = htmlDestinationPicker
         self.pdfExporterFactory = pdfExporterFactory
         self.documentPrinterFactory = documentPrinterFactory
+        self.documentConverterFactory = documentConverterFactory
+        self.pandocAvailabilityProvider = pandocAvailabilityProvider
+        self.conversionDestinationPicker = conversionDestinationPicker
         self.saveLocationPicker = saveLocationPicker
+        self.exportProfileProvider = exportProfileProvider
 
         let starterText = Self.starterMarkdown
         text = starterText
@@ -222,9 +251,14 @@ final class DocumentStore: ObservableObject {
             return
         }
 
-        let exporter = pdfExporterFactory(url)
+        let exporter = pdfExporterFactory(url, exportProfileProvider())
         pdfExporter = exporter
-        exporter.export(html: rendered.html, outline: rendered.outline, baseURL: baseURL) { [weak self] result in
+        exporter.export(
+            html: rendered.html,
+            outline: rendered.outline,
+            baseURL: baseURL,
+            documentTitle: exportDocumentTitle
+        ) { [weak self] result in
             guard let self else { return }
             self.pdfExporter = nil
             if case let .failure(error) = result {
@@ -249,12 +283,104 @@ final class DocumentStore: ObservableObject {
 
         let printer = documentPrinterFactory()
         documentPrinter = printer
-        printer.print(html: rendered.html, outline: rendered.outline, baseURL: baseURL) { [weak self] result in
+        printer.print(
+            html: rendered.html,
+            outline: rendered.outline,
+            baseURL: baseURL,
+            profile: exportProfileProvider(),
+            documentTitle: exportDocumentTitle
+        ) { [weak self] result in
             guard let self else { return }
             self.documentPrinter = nil
             if case let .failure(error) = result {
                 self.alert = DocumentAlert(
                     message: "Could not print the document.",
+                    detail: error.localizedDescription
+                )
+            }
+        }
+    }
+
+    /// Exports the rendered preview as a single self-contained HTML file chosen by
+    /// the user, with local images inlined so the file is portable and opens
+    /// offline. Like PDF export and Print this is a derived artifact: it does NOT
+    /// change `fileURL`, `isDirty`, or autosave, and the pending render is flushed
+    /// first so the export reflects the latest text. Mutually exclusive with the
+    /// other export/print jobs (it no-ops while one is in flight).
+    func exportHTML() {
+        guard !isProducingDerivedArtifact else { return }
+
+        flushPendingRender()
+
+        guard let url = htmlDestinationPicker(htmlFileName) else {
+            return
+        }
+
+        // Untitled documents have no `baseURL`, so relative image paths cannot be
+        // resolved; the builder leaves those references as-is rather than failing.
+        let html = SelfContainedHTMLBuilder.build(html: rendered.html, baseURL: baseURL)
+        do {
+            try html.write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            alert = DocumentAlert(
+                message: "Could not export \(url.lastPathComponent).",
+                detail: error.localizedDescription
+            )
+        }
+    }
+
+    /// Exports the document to DOCX via an external Pandoc binary. No-op when Pandoc
+    /// is unavailable (a guidance alert is shown instead).
+    func exportDOCX() {
+        exportConverted(to: .docx)
+    }
+
+    /// Exports the document to EPUB via an external Pandoc binary. No-op when Pandoc
+    /// is unavailable (a guidance alert is shown instead).
+    func exportEPUB() {
+        exportConverted(to: .epub)
+    }
+
+    /// Shared DOCX/EPUB flow: requires Pandoc, saves an untitled document first (so
+    /// relative images resolve against a real directory), then converts the
+    /// document's *current* Markdown (including unsaved edits) without changing
+    /// `fileURL`/dirty/autosave. Mutually exclusive with the other export jobs.
+    private func exportConverted(to format: DocumentExportFormat) {
+        guard !isProducingDerivedArtifact else { return }
+
+        guard pandocAvailabilityProvider() else {
+            alert = DocumentAlert(
+                message: "Pandoc is required to export \(format.fileExtension.uppercased()).",
+                detail: "Install Pandoc to enable DOCX and EPUB export."
+            )
+            return
+        }
+
+        // Pandoc reads a source file and resolves relative images against a
+        // directory, so an untitled document is saved first to establish one; a
+        // cancelled save aborts the export cleanly.
+        if fileURL == nil {
+            guard save() else { return }
+        }
+        guard let resourceDirectory = baseURL else { return }
+
+        guard let destination = conversionDestinationPicker(format, conversionFileName(for: format)) else {
+            return
+        }
+
+        let converter = documentConverterFactory()
+        documentConverter = converter
+        converter.convert(
+            markdown: text,
+            format: format,
+            resourceDirectory: resourceDirectory,
+            destination: destination
+        ) { [weak self] result in
+            guard let self else { return }
+            self.documentConverter = nil
+            if case let .failure(error) = result {
+                self.alert = DocumentAlert(
+                    message: "Could not export \(destination.lastPathComponent).",
                     detail: error.localizedDescription
                 )
             }
@@ -268,9 +394,54 @@ final class DocumentStore: ObservableObject {
         return fileURL.deletingPathExtension().lastPathComponent + ".pdf"
     }
 
+    /// Default HTML file name: the document's name with an `.html` extension, or
+    /// `Untitled.html` for a document that has never been saved.
+    private var htmlFileName: String {
+        guard let fileURL else { return "Untitled.html" }
+        return fileURL.deletingPathExtension().lastPathComponent + ".html"
+    }
+
+    /// Default DOCX/EPUB file name: the document's base name with the format's
+    /// extension, or `Untitled.<ext>` for a document that has never been saved.
+    private func conversionFileName(for format: DocumentExportFormat) -> String {
+        let base = fileURL?.deletingPathExtension().lastPathComponent ?? "Untitled"
+        return "\(base).\(format.fileExtension)"
+    }
+
+    /// Document title used to resolve the `{title}` running-text token in exported
+    /// PDFs: the file's base name without extension, or `Untitled` for an unsaved
+    /// document.
+    private var exportDocumentTitle: String {
+        guard let fileURL else { return "Untitled" }
+        return fileURL.deletingPathExtension().lastPathComponent
+    }
+
     private static func presentPDFDestination(defaultName: String) -> URL? {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.pdf]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = defaultName
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
+    }
+
+    private static func presentHTMLDestination(defaultName: String) -> URL? {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.html]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = defaultName
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
+    }
+
+    private static func presentConversionDestination(
+        format: DocumentExportFormat,
+        defaultName: String
+    ) -> URL? {
+        let panel = NSSavePanel()
+        if let type = UTType(filenameExtension: format.fileExtension) {
+            panel.allowedContentTypes = [type]
+        }
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = defaultName
         guard panel.runModal() == .OK else { return nil }

@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import CoreText
 import Foundation
 import MD2Core
 import PDFKit
@@ -45,24 +46,29 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
     private static let renderFilePrefix = ".md2-preview-"
     private static let renderFileSuffix = ".html"
 
-    /// How long to wait after `didFinish` for async KaTeX/diagram rendering to
-    /// settle before capturing the PDF. Matches the preview's reflow window.
-    private static let settleDelay: TimeInterval = 2.5
+    /// Maximum time to wait after `didFinish` for asynchronous diagram rendering
+    /// (Mermaid) to settle when the page's settle signal never flips (e.g. a hung
+    /// engine). Math and synchronous engines (flow/sequence) have already rendered
+    /// by the load event, so only Mermaid is awaited. Capped well under
+    /// `overallTimeout` so a single stuck diagram degrades to a capture of whatever
+    /// rendered rather than failing the whole export.
+    private static let diagramSettleTimeout: TimeInterval = 12
+    /// How often to poll the page's `__md2DiagramsSettled` signal.
+    private static let settlePollInterval: TimeInterval = 0.05
+    /// A brief grace after the signal flips so the final diagram DOM mutation and
+    /// layout flush before capture.
+    private static let postSettleGrace: TimeInterval = 0.05
     /// Overall guard so a page that never finishes loading cannot hang export.
     private static let overallTimeout: TimeInterval = 30
 
-    /// Output page geometry: A4 with narrow, document-like margins. The system
-    /// default print margins are large (~1.5"), which — together with the
-    /// preview's reading-oriented styles — wastes most of the page, so the
-    /// exporter fixes its own print geometry instead.
+    /// Output page geometry, resolved from the active export profile (default: A4
+    /// portrait with narrow margins — the previous fixed behavior). Fixing the
+    /// exporter's own print geometry — rather than the system paper size, whose
+    /// default margins are large (~1.5") and waste the page under the preview's
+    /// reading-oriented styles — keeps output consistent regardless of print locale.
     private let pageSize: CGSize
     private let margins: PDFPaginator.Margins
 
-    /// A4 at 72 dpi (210mm × 297mm).
-    static let a4PageSize = CGSize(width: 595.28, height: 841.89)
-    /// Narrow print margin on every side (0.5"), matching the familiar "Narrow"
-    /// preset so more content fits per page while keeping a clean border.
-    static let printMargin: CGFloat = 36
     /// Clearance kept below the last line on a page (~one print line at 14px ×
     /// 1.55). Page bands are capped at the printable height *minus* this cushion
     /// so a band never fills the page to the pixel; otherwise `createPDF` rounding
@@ -78,6 +84,10 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
     /// window, parked far off-screen, makes WebKit lay it out and render.
     private let hostWindow: NSWindow
     private let destinationURL: URL
+    /// The active export profile: page geometry plus any page-number/header/footer
+    /// configuration. Geometry is consumed in `init`; running-text settings are
+    /// consumed when composing pages.
+    private let profile: ExportProfile
     private var temporaryHTMLURL: URL?
     /// Document headings (whose slug `id`s match the rendered heading elements),
     /// used to build the PDF outline. Empty when the document has no headings, in
@@ -89,22 +99,53 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
     private var completion: ((Result<Void, Error>) -> Void)?
     private var timeoutWorkItem: DispatchWorkItem?
     private var hasFinished = false
+    /// When the post-`didFinish` diagram-settle wait began, used to bound it.
+    private var settleWaitStart: Date?
+    /// Document title used to resolve the `{title}` running-text token. Set in
+    /// `export`; empty when the profile draws no running text.
+    private var documentTitle: String = ""
 
     /// The drawable area of a page, inside the margins.
     private var printableWidth: CGFloat { pageSize.width - margins.left - margins.right }
-    private var printableHeight: CGFloat { pageSize.height - margins.top - margins.bottom }
+    /// The printable height available for *content*, after reserving header/footer
+    /// bands inside the margins. Running text never overlaps content because the
+    /// content area is inset past the reserved band.
+    private var printableHeight: CGFloat { pageSize.height - contentTopInset - contentBottomInset }
     /// The maximum height of page *content*: the printable height minus the
     /// boundary cushion. Used for both the break-probe's "atomic block fits a
     /// page" threshold and the band height cap, so the two stay consistent.
     private var pageContentHeight: CGFloat { max(72, printableHeight - Self.boundaryCushion) }
 
-    init(destinationURL: URL) {
-        self.destinationURL = destinationURL
+    /// Reserved height for one line of running text (header or footer), sized to the
+    /// running-text font with breathing room. Enforced even when the margin preset
+    /// is `none`, so an enabled header/footer always has room and never overlaps
+    /// content.
+    private var runningTextBandHeight: CGFloat { ceil(profile.runningTextFontSize * 1.8) }
+    private var headerActive: Bool { !profile.header.isEmpty }
+    private var footerActive: Bool { profile.showsPageNumbers || !profile.footer.isEmpty }
+    /// Distance from the page top to the top of the content area: the configured top
+    /// margin plus a reserved header band when a header is drawn.
+    private var contentTopInset: CGFloat { margins.top + (headerActive ? runningTextBandHeight : 0) }
+    /// Distance from the page bottom to the bottom of the content area: the
+    /// configured bottom margin plus a reserved footer band when a footer or page
+    /// number is drawn.
+    private var contentBottomInset: CGFloat { margins.bottom + (footerActive ? runningTextBandHeight : 0) }
 
-        // Fixed A4 print geometry (the user-facing default), not the system
-        // paper size, so output is consistent regardless of the print locale.
-        pageSize = Self.a4PageSize
-        margins = PDFPaginator.Margins(uniform: Self.printMargin)
+    init(destinationURL: URL, profile: ExportProfile = .default) {
+        self.destinationURL = destinationURL
+        self.profile = profile
+
+        // Page geometry comes from the export profile (default: A4 portrait with
+        // narrow margins), not the system paper size, so output is consistent
+        // regardless of the print locale.
+        pageSize = profile.pageSizePoints
+        let insets = profile.marginInsets
+        margins = PDFPaginator.Margins(
+            top: insets.top,
+            left: insets.left,
+            bottom: insets.bottom,
+            right: insets.right
+        )
         // Lay out at the printable width so text renders at its native size; the
         // height is nominal since each band is captured from the full content.
         let layoutWidth = max(72, pageSize.width - margins.left - margins.right)
@@ -154,10 +195,12 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
         html: String,
         outline: [Heading],
         baseURL: URL?,
+        documentTitle: String = "",
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         self.completion = completion
         self.outline = outline
+        self.documentTitle = documentTitle
 
         // Arm the overall timeout first so a load that never finishes still fails.
         let timeout = DispatchWorkItem { [weak self] in
@@ -201,11 +244,36 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard !hasFinished else { return }
-        // Give async engines (KaTeX, Mermaid/flow/sequence) time to render before
-        // capturing the PDF; there is no single completion signal to await.
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.settleDelay) { [weak self] in
+        // Math and synchronous diagram engines (flow/sequence) have rendered by the
+        // load event; only Mermaid renders asynchronously. Poll the page's
+        // diagram-settled signal and capture exactly when it flips — not after a
+        // blind fixed delay that was both slower for simple documents and unreliable
+        // for complex ones (Mermaid came out blank when the delay elapsed first).
+        settleWaitStart = Date()
+        waitForDiagramsToSettle()
+    }
+
+    /// Polls the rendered page for the diagram-settled signal, then captures. A page
+    /// with no diagrams never defines `__md2RenderDiagrams`, so the probe treats its
+    /// absence as "nothing to await" and proceeds immediately. The wait is bounded
+    /// by `diagramSettleTimeout` so a hung engine cannot stall the export.
+    private func waitForDiagramsToSettle() {
+        guard !hasFinished else { return }
+        let probe = "(typeof window.__md2RenderDiagrams === 'undefined') || (window.__md2DiagramsSettled === true)"
+        webView.evaluateJavaScript(probe) { [weak self] result, _ in
             Task { @MainActor in
-                self?.producePDF()
+                guard let self, !self.hasFinished else { return }
+                let settled = (result as? Bool) ?? false
+                let elapsed = Date().timeIntervalSince(self.settleWaitStart ?? Date())
+                guard settled || elapsed >= Self.diagramSettleTimeout else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + Self.settlePollInterval) {
+                        Task { @MainActor in self.waitForDiagramsToSettle() }
+                    }
+                    return
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.postSettleGrace) {
+                    Task { @MainActor in self.producePDF() }
+                }
             }
         }
     }
@@ -322,7 +390,7 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
         guard printableWidth > 0, printableHeight > 0 else { return nil }
         let box = CGSize(width: printableWidth, height: printableHeight)
 
-        for data in pages {
+        for (pageIndex, data) in pages.enumerated() {
             guard let provider = CGDataProvider(data: data as CFData),
                   let document = CGPDFDocument(provider),
                   let page = document.page(at: 1) else {
@@ -338,9 +406,11 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
             let scale = PDFPaginator.fitScale(source: sourceRect.size, into: box)
             let drawnWidth = sourceRect.width * scale
             let drawnHeight = sourceRect.height * scale
-            // Top-align inside the printable area (CG origin is bottom-left).
+            // Top-align inside the content area (CG origin is bottom-left). The
+            // content area is inset past any reserved header/footer band, so the
+            // running text drawn below never overlaps content.
             let originX = margins.left
-            let originY = margins.bottom + printableHeight - drawnHeight
+            let originY = contentBottomInset + printableHeight - drawnHeight
 
             context.beginPDFPage(nil)
             context.saveGState()
@@ -350,11 +420,144 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
             context.translateBy(x: -sourceRect.minX, y: -sourceRect.minY)
             context.drawPDFPage(page)
             context.restoreGState()
+
+            drawRunningText(in: context, pageNumber: pageIndex + 1, pageCount: pages.count)
+
             context.endPDFPage()
         }
 
         context.closePDF()
         return output as Data
+    }
+
+    /// Locale-aware date for the `{date}` running-text token.
+    private static let runningTextDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter
+    }()
+
+    /// Draws the configured running header/footer (and page number) into the page
+    /// margins for one page, inside the reserved band so content is never
+    /// overlapped. Each zone resolves `{title}/{date}/{page}/{pageCount}` tokens;
+    /// when page numbers are enabled, the page number fills its chosen footer zone.
+    private func drawRunningText(in context: CGContext, pageNumber: Int, pageCount: Int) {
+        guard profile.hasRunningText else { return }
+
+        let resolveContext = RunningTextContext(
+            title: documentTitle,
+            date: Self.runningTextDateFormatter.string(from: Date()),
+            page: pageNumber,
+            pageCount: pageCount
+        )
+        let contentLeft = margins.left
+        let contentWidth = max(0, pageSize.width - margins.left - margins.right)
+        let font = NSFont.systemFont(ofSize: profile.runningTextFontSize)
+
+        if headerActive {
+            // The header band's bottom edge is the content top; it occupies the
+            // reserved band above it, inside the top margin.
+            drawRunningLine(
+                profile.header,
+                pageNumber: nil,
+                contentLeft: contentLeft,
+                contentWidth: contentWidth,
+                bandBottomY: pageSize.height - contentTopInset,
+                font: font,
+                resolveContext: resolveContext,
+                in: context
+            )
+        }
+
+        if footerActive {
+            // The footer band sits just below content, inside the bottom margin: its
+            // bottom edge is at the configured bottom margin.
+            let pageNumber = profile.showsPageNumbers
+                ? (text: "\(pageNumber) / \(pageCount)", zone: profile.pageNumberAlignment)
+                : nil
+            drawRunningLine(
+                profile.footer,
+                pageNumber: pageNumber,
+                contentLeft: contentLeft,
+                contentWidth: contentWidth,
+                bandBottomY: margins.bottom,
+                font: font,
+                resolveContext: resolveContext,
+                in: context
+            )
+        }
+    }
+
+    /// Draws the left/center/right zones of one running line. When page numbers are
+    /// enabled for a zone, the page number is appended to any footer text already in
+    /// that zone (rather than replacing it), so enabling page numbers never hides a
+    /// configured header/footer entry — even when both target the same zone.
+    private func drawRunningLine(
+        _ runningText: RunningText,
+        pageNumber: (text: String, zone: PageZone)?,
+        contentLeft: CGFloat,
+        contentWidth: CGFloat,
+        bandBottomY: CGFloat,
+        font: NSFont,
+        resolveContext: RunningTextContext,
+        in context: CGContext
+    ) {
+        for zone in PageZone.allCases {
+            var text = RunningTextToken.resolve(runningText.text(for: zone), with: resolveContext)
+            if let pageNumber, pageNumber.zone == zone {
+                text = text.isEmpty ? pageNumber.text : "\(text)  \(pageNumber.text)"
+            }
+            guard !text.isEmpty else { continue }
+            drawZoneText(
+                text,
+                zone: zone,
+                contentLeft: contentLeft,
+                contentWidth: contentWidth,
+                bandBottomY: bandBottomY,
+                font: font,
+                in: context
+            )
+        }
+    }
+
+    /// Draws a single zone's text as one Core Text line, horizontally aligned to the
+    /// zone and vertically centered in the reserved band.
+    private func drawZoneText(
+        _ text: String,
+        zone: PageZone,
+        contentLeft: CGFloat,
+        contentWidth: CGFloat,
+        bandBottomY: CGFloat,
+        font: NSFont,
+        in context: CGContext
+    ) {
+        let line = CTLineCreateWithAttributedString(
+            NSAttributedString(string: text, attributes: [.font: font])
+        )
+        var ascent: CGFloat = 0
+        var descent: CGFloat = 0
+        var leading: CGFloat = 0
+        let textWidth = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
+
+        let x: CGFloat
+        switch zone {
+        case .left:
+            x = contentLeft
+        case .center:
+            x = contentLeft + max(0, (contentWidth - textWidth) / 2)
+        case .right:
+            x = contentLeft + max(0, contentWidth - textWidth)
+        }
+        // Vertically center the line within the reserved band.
+        let baselineY = bandBottomY + (runningTextBandHeight - (ascent + descent)) / 2 + descent
+
+        context.saveGState()
+        context.setFillColor(CGColor(gray: 0.33, alpha: 1.0))
+        context.textMatrix = .identity
+        context.textPosition = CGPoint(x: x, y: baselineY)
+        CTLineDraw(line, context)
+        context.restoreGState()
     }
 
     /// Parses the break-probe's `headings` payload into a map of heading `id` →
@@ -408,8 +611,9 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
             let pageIndex = min(max(node.pageIndex, 0), document.pageCount - 1)
             if let page = document.page(at: pageIndex) {
                 // PDF origin is bottom-left; the heading sits `offsetInPage` below the
-                // top of the printable area, which begins at `pageSize.height - top`.
-                let y = min(max(pageSize.height - margins.top - node.offsetInPage, 0), pageSize.height)
+                // top of the content area, which begins at `pageSize.height -
+                // contentTopInset` (the top margin plus any reserved header band).
+                let y = min(max(pageSize.height - contentTopInset - node.offsetInPage, 0), pageSize.height)
                 item.destination = PDFDestination(page: page, at: CGPoint(x: margins.left, y: y))
             }
             parent.insertChild(item, at: parent.numberOfChildren)

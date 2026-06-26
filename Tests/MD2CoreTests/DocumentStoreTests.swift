@@ -59,7 +59,7 @@ struct DocumentStoreTests {
                 #expect(defaultName == "notes.pdf")
                 return nil
             },
-            pdfExporterFactory: { _ in
+            pdfExporterFactory: { _, _ in
                 exporterCreated = true
                 return FakePDFExporter()
             }
@@ -93,7 +93,7 @@ struct DocumentStoreTests {
                 #expect(defaultName == "notes.pdf")
                 return destinationURL
             },
-            pdfExporterFactory: { url in
+            pdfExporterFactory: { url, _ in
                 #expect(url == destinationURL)
                 return exporter
             }
@@ -193,17 +193,20 @@ private final class FakePDFExporter: PDFExporting {
     private(set) var html: String?
     private(set) var outline: [Heading]?
     private(set) var baseURL: URL?
+    private(set) var documentTitle: String?
 
     func export(
         html: String,
         outline: [Heading],
         baseURL: URL?,
+        documentTitle: String,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         exportCallCount += 1
         self.html = html
         self.outline = outline
         self.baseURL = baseURL
+        self.documentTitle = documentTitle
         completion(.success(()))
     }
 }

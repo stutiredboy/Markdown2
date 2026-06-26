@@ -1585,6 +1585,18 @@ public struct MarkdownRenderer: Sendable {
     window.__md2RenderDiagrams = function (root) {
         root = root || document;
         window.__md2MermaidSeq = window.__md2MermaidSeq || 0;
+        // Offscreen PDF export/print snapshots this page and must wait for
+        // asynchronous diagram rendering (Mermaid) to finish first; otherwise the
+        // capture races ahead and the diagram comes out blank. Track the number of
+        // outstanding async renders and expose a settled flag the exporter polls.
+        // Synchronous engines (flow/sequence) and KaTeX math are already done by
+        // the load event, so only Mermaid contributes to the pending count.
+        if (typeof window.__md2DiagramPending !== "number") { window.__md2DiagramPending = 0; }
+        window.__md2DiagramsSettled = false;
+        function settleOne() {
+            window.__md2DiagramPending = Math.max(0, window.__md2DiagramPending - 1);
+            if (window.__md2DiagramPending === 0) { window.__md2DiagramsSettled = true; }
+        }
         var dark = window.matchMedia
             && window.matchMedia("(prefers-color-scheme: dark)").matches;
 
@@ -1647,19 +1659,27 @@ public struct MarkdownRenderer: Sendable {
             for (var k = 0; k < mers.length; k++) {
                 (function (el, idx) {
                     var source = el.textContent;
+                    window.__md2DiagramPending++;
                     try {
                         mermaid.render("md2-mermaid-" + idx, source).then(function (result) {
                             el.innerHTML = result.svg;
                             reveal(el);
                         }).catch(function () {
                             fail(el, source);
-                        });
+                        }).then(settleOne, settleOne);
                     } catch (err) {
                         fail(el, source);
+                        settleOne();
                     }
                 })(mers[k], window.__md2MermaidSeq++);
             }
         }
+
+        // Every synchronous engine has run and each asynchronous Mermaid render has
+        // been scheduled (bumping the pending count). If nothing is outstanding the
+        // pass is settled now; otherwise settleOne() flips the flag once the last
+        // render resolves or fails.
+        if (window.__md2DiagramPending === 0) { window.__md2DiagramsSettled = true; }
     };
     window.__md2RenderDiagrams(document);
     """

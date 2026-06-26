@@ -45,8 +45,13 @@ struct MD2Application: App {
                 }
                 .keyboardShortcut("s")
 
-                Button(appDelegate.settings.text(.exportPDF)) {
-                    appDelegate.currentDocumentStore?.exportPDF()
+                Menu(appDelegate.settings.text(.exportTo)) {
+                    Button("PDF") {
+                        appDelegate.currentDocumentStore?.exportPDF()
+                    }
+                    Button("HTML") {
+                        appDelegate.currentDocumentStore?.exportHTML()
+                    }
                 }
 
                 Divider()

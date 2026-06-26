@@ -22,13 +22,13 @@ final class DocumentPrinter: DocumentPrinting {
         }
     }
 
-    private let exporterFactory: @MainActor (URL) -> PDFExporting
+    private let exporterFactory: @MainActor (URL, ExportProfile) -> PDFExporting
     /// Retains the exporter for its asynchronous lifetime; cleared on completion.
     private var exporter: PDFExporting?
     private var temporaryPDFURL: URL?
 
     init(
-        exporterFactory: @escaping @MainActor (URL) -> PDFExporting = { PDFExporter(destinationURL: $0) }
+        exporterFactory: @escaping @MainActor (URL, ExportProfile) -> PDFExporting = { PDFExporter(destinationURL: $0, profile: $1) }
     ) {
         self.exporterFactory = exporterFactory
     }
@@ -37,6 +37,8 @@ final class DocumentPrinter: DocumentPrinting {
         html: String,
         outline: [Heading],
         baseURL: URL?,
+        profile: ExportProfile,
+        documentTitle: String,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         // Render to a temp PDF in the system temp directory: untitled documents
@@ -46,9 +48,14 @@ final class DocumentPrinter: DocumentPrinting {
             .appendingPathComponent("md2-print-\(UUID().uuidString).pdf")
         temporaryPDFURL = pdfURL
 
-        let exporter = exporterFactory(pdfURL)
+        let exporter = exporterFactory(pdfURL, profile)
         self.exporter = exporter
-        exporter.export(html: html, outline: outline, baseURL: baseURL) { [weak self] result in
+        exporter.export(
+            html: html,
+            outline: outline,
+            baseURL: baseURL,
+            documentTitle: documentTitle
+        ) { [weak self] result in
             guard let self else { return }
             self.exporter = nil
             switch result {
@@ -56,7 +63,7 @@ final class DocumentPrinter: DocumentPrinting {
                 self.cleanUpTemporaryPDF()
                 completion(.failure(error))
             case .success:
-                let printResult = self.runPrintOperation(pdfURL: pdfURL)
+                let printResult = self.runPrintOperation(pdfURL: pdfURL, profile: profile)
                 self.cleanUpTemporaryPDF()
                 completion(printResult)
             }
@@ -65,15 +72,17 @@ final class DocumentPrinter: DocumentPrinting {
 
     /// Loads the rendered PDF and runs PDFKit's standard print operation, which
     /// presents the system print dialog (printer, copies, page range) and
-    /// paginates natively. Page content is A4 already; `pageScaleDownToFit`
-    /// scales down only if the chosen paper is smaller, avoiding clipping.
-    private func runPrintOperation(pdfURL: URL) -> Result<Void, Error> {
+    /// paginates natively. The print info is pre-configured to the profile's page
+    /// size and orientation so the panel opens matching the exported PDF geometry —
+    /// not the system default paper — avoiding a surprising mismatch and a wasteful
+    /// scale-down; `pageScaleDownToFit` still guards against a smaller chosen paper.
+    private func runPrintOperation(pdfURL: URL, profile: ExportProfile) -> Result<Void, Error> {
         guard let document = PDFDocument(url: pdfURL) else {
             return .failure(PrintError.preparationFailed)
         }
 
         guard let operation = document.printOperation(
-            for: NSPrintInfo.shared,
+            for: Self.makePrintInfo(for: profile),
             scalingMode: .pageScaleDownToFit,
             autoRotate: true
         ) else {
@@ -84,6 +93,17 @@ final class DocumentPrinter: DocumentPrinting {
         operation.showsProgressPanel = true
         operation.run()
         return .success(())
+    }
+
+    /// Builds an `NSPrintInfo` pre-configured to the profile's page size and
+    /// orientation, copied from the shared info so global print state is untouched.
+    /// `paperSize` is set to the page's portrait dimensions and `orientation`
+    /// applies landscape, so the print panel reflects the configured paper.
+    static func makePrintInfo(for profile: ExportProfile, base: NSPrintInfo = .shared) -> NSPrintInfo {
+        let info = (base.copy() as? NSPrintInfo) ?? NSPrintInfo()
+        info.paperSize = profile.pageSize.portraitPoints
+        info.orientation = profile.orientation == .landscape ? .landscape : .portrait
+        return info
     }
 
     private func cleanUpTemporaryPDF() {

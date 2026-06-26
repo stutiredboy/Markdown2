@@ -112,7 +112,7 @@ struct MenuStartupImprovementsTests {
         let printer = FakeDocumentPrinter()
         let store = DocumentStore(
             pdfDestinationPicker: { _ in URL(fileURLWithPath: "/tmp/menu-startup-out.pdf") },
-            pdfExporterFactory: { _ in exporter },
+            pdfExporterFactory: { _, _ in exporter },
             documentPrinterFactory: { printer }
         )
 
@@ -133,7 +133,7 @@ struct MenuStartupImprovementsTests {
         let printer = FakeDocumentPrinter(completesImmediately: false)
         let store = DocumentStore(
             pdfDestinationPicker: { _ in URL(fileURLWithPath: "/tmp/menu-startup-out.pdf") },
-            pdfExporterFactory: { _ in exporter },
+            pdfExporterFactory: { _, _ in exporter },
             documentPrinterFactory: { printer }
         )
 
@@ -181,6 +181,7 @@ private final class FakeDocumentPrinter: DocumentPrinting {
     private(set) var html: String?
     private(set) var outline: [Heading]?
     private(set) var baseURL: URL?
+    private(set) var profile: ExportProfile?
     private let completesImmediately: Bool
     private var pendingCompletion: ((Result<Void, Error>) -> Void)?
 
@@ -192,12 +193,15 @@ private final class FakeDocumentPrinter: DocumentPrinting {
         html: String,
         outline: [Heading],
         baseURL: URL?,
+        profile: ExportProfile,
+        documentTitle: String,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         printCallCount += 1
         self.html = html
         self.outline = outline
         self.baseURL = baseURL
+        self.profile = profile
         if completesImmediately {
             completion(.success(()))
         } else {
@@ -220,6 +224,7 @@ private final class DeferringFakePDFExporter: PDFExporting {
         html: String,
         outline: [Heading],
         baseURL: URL?,
+        documentTitle: String,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         exportCallCount += 1

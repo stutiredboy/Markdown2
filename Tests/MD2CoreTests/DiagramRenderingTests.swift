@@ -178,6 +178,27 @@ struct DiagramRenderingTests {
         #expect(document.html.contains(#"if (typeof mermaid === "undefined")"#))
     }
 
+    // MARK: Export settle signal (offscreen capture waits for async Mermaid)
+
+    @Test func bootstrapExposesDiagramSettleSignalForExport() {
+        let html = MarkdownRenderer().render("""
+        ```mermaid
+        graph TD; A-->B;
+        ```
+        """).html
+
+        // The export/print pipeline polls this flag to learn when asynchronous
+        // Mermaid rendering has finished before snapshotting the offscreen page.
+        #expect(html.contains("window.__md2DiagramsSettled"))
+        #expect(html.contains("window.__md2DiagramPending"))
+        #expect(html.contains("function settleOne()"))
+        // Each Mermaid render settles the pending count on both success and failure,
+        // so a failing diagram still lets the pass settle (it falls back to source).
+        #expect(html.contains(".then(settleOne, settleOne)"))
+        // A pass with no outstanding async render settles immediately.
+        #expect(html.contains("if (window.__md2DiagramPending === 0) { window.__md2DiagramsSettled = true; }"))
+    }
+
     // MARK: Legibility override is scoped away from Mermaid
 
     @Test func legibilityOverrideExcludesMermaidAndDropsRevert() {

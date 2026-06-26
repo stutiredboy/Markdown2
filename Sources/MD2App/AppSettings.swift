@@ -51,6 +51,17 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    /// Page geometry and running-text settings applied to PDF export and Print.
+    /// Persisted as a JSON blob so the whole profile round-trips in one key. The
+    /// default reproduces the app's previous fixed output (A4 portrait, narrow
+    /// margins, no page numbers or headers/footers).
+    @Published var exportProfile: ExportProfile {
+        didSet {
+            guard let data = try? JSONEncoder().encode(exportProfile) else { return }
+            defaults.set(data, forKey: Keys.exportProfile)
+        }
+    }
+
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -79,6 +90,13 @@ final class AppSettings: ObservableObject {
 
         let storedFolder = defaults.string(forKey: Keys.attachmentFolder)
         attachmentFolder = (storedFolder?.isEmpty == false) ? storedFolder! : "assets"
+
+        if let data = defaults.data(forKey: Keys.exportProfile),
+           let decoded = try? JSONDecoder().decode(ExportProfile.self, from: data) {
+            exportProfile = decoded
+        } else {
+            exportProfile = .default
+        }
     }
 
     /// Applies the stored language preference to the process's `AppleLanguages`
@@ -152,6 +170,7 @@ private enum Keys {
     static let showsOutlineByDefault = "MD2.ShowsOutlineByDefault"
     static let opensBlankDocumentOnLaunch = "MD2.OpensBlankDocumentOnLaunch"
     static let attachmentFolder = "MD2.AttachmentFolder"
+    static let exportProfile = "MD2.ExportProfile"
 }
 
 enum AppLanguage: String, CaseIterable, Identifiable {
@@ -182,7 +201,11 @@ enum L10nKey: String {
     case new
     case open
     case save
+    case exportTo
     case exportPDF
+    case exportHTML
+    case exportDOCX
+    case exportEPUB
     case close
     case outline
     case noHeadings
@@ -232,6 +255,29 @@ enum L10nKey: String {
     case attachmentFolder
     case attachmentFolderHelp
     case imageNotFound
+    case exportSettings
+    case pageSizeLabel
+    case orientationLabel
+    case orientationPortrait
+    case orientationLandscape
+    case marginsLabel
+    case marginNone
+    case marginNarrow
+    case marginNormal
+    case marginWide
+    case marginCustom
+    case marginTop
+    case marginLeft
+    case marginBottom
+    case marginRight
+    case pageNumbers
+    case pageNumberPosition
+    case pageHeader
+    case pageFooter
+    case zoneLeft
+    case zoneCenter
+    case zoneRight
+    case runningTextTokensHelp
 }
 
 enum L10n {
@@ -248,7 +294,11 @@ enum L10n {
         .new: "New",
         .open: "Open...",
         .save: "Save",
+        .exportTo: "Export To",
         .exportPDF: "Export as PDF…",
+        .exportHTML: "Export as HTML…",
+        .exportDOCX: "Export as DOCX…",
+        .exportEPUB: "Export as EPUB…",
         .close: "Close",
         .outline: "Outline",
         .noHeadings: "No headings",
@@ -297,14 +347,41 @@ enum L10n {
         .restartLater: "Later",
         .attachmentFolder: "Image Attachment Folder",
         .attachmentFolderHelp: "Screenshots pasted from the clipboard are saved in this document-relative folder. Dragged or pasted image files are linked in place. Defaults to assets.",
-        .imageNotFound: "Image not found"
+        .imageNotFound: "Image not found",
+        .exportSettings: "Export",
+        .pageSizeLabel: "Page Size",
+        .orientationLabel: "Orientation",
+        .orientationPortrait: "Portrait",
+        .orientationLandscape: "Landscape",
+        .marginsLabel: "Margins",
+        .marginNone: "None",
+        .marginNarrow: "Narrow",
+        .marginNormal: "Normal",
+        .marginWide: "Wide",
+        .marginCustom: "Custom",
+        .marginTop: "Top",
+        .marginLeft: "Left",
+        .marginBottom: "Bottom",
+        .marginRight: "Right",
+        .pageNumbers: "Page Numbers",
+        .pageNumberPosition: "Page Number Position",
+        .pageHeader: "Header",
+        .pageFooter: "Footer",
+        .zoneLeft: "Left",
+        .zoneCenter: "Center",
+        .zoneRight: "Right",
+        .runningTextTokensHelp: "Header and footer text can use {title}, {date}, {page}, and {pageCount}."
     ]
 
     private static let zhHans: [L10nKey: String] = [
         .new: "新建",
         .open: "打开...",
         .save: "保存",
+        .exportTo: "导出到",
         .exportPDF: "导出为 PDF…",
+        .exportHTML: "导出为 HTML…",
+        .exportDOCX: "导出为 DOCX…",
+        .exportEPUB: "导出为 EPUB…",
         .close: "关闭",
         .outline: "大纲",
         .noHeadings: "没有标题",
@@ -353,6 +430,29 @@ enum L10n {
         .restartLater: "稍后",
         .attachmentFolder: "图片附件文件夹",
         .attachmentFolderHelp: "从剪贴板粘贴的截图会保存到该相对文档的文件夹；拖入或粘贴的图片文件会直接链接原位置。默认为 assets。",
-        .imageNotFound: "找不到图片"
+        .imageNotFound: "找不到图片",
+        .exportSettings: "导出",
+        .pageSizeLabel: "页面大小",
+        .orientationLabel: "方向",
+        .orientationPortrait: "纵向",
+        .orientationLandscape: "横向",
+        .marginsLabel: "页边距",
+        .marginNone: "无",
+        .marginNarrow: "窄",
+        .marginNormal: "正常",
+        .marginWide: "宽",
+        .marginCustom: "自定义",
+        .marginTop: "上",
+        .marginLeft: "左",
+        .marginBottom: "下",
+        .marginRight: "右",
+        .pageNumbers: "页码",
+        .pageNumberPosition: "页码位置",
+        .pageHeader: "页眉",
+        .pageFooter: "页脚",
+        .zoneLeft: "左",
+        .zoneCenter: "中",
+        .zoneRight: "右",
+        .runningTextTokensHelp: "页眉和页脚文本可使用 {title}、{date}、{page} 和 {pageCount}。"
     ]
 }

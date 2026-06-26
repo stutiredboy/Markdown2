@@ -78,7 +78,14 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
 
     /// Opens a fresh, empty document in its own window.
     func newDocument() {
-        makeDocumentWindow(store: DocumentStore()).window.makeKeyAndOrderFront(nil)
+        makeDocumentWindow(store: makeDocumentStore()).window.makeKeyAndOrderFront(nil)
+    }
+
+    /// Creates a document store wired to read the live export profile from
+    /// settings, so PDF export and Print always use the user's current
+    /// configuration without each store holding its own copy.
+    private func makeDocumentStore() -> DocumentStore {
+        DocumentStore(exportProfileProvider: { [settings] in settings.exportProfile })
     }
 
     /// Closes the frontmost document window in response to ⌘W. Routing through
@@ -128,7 +135,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
             return
         }
 
-        let documentWindow = makeDocumentWindow(store: DocumentStore())
+        let documentWindow = makeDocumentWindow(store: makeDocumentStore())
         documentWindow.store.open(url)
         documentWindow.window.makeKeyAndOrderFront(nil)
     }

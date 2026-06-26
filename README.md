@@ -26,11 +26,12 @@
 - **Diagrams** — `mermaid`, `flow` ([flowchart.js](https://flowchart.js.org/)), and `sequence` ([js-sequence-diagrams](https://bramp.github.io/js-sequence-diagrams/)) code blocks rendered offline with bundled engines (no network required).
 - **Footnotes** — `[^id]` inline references rendered as numbered superscript links; `[^id]: text` definitions collected into a trailing footnotes section with back-references. Supports named labels, multi-line definitions, duplicate references, and graceful fallback for undefined labels. Offline-rendered, legible in both light and dark modes.
 - **Image attachments** — paste a screenshot to save it into a configurable, document-relative folder (default `assets/`), or drag/paste image files to link them in place at their existing location. Size images with Pandoc-style `{width=480}` / `{width=320 height=180}` attributes; missing local images show an explicit broken-image placeholder in the preview.
-- **Export as PDF** — export the rendered document as a paginated A4 PDF with narrow (~0.5") margins and a navigable heading outline (bookmark tree).
+- **Export & print** — export the rendered document as a paginated PDF with a navigable heading outline (bookmark tree), or print it. A configurable **export profile** controls page size (A4 / Letter / Legal), orientation (portrait / landscape), margins (Normal / Narrow / Wide / None, or custom), and optional page numbers and header/footer text with `{title}`, `{date}`, `{page}`, and `{pageCount}` tokens — defaults stay A4 portrait with narrow (~0.5") margins, so existing output is unchanged. Diagrams render in exported and printed output, matching the preview.
+- **Export as HTML** — export a single self-contained `.html` file with styles, math/diagram engines, and images all inlined, so it opens offline with no sidecar files. DOCX/EPUB conversion support is implemented behind the scenes for a later release, but those commands are not exposed in the menu yet.
 - **Quick mode switching** — press `Esc` in the editor to switch to preview; `Cmd+double-click` in preview to jump back to edit; or select Side by Side from the toolbar to see both at once.
 - **Bidirectional scroll sync** — in Side by Side mode, scrolling either pane keeps the other aligned to the same content.
 - **Find and Replace** — `Cmd+F` opens the find bar in editor or preview; navigate matches with next/previous, replace single or all occurrences.
-- **App settings** for language, default open mode (Edit / Side by Side / Preview), and default outline visibility.
+- **App settings** for language, default open mode (Edit / Side by Side / Preview), default outline visibility, and the export profile (page size, orientation, margins, page numbers, headers/footers).
 - **Markdown file type declaration** for `.md` and `.markdown` files when packaged.
 
 See [Docs/MarkdownSupport.md](Docs/MarkdownSupport.md) for the tested Markdown/Typora support matrix.
