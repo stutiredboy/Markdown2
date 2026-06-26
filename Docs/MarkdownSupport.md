@@ -2,6 +2,14 @@
 
 Markdown2 aims for a compact Typora-like writing and reading flow. It does not claim full Typora parity; Typora includes product features and external renderers that are outside this first native implementation.
 
+> **Compatibility contract.** The authoritative, machine-checked support matrix
+> lives in [`CompatibilityMatrix.md`](CompatibilityMatrix.md): it classifies every
+> CommonMark/GFM construct as **Supported**, **Best-effort**, or **Out-of-scope**,
+> and is enforced by the conformance suite against a vendored CommonMark/GFM
+> corpus (the dashboard tracks the upstream reference-match rate per construct).
+> The list below is the human-friendly summary; where the two ever disagree, the
+> matrix wins.
+
 ## Verified in Tests
 
 - Headings: ATX (`#`) and Setext (`===`, `---`).

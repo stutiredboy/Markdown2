@@ -1,0 +1,404 @@
+{
+  "matrixSchemaVersion": "1.0",
+  "provenance": {
+    "commonMark": {
+      "source": "https://spec.commonmark.org/0.31.2/spec.json",
+      "version": "0.31.2",
+      "license": "CC-BY-SA 4.0"
+    },
+    "gfm": {
+      "source": "https://raw.githubusercontent.com/github/cmark-gfm/0.29.0.gfm.13/test/spec.txt",
+      "version": "0.29 (tag 0.29.0.gfm.13)",
+      "license": "CC-BY-SA 4.0"
+    }
+  },
+  "entries": [
+    {
+      "id": "tabs",
+      "origin": "CommonMark",
+      "sections": ["Tabs"],
+      "tier": "Best-effort",
+      "baselineRelationship": "known-incomplete",
+      "declaredBehavior": "A leading tab indents like four spaces for code-block and list detection.",
+      "boundary": "Tab-stop expansion inside content is approximate; some interior-tab cases diverge from the reference.",
+      "docLabel": "Best-effort"
+    },
+    {
+      "id": "backslash-escapes",
+      "origin": "CommonMark",
+      "sections": ["Backslash escapes"],
+      "tier": "Supported",
+      "baselineRelationship": "known-incomplete",
+      "declaredBehavior": "A backslash before an ASCII punctuation character emits that character literally rather than as Markdown syntax.",
+      "boundary": "A backslash before a non-punctuation character is left literal; escapes do not apply inside code spans or math.",
+      "docLabel": "Supported"
+    },
+    {
+      "id": "entity-references",
+      "origin": "CommonMark",
+      "sections": ["Entity and numeric character references"],
+      "tier": "Best-effort",
+      "baselineRelationship": "known-incomplete",
+      "declaredBehavior": "Named and numeric HTML entities are preserved verbatim so the browser resolves them.",
+      "boundary": "Entities are not decoded to their target character during rendering, so some reference outputs that substitute the character diverge.",
+      "docLabel": "Best-effort"
+    },
+    {
+      "id": "precedence",
+      "origin": "CommonMark",
+      "sections": ["Precedence"],
+      "tier": "Supported",
+      "baselineRelationship": "reference-match",
+      "declaredBehavior": "Block structure is resolved before inline structure, matching CommonMark precedence.",
+      "boundary": "n/a",
+      "docLabel": "Supported"
+    },
+    {
+      "id": "thematic-breaks",
+      "origin": "CommonMark",
+      "sections": ["Thematic breaks"],
+      "tier": "Supported",
+      "baselineRelationship": "reference-match",
+      "declaredBehavior": "A line of three or more `-`, `*`, or `_` (optionally spaced) becomes `<hr>`.",
+      "boundary": "Some inline-vs-rule ambiguities (e.g. emphasis runs) diverge at the edges.",
+      "docLabel": "Supported"
+    },
+    {
+      "id": "atx-headings",
+      "origin": "CommonMark",
+      "sections": ["ATX headings"],
+      "tier": "Supported",
+      "baselineRelationship": "reference-match",
+      "declaredBehavior": "`#`–`######` followed by a space become `<h1>`–`<h6>` with an auto-generated slug `id`; trailing `#` are stripped.",
+      "boundary": "More than six `#`, or no space after the `#` run, is not a heading and falls back to a paragraph.",
+      "docLabel": "Supported"
+    },
+    {
+      "id": "setext-headings",
+      "origin": "CommonMark",
+      "sections": ["Setext headings"],
+      "tier": "Supported",
+      "baselineRelationship": "reference-match",
+      "declaredBehavior": "A paragraph line underlined by `=` or `-` becomes `<h1>`/`<h2>`.",
+      "boundary": "Multi-line setext content and some interaction with lists/indentation diverge at the edges.",
+      "docLabel": "Supported"
+    },
+    {
+      "id": "indented-code-blocks",
+      "origin": "CommonMark",
+      "sections": ["Indented code blocks"],
+      "tier": "Supported",
+      "baselineRelationship": "known-incomplete",
+      "declaredBehavior": "Lines indented four spaces (or a tab) become `<pre><code>` with the indentation stripped.",
+      "boundary": "The trailing newline inside the code element is not always emitted, so output can diverge by a final `\\n`.",
+      "docLabel": "Supported"
+    },
+    {
+      "id": "fenced-code-blocks",
+      "origin": "CommonMark",
+      "sections": ["Fenced code blocks"],
+      "tier": "Supported",
+      "baselineRelationship": "known-incomplete",
+      "declaredBehavior": "``` ``` ``` and `~~~` fences become `<pre><code>`; an info string becomes `class=\"language-…\"` and drives syntax highlighting.",
+      "boundary": "An unterminated fence renders to end of document; the trailing newline inside the code element can diverge from the reference.",
+      "docLabel": "Supported"
+    },
+    {
+      "id": "html-blocks",
+      "origin": "CommonMark",
+      "sections": ["HTML blocks"],
+      "tier": "Out-of-scope",
+      "baselineRelationship": "unsupported",
+      "declaredBehavior": "Block-level raw HTML passthrough is not implemented; such input is treated as ordinary Markdown text and escaped where unsafe.",
+      "boundary": "Authored angle-bracket text is preserved (escaped); no block-level HTML is emitted verbatim.",
+      "docLabel": "Out-of-scope"
+    },
+    {
+      "id": "link-reference-definitions",
+      "origin": "CommonMark",
+      "sections": ["Link reference definitions"],
+      "tier": "Out-of-scope",
+      "baselineRelationship": "unsupported",
+      "declaredBehavior": "Reference-style link definitions (`[id]: url`) and reference links (`[text][id]`) are not resolved.",
+      "boundary": "Definition lines render as literal paragraph text rather than being consumed; inline links (`[text](url)`) are unaffected.",
+      "docLabel": "Out-of-scope"
+    },
+    {
+      "id": "paragraphs",
+      "origin": "CommonMark",
+      "sections": ["Paragraphs"],
+      "tier": "Supported",
+      "baselineRelationship": "intentional-divergence",
+      "declaredBehavior": "Runs of non-blank lines become `<p>`; a blank line separates paragraphs.",
+      "boundary": "Soft line breaks within a paragraph render as `<br>` (intentional, editor-style), where the reference joins with a newline.",
+      "docLabel": "Supported"
+    },
+    {
+      "id": "blank-lines",
+      "origin": "CommonMark",
+      "sections": ["Blank lines"],
+      "tier": "Supported",
+      "baselineRelationship": "reference-match",
+      "declaredBehavior": "Blank lines separate blocks and are otherwise ignored.",
+      "boundary": "n/a",
+      "docLabel": "Supported"
+    },
+    {
+      "id": "block-quotes",
+      "origin": "CommonMark",
+      "sections": ["Block quotes"],
+      "tier": "Supported",
+      "baselineRelationship": "intentional-divergence",
+      "declaredBehavior": "`>`-prefixed lines become `<blockquote>` with their content re-rendered as Markdown.",
+      "boundary": "Soft line breaks inside a quote render as `<br>` (intentional); lazy-continuation edge cases diverge.",
+      "docLabel": "Supported"
+    },
+    {
+      "id": "list-items",
+      "origin": "CommonMark",
+      "sections": ["List items"],
+      "tier": "Supported",
+      "baselineRelationship": "known-incomplete",
+      "declaredBehavior": "`-`/`*`/`+` and `N.`/`N)` markers become `<li>`; indentation drives nesting.",
+      "boundary": "Loose/tight detection, multi-paragraph items, and some indentation edges diverge from the reference.",
+      "docLabel": "Supported"
+    },
+    {
+      "id": "lists",
+      "origin": "CommonMark",
+      "sections": ["Lists"],
+      "tier": "Supported",
+      "baselineRelationship": "known-incomplete",
+      "declaredBehavior": "Consecutive items of one kind become a single `<ul>`/`<ol>`; `<ol>` honours the first start number.",
+      "boundary": "List-tightness and marker-change splitting follow simplified rules that diverge at the edges.",
+      "docLabel": "Supported"
+    },
+    {
+      "id": "inlines",
+      "origin": "CommonMark",
+      "sections": ["Inlines"],
+      "tier": "Supported",
+      "baselineRelationship": "reference-match",
+      "declaredBehavior": "Inline parsing runs in a fixed precedence: code spans, then escapes, math, entities, autolinks, raw HTML, then emphasis/links/images.",
+      "boundary": "n/a",
+      "docLabel": "Supported"
+    },
+    {
+      "id": "code-spans",
+      "origin": "CommonMark",
+      "sections": ["Code spans"],
+      "tier": "Supported",
+      "baselineRelationship": "known-incomplete",
+      "declaredBehavior": "Backtick runs become `<code>` with the content HTML-escaped; the longest matching run delimits the span.",
+      "boundary": "Some backtick-balancing and surrounding-space-trim edges diverge from the reference.",
+      "docLabel": "Supported"
+    },
+    {
+      "id": "emphasis",
+      "origin": "CommonMark",
+      "sections": ["Emphasis and strong emphasis"],
+      "tier": "Supported",
+      "baselineRelationship": "known-incomplete",
+      "declaredBehavior": "`*`/`_` produce `<em>`, doubled produce `<strong>`, triple produce nested strong-emphasis; `~~` produces `<del>`.",
+      "boundary": "Complex flanking/nesting cases from the CommonMark emphasis algorithm are simplified and diverge at the edges.",
+      "docLabel": "Supported"
+    },
+    {
+      "id": "links",
+      "origin": "CommonMark",
+      "sections": ["Links"],
+      "tier": "Supported",
+      "baselineRelationship": "known-incomplete",
+      "declaredBehavior": "`[text](url \"title\")` becomes `<a href>` with optional `title`; dangerous schemes are neutralised.",
+      "boundary": "Only inline links are resolved (no reference links); nested-bracket and title-edge cases diverge.",
+      "docLabel": "Supported"
+    },
+    {
+      "id": "images",
+      "origin": "CommonMark",
+      "sections": ["Images"],
+      "tier": "Supported",
+      "baselineRelationship": "known-incomplete",
+      "declaredBehavior": "`![alt](src \"title\")` becomes `<img src alt title>`, with optional Pandoc-style size attributes.",
+      "boundary": "Only inline image syntax is resolved; reference-style images and some alt-text edges diverge.",
+      "docLabel": "Supported"
+    },
+    {
+      "id": "autolinks",
+      "origin": "CommonMark",
+      "sections": ["Autolinks"],
+      "tier": "Supported",
+      "baselineRelationship": "known-incomplete",
+      "declaredBehavior": "`<scheme:...>` and `<email>` angle-bracket autolinks become `<a href>`.",
+      "boundary": "Some scheme-validation and edge cases diverge; bare-text autolinking is the GFM extension (separate entry).",
+      "docLabel": "Supported"
+    },
+    {
+      "id": "raw-html-inline",
+      "origin": "CommonMark",
+      "sections": ["Raw HTML"],
+      "tier": "Best-effort",
+      "baselineRelationship": "known-incomplete",
+      "declaredBehavior": "A safe subset of inline HTML tags passes through; unsafe tags (e.g. `<script>`) are HTML-escaped.",
+      "boundary": "The allowed-tag set is narrower than CommonMark, so disallowed/unknown tags are escaped rather than passed through.",
+      "docLabel": "Best-effort"
+    },
+    {
+      "id": "hard-line-breaks",
+      "origin": "CommonMark",
+      "sections": ["Hard line breaks"],
+      "tier": "Supported",
+      "baselineRelationship": "intentional-divergence",
+      "declaredBehavior": "A line ending in two spaces or a backslash becomes `<br>`.",
+      "boundary": "Because soft breaks also render as `<br>`, hard and soft breaks converge on `<br>` (intentional editor behaviour).",
+      "docLabel": "Supported"
+    },
+    {
+      "id": "soft-line-breaks",
+      "origin": "CommonMark",
+      "sections": ["Soft line breaks"],
+      "tier": "Supported",
+      "baselineRelationship": "intentional-divergence",
+      "declaredBehavior": "A soft line break renders as `<br>` so each authored line stays on its own line.",
+      "boundary": "Intentional divergence from the reference, which renders a soft break as a newline/space.",
+      "docLabel": "Supported"
+    },
+    {
+      "id": "textual-content",
+      "origin": "CommonMark",
+      "sections": ["Textual content"],
+      "tier": "Supported",
+      "baselineRelationship": "reference-match",
+      "declaredBehavior": "Plain text is emitted with HTML-significant characters escaped.",
+      "boundary": "n/a",
+      "docLabel": "Supported"
+    },
+    {
+      "id": "gfm-tables",
+      "origin": "GFM",
+      "sections": ["Tables (extension)"],
+      "tier": "Supported",
+      "baselineRelationship": "intentional-divergence",
+      "declaredBehavior": "Pipe tables become `<table>` with `<thead>`/`<tbody>`; column alignment is emitted as `style=\"text-align:…\"`.",
+      "boundary": "Alignment uses CSS `style` rather than the GFM `align` attribute (intentional); a delimiter row without leading/trailing pipes is not recognised and falls back to a paragraph.",
+      "docLabel": "Supported"
+    },
+    {
+      "id": "gfm-task-lists",
+      "origin": "GFM",
+      "sections": ["Task list items (extension)"],
+      "tier": "Supported",
+      "baselineRelationship": "intentional-divergence",
+      "declaredBehavior": "`- [ ]`/`- [x]` items become `<li>` with a `<input type=checkbox>`; the list carries `class=\"task-list\"`.",
+      "boundary": "Checkboxes are left enabled (not `disabled`) and carry `data-md2-task-line` so a preview click can toggle them — intentional divergence from the reference.",
+      "docLabel": "Supported"
+    },
+    {
+      "id": "gfm-strikethrough",
+      "origin": "GFM",
+      "sections": ["Strikethrough (extension)"],
+      "tier": "Supported",
+      "baselineRelationship": "reference-match",
+      "declaredBehavior": "`~~text~~` becomes `<del>text</del>`.",
+      "boundary": "n/a",
+      "docLabel": "Supported"
+    },
+    {
+      "id": "gfm-autolinks",
+      "origin": "GFM",
+      "sections": ["Autolinks (extension)"],
+      "tier": "Out-of-scope",
+      "baselineRelationship": "unsupported",
+      "declaredBehavior": "Bare-text autolinking (`www.`/`http(s)`/email without angle brackets) is not implemented.",
+      "boundary": "Such text renders literally; use angle-bracket autolinks or explicit links instead.",
+      "docLabel": "Out-of-scope"
+    },
+    {
+      "id": "gfm-disallowed-raw-html",
+      "origin": "GFM",
+      "sections": ["Disallowed Raw HTML (extension)"],
+      "tier": "Best-effort",
+      "baselineRelationship": "known-incomplete",
+      "declaredBehavior": "Unsafe HTML tags are HTML-escaped, which is at least as strict as GFM's disallowed-raw-HTML filtering.",
+      "boundary": "Markdown2 escapes a broader set than GFM filters, so output diverges while remaining safe.",
+      "docLabel": "Best-effort"
+    },
+    {
+      "id": "front-matter",
+      "origin": "Markdown2 extension",
+      "sections": [],
+      "tier": "Supported",
+      "baselineRelationship": "not-in-corpus",
+      "declaredBehavior": "A leading `---` fenced YAML block is parsed as front matter.",
+      "boundary": "Only a document-leading block is treated as front matter; malformed YAML degrades to visible text.",
+      "docLabel": "Supported",
+      "localTests": ["MarkdownRendererTests"]
+    },
+    {
+      "id": "toc",
+      "origin": "Markdown2 extension",
+      "sections": [],
+      "tier": "Supported",
+      "baselineRelationship": "not-in-corpus",
+      "declaredBehavior": "`[TOC]` expands to a nested table of contents generated from the document headings.",
+      "boundary": "With no headings, `[TOC]` produces an empty list rather than failing.",
+      "docLabel": "Supported",
+      "localTests": ["MarkdownRendererTests", "OutlineBuilderTests"]
+    },
+    {
+      "id": "tex-math",
+      "origin": "Markdown2 extension",
+      "sections": [],
+      "tier": "Supported",
+      "baselineRelationship": "not-in-corpus",
+      "declaredBehavior": "Inline `$…$` and display `$$…$$` TeX are typeset offline with bundled KaTeX (incl. mhchem).",
+      "boundary": "Commands outside KaTeX's subset render as an inline KaTeX error rather than blanking; currency `$` and `$` in code stay literal.",
+      "docLabel": "Supported",
+      "localTests": ["MathRenderingTests"]
+    },
+    {
+      "id": "diagrams",
+      "origin": "Markdown2 extension",
+      "sections": [],
+      "tier": "Supported",
+      "baselineRelationship": "not-in-corpus",
+      "declaredBehavior": "`mermaid`, `flow`, and `sequence` fenced blocks render offline with bundled engines in the Read-mode preview.",
+      "boundary": "Invalid diagram source falls back to showing its raw text instead of blanking the preview.",
+      "docLabel": "Supported",
+      "localTests": ["DiagramRenderingTests", "MermaidOffscreenRenderingTests"]
+    },
+    {
+      "id": "footnotes",
+      "origin": "Markdown2 extension",
+      "sections": [],
+      "tier": "Supported",
+      "baselineRelationship": "not-in-corpus",
+      "declaredBehavior": "`[^id]` references and `[^id]:` definitions become numbered superscript links plus a footnotes section with back-references.",
+      "boundary": "An undefined reference renders as literal text; definitions are collected regardless of position.",
+      "docLabel": "Supported",
+      "localTests": ["FootnoteRenderingTests"]
+    },
+    {
+      "id": "image-size-attributes",
+      "origin": "Markdown2 extension",
+      "sections": [],
+      "tier": "Supported",
+      "baselineRelationship": "not-in-corpus",
+      "declaredBehavior": "Pandoc-style `{width=… height=…}` after an image sets its dimensions.",
+      "boundary": "Invalid attributes are ignored and the image still renders.",
+      "docLabel": "Supported",
+      "localTests": ["ImageAttachmentTests"]
+    },
+    {
+      "id": "image-attachments",
+      "origin": "Markdown2 extension",
+      "sections": [],
+      "tier": "Supported",
+      "baselineRelationship": "not-in-corpus",
+      "declaredBehavior": "Pasted/dropped images are saved into a configurable document-relative folder and linked in place.",
+      "boundary": "A missing local image shows an explicit broken-image placeholder rather than a blank.",
+      "docLabel": "Supported",
+      "localTests": ["ImageAttachmentTests", "DocumentStoreImageAttachmentTests"]
+    }
+  ]
+}

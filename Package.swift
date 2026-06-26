@@ -38,7 +38,14 @@ let package = Package(
         ),
         .testTarget(
             name: "MD2CoreTests",
-            dependencies: ["MD2Core", "MD2AppSupport", "MD2App"]
+            dependencies: ["MD2Core", "MD2AppSupport", "MD2App"],
+            exclude: [
+                "Matrix",
+                "Conformance"
+            ],
+            resources: [
+                .copy("Corpus")
+            ]
         )
     ]
 )

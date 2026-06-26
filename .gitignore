@@ -11,3 +11,7 @@ memory/
 # Transient preview files written next to documents during Read-mode rendering
 .md2-preview-*.html
 tmp/
+
+# Generated conformance dashboard (the sibling baseline.json IS tracked)
+Tests/MD2CoreTests/Conformance/dashboard.md
+Tests/MD2CoreTests/Conformance/dashboard.json
