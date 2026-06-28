@@ -52,6 +52,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
     /// via `__md2ApplyContent` — preserving scroll position and avoiding the
     /// full-page reload flash — instead of reloading the web view.
     var liveUpdate: Bool = false
+    /// Whether the preview should show a rendered leading YAML front-matter block.
+    /// The shared renderer still emits it; this is a preview-only visibility state.
+    var showsFrontMatter: Bool = true
     @Binding var jumpHeadingID: String?
     /// Fraction (0...1) to scroll to after load when no heading anchor applies.
     @Binding var jumpFraction: Double?
@@ -80,9 +83,11 @@ struct MarkdownPreviewView: NSViewRepresentable {
     /// Reports match count and the 1-based index of the current match (0 when
     /// there are none) back to the find bar.
     var onFindResult: (_ total: Int, _ index: Int) -> Void = { _, _ in }
-    /// Localized label shown in the broken-image placeholder (e.g. "Image not
-    /// found"). The failed path is appended at runtime as text.
-    var brokenImageLabel: String = "Image not found"
+    /// Localized labels shown in preview-only broken-image placeholders. The
+    /// failed path/URL is appended at runtime as text.
+    var localImageMissingLabel: String = "Image not found"
+    var remoteImageUnavailableLabel: String = "Remote image could not be loaded"
+    var genericImageLoadFailedLabel: String = "Image could not be loaded"
 
     private static let enterEditMessageName = "enterEdit"
     private static let anchorMessageName = "anchorChange"
@@ -140,6 +145,15 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 checked: !!box.checked
             });
         });
+        (function () {
+            var style = document.createElement('style');
+            style.textContent = 'html.md2-hide-front-matter .front-matter{display:none!important;}';
+            document.head.appendChild(style);
+            window.__md2SetFrontMatterVisible = function (visible) {
+                document.documentElement.classList.toggle('md2-hide-front-matter', !visible);
+            };
+            window.__md2SetFrontMatterVisible(\(Self.jsBoolean(showsFrontMatter)));
+        })();
         (function () {
             // Suppress anchor reporting while we are programmatically scrolling,
             // so a mode-switch scroll is never captured back as the user's anchor.
@@ -548,15 +562,23 @@ struct MarkdownPreviewView: NSViewRepresentable {
                     var img = event.target;
                     if (!img || img.tagName !== 'IMG') { return; }
                     if (img.getAttribute('data-md2-broken') === '1') { return; }
+                    var src = img.getAttribute('src') || '';
+                    var lower = src.trim().toLowerCase();
+                    var labelText = '\(Self.escapeForJS(genericImageLoadFailedLabel))';
+                    if (/^https?:/.test(lower)) {
+                        labelText = '\(Self.escapeForJS(remoteImageUnavailableLabel))';
+                    } else if (/^(file|md2-local-image):/.test(lower) || !/^[a-z][a-z0-9+.-]*:/.test(lower)) {
+                        labelText = '\(Self.escapeForJS(localImageMissingLabel))';
+                    }
                     var placeholder = document.createElement('span');
                     placeholder.className = 'md2-broken-image';
                     placeholder.setAttribute('data-md2-broken', '1');
                     var label = document.createElement('span');
-                    label.textContent = '\(Self.escapeForJS(brokenImageLabel))';
+                    label.textContent = labelText;
                     var path = document.createElement('span');
                     path.className = 'md2-broken-image-path';
                     // textContent (never innerHTML) so a hostile/odd path is inert.
-                    path.textContent = img.getAttribute('src') || '';
+                    path.textContent = src;
                     placeholder.appendChild(label);
                     placeholder.appendChild(document.createTextNode(' '));
                     placeholder.appendChild(path);
@@ -616,6 +638,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         context.coordinator.onAnchorChange = onAnchorChange
         context.coordinator.onFindShortcut = onFindShortcut
         context.coordinator.onFindResult = onFindResult
+        context.coordinator.showsFrontMatter = showsFrontMatter
 
         if let previewWebView = webView as? PreviewWebView {
             previewWebView.onFindAction = { action in
@@ -647,6 +670,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
 
         let htmlChanged = context.coordinator.lastHTML != html
         let baseURLChanged = context.coordinator.lastBaseURL != baseURL
+        context.coordinator.applyFrontMatterVisibility(in: webView)
         if htmlChanged || baseURLChanged {
             // In Side by Side mode, a content-only change (same document, no new
             // diagram engine needed) is applied in place so typing does not
@@ -777,6 +801,30 @@ struct MarkdownPreviewView: NSViewRepresentable {
             .replacingOccurrences(of: "\r", with: "")
     }
 
+    static func jsBoolean(_ value: Bool) -> String {
+        value ? "true" : "false"
+    }
+
+    enum ImageFailureKind: Equatable {
+        case local
+        case remote
+        case generic
+    }
+
+    static func imageFailureKind(for source: String) -> ImageFailureKind {
+        let lower = source.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if lower.hasPrefix("http:") || lower.hasPrefix("https:") {
+            return .remote
+        }
+        if lower.hasPrefix("file:") || lower.hasPrefix("\(LocalImageSchemeHandler.scheme):") {
+            return .local
+        }
+        if lower.range(of: #"^[a-z][a-z0-9+.-]*:"#, options: .regularExpression) != nil {
+            return .generic
+        }
+        return .local
+    }
+
     func makeCoordinator() -> Coordinator {
         let coordinator = Coordinator()
         coordinator.onEnterEdit = onEnterEdit
@@ -881,6 +929,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         var onFindShortcut: (_ action: FindCommand.Action) -> Void = { _ in }
         var onFindResult: (_ total: Int, _ index: Int) -> Void = { _, _ in }
         let localImageSchemeHandler = LocalImageSchemeHandler()
+        var showsFrontMatter = true
         var lastFindQuery: String?
         var lastFocusToken: UUID?
         /// Token of the most recently consumed find-navigation command, so it runs
@@ -1079,6 +1128,13 @@ struct MarkdownPreviewView: NSViewRepresentable {
             onFindResult(total, index)
         }
 
+        func applyFrontMatterVisibility(in webView: WKWebView) {
+            guard isLoaded else { return }
+            webView.evaluateJavaScript(
+                "window.__md2SetFrontMatterVisible ? window.__md2SetFrontMatterVisible(\(MarkdownPreviewView.jsBoolean(showsFrontMatter))) : null;"
+            )
+        }
+
         func userContentController(
             _ userContentController: WKUserContentController,
             didReceive message: WKScriptMessage
@@ -1126,6 +1182,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             isLoaded = true
             NSLog("MD2DBG preview didFinish pendingScroll=\(String(describing: pendingScroll))")
+            applyFrontMatterVisibility(in: webView)
             applyPendingScroll(in: webView, consume: true)
             applyPendingFind(in: webView)
         }

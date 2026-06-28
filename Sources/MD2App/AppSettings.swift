@@ -238,6 +238,9 @@ enum L10nKey: String {
     case noHeadings
     case hideOutline
     case showOutline
+    case showMetadata
+    case hideMetadata
+    case navigateToHeading
     case mode
     case write
     case read
@@ -282,6 +285,8 @@ enum L10nKey: String {
     case attachmentFolder
     case attachmentFolderHelp
     case imageNotFound
+    case remoteImageUnavailable
+    case imageLoadFailed
     case exportSettings
     case pageSizeLabel
     case orientationLabel
@@ -337,6 +342,9 @@ enum L10n {
         .noHeadings: "No headings",
         .hideOutline: "Hide outline",
         .showOutline: "Show outline",
+        .showMetadata: "Show metadata",
+        .hideMetadata: "Hide metadata",
+        .navigateToHeading: "Navigate to heading",
         .mode: "Mode",
         .write: "Edit",
         .read: "Preview",
@@ -381,6 +389,8 @@ enum L10n {
         .attachmentFolder: "Image Attachment Folder",
         .attachmentFolderHelp: "Screenshots pasted from the clipboard are saved in this document-relative folder. Dragged or pasted image files are linked in place. Defaults to assets.",
         .imageNotFound: "Image not found",
+        .remoteImageUnavailable: "Remote image could not be loaded",
+        .imageLoadFailed: "Image could not be loaded",
         .exportSettings: "Export",
         .pageSizeLabel: "Page Size",
         .orientationLabel: "Orientation",
@@ -426,6 +436,9 @@ enum L10n {
         .noHeadings: "没有标题",
         .hideOutline: "隐藏大纲",
         .showOutline: "显示大纲",
+        .showMetadata: "显示元数据",
+        .hideMetadata: "隐藏元数据",
+        .navigateToHeading: "跳转到标题",
         .mode: "模式",
         .write: "编辑",
         .read: "预览",
@@ -470,6 +483,8 @@ enum L10n {
         .attachmentFolder: "图片附件文件夹",
         .attachmentFolderHelp: "从剪贴板粘贴的截图会保存到该相对文档的文件夹；拖入或粘贴的图片文件会直接链接原位置。默认为 assets。",
         .imageNotFound: "找不到图片",
+        .remoteImageUnavailable: "无法加载远程图片",
+        .imageLoadFailed: "无法加载图片",
         .exportSettings: "导出",
         .pageSizeLabel: "页面大小",
         .orientationLabel: "方向",

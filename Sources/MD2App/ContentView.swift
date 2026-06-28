@@ -2,11 +2,62 @@ import Foundation
 import MD2Core
 import SwiftUI
 
+enum FrontMatterMetadataVisibility {
+    static func hasDisplayableFrontMatter(in markdown: String) -> Bool {
+        !FrontMatterReader.fields(in: markdown).isEmpty
+    }
+}
+
+enum DocumentLayoutMetrics {
+    static let splitEditorMinWidth: CGFloat = 360
+    static let splitPreviewMinWidth: CGFloat = 420
+    static let outlineSidebarWidth: CGFloat = 230
+    static let splitChromeReserveWidth: CGFloat = 36
+    static let nonSplitMinWidth: CGFloat = 780
+
+    static func minimumWindowWidth(mode: EditorMode, showsOutline: Bool) -> CGFloat {
+        if mode == .split {
+            return splitEditorMinWidth
+                + splitPreviewMinWidth
+                + (showsOutline ? outlineSidebarWidth : 0)
+                + splitChromeReserveWidth
+        }
+        return nonSplitMinWidth
+    }
+}
+
+enum OutlineMoveDirection {
+    case up
+    case down
+}
+
+enum OutlineKeyboardNavigation {
+    static func selectedID(
+        after move: OutlineMoveDirection,
+        in headings: [Heading],
+        currentID: String?
+    ) -> String? {
+        guard !headings.isEmpty else { return nil }
+        guard let currentID,
+              let currentIndex = headings.firstIndex(where: { $0.id == currentID }) else {
+            return move == .up ? headings.last?.id : headings.first?.id
+        }
+
+        switch move {
+        case .up:
+            return headings[max(0, currentIndex - 1)].id
+        case .down:
+            return headings[min(headings.count - 1, currentIndex + 1)].id
+        }
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var document: DocumentStore
     @ObservedObject var settings: AppSettings
     @State private var mode: EditorMode
     @State private var showsOutline: Bool
+    @State private var showsFrontMatterMetadata = false
     /// Latest top-visible source line reported by the editor — the cached
     /// fallback when a live capture is unavailable at switch time.
     @State private var editorAnchorLine = 1
@@ -53,8 +104,6 @@ struct ContentView: View {
     /// reports from the preview during this window are consequences of editing,
     /// not preview scroll gestures, so they must never move the editor.
     @State private var suppressPreviewDrivenEditorSyncUntil = Date.distantPast
-    /// Per-pane minimum width in Side by Side so neither side collapses.
-    private let splitPaneMinWidth: CGFloat = 340
     private let onOpen: () -> Void
     private var findDialogEntranceAnimation: Animation { .easeOut(duration: 0.20) }
     private var findDialogExitAnimation: Animation { .easeIn(duration: 0.15) }
@@ -81,6 +130,7 @@ struct ContentView: View {
                         headings: document.rendered.outline,
                         selectedHeadingID: document.jumpHeadingID,
                         settings: settings,
+                        width: DocumentLayoutMetrics.outlineSidebarWidth,
                         onSelect: document.jump(to:)
                     )
                     Divider()
@@ -92,10 +142,11 @@ struct ContentView: View {
             Divider()
             StatusBar(stats: document.rendered.stats, url: document.fileURL, settings: settings)
         }
-        .frame(minWidth: mode == .split ? 1000 : 780, minHeight: 540)
+        .frame(minWidth: minimumWindowWidth, minHeight: 540)
         .navigationTitle(document.displayTitle)
         .onChange(of: document.documentIdentity) { _, _ in
             applyDefaultPresentation()
+            showsFrontMatterMetadata = false
             dismissEditorFind()
             dismissPreviewFind()
         }
@@ -111,8 +162,12 @@ struct ContentView: View {
                 Button {
                     showsOutline.toggle()
                 } label: {
-                    Image(systemName: "sidebar.left")
+                    Label(
+                        showsOutline ? settings.text(.hideOutline) : settings.text(.showOutline),
+                        systemImage: "sidebar.left"
+                    )
                 }
+                .labelStyle(.titleAndIcon)
                 .accessibilityLabel(showsOutline ? settings.text(.hideOutline) : settings.text(.showOutline))
                 .help(showsOutline ? settings.text(.hideOutline) : settings.text(.showOutline))
             }
@@ -121,35 +176,57 @@ struct ContentView: View {
                 Button {
                     onOpen()
                 } label: {
-                    Image(systemName: "folder")
+                    Label(settings.text(.open), systemImage: "folder")
                 }
+                .labelStyle(.titleAndIcon)
                 .accessibilityLabel(settings.text(.open))
                 .help(settings.text(.open))
 
                 Button {
                     document.save()
                 } label: {
-                    Image(systemName: "square.and.arrow.down")
+                    Label(settings.text(.save), systemImage: "square.and.arrow.down")
                 }
+                .labelStyle(.titleAndIcon)
                 .accessibilityLabel(settings.text(.save))
                 .help(settings.text(.save))
+
+                if mode != .write, hasDisplayableFrontMatter {
+                    Button {
+                        showsFrontMatterMetadata.toggle()
+                    } label: {
+                        Label(
+                            showsFrontMatterMetadata ? settings.text(.hideMetadata) : settings.text(.showMetadata),
+                            systemImage: "info.circle"
+                        )
+                    }
+                    .labelStyle(.titleAndIcon)
+                    .accessibilityLabel(
+                        showsFrontMatterMetadata ? settings.text(.hideMetadata) : settings.text(.showMetadata)
+                    )
+                    .help(showsFrontMatterMetadata ? settings.text(.hideMetadata) : settings.text(.showMetadata))
+                }
 
                 Picker(
                     settings.text(.mode),
                     selection: Binding(get: { mode }, set: { requestMode($0) })
                 ) {
                     Label(settings.text(.write), systemImage: "pencil")
-                        .labelStyle(.iconOnly)
+                        .accessibilityLabel(settings.text(.write))
+                        .help(settings.text(.write))
                         .tag(EditorMode.write)
                     Label(settings.text(.sideBySide), systemImage: "rectangle.split.2x1")
-                        .labelStyle(.iconOnly)
+                        .accessibilityLabel(settings.text(.sideBySide))
+                        .help(settings.text(.sideBySide))
                         .tag(EditorMode.split)
                     Label(settings.text(.read), systemImage: "doc.richtext")
-                        .labelStyle(.iconOnly)
+                        .accessibilityLabel(settings.text(.read))
+                        .help(settings.text(.read))
                         .tag(EditorMode.read)
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 132)
+                .frame(width: 280)
+                .accessibilityLabel(settings.text(.mode))
                 .help(settings.text(.writeReadOrSplit))
             }
         }
@@ -165,6 +242,18 @@ struct ContentView: View {
     private func applyDefaultPresentation() {
         mode = settings.presentationMode(isFileBacked: document.fileURL != nil)
         showsOutline = settings.showsOutlineByDefault
+    }
+
+    private var hasDisplayableFrontMatter: Bool {
+        FrontMatterMetadataVisibility.hasDisplayableFrontMatter(in: document.text)
+    }
+
+    private var showsFrontMatterInPreview: Bool {
+        hasDisplayableFrontMatter && showsFrontMatterMetadata
+    }
+
+    private var minimumWindowWidth: CGFloat {
+        DocumentLayoutMetrics.minimumWindowWidth(mode: mode, showsOutline: showsOutline)
     }
 
     /// Dispatches a find action from the menu to the active surface.
@@ -402,9 +491,9 @@ struct ContentView: View {
             // divider (HSplitView). Each pane is clamped to a usable minimum.
             HSplitView {
                 editorPane(inSplit: true)
-                    .frame(minWidth: splitPaneMinWidth)
+                    .frame(minWidth: DocumentLayoutMetrics.splitEditorMinWidth)
                 previewPane(inSplit: true)
-                    .frame(minWidth: splitPaneMinWidth)
+                    .frame(minWidth: DocumentLayoutMetrics.splitPreviewMinWidth)
             }
         }
     }
@@ -483,6 +572,7 @@ struct ContentView: View {
                 bodyHTML: document.rendered.body,
                 baseURL: document.baseURL,
                 liveUpdate: inSplit,
+                showsFrontMatter: showsFrontMatterInPreview,
                 jumpHeadingID: $document.jumpHeadingID,
                 jumpFraction: $document.jumpFraction,
                 jumpAnchor: $document.previewJumpAnchor,
@@ -513,7 +603,9 @@ struct ContentView: View {
                     previewMatchTotal = total
                     previewMatchIndex = index
                 },
-                brokenImageLabel: settings.text(.imageNotFound)
+                localImageMissingLabel: settings.text(.imageNotFound),
+                remoteImageUnavailableLabel: settings.text(.remoteImageUnavailable),
+                genericImageLoadFailedLabel: settings.text(.imageLoadFailed)
             )
 
             if previewFindVisible {
@@ -622,7 +714,31 @@ private struct OutlineSidebar: View {
     let headings: [Heading]
     let selectedHeadingID: String?
     let settings: AppSettings
+    let width: CGFloat
     let onSelect: (Heading) -> Void
+    @State private var keyboardSelectedHeadingID: String?
+
+    private var activeHeadingID: String? {
+        keyboardSelectedHeadingID ?? selectedHeadingID
+    }
+
+    /// Selection drives navigation: changing the selected row (mouse, keyboard,
+    /// or VoiceOver) scrolls to the heading. Programmatic selection updates from
+    /// the document viewport go through `onChange(of: selectedHeadingID)` instead
+    /// of this setter, so following the scroll position never re-triggers a jump.
+    private var selectionBinding: Binding<String?> {
+        Binding(
+            get: { activeHeadingID },
+            set: { newID in
+                keyboardSelectedHeadingID = newID
+                guard let newID,
+                      let heading = headings.first(where: { $0.id == newID }) else {
+                    return
+                }
+                onSelect(heading)
+            }
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -638,12 +754,18 @@ private struct OutlineSidebar: View {
                     .font(.callout)
                     .foregroundStyle(.tertiary)
                     .padding(14)
+                    .accessibilityLabel(settings.text(.noHeadings))
                 Spacer()
             } else {
-                List(headings) { heading in
-                    Button {
-                        onSelect(heading)
-                    } label: {
+                // A plain (non-Button) List row is the only structure that
+                // reliably surfaces the heading title as the row's native
+                // accessibility label and its selection as AXSelected; wrapping
+                // the row in a Button or attaching an accessibility action makes
+                // AppKit drop the label. Navigation is therefore driven by the
+                // selection binding, so a mouse click, VoiceOver activation, and
+                // Return all scroll to the heading without coordinate clicking.
+                List(selection: selectionBinding) {
+                    ForEach(headings) { heading in
                         HStack(spacing: 0) {
                             Color.clear
                                 .frame(width: CGFloat(max(0, heading.level - 1)) * 12)
@@ -651,16 +773,56 @@ private struct OutlineSidebar: View {
                                 .lineLimit(1)
                                 .font(heading.level == 1 ? .callout.weight(.semibold) : .callout)
                         }
-                        .foregroundStyle(selectedHeadingID == heading.id ? .primary : .secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .foregroundStyle(activeHeadingID == heading.id ? .primary : .secondary)
                         .contentShape(Rectangle())
+                        .tag(heading.id)
+                        .accessibilityHint(settings.text(.navigateToHeading))
                     }
-                    .buttonStyle(.plain)
                 }
                 .listStyle(.sidebar)
+                .focusable()
+                // Arrow keys move the selection without jumping; Return activates.
+                .onMoveCommand(perform: moveSelection)
+                .onSubmit(activateSelectedHeading)
             }
         }
-        .frame(width: 230)
+        .frame(width: width)
         .background(.regularMaterial)
+        .onChange(of: selectedHeadingID) { _, newValue in
+            keyboardSelectedHeadingID = newValue
+        }
+    }
+
+    private func activate(_ heading: Heading) {
+        keyboardSelectedHeadingID = heading.id
+        onSelect(heading)
+    }
+
+    private func activateSelectedHeading() {
+        guard let id = activeHeadingID,
+              let heading = headings.first(where: { $0.id == id }) else {
+            return
+        }
+        activate(heading)
+    }
+
+    private func moveSelection(_ direction: MoveCommandDirection) {
+        guard !headings.isEmpty else { return }
+        let move: OutlineMoveDirection
+        switch direction {
+        case .up:
+            move = .up
+        case .down:
+            move = .down
+        default:
+            return
+        }
+        keyboardSelectedHeadingID = OutlineKeyboardNavigation.selectedID(
+            after: move,
+            in: headings,
+            currentID: activeHeadingID
+        )
     }
 }
 
