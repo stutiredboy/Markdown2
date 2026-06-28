@@ -1,0 +1,138 @@
+## MODIFIED Requirements
+
+### Requirement: Paginated, print-ready output
+
+The exported PDF SHALL be paginated to a configurable page **size** and
+**orientation** drawn from the active export profile so it can be printed or read
+page by page, rather than emitted as a single unbounded page. The default profile
+SHALL be **A4, portrait**, so output is unchanged unless the user opts in. The
+output SHALL use print-oriented density — page **margins** from the active profile
+(default **narrow, ~0.5", on every side**) and a document-scale base font — rather
+than the on-screen reading layout, so each page holds a normal amount of content
+and little page area is wasted to whitespace. A page break SHALL NOT slice through
+a line of text or through an atomic block (image, table, code block, or diagram);
+each page SHALL end at a safe boundary between lines or blocks. This guarantee
+SHALL hold at the bottom of a page: the last line or block on a page SHALL be
+rendered whole, never clipped by the page boundary. A table row that fits within a
+page SHALL be kept whole and SHALL NOT be sliced across a page boundary. An atomic
+block (or a single table row) taller than a single page MAY be divided as a last
+resort.
+
+#### Scenario: Multi-page document paginates
+
+- **WHEN** a document whose rendered height exceeds one page is exported
+- **THEN** the resulting PDF contains multiple pages
+- **AND** the pages match the configured page size (A4 by default)
+
+#### Scenario: Default geometry is A4 with narrow margins
+
+- **WHEN** a document is exported with the default (unconfigured) export profile
+- **THEN** the pages are A4 portrait with narrow (~0.5") margins on every side
+- **AND** the output matches the behavior from before this change
+
+#### Scenario: Configured page size is applied
+
+- **WHEN** the export profile selects a non-default page size (e.g. Letter) and a document is exported
+- **THEN** every page of the resulting PDF is the selected size
+- **AND** content is laid out and paginated to that size's printable area
+
+#### Scenario: Configured orientation is applied
+
+- **WHEN** the export profile selects landscape orientation and a document is exported
+- **THEN** every page of the resulting PDF is wider than it is tall
+- **AND** content is wrapped and paginated to the landscape printable width
+
+#### Scenario: Configured margins are applied
+
+- **WHEN** the export profile selects a margin preset other than the default (e.g. Wide) and a document is exported
+- **THEN** the content is laid out within the selected margins on every side
+- **AND** the printable column width reflects the selected margins
+
+#### Scenario: Lines and blocks are not split across pages
+
+- **WHEN** a document's content crosses a page boundary
+- **THEN** no line of text is cut in half across two pages
+- **AND** an image, table, code block, or diagram that fits within one page is kept whole on a single page
+
+#### Scenario: The last line of a full page is not clipped
+
+- **WHEN** a page is filled to near its printable height and the next content starts a new page
+- **THEN** the last line of text on the full page shows its full glyph height, with no descenders sliced by the page boundary
+
+#### Scenario: Table rows are not sliced at a page boundary
+
+- **WHEN** a multi-row table spans a page boundary
+- **THEN** each row that fits within a page is rendered whole on one page
+- **AND** no row is cut horizontally across two pages
+
+## ADDED Requirements
+
+### Requirement: Exported and printed diagrams match the preview
+
+The offscreen render used for PDF export and Print SHALL render every diagram that
+the live preview renders, so that a `mermaid`, `flow`, or `sequence` block that
+appears as a diagram in the preview also appears as that diagram in the exported
+PDF and in printed output. The export SHALL begin capturing pages only after the
+document's asynchronous diagram and math rendering has settled, rather than after a
+fixed delay alone, bounded by the existing overall export timeout. A diagram that
+fails to render SHALL fall back to showing its source text (as in the preview) and
+SHALL NOT blank the diagram or fail the export.
+
+#### Scenario: Mermaid diagram appears in the exported PDF
+
+- **WHEN** a document containing a Mermaid diagram that renders in the preview is exported to PDF
+- **THEN** the rendered Mermaid diagram appears in the PDF
+- **AND** the diagram is not blank or missing
+
+#### Scenario: Diagram-bearing document prints faithfully
+
+- **WHEN** a document containing diagrams is printed
+- **THEN** the printed output shows the same rendered diagrams as the preview
+
+#### Scenario: Export waits for diagram rendering to settle
+
+- **WHEN** a document with diagrams that take time to render is exported
+- **THEN** page capture begins only after the diagrams have finished rendering (or the overall timeout is reached)
+- **AND** no page is captured while a diagram is still blank
+
+#### Scenario: A failing diagram does not break export
+
+- **WHEN** a document contains a malformed diagram that cannot be rendered
+- **THEN** the export still succeeds
+- **AND** that diagram shows its source text in the PDF rather than blanking the page
+
+### Requirement: Optional page numbers and headers/footers in exported output
+
+The exported PDF SHALL be able to include page numbers and header/footer text
+drawn from the active export profile. When enabled, header and footer text SHALL
+support left, center, and right zones, and SHALL resolve substitution tokens for
+the document title, the current date, the page number, and the total page count,
+evaluated per page. Page numbers and header/footer text SHALL be drawn within the
+page margin so they never overlap document content; when enabled with a margin
+preset that leaves no room, a minimum text band SHALL be reserved so content is
+not clipped. When page numbers and headers/footers are disabled (the default), the
+output SHALL contain none and match the prior behavior.
+
+#### Scenario: Page numbers appear on every page
+
+- **WHEN** the profile enables page numbers and a multi-page document is exported
+- **THEN** each page of the PDF shows its page number in the configured position
+- **AND** the numbering reflects the correct page and total page count
+
+#### Scenario: Header and footer text with tokens
+
+- **WHEN** the profile sets a footer center template using the title and page tokens and a document is exported
+- **THEN** each page's footer shows the resolved document title and page number
+- **AND** the left/center/right zones are positioned independently
+
+#### Scenario: Running text does not overlap content
+
+- **WHEN** headers/footers are enabled and a document is exported
+- **THEN** the header/footer text is drawn inside the page margin
+- **AND** no document content is overlapped or clipped by the running text
+
+#### Scenario: Disabled by default
+
+- **WHEN** a document is exported with the default profile
+- **THEN** the PDF contains no page numbers, header, or footer
+- **AND** the output matches the behavior from before this change

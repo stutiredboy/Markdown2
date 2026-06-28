@@ -5,7 +5,6 @@ dist/
 .opencode/
 .DS_Store
 .playwright-mcp/
-openspec/
 memory/
 
 # Transient preview files written next to documents during Read-mode rendering
