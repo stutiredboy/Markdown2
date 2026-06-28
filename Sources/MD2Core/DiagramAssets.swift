@@ -29,7 +29,7 @@ enum DiagramAssets {
     static let mermaid: String = load("mermaid.min")
 
     private static func load(_ name: String) -> String {
-        guard let url = Bundle.module.url(
+        guard let url = MD2CoreResources.bundle.url(
             forResource: name,
             withExtension: "js",
             subdirectory: "diagrams"

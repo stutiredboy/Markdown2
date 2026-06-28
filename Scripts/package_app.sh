@@ -32,14 +32,18 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp ".build/release/$APP_NAME" "$MACOS_DIR/$APP_NAME"
 cp "Resources/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
 
-# Copy SwiftPM resource bundles (e.g. Markdown2_MD2Core.bundle, which carries the
-# bundled KaTeX assets) next to the .app root, where the generated `Bundle.module`
-# accessor looks (Bundle.main.bundleURL/<name>.bundle). Without this the app falls
-# back to a hard-coded local .build path that only exists on the build machine.
+# Copy SwiftPM resource bundles (e.g. MD2_MD2Core.bundle, which carries the
+# bundled KaTeX and diagram assets) into Contents/Resources. This is the only
+# location a `.app` can hold extra content and still be code-signed: anything
+# placed beside Contents/ at the bundle root is rejected by codesign as
+# "unsealed contents present in the bundle root", which invalidates the
+# signature and makes the app get killed by AMFI on launch. MD2Core resolves the
+# bundle from Contents/Resources at runtime (see MD2CoreResources), so it no
+# longer depends on the build-machine-only .build fallback path.
 RELEASE_BIN_DIR="$(cd "$ROOT_DIR/.build/release" && pwd)"
 shopt -s nullglob
 for bundle in "$RELEASE_BIN_DIR"/*.bundle; do
-    cp -R "$bundle" "$APP_DIR/$(basename "$bundle")"
+    cp -R "$bundle" "$RESOURCES_DIR/$(basename "$bundle")"
 done
 shopt -u nullglob
 
@@ -130,6 +134,14 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+
+# Code-sign the fully assembled bundle. An ad-hoc signature (-) is enough to
+# satisfy AMFI on the local machine and seals Contents/ so the app is not killed
+# on launch. Override MARKDOWN2_CODESIGN_IDENTITY to sign with a Developer ID for
+# distribution. --force replaces the linker's ad-hoc signature on the binary.
+CODESIGN_IDENTITY="${MARKDOWN2_CODESIGN_IDENTITY:--}"
+codesign --force --deep --sign "$CODESIGN_IDENTITY" "$APP_DIR"
+codesign --verify --deep --strict "$APP_DIR"
 
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_DIR" >/dev/null 2>&1 || true
 swift - >/dev/null 2>&1 <<'SWIFT' || true

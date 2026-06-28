@@ -19,7 +19,7 @@ enum MathAssets {
     static let mhchem: String = load("mhchem.min", "js")
 
     private static func load(_ name: String, _ ext: String) -> String {
-        guard let url = Bundle.module.url(
+        guard let url = MD2CoreResources.bundle.url(
             forResource: name,
             withExtension: ext,
             subdirectory: "katex"
