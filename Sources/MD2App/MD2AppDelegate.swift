@@ -19,16 +19,28 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
     /// items (New, Open, Save, Print, …) localized immediately; only the standard
     /// AppKit menu bar still needs a restart.
     private var settingsObservation: AnyCancellable?
+    private var modeShortcutObservation: AnyCancellable?
+    /// Shortcuts that have been registered as mode shortcuts during this run.
+    /// SwiftUI command menus can keep a previous key equivalent alive after a
+    /// Settings edit; consuming stale entries here prevents old bindings from
+    /// firing after the user customizes them.
+    private var knownModeShortcuts = Set<ModeKeyboardShortcut>()
 
     override init() {
         super.init()
+        knownModeShortcuts = Set(settings.modeShortcuts.assignments.map(\.shortcut))
+        modeShortcutObservation = settings.$modeShortcuts.sink { [weak self] configuration in
+            self?.knownModeShortcuts.formUnion(configuration.assignments.map(\.shortcut))
+        }
         settingsObservation = settings.objectWillChange.sink { [weak self] _ in
             guard let self else { return }
             self.objectWillChange.send()
             // `objectWillChange` fires before the new value commits, so re-render
-            // on the next runloop tick to pick up the changed citation/equation
-            // preferences and refresh every open preview.
+            // on the next runloop tick to pick up committed settings. The second
+            // delegate publish also lets SwiftUI rebuild command shortcuts after
+            // users change mode bindings in Settings.
             DispatchQueue.main.async {
+                self.objectWillChange.send()
                 for documentWindow in self.documentWindows {
                     documentWindow.store.reRenderForSettingsChange()
                 }
@@ -47,6 +59,23 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
             return match.store
         }
         return documentWindows.last?.store
+    }
+
+    private func handleModeShortcutEvent(_ event: NSEvent, for store: DocumentStore) -> Bool {
+        guard let shortcut = ModeKeyboardShortcut(event: event) else {
+            return false
+        }
+
+        if let assignment = settings.modeShortcuts.assignments.first(where: { $0.shortcut == shortcut }) {
+            store.requestMode(assignment.mode)
+            return true
+        }
+
+        if knownModeShortcuts.contains(shortcut) {
+            return true
+        }
+
+        return false
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -163,12 +192,16 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
             onOpen: { [weak self] in self?.openDocument() }
         )
 
-        let window = NSWindow(
+        let window = ModeShortcutWindow(
             contentRect: NSRect(x: 0, y: 0, width: 980, height: 680),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
+        window.modeShortcutHandler = { [weak self, weak store] event in
+            guard let self, let store else { return false }
+            return self.handleModeShortcutEvent(event, for: store)
+        }
         window.title = store.displayTitle
         window.isReleasedWhenClosed = false
         window.delegate = self
@@ -287,6 +320,17 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
         default:
             return true
         }
+    }
+}
+
+private final class ModeShortcutWindow: NSWindow {
+    var modeShortcutHandler: ((NSEvent) -> Bool)?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if modeShortcutHandler?(event) == true {
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
     }
 }
 

@@ -26,6 +26,13 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    @Published private(set) var modeShortcuts: ModeShortcutConfiguration {
+        didSet {
+            guard let data = try? JSONEncoder().encode(modeShortcuts) else { return }
+            defaults.set(data, forKey: Keys.modeShortcuts)
+        }
+    }
+
     @Published var showsOutlineByDefault: Bool {
         didSet {
             defaults.set(showsOutlineByDefault, forKey: Keys.showsOutlineByDefault)
@@ -91,6 +98,14 @@ final class AppSettings: ObservableObject {
 
         let newModeValue = defaults.string(forKey: Keys.newDocumentMode) ?? EditorMode.write.rawValue
         newDocumentMode = EditorMode(rawValue: newModeValue) ?? .write
+
+        if let data = defaults.data(forKey: Keys.modeShortcuts),
+           let decoded = try? JSONDecoder().decode(ModeShortcutConfiguration.self, from: data),
+           ModeShortcutValidator.isValidConfiguration(decoded) {
+            modeShortcuts = decoded
+        } else {
+            modeShortcuts = .default
+        }
 
         if defaults.object(forKey: Keys.showsOutlineByDefault) == nil {
             showsOutlineByDefault = true
@@ -174,6 +189,23 @@ final class AppSettings: ObservableObject {
         isFileBacked ? defaultMode : newDocumentMode
     }
 
+    func updateModeShortcut(
+        _ shortcut: ModeKeyboardShortcut,
+        for mode: EditorMode
+    ) -> ModeShortcutValidationError? {
+        var next = modeShortcuts
+        next[mode] = shortcut
+        if let error = ModeShortcutValidator.validate(shortcut, for: mode, in: next) {
+            return error
+        }
+        modeShortcuts = next
+        return nil
+    }
+
+    func resetModeShortcutsToDefaults() {
+        modeShortcuts = .default
+    }
+
     var effectiveLanguage: AppLanguage {
         if language != .system {
             return language
@@ -186,12 +218,37 @@ final class AppSettings: ObservableObject {
     func text(_ key: L10nKey) -> String {
         L10n.text(key, language: effectiveLanguage)
     }
+
+    func modeLabel(_ mode: EditorMode) -> String {
+        switch mode {
+        case .write:
+            text(.write)
+        case .read:
+            text(.read)
+        case .split:
+            text(.sideBySide)
+        }
+    }
+
+    func modeShortcutValidationMessage(_ error: ModeShortcutValidationError) -> String {
+        switch error {
+        case .malformed:
+            text(.shortcutMalformed)
+        case let .duplicate(existingMode):
+            String(format: text(.shortcutDuplicate), modeLabel(existingMode))
+        case let .appCommand(commandName):
+            String(format: text(.shortcutAppCommandConflict), commandName)
+        case let .systemReserved(reason):
+            String(format: text(.shortcutSystemConflict), reason)
+        }
+    }
 }
 
 private enum Keys {
     static let language = "MD2.Language"
     static let defaultMode = "MD2.DefaultMode"
     static let newDocumentMode = "MD2.NewDocumentMode"
+    static let modeShortcuts = "MD2.ModeShortcuts"
     static let showsOutlineByDefault = "MD2.ShowsOutlineByDefault"
     static let opensBlankDocumentOnLaunch = "MD2.OpensBlankDocumentOnLaunch"
     static let attachmentFolder = "MD2.AttachmentFolder"
@@ -259,6 +316,14 @@ enum L10nKey: String {
     case chineseSimplified
     case defaultOpenMode
     case newDocumentMode
+    case modeShortcuts
+    case resetModeShortcuts
+    case clickToRecordShortcut
+    case recordingShortcut
+    case shortcutMalformed
+    case shortcutDuplicate
+    case shortcutAppCommandConflict
+    case shortcutSystemConflict
     case showOutlineByDefault
     case general
     case preferences
@@ -363,6 +428,14 @@ enum L10n {
         .chineseSimplified: "Simplified Chinese",
         .defaultOpenMode: "Mode When Opening a File",
         .newDocumentMode: "Mode for New Documents",
+        .modeShortcuts: "Mode Shortcuts",
+        .resetModeShortcuts: "Reset Shortcuts",
+        .clickToRecordShortcut: "Click to record a shortcut",
+        .recordingShortcut: "Press shortcut...",
+        .shortcutMalformed: "Use a real key with at least one modifier.",
+        .shortcutDuplicate: "Shortcut is already assigned to %@.",
+        .shortcutAppCommandConflict: "Shortcut is already used by %@.",
+        .shortcutSystemConflict: "Shortcut conflicts with macOS %@.",
         .showOutlineByDefault: "Show Outline by Default",
         .general: "General",
         .preferences: "Settings",
@@ -457,6 +530,14 @@ enum L10n {
         .chineseSimplified: "简体中文",
         .defaultOpenMode: "打开文件时的模式",
         .newDocumentMode: "新建文档时的模式",
+        .modeShortcuts: "模式快捷键",
+        .resetModeShortcuts: "重置快捷键",
+        .clickToRecordShortcut: "点击录制快捷键",
+        .recordingShortcut: "按下快捷键...",
+        .shortcutMalformed: "请使用真实按键，并至少包含一个修饰键。",
+        .shortcutDuplicate: "该快捷键已分配给 %@。",
+        .shortcutAppCommandConflict: "该快捷键已被 %@ 使用。",
+        .shortcutSystemConflict: "该快捷键与 macOS %@ 冲突。",
         .showOutlineByDefault: "默认显示大纲",
         .general: "通用",
         .preferences: "设置",

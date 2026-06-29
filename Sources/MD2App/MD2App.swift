@@ -69,6 +69,26 @@ struct MD2Application: App {
                 .keyboardShortcut("p")
             }
 
+            CommandMenu(appDelegate.settings.text(.mode)) {
+                let editShortcut = appDelegate.settings.modeShortcuts[.write]
+                Button(appDelegate.settings.text(.write)) {
+                    appDelegate.currentDocumentStore?.requestMode(.write)
+                }
+                .keyboardShortcut(editShortcut.keyEquivalent, modifiers: editShortcut.modifiers.eventModifiers)
+
+                let previewShortcut = appDelegate.settings.modeShortcuts[.read]
+                Button(appDelegate.settings.text(.read)) {
+                    appDelegate.currentDocumentStore?.requestMode(.read)
+                }
+                .keyboardShortcut(previewShortcut.keyEquivalent, modifiers: previewShortcut.modifiers.eventModifiers)
+
+                let splitShortcut = appDelegate.settings.modeShortcuts[.split]
+                Button(appDelegate.settings.text(.sideBySide)) {
+                    appDelegate.currentDocumentStore?.requestMode(.split)
+                }
+                .keyboardShortcut(splitShortcut.keyEquivalent, modifiers: splitShortcut.modifiers.eventModifiers)
+            }
+
             CommandGroup(after: .textEditing) {
                 Divider()
                 Button(appDelegate.settings.text(.find)) {

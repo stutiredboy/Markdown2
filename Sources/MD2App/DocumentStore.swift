@@ -60,6 +60,9 @@ final class DocumentStore: ObservableObject {
     /// Set by Find menu commands; observed by `ContentView`, which dispatches the
     /// action to whichever surface (editor or preview) is currently active.
     @Published var findCommand: FindCommand?
+    /// Set by Mode menu commands; observed by `ContentView`, which dispatches the
+    /// action through the same viewport-preserving transition path as the toolbar.
+    @Published var modeCommand: ModeCommand?
 
     private let renderer = MarkdownRenderer()
     /// Retains the in-flight PDF export for its (asynchronous) lifetime; cleared
@@ -164,6 +167,10 @@ final class DocumentStore: ObservableObject {
         } else {
             return presentSaveLocationAndWrite()
         }
+    }
+
+    func requestMode(_ mode: EditorMode) {
+        modeCommand = ModeCommand(mode)
     }
 
     /// Prompts for a destination and writes there. Backs the first save of an

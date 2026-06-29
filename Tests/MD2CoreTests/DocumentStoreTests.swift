@@ -31,6 +31,19 @@ struct DocumentStoreTests {
         #expect(store.isReusableEmptyDocument)
     }
 
+    @Test func requestModePublishesFreshModeCommands() {
+        let store = DocumentStore()
+
+        store.requestMode(.read)
+        let first = store.modeCommand
+        store.requestMode(.read)
+        let second = store.modeCommand
+
+        #expect(first?.mode == .read)
+        #expect(second?.mode == .read)
+        #expect(first != second)
+    }
+
     @Test func renderedDocumentTracksTextChanges() {
         let store = DocumentStore()
         store.text = "# Heading One\n\nSome words here."

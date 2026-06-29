@@ -260,6 +260,69 @@ struct MarkdownRendererTests {
         #expect(html.contains("<ol>\n<li><strong>first point</strong>\n<ul>\n<li>supporting detail</li>\n<li>another detail</li>\n</ul></li>\n<li><strong>second point</strong>\n<ul>\n<li>supporting detail</li>\n</ul></li>\n</ol>"))
     }
 
+    @Test func tableIndentedUnderOrderedItemRendersInsideItem() {
+        // The marker is indented three columns and its body six, so the table
+        // sits at the item's content column. It must render as the item's table
+        // body — not leak to the top level where 4+ space indentation would make
+        // it an indented code block (the orchestrator-notes bug).
+        let markdown = [
+            "   2. 基本信息采集",
+            "",
+            "      采集的信息为：",
+            "",
+            "      |SQL 字段|写入字段|",
+            "      | ---------- | ---------- |",
+            "      |`@@global.hostname`|`mysqlHostname`|",
+            "",
+            "   3. binlog 坐标采集",
+        ].joined(separator: "\n")
+
+        let html = MarkdownRenderer().render(markdown).html.withoutSourceLineMetadata
+
+        #expect(html.contains("<table>"))
+        #expect(html.contains("<td style=\"text-align:left\"><code>@@global.hostname</code></td>"))
+        // The table header must not be swallowed into a <pre> code block.
+        #expect(!html.contains("<pre><code>"))
+        #expect(!html.contains("|SQL 字段|"))
+        // Both numbered items stay in one continuous ordered list.
+        #expect(html.contains("<li>基本信息采集"))
+        #expect(html.contains("<li>binlog 坐标采集</li>"))
+        #expect(html.contains("<ol>") && !html.contains("</ol>\n<ol>"))
+    }
+
+    @Test func paragraphAndCodeBlockNestUnderListItem() {
+        let markdown = """
+        - step one
+
+          A follow-up paragraph.
+
+          ```swift
+          let x = 1
+          ```
+        - step two
+        """
+
+        let html = MarkdownRenderer().render(markdown).html.withoutSourceLineMetadata
+
+        // The item's block body renders inside the <li>: a paragraph and a
+        // fenced code block, both nested rather than leaked to the top level.
+        #expect(html.contains("<li>step one\n<p>A follow-up paragraph.</p>"))
+        #expect(html.contains("<code class=\"language-swift\">") || html.contains("<pre"))
+        #expect(html.contains("<li>step two</li>"))
+    }
+
+    @Test func shortIndentedLineStaysSiblingParagraph() {
+        // CommonMark example 255: ` two` is indented one space — short of the
+        // `- ` content column (two) — so it is a separate paragraph, not body.
+        let markdown = "- one\n\n two"
+
+        let html = MarkdownRenderer().render(markdown).html.withoutSourceLineMetadata
+
+        #expect(html.contains("<ul>\n<li>one</li>\n</ul>"))
+        #expect(html.contains("<p>two</p>"))
+        #expect(!html.contains("<li>one\n<p>two</p>"))
+    }
+
     @Test func standaloneIndentedDashRendersAsCodeNotList() {
         let markdown = """
         Some paragraph.

@@ -157,6 +157,9 @@ struct ContentView: View {
         .onChange(of: document.findCommand) { _, command in
             handleFindCommand(command)
         }
+        .onChange(of: document.modeCommand) { _, command in
+            handleModeCommand(command)
+        }
         .toolbar {
             ToolbarItemGroup(placement: .navigation) {
                 Button {
@@ -254,6 +257,11 @@ struct ContentView: View {
 
     private var minimumWindowWidth: CGFloat {
         DocumentLayoutMetrics.minimumWindowWidth(mode: mode, showsOutline: showsOutline)
+    }
+
+    private func handleModeCommand(_ command: ModeCommand?) {
+        guard let command else { return }
+        requestMode(command.mode)
     }
 
     /// Dispatches a find action from the menu to the active surface.

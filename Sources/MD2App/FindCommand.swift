@@ -35,6 +35,18 @@ struct FindReplaceCommand: Equatable {
     }
 }
 
+/// A presentation-mode action relayed from app commands to the active document
+/// view. Each instance carries a fresh token so repeating the same command still
+/// reaches SwiftUI's `onChange` observation.
+struct ModeCommand: Equatable {
+    let mode: EditorMode
+    let token = UUID()
+
+    init(_ mode: EditorMode) {
+        self.mode = mode
+    }
+}
+
 extension FindCommand.Action {
     /// Maps a standard Find menu item (whose tag carries an `NSTextFinder.Action`)
     /// to a find action. Shared by the editor and preview surfaces so both route

@@ -6,6 +6,8 @@ struct SettingsView: View {
     @ObservedObject var settings: AppSettings
     /// Invoked when the user confirms restarting to apply a language change.
     var onRequestRelaunch: () -> Void = {}
+    @State private var recordingShortcutMode: EditorMode?
+    @State private var shortcutValidation: ShortcutValidationNotice?
 
     var body: some View {
         Form {
@@ -30,6 +32,8 @@ struct SettingsView: View {
                     Text(settings.text(.read)).tag(EditorMode.read)
                 }
                 .pickerStyle(.segmented)
+
+                modeShortcutSettings
 
                 Toggle(settings.text(.showOutlineByDefault), isOn: $settings.showsOutlineByDefault)
 
@@ -71,6 +75,33 @@ struct SettingsView: View {
         }
     }
 
+    private var modeShortcutSettings: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(settings.text(.modeShortcuts))
+                Spacer()
+                Button(settings.text(.resetModeShortcuts)) {
+                    settings.resetModeShortcutsToDefaults()
+                    recordingShortcutMode = nil
+                    shortcutValidation = nil
+                }
+            }
+
+            ForEach([EditorMode.write, .read, .split]) { mode in
+                ModeShortcutRecorderRow(
+                    settings: settings,
+                    mode: mode,
+                    recordingShortcutMode: $recordingShortcutMode,
+                    shortcutValidation: $shortcutValidation
+                )
+            }
+
+            Text(settings.text(.clickToRecordShortcut))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
     /// Asks whether to restart now so the menu bar picks up the new language.
     /// The custom command items already updated live; only the standard AppKit
     /// menus need the relaunch.
@@ -83,6 +114,111 @@ struct SettingsView: View {
         if alert.runModal() == .alertFirstButtonReturn {
             onRequestRelaunch()
         }
+    }
+}
+
+private struct ShortcutValidationNotice: Equatable {
+    var mode: EditorMode
+    var message: String
+}
+
+private struct ModeShortcutRecorderRow: View {
+    @ObservedObject var settings: AppSettings
+    var mode: EditorMode
+    @Binding var recordingShortcutMode: EditorMode?
+    @Binding var shortcutValidation: ShortcutValidationNotice?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(settings.modeLabel(mode))
+                Spacer()
+                Button {
+                    recordingShortcutMode = mode
+                    shortcutValidation = nil
+                } label: {
+                    Text(isRecording ? settings.text(.recordingShortcut) : settings.modeShortcuts[mode].displayString)
+                        .frame(minWidth: 150)
+                }
+                .help(settings.text(.clickToRecordShortcut))
+                .background(
+                    ShortcutCaptureView(isActive: isRecording) { shortcut in
+                        if let error = settings.updateModeShortcut(shortcut, for: mode) {
+                            shortcutValidation = ShortcutValidationNotice(
+                                mode: mode,
+                                message: settings.modeShortcutValidationMessage(error)
+                            )
+                        } else {
+                            shortcutValidation = nil
+                        }
+                        recordingShortcutMode = nil
+                    }
+                    .frame(width: 0, height: 0)
+                )
+            }
+
+            if shortcutValidation?.mode == mode, let message = shortcutValidation?.message {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    private var isRecording: Bool {
+        recordingShortcutMode == mode
+    }
+}
+
+private struct ShortcutCaptureView: NSViewRepresentable {
+    var isActive: Bool
+    var onShortcut: (ModeKeyboardShortcut) -> Void
+
+    func makeNSView(context: Context) -> ShortcutCaptureNSView {
+        let view = ShortcutCaptureNSView()
+        view.onShortcut = onShortcut
+        return view
+    }
+
+    func updateNSView(_ nsView: ShortcutCaptureNSView, context: Context) {
+        nsView.isActive = isActive
+        nsView.onShortcut = onShortcut
+        guard isActive else { return }
+        DispatchQueue.main.async {
+            nsView.window?.makeFirstResponder(nsView)
+        }
+    }
+}
+
+private final class ShortcutCaptureNSView: NSView {
+    var onShortcut: ((ModeKeyboardShortcut) -> Void)?
+    var isActive = false
+
+    override var acceptsFirstResponder: Bool {
+        true
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard isActive else {
+            super.keyDown(with: event)
+            return
+        }
+        guard let shortcut = ModeKeyboardShortcut(event: event) else {
+            super.keyDown(with: event)
+            return
+        }
+        onShortcut?(shortcut)
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard isActive else {
+            return false
+        }
+        guard let shortcut = ModeKeyboardShortcut(event: event) else {
+            return false
+        }
+        onShortcut?(shortcut)
+        return true
     }
 }
 
