@@ -62,6 +62,21 @@ struct PreviewReaderUXTests {
         #expect(DocumentLayoutMetrics.minimumWindowWidth(mode: .split, showsOutline: true) == 1046)
     }
 
+    @Test func splitEditSyncGateSuppressesPreviewDrivenEditorSyncDuringEditWindow() {
+        let editAt = Date(timeIntervalSinceReferenceDate: 1_000)
+        let deadline = SplitEditSyncGate.suppressionDeadline(afterEditAt: editAt)
+
+        #expect(abs(deadline.timeIntervalSince(editAt) - SplitEditSyncGate.editSuppressionWindow) < 0.001)
+        #expect(!SplitEditSyncGate.allowsPreviewDrivenEditorSync(
+            now: editAt.addingTimeInterval(SplitEditSyncGate.editSuppressionWindow - 0.01),
+            suppressUntil: deadline
+        ))
+        #expect(SplitEditSyncGate.allowsPreviewDrivenEditorSync(
+            now: deadline,
+            suppressUntil: deadline
+        ))
+    }
+
     @Test func outlineKeyboardNavigationSelectsPredictably() {
         let headings = [
             Heading(id: "intro", level: 1, title: "Intro", line: 1),

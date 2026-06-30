@@ -557,6 +557,30 @@ public struct MarkdownRenderer: Sendable {
                 }
             }
 
+            if !items.isEmpty, isStandaloneImageLine(lines[index]) {
+                var continuation: [String] = []
+                var lookahead = index
+                while lookahead < lines.count {
+                    let candidate = lines[lookahead]
+                    if candidate.trimmedMarkdownLine.isEmpty {
+                        continuation.append("")
+                        lookahead += 1
+                        continue
+                    }
+                    guard isStandaloneImageLine(candidate) else { break }
+                    continuation.append(candidate)
+                    lookahead += 1
+                }
+
+                if lookahead < lines.count,
+                   let nextItem = parseListItem(lines[lookahead]),
+                   nextItem.indent >= items[items.count - 1].indent {
+                    items[items.count - 1].continuation.append(contentsOf: continuation)
+                    index = lookahead
+                    continue
+                }
+            }
+
             break
         }
 
@@ -663,36 +687,39 @@ public struct MarkdownRenderer: Sendable {
         return String(rest)
     }
 
-    /// Derives each item's nesting level from indentation. A deeper level opens
-    /// only when an item is indented at least three columns past the indentation
-    /// at which the enclosing level began; a smaller increase keeps the current
-    /// level, and dropping below a level's opening indent closes that level.
-    ///
-    /// Three columns is the smallest step that keeps a two-space indent a sibling
-    /// (preserving the existing convention) while letting bullets aligned to an
-    /// ordered marker's content column nest (`1. ` is three columns, `10. ` four),
-    /// alongside the established four-space / one-tab step.
+    /// Derives each item's nesting level from indentation. A child list starts
+    /// when its marker reaches the previous open item's content column: two
+    /// spaces under `- `, three under `1. `, four under `10. `, etc. Consecutive
+    /// siblings at the child indent stay on that child level because the nearest
+    /// ancestor whose content column they still reach remains on the stack.
     private func nestingLevels(for items: [ListItem]) -> [Int] {
-        let nestStep = 3
-        // Stack of the indentation at which each currently-open level began; the
-        // stack depth minus one is the current nesting level.
-        var levelIndents: [Int] = []
+        struct OpenLevel {
+            var contentIndent: Int
+        }
+
+        var stack: [OpenLevel] = []
         var levels: [Int] = []
 
         for item in items {
-            while let top = levelIndents.last, item.indent < top {
-                levelIndents.removeLast()
-            }
-
-            if let top = levelIndents.last {
-                if item.indent >= top + nestStep {
-                    levelIndents.append(item.indent)
-                }
+            let level: Int
+            if let parentIndex = stack.lastIndex(where: { item.indent >= $0.contentIndent }) {
+                level = parentIndex + 1
             } else {
-                levelIndents.append(item.indent)
+                level = 0
             }
 
-            levels.append(levelIndents.count - 1)
+            if level < stack.count {
+                stack.removeSubrange(level..<stack.count)
+            }
+
+            let openLevel = OpenLevel(contentIndent: item.contentIndent)
+            if level == stack.count {
+                stack.append(openLevel)
+            } else {
+                stack[level] = openLevel
+            }
+
+            levels.append(level)
         }
 
         return levels
@@ -1015,6 +1042,11 @@ public struct MarkdownRenderer: Sendable {
             line: sourceLine,
             lineIndex: lineIndex
         )
+    }
+
+    private func isStandaloneImageLine(_ line: String) -> Bool {
+        let trimmed = line.trimmedMarkdownLine
+        return firstMatch(in: trimmed, pattern: #"^!\[[^\]]*\]\([^)]*\)(?:\{[^}]*\})?$"#) != nil
     }
 
     /// Column at which a list item's content begins: the marker indent, plus the
@@ -1911,6 +1943,10 @@ public struct MarkdownRenderer: Sendable {
         .task-list {
             list-style: none;
             padding-left: 0;
+        }
+
+        li > .task-list {
+            padding-left: 1.6em;
         }
 
         .task-list input {

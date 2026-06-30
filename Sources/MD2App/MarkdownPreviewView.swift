@@ -1168,7 +1168,6 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// Records a scroll target and applies it now if the page has finished
         /// loading, otherwise defers it to `didFinish`.
         func setPendingScroll(_ anchor: ModeSwitchAnchor, in webView: WKWebView) {
-            NSLog("MD2DBG preview setPendingScroll isLoaded=\(isLoaded) anchor=\(anchor)")
             pendingScroll = anchor
             if isLoaded {
                 // Apply now, but KEEP the target: entering Side by Side rebuilds
@@ -1181,7 +1180,6 @@ struct MarkdownPreviewView: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             isLoaded = true
-            NSLog("MD2DBG preview didFinish pendingScroll=\(String(describing: pendingScroll))")
             applyFrontMatterVisibility(in: webView)
             applyPendingScroll(in: webView, consume: true)
             applyPendingFind(in: webView)
@@ -1198,7 +1196,6 @@ struct MarkdownPreviewView: NSViewRepresentable {
 
             switch anchor {
             case let .viewport(viewport):
-                NSLog("MD2DBG preview applyPendingScroll.viewport line=\(viewport.sourceLine ?? -1) frac=\(viewport.scrollFraction)")
                 webView.evaluateJavaScript(
                     "window.__md2ScrollToViewportAnchor(\(Self.viewportAnchorJS(viewport)));"
                 )

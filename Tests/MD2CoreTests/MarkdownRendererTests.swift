@@ -163,16 +163,45 @@ struct MarkdownRendererTests {
         #expect(document.html.contains("<li>parent\n<ul>\n<li>child</li>\n</ul></li>"))
     }
 
-    @Test func twoSpaceIndentedListItemStaysAtCurrentFourSpaceLevel() {
+    @Test func twoSpaceIndentedUnorderedListItemNestsUnderParent() {
         let markdown = """
         - parent
-          - sibling
+          - child
         """
 
         let document = MarkdownRenderer().render(markdown)
 
-        #expect(document.html.contains("<li>parent</li>\n<li>sibling</li>"))
-        #expect(!document.html.contains("<li>parent\n<ul>"))
+        #expect(document.html.contains("<li>parent\n<ul>\n<li>child</li>\n</ul></li>"))
+    }
+
+    @Test func monthlyReportTwoSpaceNestedBulletsStayUnderBoldParents() {
+        let markdown = """
+        - **重点故障与隐患**：
+          - 5月18日及6月18日，东冠 M02（9.5 年）与滨安 M01（7.8 年）两台 H3C 核心交换机相继出现管理平面“假死”与配置保存失败故障。
+        - **告警与工单**：
+          - 5月人工处理 L1/L2 告警共 **5,586 次**
+        """
+
+        let html = MarkdownRenderer().render(markdown).html.withoutSourceLineMetadata
+
+        #expect(html.contains("<ul>\n<li><strong>重点故障与隐患</strong>：\n<ul>"))
+        #expect(html.contains("<li>5月18日及6月18日，东冠 M02"))
+        #expect(html.contains("</ul></li>\n<li><strong>告警与工单</strong>：\n<ul>"))
+        #expect(html.contains("<li>5月人工处理 L1/L2 告警共 <strong>5,586 次</strong></li>"))
+    }
+
+    @Test func unindentedImagesBetweenNestedSiblingItemsDoNotBreakChildList() {
+        let markdown = """
+        - parent
+          - first child
+        ![](first.png)
+        ![](second.png)
+          - second child
+        """
+
+        let html = MarkdownRenderer().render(markdown).html.withoutSourceLineMetadata
+
+        #expect(html.contains("<li>parent\n<ul>\n<li>first child\n<p><img src=\"first.png\" alt=\"\"><br><img src=\"second.png\" alt=\"\"></p></li>\n<li>second child</li>\n</ul></li>"))
     }
 
     @Test func dedentClosesNestedListAndContinuesParent() {
@@ -242,6 +271,18 @@ struct MarkdownRendererTests {
         #expect(html.contains("<ol>\n<li>first\n<ul>\n<li>detail a</li>\n<li>detail b</li>\n</ul></li>\n<li>second</li>\n</ol>"))
     }
 
+    @Test func markerAlignedBulletsNestUnderTwoDigitOrderedItem() {
+        let markdown = """
+        10. first
+            - detail a
+        11. second
+        """
+
+        let html = MarkdownRenderer().render(markdown).html.withoutSourceLineMetadata
+
+        #expect(html.contains("<ol>\n<li>first\n<ul>\n<li>detail a</li>\n</ul></li>\n<li>second</li>\n</ol>"))
+    }
+
     @Test func mixedOrderedListWithBlankLinesAndNestedBulletsStaysOneList() {
         let markdown = """
         1. **first point**
@@ -309,6 +350,19 @@ struct MarkdownRendererTests {
         #expect(html.contains("<li>step one\n<p>A follow-up paragraph.</p>"))
         #expect(html.contains("<code class=\"language-swift\">") || html.contains("<pre"))
         #expect(html.contains("<li>step two</li>"))
+    }
+
+    @Test func twoSpaceIndentedNestedTaskAndOrderedListsKeepStructure() {
+        let markdown = """
+        - parent
+          - [x] done
+          1. step one
+          2. step two
+        """
+
+        let html = MarkdownRenderer().render(markdown).html.withoutSourceLineMetadata
+
+        #expect(html.contains("<ul>\n<li>parent\n<ul class=\"task-list\">\n<li><input type=\"checkbox\" checked> done</li>\n</ul>\n<ol>\n<li>step one</li>\n<li>step two</li>\n</ol></li>\n</ul>"))
     }
 
     @Test func shortIndentedLineStaysSiblingParagraph() {

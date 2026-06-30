@@ -26,6 +26,18 @@ enum DocumentLayoutMetrics {
     }
 }
 
+enum SplitEditSyncGate {
+    static let editSuppressionWindow: TimeInterval = 0.85
+
+    static func suppressionDeadline(afterEditAt date: Date) -> Date {
+        date.addingTimeInterval(editSuppressionWindow)
+    }
+
+    static func allowsPreviewDrivenEditorSync(now: Date, suppressUntil: Date) -> Bool {
+        now >= suppressUntil
+    }
+}
+
 enum OutlineMoveDirection {
     case up
     case down
@@ -397,7 +409,6 @@ struct ContentView: View {
             isCapturingPreviewAnchor = true
             previewViewport.currentAnchor { fresh in
                 isCapturingPreviewAnchor = false
-                NSLog("MD2DBG capture fresh=\(fresh?.sourceLine ?? -1) freshFrac=\(fresh?.scrollFraction ?? -1) cachedPreviewAnchor=\(previewAnchor?.sourceLine ?? -1) cachedFrac=\(previewAnchor?.scrollFraction ?? -1)")
                 guard mode == .read else { return }
                 deliver(anchor: previewAnchorForEditor(fresh: fresh), to: newMode)
             }
@@ -410,7 +421,6 @@ struct ContentView: View {
     /// own anchor binding: the outgoing surface's final `updateNSView` pass
     /// must not be able to consume the incoming surface's target.
     private func deliver(anchor: ViewportAnchor, to newMode: EditorMode) {
-        NSLog("MD2DBG deliver to=\(newMode) line=\(anchor.sourceLine ?? -1) endLine=\(anchor.sourceEndLine ?? -1) frac=\(anchor.scrollFraction) heading=\(anchor.fallbackHeadingID ?? "nil") progress=\(anchor.intraBlockProgress)")
         document.jumpLine = nil
         document.jumpHeadingID = nil
         document.jumpFraction = nil
@@ -587,7 +597,6 @@ struct ContentView: View {
                 viewportReader: previewViewport,
                 onAnchorChange: { anchor, isUserInitiated in
                     previewAnchor = anchor
-                    NSLog("MD2DBG onAnchorChange line=\(anchor.sourceLine ?? -1) frac=\(anchor.scrollFraction) user=\(isUserInitiated) inSplit=\(inSplit)")
                     if inSplit, isUserInitiated { syncPreviewToEditor(anchor: anchor) }
                 },
                 onEnterEdit: { if !inSplit { requestMode(.write) } },
@@ -645,7 +654,6 @@ struct ContentView: View {
         markSyncSource(.editor)
         focusedPane = .editor
         let fractionalLine = editorViewport.currentTopFractionalLine() ?? Double(line)
-        NSLog("MD2DBG E2P line=\(line) fractionalLine=\(fractionalLine)")
         previewViewport.scrollToFollowLine(fractionalLine)
     }
 
@@ -653,10 +661,12 @@ struct ContentView: View {
     /// lightweight, continuous follow. Ignored while the preview is itself
     /// following the editor.
     private func syncPreviewToEditor(anchor: ViewportAnchor) {
-        NSLog("MD2DBG P2E? line=\(anchor.sourceLine ?? -1) src=\(String(describing: splitSyncSource)) frac=\(anchor.scrollFraction)")
         guard mode == .split,
               splitSyncSource != .editor,
-              Date() >= suppressPreviewDrivenEditorSyncUntil else { return }
+              SplitEditSyncGate.allowsPreviewDrivenEditorSync(
+                now: Date(),
+                suppressUntil: suppressPreviewDrivenEditorSyncUntil
+              ) else { return }
         markSyncSource(.preview)
         focusedPane = .preview
         editorViewport.scrollToFollowLine(fractionalSourceLine(from: anchor))
@@ -674,8 +684,8 @@ struct ContentView: View {
     private func markEditorEditInSplit(caretLine: Int) {
         guard mode == .split else { return }
         focusedPane = .editor
-        suppressPreviewDrivenEditorSyncUntil = Date().addingTimeInterval(0.85)
-        markSyncSource(.editor, cooldown: 0.85)
+        suppressPreviewDrivenEditorSyncUntil = SplitEditSyncGate.suppressionDeadline(afterEditAt: Date())
+        markSyncSource(.editor, cooldown: SplitEditSyncGate.editSuppressionWindow)
         previewViewport.setPendingEditFollow(caretLine)
     }
 

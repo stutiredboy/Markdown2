@@ -1,18 +1,4 @@
-## Purpose
-
-Define how the renderer converts Markdown list syntax — flat, nested, ordered, unordered, task, and mixed-kind lists — into structured HTML whose nesting and visible indentation reflect each item's source indentation.
-
-## Requirements
-### Requirement: Flat list rendering
-The system SHALL render a run of consecutive list lines of a single kind as one HTML list: lines beginning with `-`, `*`, or `+` (followed by a space) as an unordered list (`<ul>`), and lines beginning with a number followed by `.` or `)` and a space as an ordered list (`<ol>`). Each list line SHALL become one `<li>` whose content is the item text rendered with inline Markdown formatting.
-
-#### Scenario: Unordered list renders as ul
-- **WHEN** the source contains the lines `- 电缆` and `- 配电箱`
-- **THEN** the preview renders a single `<ul>` containing two `<li>` items with text `电缆` and `配电箱`
-
-#### Scenario: Ordered list renders as ol
-- **WHEN** the source contains the lines `1. first` and `2. second`
-- **THEN** the preview renders a single `<ol>` containing two `<li>` items
+## MODIFIED Requirements
 
 ### Requirement: Nested list rendering by indentation
 The system SHALL determine each list item's nesting level from its leading-whitespace indentation relative to the content column of the nearest preceding list item. A list item indented to or beyond the preceding item's content column SHALL render as a child list nested inside that preceding item's `<li>`. Returning to a shallower indentation SHALL close the deeper child list(s) and continue the appropriate ancestor list. The content column is the parent marker indentation plus marker width: two columns for an unordered marker such as `- `, three columns for an ordered marker such as `1. `, and four columns for an ordered marker such as `10. `. A tab and four spaces SHALL satisfy nesting under any one-, two-, or three-column marker. Nested ordered, unordered, mixed-kind, and task lists SHALL remain visibly indented from their parent item in the rendered preview.
@@ -85,18 +71,6 @@ The system SHALL determine each list item's nesting level from its leading-white
 - **THEN** the preview renders a single `<ol>` whose first item contains a nested `<ul>` with `detail a`
 - **AND** the `second` item remains a sibling ordered item
 
-### Requirement: Nested list lines are not treated as indented code
-The system SHALL recognize a four-space- or tab-indented line that is itself a list item as a nested list item while a list is being parsed, rather than treating it as an indented code block. Indented code handling SHALL continue to apply to indented lines that are not part of a surrounding list.
-
-#### Scenario: Four-space indented list item nests instead of becoming code
-- **WHEN** a `- parent` line is immediately followed by a `    - child` line indented with four spaces
-- **THEN** the `child` line renders as a nested list item under `parent`
-- **AND** the literal text `- child` does not appear inside a `<pre>`/`<code>` code block
-
-#### Scenario: Indented code outside a list is unaffected
-- **WHEN** a four-space-indented line that is not a list item appears outside any list (for example after a blank line following a paragraph)
-- **THEN** it is still rendered as an indented code block
-
 ### Requirement: Task list and mixed-kind nesting preservation
 The system SHALL preserve task-list rendering and mixed ordered/unordered nesting. A list item written as `- [ ]` or `- [x]` SHALL render with an enabled (clickable) checkbox reflecting the checked state, including when nested. Each task checkbox SHALL carry a `data-md2-task-line` attribute holding the 1-based source line of its list item, absolute with respect to the whole document (including items rendered inside blockquotes). A nested child list MAY be of a different kind (ordered vs. unordered) than its parent. Task-list marker styling SHALL NOT collapse child-list indentation.
 
@@ -117,38 +91,3 @@ The system SHALL preserve task-list rendering and mixed ordered/unordered nestin
 - **WHEN** a `- parent` item is followed by `  1. step one` and `  2. step two`
 - **THEN** the `parent` item contains a nested `<ol>` with two items
 - **AND** the nested ordered list is visually indented from the parent item
-
-### Requirement: Loose-list continuity across blank lines
-The system SHALL treat a blank line between list items as a separator within one list rather than a list terminator, provided the list resumes: when a blank line is followed (after any number of consecutive blank lines) by another list item, the items before and after the blank line SHALL belong to the same list and an ordered list's numbering SHALL continue without resetting. A blank line followed by a non-list line SHALL still end the list. Items grouped across a blank line SHALL render with the same tight `<li>` content as items with no intervening blank line (no `<p>` wrapping is introduced).
-
-#### Scenario: Blank line between ordered items keeps continuous numbering
-- **WHEN** the source contains:
-  ```
-  1. first
-
-  2. second
-
-  3. third
-  ```
-- **THEN** the preview renders a single `<ol>` containing three `<li>` items in order `first`, `second`, `third`
-- **AND** the rendered markers are `1.`, `2.`, `3.` (the count does not reset to `1` for every item)
-
-#### Scenario: Blank line before a non-list line ends the list
-- **WHEN** an ordered list item is followed by a blank line and then a paragraph line that is not a list item
-- **THEN** the list ends at the item before the blank line
-- **AND** the following text renders as a separate paragraph
-
-#### Scenario: Mixed ordered list with blank-line separation and nested bullets
-- **WHEN** the source contains:
-  ```
-  1. **first point**
-     - supporting detail
-     - another detail
-
-  2. **second point**
-     - supporting detail
-  ```
-- **THEN** the preview renders a single `<ol>` whose items are numbered `1.` and `2.`
-- **AND** each ordered item contains a nested `<ul>` with its bullet details
-- **AND** no ordered item's marker resets to `1.`
-
