@@ -68,9 +68,16 @@ struct MarkdownPreviewView: NSViewRepresentable {
     var onAnchorChange: (_ anchor: ViewportAnchor, _ isUserInitiated: Bool) -> Void = { _, _ in }
     /// Called on a Cmd+double-click, requesting a switch to edit mode.
     var onEnterEdit: () -> Void = {}
+    /// Called when the user presses Esc in the preview page. Returns whether
+    /// the key was consumed (a visible find bar was dismissed); an unconsumed
+    /// Esc stays available to the responder chain and the system.
+    var onEscape: () -> Bool = { false }
     /// Called when a task checkbox is clicked, carrying the 1-based source
     /// line to rewrite and the absolute state the checkbox now shows.
     var onToggleTask: (_ line: Int, _ checked: Bool) -> Void = { _, _ in }
+    /// Called when the user clicks a link to a local Markdown file, so the app
+    /// can open it in a document window (the preview itself never navigates).
+    var onOpenMarkdownLink: (_ url: URL) -> Void = { _ in }
     /// The current find query; running search whenever it changes.
     @Binding var findQuery: String
     /// A next/previous navigation request; consumed (set to nil) once applied.
@@ -603,8 +610,12 @@ struct MarkdownPreviewView: NSViewRepresentable {
         webView.onFindAction = { action in
             context.coordinator.onFindShortcut(action)
         }
-        webView.allowsBackForwardNavigationGestures = true
+        webView.onEscape = onEscape
+        // The link policy below never lets the page navigate away from the
+        // document, so there is no history for a swipe to traverse.
+        webView.allowsBackForwardNavigationGestures = false
         webView.navigationDelegate = context.coordinator
+        webView.uiDelegate = context.coordinator
         webView.setValue(false, forKey: "drawsBackground")
 
         let coordinator = context.coordinator
@@ -635,6 +646,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.onEnterEdit = onEnterEdit
         context.coordinator.onToggleTask = onToggleTask
+        context.coordinator.onOpenMarkdownLink = onOpenMarkdownLink
         context.coordinator.onAnchorChange = onAnchorChange
         context.coordinator.onFindShortcut = onFindShortcut
         context.coordinator.onFindResult = onFindResult
@@ -644,6 +656,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             previewWebView.onFindAction = { action in
                 context.coordinator.onFindShortcut(action)
             }
+            previewWebView.onEscape = onEscape
         }
 
         let coordinator = context.coordinator
@@ -829,6 +842,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         let coordinator = Coordinator()
         coordinator.onEnterEdit = onEnterEdit
         coordinator.onToggleTask = onToggleTask
+        coordinator.onOpenMarkdownLink = onOpenMarkdownLink
         return coordinator
     }
 
@@ -863,8 +877,14 @@ struct MarkdownPreviewView: NSViewRepresentable {
             // to a preview-local scheme whose handler serves only the image files
             // referenced by this render, avoiding broad filesystem read access.
             // The request URL carries the anchor fragment so the browser scrolls
-            // to it as the DOM is built.
-            let request = URLRequest(url: fragmentURL(previewURL, fragment: fragment))
+            // to it as the DOM is built. A per-load query token keeps every
+            // request URL distinct: reloading the same preview file with only a
+            // fragment appended would otherwise be a same-document navigation —
+            // WebKit just scrolls, never re-reads the file, and `didFinish`
+            // never fires — leaving the page showing stale content.
+            let request = URLRequest(
+                url: fragmentURL(previewURL, fragment: fragment, loadToken: coordinator.nextLoadToken())
+            )
             webView.loadFileRequest(request, allowingReadAccessTo: baseURL)
         } catch {
             webView.loadHTMLString(rewritten.html, baseURL: baseURL)
@@ -905,17 +925,18 @@ struct MarkdownPreviewView: NSViewRepresentable {
         }
     }
 
-    /// Appends a percent-encoded fragment to a file URL, if provided.
-    private func fragmentURL(_ url: URL, fragment: String?) -> URL {
-        guard let fragment,
-              let encoded = fragment.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed),
-              let withFragment = URL(string: url.absoluteString + "#" + encoded) else {
-            return url
+    /// Builds the load-request URL: the preview file plus a uniqueness query
+    /// token (see the call site) and, if provided, a percent-encoded fragment.
+    private func fragmentURL(_ url: URL, fragment: String?, loadToken: Int) -> URL {
+        var absolute = url.absoluteString + "?md2r=\(loadToken)"
+        if let fragment,
+           let encoded = fragment.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed) {
+            absolute += "#" + encoded
         }
-        return withFragment
+        return URL(string: absolute) ?? url
     }
 
-    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
         var lastHTML = ""
         /// The last `<main>` content applied (via full load or live swap), used
         /// to decide whether an update can be a live in-place swap.
@@ -925,6 +946,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         var previewFileURL: URL?
         var onEnterEdit: () -> Void = {}
         var onToggleTask: (_ line: Int, _ checked: Bool) -> Void = { _, _ in }
+        var onOpenMarkdownLink: (_ url: URL) -> Void = { _ in }
         var onAnchorChange: (_ anchor: ViewportAnchor, _ isUserInitiated: Bool) -> Void = { _, _ in }
         var onFindShortcut: (_ action: FindCommand.Action) -> Void = { _ in }
         var onFindResult: (_ total: Int, _ index: Int) -> Void = { _, _ in }
@@ -939,6 +961,14 @@ struct MarkdownPreviewView: NSViewRepresentable {
         var lastFindNavigationToken: UUID?
 
         private(set) var isLoaded = false
+        /// Monotonic per-load token appended to the request URL so consecutive
+        /// loads of the same preview file are always real navigations.
+        private var loadToken = 0
+
+        func nextLoadToken() -> Int {
+            loadToken += 1
+            return loadToken
+        }
         /// The mode-switch scroll target. Retained across an immediate apply so a
         /// reload that fires right after entering Side by Side (the preview view
         /// is rebuilt, resetting scroll to the top) re-applies it on `didFinish`
@@ -1163,6 +1193,78 @@ struct MarkdownPreviewView: NSViewRepresentable {
             }
         }
 
+        // MARK: Link policy
+
+        /// The preview is a viewport onto the document, never a browser: the
+        /// only allowed main-frame navigations are the app's own page (initial
+        /// load, reload-on-edit, and same-page fragment jumps — `about:`/
+        /// `applewebdata:` for string-loaded untitled documents). Every other
+        /// target is cancelled; a genuine link activation (including
+        /// new-window requests, which carry no target frame) is handed off to
+        /// the matching external handler, while a script- or meta-driven
+        /// redirect is cancelled outright so a document can never auto-open
+        /// anything.
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction,
+            decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void
+        ) {
+            // Subframe navigations stay inside the page.
+            if let targetFrame = navigationAction.targetFrame, !targetFrame.isMainFrame {
+                decisionHandler(.allow)
+                return
+            }
+
+            let route = PreviewLinkRouter.route(
+                for: navigationAction.request.url,
+                documentPageURL: previewFileURL
+            )
+            if route == .allowInPage {
+                decisionHandler(.allow)
+                return
+            }
+
+            if navigationAction.navigationType == .linkActivated || navigationAction.targetFrame == nil {
+                dispatch(route)
+            }
+            decisionHandler(.cancel)
+        }
+
+        /// `target="_blank"`/`window.open` requests never create an in-app
+        /// browsing context; a link-activated one routes exactly like a plain
+        /// click on the same URL.
+        func webView(
+            _ webView: WKWebView,
+            createWebViewWith configuration: WKWebViewConfiguration,
+            for navigationAction: WKNavigationAction,
+            windowFeatures: WKWindowFeatures
+        ) -> WKWebView? {
+            if navigationAction.navigationType == .linkActivated {
+                dispatch(PreviewLinkRouter.route(
+                    for: navigationAction.request.url,
+                    documentPageURL: previewFileURL
+                ))
+            }
+            return nil
+        }
+
+        private func dispatch(_ route: PreviewLinkRouter.Route) {
+            switch route {
+            case .allowInPage, .ignore:
+                break
+            case let .openExternal(url):
+                NSWorkspace.shared.open(url)
+            case let .openMarkdownDocument(url):
+                // A dead target (file since removed) is ignored rather than
+                // surfacing a failed open for a click the page offered.
+                guard FileManager.default.fileExists(atPath: url.path) else { return }
+                onOpenMarkdownLink(url)
+            case let .openWithSystem(url):
+                guard FileManager.default.fileExists(atPath: url.path) else { return }
+                NSWorkspace.shared.open(url)
+            }
+        }
+
         // MARK: Deferred scrolling
 
         /// Records a scroll target and applies it now if the page has finished
@@ -1246,13 +1348,33 @@ struct MarkdownPreviewView: NSViewRepresentable {
 
 private final class PreviewWebView: WKWebView {
     var onFindAction: ((FindCommand.Action) -> Void)?
+    /// Esc handler; returns whether the key was consumed (find bar dismissed).
+    var onEscape: (() -> Bool)?
+
+    private static let escapeKeyCode: UInt16 = 53
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // Esc travels as a plain key press; claim it only when the owner
+        // actually consumed it (dismissed a find bar), so full-screen exit
+        // and other system uses keep working.
+        if event.keyCode == Self.escapeKeyCode, onEscape?() == true {
+            return true
+        }
         if let action = findAction(for: event) {
             onFindAction?(action)
             return true
         }
         return super.performKeyEquivalent(with: event)
+    }
+
+    override func cancelOperation(_ sender: Any?) {
+        // Fallback path for an Esc that reaches the responder chain instead of
+        // the key-equivalent pass (WebKit hands unhandled page keys back via
+        // doCommandBySelector). Never call super: `NSResponder` declares but
+        // does not implement `cancelOperation:`, so a super call dies with an
+        // unrecognized selector. An unconsumed Esc simply ends here, matching
+        // the pre-override behavior.
+        _ = onEscape?()
     }
 
     @objc(performFindPanelAction:)

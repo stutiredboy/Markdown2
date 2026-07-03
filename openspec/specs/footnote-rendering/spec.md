@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Define rendering of footnote references and definitions: numbered superscript links, a trailing footnotes section, back-references, and graceful fallbacks.
+
+## Requirements
 
 ### Requirement: Inline footnote reference rendering
 The system SHALL detect inline footnote references written as `[^id]` within paragraph and other inline text, where `id` is a non-empty label containing no whitespace or closing bracket, and SHALL render each reference as a small superscript anchor link in the Read-mode preview. The rendered reference SHALL link to the corresponding footnote definition at the bottom of the document and SHALL display a sequential number reflecting the order in which footnotes are first referenced, regardless of the literal label text.

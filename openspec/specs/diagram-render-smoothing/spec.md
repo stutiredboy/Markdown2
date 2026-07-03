@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Define how live preview updates re-render diagrams without flicker or viewport jumps while the user edits in Side by Side mode.
+
+## Requirements
 
 ### Requirement: Diagram placeholder hides raw source while loading
 A diagram block (`mermaid`, `flow`, `sequence`) SHALL NOT display its raw diagram source as visible text in the Read-mode preview while waiting for its engine to render. The verbatim source SHALL remain available to the rendering engine, but SHALL not be shown to the reader as code during the load/render window.

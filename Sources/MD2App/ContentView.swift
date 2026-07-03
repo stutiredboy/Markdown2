@@ -43,6 +43,25 @@ enum OutlineMoveDirection {
     case down
 }
 
+/// What Esc does in a document surface: a visible find bar is always dismissed
+/// first — the mode gesture never fires while one is shown — and only a
+/// subsequent Esc (no bar visible) switches single-pane write mode to preview.
+/// Read mode and Side by Side have no Esc mode gesture.
+enum EscAction: Equatable {
+    case dismissFind
+    case switchToPreview
+    case none
+}
+
+enum EscRouting {
+    static func action(findBarVisible: Bool, mode: EditorMode) -> EscAction {
+        if findBarVisible {
+            return .dismissFind
+        }
+        return mode == .write ? .switchToPreview : .none
+    }
+}
+
 enum OutlineKeyboardNavigation {
     static func selectedID(
         after move: OutlineMoveDirection,
@@ -117,6 +136,9 @@ struct ContentView: View {
     /// not preview scroll gestures, so they must never move the editor.
     @State private var suppressPreviewDrivenEditorSyncUntil = Date.distantPast
     private let onOpen: () -> Void
+    /// Opens a local Markdown file the user clicked in the preview, routed up
+    /// to the app delegate's open-in-window path.
+    private let onOpenMarkdownLink: (URL) -> Void
     private var findDialogEntranceAnimation: Animation { .easeOut(duration: 0.20) }
     private var findDialogExitAnimation: Animation { .easeIn(duration: 0.15) }
     private var findDialogTransition: AnyTransition {
@@ -126,10 +148,16 @@ struct ContentView: View {
         )
     }
 
-    init(document: DocumentStore, settings: AppSettings, onOpen: @escaping () -> Void) {
+    init(
+        document: DocumentStore,
+        settings: AppSettings,
+        onOpen: @escaping () -> Void,
+        onOpenMarkdownLink: @escaping (URL) -> Void = { _ in }
+    ) {
         self.document = document
         self.settings = settings
         self.onOpen = onOpen
+        self.onOpenMarkdownLink = onOpenMarkdownLink
         _mode = State(initialValue: settings.presentationMode(isFileBacked: document.fileURL != nil))
         _showsOutline = State(initialValue: settings.showsOutlineByDefault)
     }
@@ -171,6 +199,10 @@ struct ContentView: View {
         }
         .onChange(of: document.modeCommand) { _, command in
             handleModeCommand(command)
+        }
+        .onChange(of: document.pendingExternalReload) { _, token in
+            guard token != nil else { return }
+            captureAnchorForExternalReload()
         }
         .toolbar {
             ToolbarItemGroup(placement: .navigation) {
@@ -274,6 +306,46 @@ struct ContentView: View {
     private func handleModeCommand(_ command: ModeCommand?) {
         guard let command else { return }
         requestMode(command.mode)
+    }
+
+    /// The document's backing file changed externally and the store wants to
+    /// reload in place: capture the live viewport anchor of the surface the
+    /// user is looking at (same machinery as a mode switch) and hand it back,
+    /// so the refreshed content lands where the user was reading.
+    private func captureAnchorForExternalReload() {
+        switch mode {
+        case .write, .split:
+            document.completeExternalReload(anchor: editorAnchorForPreview())
+        case .read:
+            previewViewport.currentAnchor { fresh in
+                document.completeExternalReload(anchor: previewAnchorForEditor(fresh: fresh))
+            }
+        }
+    }
+
+    /// Esc pressed in the editor text: a visible find bar closes (keeping the
+    /// document in its mode, focus back in the editor); only a subsequent Esc
+    /// performs the single-pane write→preview gesture. Split never switches.
+    private func handleEditorEscape() {
+        switch EscRouting.action(findBarVisible: editorFindVisible, mode: mode) {
+        case .dismissFind:
+            dismissEditorFind(refocusEditor: true)
+        case .switchToPreview:
+            requestMode(.read)
+        case .none:
+            break
+        }
+    }
+
+    /// Esc pressed in the preview page: closes a visible preview find bar and
+    /// reports whether the key was consumed (an unconsumed Esc stays available
+    /// to the system, e.g. exiting full screen).
+    private func handlePreviewEscape() -> Bool {
+        guard EscRouting.action(findBarVisible: previewFindVisible, mode: mode) == .dismissFind else {
+            return false
+        }
+        dismissPreviewFind(refocusPreview: true)
+        return true
     }
 
     /// Dispatches a find action from the menu to the active surface.
@@ -538,7 +610,7 @@ struct ContentView: View {
                 onTextEdit: { caretLine in
                     if inSplit { markEditorEditInSplit(caretLine: caretLine) }
                 },
-                onEnterPreview: { if !inSplit { requestMode(.read) } },
+                onEnterPreview: { handleEditorEscape() },
                 findQuery: $editorFindQuery,
                 findNavigation: $editorFindNavigation,
                 findReplacement: $editorFindReplacement,
@@ -600,6 +672,7 @@ struct ContentView: View {
                     if inSplit, isUserInitiated { syncPreviewToEditor(anchor: anchor) }
                 },
                 onEnterEdit: { if !inSplit { requestMode(.write) } },
+                onEscape: { handlePreviewEscape() },
                 onToggleTask: { line, checked in
                     if inSplit { focusedPane = .preview }
                     // Capture the live viewport first so the re-render the
@@ -609,6 +682,7 @@ struct ContentView: View {
                         document.previewJumpAnchor = fresh ?? previewAnchor
                     }
                 },
+                onOpenMarkdownLink: onOpenMarkdownLink,
                 findQuery: $previewFindQuery,
                 findNavigation: $previewFindNavigation,
                 focusToken: previewSurfaceFocusToken,

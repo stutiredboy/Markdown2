@@ -7,6 +7,10 @@ import SwiftUI
 final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, ObservableObject {
     let settings = AppSettings()
 
+    /// Recent-documents list (persists across launches; also noted with the
+    /// system so the system-level recents work where code signing allows).
+    /// Noted on every successful open and first save.
+    private let recentDocuments: RecentDocumentsRecording = SystemRecentDocumentsRecorder()
     private var documentWindows: [DocumentWindow] = []
     private let activationController = LaunchActivationController()
     /// Set when the user asks to restart for a language change. Read in
@@ -92,6 +96,33 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
         LaunchHealthReporter.write("didFinishLaunching")
     }
 
+    /// The Dock icon's context menu: live recent documents, rebuilt by AppKit
+    /// on every right-click. This surface is fully app-owned, so it stays
+    /// current within the session — unlike the File menu, whose SwiftUI
+    /// command tree is frozen while the Settings scene is closed.
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let entries = recentDocumentEntries
+        guard !entries.isEmpty else { return nil }
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for entry in entries {
+            let item = NSMenuItem(
+                title: entry.title,
+                action: #selector(openDockRecentDocument(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = entry.url
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    @objc private func openDockRecentDocument(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        openRecentDocument(url)
+    }
+
     func applicationShouldHandleReopen(
         _ sender: NSApplication,
         hasVisibleWindows flag: Bool
@@ -126,7 +157,8 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
     private func makeDocumentStore() -> DocumentStore {
         DocumentStore(
             exportProfileProvider: { [settings] in settings.exportProfile },
-            renderConfigProvider: { [settings] in (settings.citationStyle, settings.numberAllEquations) }
+            renderConfigProvider: { [settings] in (settings.citationStyle, settings.numberAllEquations) },
+            alertTextProvider: { [settings] in settings.text($0) }
         )
     }
 
@@ -164,10 +196,15 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
 
     /// Loads `url` into a window. If it is already open, that window is brought
     /// to the front; otherwise an untouched starter window is reused or a new
-    /// one is created.
-    private func openInNewWindow(_ url: URL) {
+    /// one is created. Also the open path for Markdown links clicked in a
+    /// preview, so linked documents front/dedupe like any other open.
+    func openInNewWindow(_ url: URL) {
         if let existing = documentWindows.first(where: { $0.store.fileURL == url }) {
             existing.window.makeKeyAndOrderFront(nil)
+            // Re-opening an already-open document still bumps its recency,
+            // matching platform behavior. (Fresh opens are noted through the
+            // window's fileURL transition.)
+            noteRecentDocument(url)
             return
         }
 
@@ -182,6 +219,42 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
         documentWindow.window.makeKeyAndOrderFront(nil)
     }
 
+    // MARK: - Recent documents
+
+    /// The Open Recent menu model (deduplicated, disambiguated, most recent
+    /// first). The `.commands` tree re-reads this whenever the delegate
+    /// republishes.
+    var recentDocumentEntries: [RecentDocumentEntry] {
+        RecentDocumentsList.menuEntries(for: recentDocuments.recentDocumentURLs)
+    }
+
+    /// Opens a document chosen from the Open Recent menu. A file that no
+    /// longer exists shows the localized open-failure notice and is pruned
+    /// from the list, leaving the remaining entries intact.
+    func openRecentDocument(_ url: URL) {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = String(format: settings.text(.alertCouldNotOpen), url.lastPathComponent)
+            alert.informativeText = settings.text(.recentDocumentMissingDetail)
+            alert.addButton(withTitle: settings.text(.ok))
+            alert.runModal()
+            RecentDocumentsList.removeEntry(url, from: recentDocuments)
+            return
+        }
+        openInNewWindow(url)
+    }
+
+    func clearRecentDocuments() {
+        recentDocuments.clear()
+    }
+
+    /// Records `url` as a recent document. The submenu pulls the live list on
+    /// every open, so recording needs no UI notification.
+    private func noteRecentDocument(_ url: URL) {
+        recentDocuments.note(url)
+    }
+
     // MARK: - Window management
 
     @discardableResult
@@ -189,7 +262,8 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
         let contentView = ContentView(
             document: store,
             settings: settings,
-            onOpen: { [weak self] in self?.openDocument() }
+            onOpen: { [weak self] in self?.openDocument() },
+            onOpenMarkdownLink: { [weak self] url in self?.openInNewWindow(url) }
         )
 
         let window = ModeShortcutWindow(
@@ -219,7 +293,12 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
             window.center()
         }
 
-        let documentWindow = DocumentWindow(window: window, store: store)
+        let documentWindow = DocumentWindow(
+            window: window,
+            store: store,
+            settings: settings,
+            onFileBacked: { [weak self] url in self?.noteRecentDocument(url) }
+        )
         documentWindows.append(documentWindow)
         return documentWindow
     }
@@ -248,6 +327,9 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
 
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
+        // Detach the file watcher deterministically; releasing the store also
+        // cancels it, but the hosting view can keep references alive briefly.
+        documentWindows.first(where: { $0.window == window })?.store.stopWatchingFile()
         documentWindows.removeAll { $0.window == window }
     }
 
@@ -334,24 +416,73 @@ private final class ModeShortcutWindow: NSWindow {
     }
 }
 
-/// Pairs an `NSWindow` with the document it presents and keeps the window's
-/// title in sync with the document (filename and unsaved-changes marker).
+/// Pairs an `NSWindow` with the document it presents, keeps the window's
+/// title in sync with the document (filename and unsaved-changes marker), and
+/// presents the external-change conflict prompt the store requests.
 @MainActor
 private final class DocumentWindow {
     let window: NSWindow
     let store: DocumentStore
+    private let settings: AppSettings
     private var cancellable: AnyCancellable?
+    private var conflictCancellable: AnyCancellable?
+    private var isPresentingConflict = false
+    /// The last file URL reported through `onFileBacked`, so a document
+    /// becoming file-backed (open into this window, or an untitled document's
+    /// first save) is reported exactly once per URL — re-saves do not re-note.
+    private var lastReportedFileURL: URL?
 
-    init(window: NSWindow, store: DocumentStore) {
+    init(
+        window: NSWindow,
+        store: DocumentStore,
+        settings: AppSettings,
+        onFileBacked: @escaping (URL) -> Void = { _ in }
+    ) {
         self.window = window
         self.store = store
+        self.settings = settings
         cancellable = store.objectWillChange.sink { [weak self] _ in
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.window.title = self.store.displayTitle
                 self.window.isDocumentEdited = self.store.isDirty
                 self.window.representedURL = self.store.fileURL
+                if let url = self.store.fileURL, url != self.lastReportedFileURL {
+                    self.lastReportedFileURL = url
+                    onFileBacked(url)
+                }
             }
+        }
+        conflictCancellable = store.$externalConflictRequest.sink { [weak self] request in
+            guard request != nil else { return }
+            DispatchQueue.main.async {
+                self?.presentConflictPromptIfNeeded()
+            }
+        }
+    }
+
+    /// Sheet on the affected window: keep the in-memory version (default; the
+    /// next save overwrites the disk) or reload from disk (discarding edits).
+    /// One sheet at a time — re-raised requests while it is up are answered by
+    /// the same pending choice.
+    private func presentConflictPromptIfNeeded() {
+        guard !isPresentingConflict, store.hasExternalConflict else { return }
+        isPresentingConflict = true
+
+        let alert = NSAlert()
+        alert.messageText = settings.text(.externalChangeConflictTitle)
+        alert.informativeText = settings.text(.externalChangeConflictMessage)
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: settings.text(.keepMyVersion))
+        alert.addButton(withTitle: settings.text(.reloadFromDisk))
+
+        window.makeKeyAndOrderFront(nil)
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            self.isPresentingConflict = false
+            self.store.resolveExternalConflict(
+                reloadingFromDisk: response == .alertSecondButtonReturn
+            )
         }
     }
 }

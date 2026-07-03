@@ -1,3 +1,7 @@
+## Purpose
+
+Define offline rendering of mermaid, flow, and sequence code blocks into diagrams in the preview and exported output.
+
 ## Requirements
 
 ### Requirement: Offline rendering with graceful error handling

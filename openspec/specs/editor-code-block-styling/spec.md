@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Define the visual styling of fenced code blocks in the Markdown editor, including the continuous block panel.
+
+## Requirements
 
 ### Requirement: Continuous code-block shading in the editor
 

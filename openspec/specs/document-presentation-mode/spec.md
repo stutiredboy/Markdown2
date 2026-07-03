@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Define the Write / Read / Side by Side presentation modes: defaults for opened and new documents, switching commands and gestures, and configurable mode shortcuts.
+
+## Requirements
 
 ### Requirement: Separate default mode for new documents and opened files
 The app SHALL maintain two independent preferences for a document's initial editor mode: one for new/blank documents and one for documents opened from a file. New/blank documents SHALL use the new-document preference; documents opened from a file SHALL use the opened-file preference. The selection SHALL be resolved from whether the document is backed by a file.

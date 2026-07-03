@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Define how soft and hard line breaks in Markdown source render in the preview.
+
+## Requirements
 
 ### Requirement: Soft line breaks are preserved as visible line breaks
 

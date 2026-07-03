@@ -3,6 +3,7 @@ dist/
 .claude/
 .codex/
 .opencode/
+.gstack/
 .DS_Store
 .playwright-mcp/
 memory/

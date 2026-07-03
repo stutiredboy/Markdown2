@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Define clickable task-list checkboxes in the preview that update the corresponding Markdown source line.
+
+## Requirements
 
 ### Requirement: Clicking a preview checkbox toggles the source marker
 The system SHALL, when the user clicks a task-list checkbox in preview mode, update the corresponding Markdown source line to the checkbox's new state: `[ ]` when unchecked and `[x]` when checked. The updated text SHALL flow through the standard document pipeline so the preview re-renders from source, the document is marked dirty, and the existing autosave behavior applies.

@@ -284,6 +284,9 @@ enum AppLanguage: String, CaseIterable, Identifiable {
 enum L10nKey: String {
     case new
     case open
+    case openRecent
+    case clearMenu
+    case recentDocumentMissingDetail
     case save
     case exportTo
     case exportPDF
@@ -329,8 +332,22 @@ enum L10nKey: String {
     case preferences
     case unsavedChangesTitle
     case unsavedChangesMessage
+    case externalChangeConflictTitle
+    case externalChangeConflictMessage
+    case keepMyVersion
+    case reloadFromDisk
     case cancel
     case dontSave
+    case alertCouldNotOpen
+    case alertUndecodableFile
+    case alertUndecodableFileDetail
+    case alertCouldNotSave
+    case alertCouldNotExport
+    case alertCouldNotPrint
+    case alertPandocRequired
+    case alertPandocRequiredDetail
+    case alertAttachmentSaveFailed
+    case alertExternalReloadFailedDetail
     case find
     case findNext
     case findPrevious
@@ -396,6 +413,9 @@ enum L10n {
     private static let english: [L10nKey: String] = [
         .new: "New",
         .open: "Open...",
+        .openRecent: "Open Recent",
+        .clearMenu: "Clear Menu",
+        .recentDocumentMissingDetail: "The file no longer exists at its recorded location.",
         .save: "Save",
         .exportTo: "Export To",
         .exportPDF: "Export as PDF…",
@@ -441,8 +461,22 @@ enum L10n {
         .preferences: "Settings",
         .unsavedChangesTitle: "Save changes before closing?",
         .unsavedChangesMessage: "This document has unsaved changes.",
+        .externalChangeConflictTitle: "Keep your edits or reload from disk?",
+        .externalChangeConflictMessage: "This document has unsaved changes, and its file was modified outside Markdown2. Keeping your version overwrites the file on the next save.",
+        .keepMyVersion: "Keep My Version",
+        .reloadFromDisk: "Reload from Disk",
         .cancel: "Cancel",
         .dontSave: "Don't Save",
+        .alertCouldNotOpen: "Could not open %@.",
+        .alertUndecodableFile: "Could not read %@ as text.",
+        .alertUndecodableFileDetail: "The file is not in a supported text encoding (UTF-8, UTF-16/32 with a byte-order mark, or GB18030).",
+        .alertCouldNotSave: "Could not save %@.",
+        .alertCouldNotExport: "Could not export %@.",
+        .alertCouldNotPrint: "Could not print the document.",
+        .alertPandocRequired: "Pandoc is required to export %@.",
+        .alertPandocRequiredDetail: "Install Pandoc to enable DOCX and EPUB export.",
+        .alertAttachmentSaveFailed: "Could not save the image attachment.",
+        .alertExternalReloadFailedDetail: "The file could not be re-read after it changed on disk.",
         .find: "Find…",
         .findNext: "Find Next",
         .findPrevious: "Find Previous",
@@ -498,6 +532,9 @@ enum L10n {
     private static let zhHans: [L10nKey: String] = [
         .new: "新建",
         .open: "打开...",
+        .openRecent: "打开最近使用的",
+        .clearMenu: "清除菜单",
+        .recentDocumentMissingDetail: "文件已不在原来的位置（可能已被移动或删除）。",
         .save: "保存",
         .exportTo: "导出到",
         .exportPDF: "导出为 PDF…",
@@ -543,8 +580,22 @@ enum L10n {
         .preferences: "设置",
         .unsavedChangesTitle: "关闭前保存更改？",
         .unsavedChangesMessage: "当前文档还有未保存的更改。",
+        .externalChangeConflictTitle: "保留你的修改，还是从磁盘重新载入？",
+        .externalChangeConflictMessage: "当前文档有未保存的更改，同时文件已在 Markdown2 之外被修改。选择保留后，下次保存将覆盖磁盘上的文件。",
+        .keepMyVersion: "保留我的版本",
+        .reloadFromDisk: "从磁盘重新载入",
         .cancel: "取消",
         .dontSave: "不保存",
+        .alertCouldNotOpen: "无法打开 %@。",
+        .alertUndecodableFile: "无法将 %@ 作为文本读取。",
+        .alertUndecodableFileDetail: "文件不是受支持的文本编码（UTF-8、带字节序标记的 UTF-16/32，或 GB18030）。",
+        .alertCouldNotSave: "无法保存 %@。",
+        .alertCouldNotExport: "无法导出 %@。",
+        .alertCouldNotPrint: "无法打印文档。",
+        .alertPandocRequired: "导出 %@ 需要 Pandoc。",
+        .alertPandocRequiredDetail: "安装 Pandoc 后即可启用 DOCX 和 EPUB 导出。",
+        .alertAttachmentSaveFailed: "无法保存图片附件。",
+        .alertExternalReloadFailedDetail: "文件在磁盘上发生变化后无法重新读取。",
         .find: "查找…",
         .findNext: "查找下一个",
         .findPrevious: "查找上一个",

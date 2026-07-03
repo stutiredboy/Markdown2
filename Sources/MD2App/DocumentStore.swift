@@ -57,6 +57,19 @@ final class DocumentStore: ObservableObject {
     @Published var editorJumpAnchor: ViewportAnchor?
     @Published var previewJumpAnchor: ViewportAnchor?
     @Published private(set) var documentIdentity = UUID()
+    /// True while the backing file has changed on disk under unsaved edits and
+    /// the user has not chosen a side yet. While set, autosave is suspended and
+    /// every save request re-presents the conflict prompt instead of writing.
+    @Published private(set) var hasExternalConflict = false
+    /// Asks the window layer to present the external-change conflict prompt.
+    /// Re-set (new identity) each time the prompt must appear; cleared when
+    /// the user resolves it.
+    @Published var externalConflictRequest: ExternalConflictRequest?
+    /// Set when a clean document should reload externally changed content.
+    /// `ContentView` observes it, captures the live viewport anchor of the
+    /// active surface, and completes the reload via `completeExternalReload`,
+    /// so the window keeps showing the same content position.
+    @Published private(set) var pendingExternalReload: UUID?
     /// Set by Find menu commands; observed by `ContentView`, which dispatches the
     /// action to whichever surface (editor or preview) is currently active.
     @Published var findCommand: FindCommand?
@@ -81,6 +94,10 @@ final class DocumentStore: ObservableObject {
     /// Supplies the citation/equation-numbering preferences that feed the render
     /// config. Injected so tests can pin them; the app wires it to live settings.
     private let renderConfigProvider: @MainActor () -> (citationStyle: CitationStyle, numberAllEquations: Bool)
+    /// Resolves user-facing alert copy from the app's localization table, so
+    /// document alerts follow the app language. Injected (the app wires it to
+    /// `AppSettings.text(_:)`); defaults to the English table for tests.
+    private let alertTextProvider: @MainActor (L10nKey) -> String
     /// Resolves the destination for the first save of an untitled document.
     /// Injected so the save-before-attachment flow can be tested without the
     /// modal `NSSavePanel`.
@@ -109,6 +126,20 @@ final class DocumentStore: ObservableObject {
     private var isLoading = false
     private var autosaveWorkItem: DispatchWorkItem?
     private let autosaveDelay: TimeInterval = 5
+    /// Watches the backing file for external modification/replacement/deletion.
+    /// Created lazily on first load/save of a file-backed document; injected so
+    /// tests can drive events deterministically.
+    private let fileWatcherFactory: @MainActor () -> DocumentFileWatching
+    private var fileWatcher: DocumentFileWatching?
+    /// Fingerprint of the last content this app read from or wrote to the
+    /// backing file. The reference every external event and every write is
+    /// checked against, so nothing is silently overwritten or needlessly
+    /// reloaded.
+    private var lastKnownFingerprint: DocumentFileFingerprint?
+    /// True when the pending external reload came from the user choosing
+    /// "Reload from Disk" in the conflict prompt, which deliberately discards
+    /// the in-memory edits.
+    private var pendingReloadDiscardsEdits = false
     /// Coalesces the full-document render that feeds the preview/stats so a burst
     /// of typing renders once when the user pauses instead of synchronously on
     /// every keystroke. Bumped on each schedule so only the latest one fires.
@@ -118,6 +149,16 @@ final class DocumentStore: ObservableObject {
 
     var baseURL: URL? {
         fileURL?.deletingLastPathComponent()
+    }
+
+    /// Localized alert copy, with the file name/format interpolated when the
+    /// table string is parameterized.
+    private func alertText(_ key: L10nKey) -> String {
+        alertTextProvider(key)
+    }
+
+    private func alertText(_ key: L10nKey, _ argument: String) -> String {
+        String(format: alertTextProvider(key), argument)
     }
 
     var displayTitle: String {
@@ -135,7 +176,9 @@ final class DocumentStore: ObservableObject {
         conversionDestinationPicker: @escaping @MainActor (DocumentExportFormat, String) -> URL? = DocumentStore.presentConversionDestination,
         saveLocationPicker: @escaping @MainActor (String) -> URL? = DocumentStore.presentSaveLocation,
         exportProfileProvider: @escaping @MainActor () -> ExportProfile = { .default },
-        renderConfigProvider: @escaping @MainActor () -> (citationStyle: CitationStyle, numberAllEquations: Bool) = { (.authorYear, false) }
+        renderConfigProvider: @escaping @MainActor () -> (citationStyle: CitationStyle, numberAllEquations: Bool) = { (.authorYear, false) },
+        alertTextProvider: @escaping @MainActor (L10nKey) -> String = { L10n.text($0, language: .english) },
+        fileWatcherFactory: @escaping @MainActor () -> DocumentFileWatching = { DispatchSourceFileWatcher() }
     ) {
         self.pdfDestinationPicker = pdfDestinationPicker
         self.htmlDestinationPicker = htmlDestinationPicker
@@ -147,6 +190,8 @@ final class DocumentStore: ObservableObject {
         self.saveLocationPicker = saveLocationPicker
         self.exportProfileProvider = exportProfileProvider
         self.renderConfigProvider = renderConfigProvider
+        self.alertTextProvider = alertTextProvider
+        self.fileWatcherFactory = fileWatcherFactory
 
         let starterText = Self.starterMarkdown
         text = starterText
@@ -162,6 +207,12 @@ final class DocumentStore: ObservableObject {
 
     @discardableResult
     func save() -> Bool {
+        // An unresolved external conflict blocks every write; asking again is
+        // the only honest response to another ⌘S.
+        if hasExternalConflict {
+            externalConflictRequest = ExternalConflictRequest()
+            return false
+        }
         if let fileURL {
             return write(to: fileURL)
         } else {
@@ -234,7 +285,7 @@ final class DocumentStore: ObservableObject {
                     references.append("![\(written.altText)](\(linkPath))")
                 } catch {
                     alert = DocumentAlert(
-                        message: "Could not save the image attachment.",
+                        message: alertText(.alertAttachmentSaveFailed),
                         detail: error.localizedDescription
                     )
                 }
@@ -275,7 +326,7 @@ final class DocumentStore: ObservableObject {
             self.pdfExporter = nil
             if case let .failure(error) = result {
                 self.alert = DocumentAlert(
-                    message: "Could not export \(url.lastPathComponent).",
+                    message: self.alertText(.alertCouldNotExport, url.lastPathComponent),
                     detail: error.localizedDescription
                 )
             }
@@ -306,7 +357,7 @@ final class DocumentStore: ObservableObject {
             self.documentPrinter = nil
             if case let .failure(error) = result {
                 self.alert = DocumentAlert(
-                    message: "Could not print the document.",
+                    message: self.alertText(.alertCouldNotPrint),
                     detail: error.localizedDescription
                 )
             }
@@ -335,7 +386,7 @@ final class DocumentStore: ObservableObject {
             try html.write(to: url, atomically: true, encoding: .utf8)
         } catch {
             alert = DocumentAlert(
-                message: "Could not export \(url.lastPathComponent).",
+                message: alertText(.alertCouldNotExport, url.lastPathComponent),
                 detail: error.localizedDescription
             )
         }
@@ -362,8 +413,8 @@ final class DocumentStore: ObservableObject {
 
         guard pandocAvailabilityProvider() else {
             alert = DocumentAlert(
-                message: "Pandoc is required to export \(format.fileExtension.uppercased()).",
-                detail: "Install Pandoc to enable DOCX and EPUB export."
+                message: alertText(.alertPandocRequired, format.fileExtension.uppercased()),
+                detail: alertText(.alertPandocRequiredDetail)
             )
             return
         }
@@ -392,7 +443,7 @@ final class DocumentStore: ObservableObject {
             self.documentConverter = nil
             if case let .failure(error) = result {
                 self.alert = DocumentAlert(
-                    message: "Could not export \(destination.lastPathComponent).",
+                    message: self.alertText(.alertCouldNotExport, destination.lastPathComponent),
                     detail: error.localizedDescription
                 )
             }
@@ -561,27 +612,71 @@ final class DocumentStore: ObservableObject {
 
     private func load(from url: URL) {
         do {
-            let loadedText = try String(contentsOf: url, encoding: .utf8)
-            setDocumentText(loadedText, fileURL: url, dirty: false)
+            // Read the raw bytes once: the text decodes from them and the
+            // fingerprint hashes them, so the stored hash always matches the
+            // exact on-disk content (no re-encoding drift).
+            let data = try Data(contentsOf: url)
+            guard let decoded = MarkdownFileDecoder.decode(data) else {
+                alert = DocumentAlert(
+                    message: alertText(.alertUndecodableFile, url.lastPathComponent),
+                    detail: alertText(.alertUndecodableFileDetail)
+                )
+                return
+            }
+            setDocumentText(decoded.text, fileURL: url, dirty: false)
+            lastKnownFingerprint = DocumentFileFingerprint.of(data: data, at: url)
+            hasExternalConflict = false
+            externalConflictRequest = nil
+            pendingExternalReload = nil
+            pendingReloadDiscardsEdits = false
+            startWatchingFile()
         } catch {
-            alert = DocumentAlert(message: "Could not open \(url.lastPathComponent).", detail: error.localizedDescription)
+            alert = DocumentAlert(
+                message: alertText(.alertCouldNotOpen, url.lastPathComponent),
+                detail: error.localizedDescription
+            )
         }
     }
 
     @discardableResult
     private func write(to url: URL) -> Bool {
+        // Never blind-overwrite content this app has not seen: when writing to
+        // the document's own file, a changed on-disk hash means an external
+        // edit landed after our last read/write, so the write is aborted and
+        // the conflict flow runs instead. (A missing file proceeds — that is
+        // the deliberate recreate-after-external-delete path.)
+        if url == fileURL, let lastKnown = lastKnownFingerprint {
+            let comparison = DocumentFileFingerprint.comparison(
+                lastKnown: lastKnown,
+                current: DocumentFileFingerprint.current(at: url)
+            )
+            if comparison == .contentChanged {
+                raiseExternalConflict()
+                return false
+            }
+        }
+
         // Persisting reads `text` directly (always current), but flush so the
         // rendered state/stats match what was just saved.
         flushPendingRender()
         do {
             autosaveWorkItem?.cancel()
             autosaveWorkItem = nil
+            let writtenData = Data(text.utf8)
             try text.write(to: url, atomically: true, encoding: .utf8)
+            lastKnownFingerprint = DocumentFileFingerprint.of(data: writtenData, at: url)
             fileURL = url
             isDirty = false
+            hasExternalConflict = false
+            // Re-arm on the path: an atomic write replaced the inode, and a
+            // first save has no watcher yet.
+            startWatchingFile()
             return true
         } catch {
-            alert = DocumentAlert(message: "Could not save \(url.lastPathComponent).", detail: error.localizedDescription)
+            alert = DocumentAlert(
+                message: alertText(.alertCouldNotSave, url.lastPathComponent),
+                detail: error.localizedDescription
+            )
             return false
         }
     }
@@ -660,8 +755,154 @@ final class DocumentStore: ObservableObject {
         renderNow()
     }
 
+    // MARK: External file changes
+
+    /// Creates (once) and (re-)arms the watcher on the current backing file.
+    private func startWatchingFile() {
+        guard let fileURL else {
+            stopWatchingFile()
+            return
+        }
+        if fileWatcher == nil {
+            let watcher = fileWatcherFactory()
+            watcher.onEvent = { [weak self] in self?.evaluateExternalChange() }
+            fileWatcher = watcher
+        }
+        fileWatcher?.watch(url: fileURL)
+    }
+
+    /// Detaches the watcher (window close). Idempotent.
+    func stopWatchingFile() {
+        fileWatcher?.stop()
+    }
+
+    /// A watcher event fired: fingerprint the file off the main thread, then
+    /// decide on the main actor. The captured `lastKnown` is re-checked on
+    /// arrival so a save or reload that landed meanwhile invalidates the
+    /// stale evaluation instead of acting on it.
+    private func evaluateExternalChange() {
+        guard let fileURL, let lastKnown = lastKnownFingerprint, !isLoading else { return }
+        let url = fileURL
+        Task.detached(priority: .utility) { [weak self] in
+            let current = DocumentFileFingerprint.current(at: url)
+            await MainActor.run { [weak self] in
+                self?.applyExternalChange(current: current, lastKnown: lastKnown, url: url)
+            }
+        }
+    }
+
+    private func applyExternalChange(
+        current: DocumentFileFingerprint?,
+        lastKnown: DocumentFileFingerprint,
+        url: URL
+    ) {
+        guard fileURL == url, lastKnownFingerprint == lastKnown else { return }
+        switch ExternalChangeDecision.action(
+            for: DocumentFileFingerprint.comparison(lastKnown: lastKnown, current: current),
+            isDirty: isDirty
+        ) {
+        case .ignore:
+            // Same bytes; refresh the date so a touch is not re-hashed forever.
+            if let current { lastKnownFingerprint = current }
+        case .reloadPreservingViewport:
+            beginExternalReload()
+        case .presentConflict:
+            raiseExternalConflict()
+        case .markDeletedDirty:
+            // Memory is now the only copy: dirty engages close/quit protection,
+            // and the next save recreates the file at the original path. The
+            // watcher keeps polling the path for an external restore.
+            isDirty = true
+        }
+    }
+
+    /// Starts the viewport-preserving reload handshake: `ContentView` observes
+    /// `pendingExternalReload`, captures the active surface's live anchor, and
+    /// calls `completeExternalReload(anchor:)`.
+    private func beginExternalReload(discardingEdits: Bool = false) {
+        if discardingEdits {
+            pendingReloadDiscardsEdits = true
+        }
+        guard pendingExternalReload == nil else { return }
+        pendingExternalReload = UUID()
+    }
+
+    /// Replaces the document content with the current on-disk content, keeping
+    /// `documentIdentity` (so mode, outline visibility, and find state stay)
+    /// and landing both surfaces on `anchor`. An edit that slipped in between
+    /// the reload request and this completion downgrades to the conflict
+    /// prompt rather than clobbering it.
+    func completeExternalReload(anchor: ViewportAnchor?) {
+        guard pendingExternalReload != nil else { return }
+        pendingExternalReload = nil
+        let discardsEdits = pendingReloadDiscardsEdits
+        pendingReloadDiscardsEdits = false
+        guard let fileURL else { return }
+
+        guard let data = try? Data(contentsOf: fileURL),
+              let decoded = MarkdownFileDecoder.decode(data) else {
+            alert = DocumentAlert(
+                message: alertText(.alertCouldNotOpen, fileURL.lastPathComponent),
+                detail: alertText(.alertExternalReloadFailedDetail)
+            )
+            return
+        }
+        guard !isDirty || discardsEdits else {
+            raiseExternalConflict()
+            return
+        }
+
+        autosaveWorkItem?.cancel()
+        autosaveWorkItem = nil
+        jumpLine = nil
+        jumpHeadingID = nil
+        jumpFraction = nil
+        if let anchor {
+            editorJumpAnchor = anchor
+            previewJumpAnchor = anchor
+        }
+        isLoading = true
+        text = decoded.text
+        isDirty = false
+        renderNow()
+        isLoading = false
+        lastKnownFingerprint = DocumentFileFingerprint.of(data: data, at: fileURL)
+        hasExternalConflict = false
+        externalConflictRequest = nil
+        startWatchingFile()
+    }
+
+    /// Enters the conflict state: writes stop, autosave is suspended, and the
+    /// window layer is asked to present the choice. Re-raising while the
+    /// prompt is already pending keeps a single prompt.
+    private func raiseExternalConflict() {
+        hasExternalConflict = true
+        autosaveWorkItem?.cancel()
+        autosaveWorkItem = nil
+        guard externalConflictRequest == nil else { return }
+        externalConflictRequest = ExternalConflictRequest()
+    }
+
+    /// Applies the user's conflict choice. Reloading discards the in-memory
+    /// edits (through the viewport-preserving handshake); keeping acknowledges
+    /// the on-disk state as seen — so the next save overwrites it — and lets
+    /// autosave resume.
+    func resolveExternalConflict(reloadingFromDisk: Bool) {
+        externalConflictRequest = nil
+        guard hasExternalConflict else { return }
+        hasExternalConflict = false
+        if reloadingFromDisk {
+            beginExternalReload(discardingEdits: true)
+        } else {
+            if let fileURL, let current = DocumentFileFingerprint.current(at: fileURL) {
+                lastKnownFingerprint = current
+            }
+            scheduleAutosaveIfNeeded()
+        }
+    }
+
     private func scheduleAutosaveIfNeeded() {
-        guard fileURL != nil else {
+        guard fileURL != nil, !hasExternalConflict else {
             autosaveWorkItem?.cancel()
             autosaveWorkItem = nil
             return
@@ -679,7 +920,7 @@ final class DocumentStore: ObservableObject {
     }
 
     private func autosaveNow() {
-        guard let fileURL, isDirty else {
+        guard let fileURL, isDirty, !hasExternalConflict else {
             return
         }
 
@@ -709,4 +950,9 @@ struct DocumentAlert: Identifiable {
     let id = UUID()
     let message: String
     let detail: String
+}
+
+/// One presentation of the external-change conflict prompt.
+struct ExternalConflictRequest: Identifiable, Equatable {
+    let id = UUID()
 }

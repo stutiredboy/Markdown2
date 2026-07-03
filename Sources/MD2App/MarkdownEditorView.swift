@@ -55,7 +55,9 @@ struct MarkdownEditorView: NSViewRepresentable {
     /// triggers markdown rendering. Reports the 1-based source line of the caret
     /// after the edit so Side by Side can follow the editing position.
     var onTextEdit: (_ caretLine: Int) -> Void = { _ in }
-    /// Called when the user presses Esc, requesting a switch to preview mode.
+    /// Called when the user presses Esc in the editor text. The owner decides
+    /// what it means (dismiss a visible find bar first, else the single-pane
+    /// switch-to-preview gesture).
     var onEnterPreview: () -> Void = {}
     /// The current edit-mode find query.
     @Binding var findQuery: String
@@ -192,7 +194,18 @@ struct MarkdownEditorView: NSViewRepresentable {
             let selectedRanges = textView.selectedRanges
             textView.string = text
             MarkdownTextStyler.apply(to: textView)
-            textView.selectedRanges = selectedRanges
+            // External content (e.g. a reload after the file changed on disk)
+            // can be shorter than the old selection; restoring an out-of-range
+            // selection raises. Clamp each range to the new length.
+            let length = (text as NSString).length
+            let clamped = selectedRanges.map { value -> NSValue in
+                let range = value.rangeValue
+                let location = min(range.location, length)
+                return NSValue(range: NSRange(location: location, length: min(range.length, length - location)))
+            }
+            textView.selectedRanges = clamped.isEmpty
+                ? [NSValue(range: NSRange(location: length, length: 0))]
+                : clamped
         }
 
         context.coordinator.updateFind(query: findQuery, in: textView)
@@ -892,9 +905,10 @@ struct MarkdownEditorView: NSViewRepresentable {
         }
 
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-            // Esc maps to cancelOperation: in the standard key bindings. Intercept
-            // it here so the editor switches to preview instead of triggering the
-            // text view's default completion behaviour.
+            // Esc maps to cancelOperation: in the standard key bindings.
+            // Intercept it here so the owner can route it (dismiss find /
+            // switch to preview) instead of triggering the text view's
+            // default completion behaviour.
             if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
                 onEnterPreview()
                 return true

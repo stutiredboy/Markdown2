@@ -1,4 +1,8 @@
-## MODIFIED Requirements
+## Purpose
+
+Define how the viewport position is captured and restored across presentation-mode switches so the user stays on the same content.
+
+## Requirements
 
 ### Requirement: Long documents scroll to the anchored position
 The system SHALL scroll the destination to the captured viewport-context anchor
@@ -44,7 +48,6 @@ destination with an empty or invalid visible range after settling.
 - **AND** the destination still reports a non-empty visible range once layout has
   settled
 
-## ADDED Requirements
 
 ### Requirement: Preview blocks expose source-line anchors
 The rendered preview SHALL expose stable source-line metadata on block-level

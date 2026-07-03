@@ -1,6 +1,30 @@
 import MD2AppSupport
 import SwiftUI
 
+/// File ▸ Open Recent, built from the persisted list at app launch. Selection
+/// and Clear run live; only the displayed list is a launch-time snapshot (see
+/// the call site).
+private struct RecentDocumentsMenu: View {
+    let title: String
+    let clearTitle: String
+    let entries: [RecentDocumentEntry]
+    let onOpen: (URL) -> Void
+    let onClear: () -> Void
+
+    var body: some View {
+        Menu(title) {
+            ForEach(entries, id: \.url) { entry in
+                Button(entry.title) { onOpen(entry.url) }
+            }
+            if !entries.isEmpty {
+                Divider()
+            }
+            Button(clearTitle, action: onClear)
+                .disabled(entries.isEmpty)
+        }
+    }
+}
+
 @main
 struct MD2Application: App {
     @NSApplicationDelegateAdaptor(MD2AppDelegate.self) private var appDelegate
@@ -37,6 +61,19 @@ struct MD2Application: App {
                     appDelegate.openDocument()
                 }
                 .keyboardShortcut("o")
+
+                // Launch-snapshot list: with Settings closed this command tree
+                // is never re-evaluated, so the entries shown are the persisted
+                // list as of app launch (the primary recents use case — reopen
+                // last session's files). The Dock icon menu serves the live
+                // list; owning the menu bar in AppKit would lift this limit.
+                RecentDocumentsMenu(
+                    title: appDelegate.settings.text(.openRecent),
+                    clearTitle: appDelegate.settings.text(.clearMenu),
+                    entries: appDelegate.recentDocumentEntries,
+                    onOpen: { appDelegate.openRecentDocument($0) },
+                    onClear: { appDelegate.clearRecentDocuments() }
+                )
             }
 
             CommandGroup(replacing: .saveItem) {

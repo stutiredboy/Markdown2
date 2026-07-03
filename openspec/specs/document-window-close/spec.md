@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Define close and quit confirmation for documents with unsaved changes so user content is never silently discarded.
+
+## Requirements
 
 ### Requirement: Close active document with ⌘W
 
