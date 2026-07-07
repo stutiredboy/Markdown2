@@ -64,6 +64,26 @@ struct MarkdownRendererTests {
         #expect(!document.html.contains("amp;amp"))
     }
 
+    @Test func imageSourceUnderscoresAreNotParsedAsEmphasis() {
+        let document = MarkdownRenderer().render("![图 2-1 霍尔三维结构示意图](figures/fig2_1_hall.png)")
+
+        #expect(document.html.contains(#"<img src="figures/fig2_1_hall.png" alt="图 2-1 霍尔三维结构示意图">"#))
+        #expect(!document.html.contains("fig2<em>1</em>hall"))
+    }
+
+    @Test func linkHrefUnderscoresAreNotParsedAsEmphasis() {
+        let document = MarkdownRenderer().render("[Open spec](docs/open_spec_v1.html)")
+
+        #expect(document.html.contains(#"<a href="docs/open_spec_v1.html">Open spec</a>"#))
+        #expect(!document.html.contains("open<em>spec</em>v1"))
+    }
+
+    @Test func linkLabelsStillRenderEmphasisWhenHrefIsProtected() {
+        let document = MarkdownRenderer().render("[**Open** spec](docs/open_spec_v1.html)")
+
+        #expect(document.html.contains(#"<a href="docs/open_spec_v1.html"><strong>Open</strong> spec</a>"#))
+    }
+
     @Test func infersImageDimensionsFromSizedURLPath() {
         let document = MarkdownRenderer().render(#"![Sample](https://via.placeholder.com/200x100 "Placeholder image")"#)
 

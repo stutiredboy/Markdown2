@@ -1153,11 +1153,12 @@ public struct MarkdownRenderer: Sendable {
 
     /// Renders inline Markdown by running an explicit, ordered pipeline of passes.
     /// The order is load-bearing: fragments that must survive HTML-escaping and the
-    /// later passes (code, math, entities, autolinks, raw HTML, footnote anchors)
-    /// are swapped for placeholder tokens up front; the text is escaped once; the
-    /// emphasis/image/link passes then run on escaped text; finally the protected
-    /// fragments are restored. Each pass is a named method below, so adding a new
-    /// inline construct means inserting one entry at the right point in this list.
+    /// later passes (code, math, entities, autolinks, raw HTML, footnote anchors,
+    /// images, and links) are swapped for placeholder tokens up front; the text is
+    /// escaped once; emphasis then runs only over remaining Markdown text; finally
+    /// the protected fragments are restored. Each pass is a named method below, so
+    /// adding a new inline construct means inserting one entry at the right point
+    /// in this list.
     private func inlineHTML(_ markdown: String, context: InlineContext? = nil) -> String {
         let protector = InlineProtector()
 
@@ -1172,9 +1173,9 @@ public struct MarkdownRenderer: Sendable {
             { applyCitations($0, protector: protector, citations: context?.citations) },
             { applyCrossReferences($0, protector: protector, crossReferences: context?.crossReferences) },
             { escapeHTML($0) },
-            { renderEmphasis($0) },
-            { renderImages($0, context: context) },
-            { renderLinks($0) }
+            { renderImages($0, context: context, protector: protector) },
+            { renderLinks($0, protector: protector) },
+            { renderEmphasis($0) }
         ]
 
         let transformed = pipeline.reduce(markdown) { text, pass in pass(text) }
@@ -1581,7 +1582,7 @@ public struct MarkdownRenderer: Sendable {
     /// Explicit sizes win over dimensions inferred from the URL; both-dimension
     /// sizes reserve layout space through `.image-frame`. An image carrying a
     /// `#fig:label` id becomes a numbered, captioned `<figure>`.
-    private func renderImages(_ text: String, context: InlineContext? = nil) -> String {
+    private func renderImages(_ text: String, context: InlineContext? = nil, protector: InlineProtector) -> String {
         replaceMatches(in: text, pattern: #"!\[([^\]]*)\]\((\S+?)(?:\s+&quot;(.+?)&quot;)?\)(?:\{([^}]*)\})?"#) { match, source in
             guard let altRange = Range(match.range(at: 1), in: source),
                   let srcRange = Range(match.range(at: 2), in: source) else {
@@ -1642,16 +1643,17 @@ public struct MarkdownRenderer: Sendable {
             }
 
             // A `#fig:label` (with an active context to number it) becomes a
-            // captioned, numbered figure; the caption inherits the already-escaped
-            // alt text so inline emphasis in the caption survives.
+            // captioned, numbered figure; the caption renders simple inline markup
+            // while the image attributes stay inert plain text.
             if let figLabel, let context {
                 let number = context.crossReferences.assignFigure(label: figLabel)
-                return "<figure class=\"figure\" id=\"\(self.escapeAttribute(figLabel))\">"
+                let caption = self.renderEscapedInlineContent(alt, protector: protector)
+                return protector.protect("<figure class=\"figure\" id=\"\(self.escapeAttribute(figLabel))\">"
                     + imageHTML
-                    + "<figcaption class=\"fig-caption\">Figure \(number): \(alt)</figcaption></figure>"
+                    + "<figcaption class=\"fig-caption\">Figure \(number): \(caption)</figcaption></figure>")
             }
 
-            return imageHTML + trailing
+            return protector.protect(imageHTML) + trailing
         }
     }
 
@@ -1687,7 +1689,7 @@ public struct MarkdownRenderer: Sendable {
 
     /// Inline links `[label](href "title")`. Links whose scheme could execute
     /// script are dropped, keeping the label as inert text.
-    private func renderLinks(_ text: String) -> String {
+    private func renderLinks(_ text: String, protector: InlineProtector) -> String {
         replaceMatches(in: text, pattern: #"\[([^\]]+)\]\((\S+?)(?:\s+&quot;(.+?)&quot;)?\)"#) { match, source in
             guard let labelRange = Range(match.range(at: 1), in: source),
                   let hrefRange = Range(match.range(at: 2), in: source) else {
@@ -1708,8 +1710,16 @@ public struct MarkdownRenderer: Sendable {
                 title = ""
             }
 
-            return "<a href=\"\(href)\"\(title)>\(source[labelRange])</a>"
+            let label = self.renderEscapedInlineContent(String(source[labelRange]), protector: protector)
+            return protector.protect("<a href=\"\(href)\"\(title)>\(label)</a>")
         }
+    }
+
+    /// Renders the small inline subset used inside link labels and figure captions.
+    /// Input has already passed through `escapeHTML`, so generated links can be
+    /// protected before emphasis runs and their `href` attributes stay untouched.
+    private func renderEscapedInlineContent(_ text: String, protector: InlineProtector) -> String {
+        renderEmphasis(renderLinks(text, protector: protector))
     }
 
     /// Infers image dimensions from common placeholder/CDN URL segments such as
