@@ -654,8 +654,8 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
       var style = document.createElement('style');
       style.id = 'md2-print-overrides';
       style.textContent =
-        'html { font-size: 14px; }' +
-        'body { font-size: 14px; line-height: 1.55; }' +
+        'html { font-size: 12px; }' +
+        'body { font-size: 12px; line-height: 1.2; }' +
         'main { max-width: none !important; width: 100% !important;' +
         ' margin: 0 !important; padding: 0 !important; }' +
         'table { display: table !important; table-layout: fixed;' +
