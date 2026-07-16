@@ -127,6 +127,12 @@ A caption line right after a pipe table numbers and labels it, so it can be cros
 | Cross-references | Done |
 : Feature status overview {#tbl:features}
 
+## Relative Image Paths
+
+This example keeps a relative path on purpose so preview and export can resolve images from the document directory.
+
+![](../tmp/pdfs/save-as-pdf-regression/beer-01.png)
+
 ## Code Blocks
 
 ```swift

@@ -3,8 +3,8 @@ import UniformTypeIdentifiers
 import WebKit
 
 /// Serves only the local image files that the current rendered document already
-/// references. This keeps absolute dropped-image links working without granting
-/// a WKWebView read access to the whole filesystem.
+/// references. This keeps absolute and document-relative image links working
+/// without granting a WKWebView read access to the whole filesystem.
 final class LocalImageSchemeHandler: NSObject, WKURLSchemeHandler {
     nonisolated static let scheme = "md2-local-image"
 
@@ -66,10 +66,10 @@ final class LocalImageSchemeHandler: NSObject, WKURLSchemeHandler {
 struct LocalImageHTMLRewriter {
     private static let imgTagPattern = #"<img\b[^>]*\bsrc="([^"]*)"[^>]*>"#
 
-    /// Rewrites absolute local image sources to the app-local scheme and returns
-    /// the exact file whitelist the scheme handler may serve. Relative images stay
-    /// untouched and continue to load from the document directory read grant.
-    static func rewrite(_ html: String) -> (html: String, allowedImages: [String: URL]) {
+    /// Rewrites resolvable local image sources to the app-local scheme and returns
+    /// the exact file whitelist the scheme handler may serve. Relative sources are
+    /// resolved from `baseURL`, including paths that traverse to a parent folder.
+    static func rewrite(_ html: String, baseURL: URL? = nil) -> (html: String, allowedImages: [String: URL]) {
         guard let regex = try? NSRegularExpression(pattern: imgTagPattern, options: [.caseInsensitive]) else {
             return (html, [:])
         }
@@ -83,7 +83,10 @@ struct LocalImageHTMLRewriter {
 
         for match in matches.reversed() {
             guard let sourceRange = Range(match.range(at: 1), in: rewritten),
-                  let imageURL = localImageURL(fromHTMLSource: String(rewritten[sourceRange])) else {
+                  let imageURL = localImageURL(
+                    fromHTMLSource: String(rewritten[sourceRange]),
+                    baseURL: baseURL
+                  ) else {
                 continue
             }
 
@@ -98,14 +101,20 @@ struct LocalImageHTMLRewriter {
         return (rewritten, allowedImages)
     }
 
-    private static func localImageURL(fromHTMLSource source: String) -> URL? {
+    private static func localImageURL(fromHTMLSource source: String, baseURL: URL?) -> URL? {
         let unescaped = htmlUnescaped(source)
+        let lower = unescaped.lowercased()
         let url: URL?
 
-        if unescaped.hasPrefix("/") {
-            url = URL(fileURLWithPath: unescaped.removingPercentEncoding ?? unescaped)
-        } else if let parsed = URL(string: unescaped), parsed.isFileURL {
+        if lower.hasPrefix("file://"), let parsed = URL(string: unescaped), parsed.isFileURL {
             url = parsed
+        } else if unescaped.hasPrefix("/") {
+            url = URL(fileURLWithPath: unescaped.removingPercentEncoding ?? unescaped)
+        } else if unescaped.contains("://") {
+            url = nil
+        } else if let baseURL {
+            let relativePath = unescaped.removingPercentEncoding ?? unescaped
+            url = baseURL.appendingPathComponent(relativePath).standardizedFileURL
         } else {
             url = nil
         }

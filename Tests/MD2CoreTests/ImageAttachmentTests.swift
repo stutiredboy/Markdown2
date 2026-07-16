@@ -111,6 +111,24 @@ struct ImageAttachmentTests {
         #expect(rewritten.allowedImages.values.contains(imageURL))
     }
 
+    @Test func rewritesParentRelativeImageSourcesAgainstDocumentDirectory() throws {
+        let root = makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let documentDirectory = root.appendingPathComponent("docs", isDirectory: true)
+        let imageDirectory = root.appendingPathComponent("tmp/pdfs", isDirectory: true)
+        try FileManager.default.createDirectory(at: documentDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: imageDirectory, withIntermediateDirectories: true)
+        let imageURL = imageDirectory.appendingPathComponent("beer-01.png")
+        try Self.makeTIFFData().write(to: imageURL)
+        let html = #"<p><img src="../tmp/pdfs/beer-01.png" alt="beer"></p>"#
+
+        let rewritten = LocalImageHTMLRewriter.rewrite(html, baseURL: documentDirectory)
+
+        #expect(rewritten.html.contains(#"src="md2-local-image://image/"#))
+        #expect(!rewritten.html.contains(#"src="../tmp/pdfs/beer-01.png""#))
+        #expect(rewritten.allowedImages.values.contains(imageURL.standardizedFileURL))
+    }
+
     @Test func localImageRewriterIgnoresMissingAndNonImageAbsoluteSources() throws {
         let directory = makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

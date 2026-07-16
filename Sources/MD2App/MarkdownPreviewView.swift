@@ -848,13 +848,12 @@ struct MarkdownPreviewView: NSViewRepresentable {
 
     /// Loads the rendered HTML into the web view.
     ///
-    /// `loadHTMLString(_:baseURL:)` does not grant the web view read access to the
-    /// file system, so relative resources such as `![](images/foo.png)` never load.
-    /// When the document lives on disk we instead write the HTML to a temporary file
-    /// inside the document's directory and load it via `loadFileURL`, granting read
-    /// access to that directory so relative image paths resolve correctly.
+    /// `loadHTMLString(_:baseURL:)` does not grant the web view file-system access.
+    /// Local images are therefore resolved and whitelisted by the rewriter below;
+    /// for other relative page resources, a file-backed document is loaded from a
+    /// temporary HTML file beside the source document with directory read access.
     private func load(_ html: String, baseURL: URL?, fragment: String?, in webView: WKWebView, coordinator: Coordinator) {
-        let rewritten = LocalImageHTMLRewriter.rewrite(html)
+        let rewritten = LocalImageHTMLRewriter.rewrite(html, baseURL: baseURL)
         coordinator.localImageSchemeHandler.setAllowedImages(rewritten.allowedImages)
 
         guard let baseURL, baseURL.isFileURL else {
@@ -872,10 +871,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
             sweepStalePreviewFiles(in: baseURL, keeping: previewURL)
             try rewritten.html.write(to: previewURL, atomically: true, encoding: .utf8)
             coordinator.previewFileURL = previewURL
-            // Relative images (`assets/foo.png`) resolve against the preview file
-            // in the document directory. Absolute local image paths are rewritten
-            // to a preview-local scheme whose handler serves only the image files
-            // referenced by this render, avoiding broad filesystem read access.
+            // Local images, including `../` paths outside the document directory,
+            // are rewritten to a preview-local scheme whose handler serves only
+            // the exact files referenced by this render. The document-directory
+            // grant remains available for other relative page resources.
             // The request URL carries the anchor fragment so the browser scrolls
             // to it as the DOM is built. A per-load query token keeps every
             // request URL distinct: reloading the same preview file with only a
@@ -999,7 +998,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// preview's current source anchor. Called only when the page is loaded
         /// and no new diagram engine is required (the caller guarantees this).
         func applyLiveContent(_ bodyHTML: String, in webView: WKWebView) {
-            let rewritten = LocalImageHTMLRewriter.rewrite(bodyHTML)
+            let rewritten = LocalImageHTMLRewriter.rewrite(bodyHTML, baseURL: lastBaseURL)
             localImageSchemeHandler.setAllowedImages(rewritten.allowedImages)
             pendingLiveBody = rewritten.html
             liveUpdateGeneration += 1

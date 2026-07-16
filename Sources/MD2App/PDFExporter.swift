@@ -218,10 +218,10 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
 
         // `loadHTMLString` grants no file-system read access, so relative images
         // never load. Mirror the preview: write the HTML into the document
-        // directory and load it via a file request. Absolute local images are
-        // rewritten to a local scheme whose handler serves only the image files
-        // referenced by this render.
-        let rewritten = LocalImageHTMLRewriter.rewrite(html)
+        // directory and load it via a file request. Local images, including
+        // parent-relative paths outside that directory, are rewritten to a local
+        // scheme whose handler serves only the exact files referenced by this render.
+        let rewritten = LocalImageHTMLRewriter.rewrite(html, baseURL: baseURL)
         localImageSchemeHandler.setAllowedImages(rewritten.allowedImages)
         let renderURL = baseURL.appendingPathComponent(
             "\(Self.renderFilePrefix)\(UUID().uuidString)\(Self.renderFileSuffix)"

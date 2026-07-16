@@ -1088,7 +1088,7 @@ public struct MarkdownRenderer: Sendable {
 
         for cell in cells {
             let trimmed = cell.trimmingCharacters(in: .whitespaces)
-            guard trimmed.range(of: #"^:?-{3,}:?$"#, options: .regularExpression) != nil else {
+            guard trimmed.range(of: #"^:?-+:?$"#, options: .regularExpression) != nil else {
                 return nil
             }
 

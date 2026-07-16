@@ -50,6 +50,21 @@ struct MarkdownRendererTests {
         #expect(html.contains(##"<a class="toc-level-2" href="#part">Part</a>"##))
     }
 
+    @Test func rendersTableWithTwoHyphenAlignmentDelimiter() {
+        let markdown = """
+        | 优先级 | 方向 | ML 复核证据 |
+        |:--:|------|------|
+        | **P0** | 硬件预测性维护 | 三方交叉印证 |
+        """
+
+        let html = MarkdownRenderer().render(markdown).html.withoutSourceLineMetadata
+
+        #expect(html.contains("<table>"))
+        #expect(html.contains(#"<th style="text-align:center">优先级</th>"#))
+        #expect(html.contains(#"<td style="text-align:center"><strong>P0</strong></td>"#))
+        #expect(!html.contains("|:--:|"))
+    }
+
     @Test func escapesHTMLInParagraphs() {
         let document = MarkdownRenderer().render("<script>alert(1)</script>")
 
