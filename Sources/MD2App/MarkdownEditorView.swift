@@ -190,7 +190,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             sourceTextView.onInsertImageAttachments = onInsertImageAttachments
         }
 
-        if textView.string != text, !context.coordinator.isApplyingStyle {
+        if context.coordinator.shouldApplyBoundText(text, to: textView) {
             let selectedRanges = textView.selectedRanges
             textView.string = text
             MarkdownTextStyler.apply(to: textView)
@@ -444,7 +444,18 @@ struct MarkdownEditorView: NSViewRepresentable {
             _text = text
         }
 
+        /// SwiftUI may refresh this representable for unrelated state while an
+        /// input method owns marked text in the editor. Replacing `string` in
+        /// that window destroys the input method's composition buffer and can
+        /// commit a stale candidate at a different selection.
+        @MainActor func shouldApplyBoundText(_ boundText: String, to textView: NSTextView) -> Bool {
+            textView.string != boundText && !isApplyingStyle && !textView.hasMarkedText()
+        }
+
         @MainActor func updateFind(query: String, in textView: NSTextView) {
+            // Rebuilding highlights can select/reveal a match. Never do that
+            // while the input method owns the selection for marked text.
+            guard !textView.hasMarkedText() else { return }
             let textChanged = textView.string != lastIndexedText
             let queryChanged = query != lastFindQuery
             guard textChanged || queryChanged else {
@@ -916,8 +927,29 @@ struct MarkdownEditorView: NSViewRepresentable {
             return false
         }
 
+        @MainActor func textViewDidChangeSelection(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView,
+                  !textView.hasMarkedText() else { return }
+
+            MarkdownTextStyler.synchronizeTypingAttributes(in: textView)
+
+            // A click or keyboard selection move after an edit supersedes the
+            // old viewport. Otherwise a delayed restore from that edit can yank
+            // the viewport back after the caret has deliberately moved.
+            if !isApplyingStyle {
+                editViewportRestoreToken = UUID()
+            }
+        }
+
         @MainActor func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
+            // Marked text is the input method's private, provisional buffer. It
+            // must not enter the document binding, Markdown restyling, preview
+            // rendering, autosave, or selection restoration before commit.
+            guard !textView.hasMarkedText() else {
+                editViewportRestoreToken = UUID()
+                return
+            }
             let visibleOrigin = scrollView?.contentView.bounds.origin
             // The caret reflects the post-edit position (textDidChange fires after
             // the change), so its source line is where the user is writing — the

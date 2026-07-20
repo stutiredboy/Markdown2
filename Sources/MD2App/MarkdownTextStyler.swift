@@ -22,6 +22,8 @@ enum MarkdownTextStyler {
         applyInlineStyles(to: storage)
         storage.endEditing()
 
+        synchronizeTypingAttributes(in: textView)
+
         // Re-styling the whole document shifts line positions (heading fonts are
         // taller than body text), but lines that merely moved — without their own
         // attributes changing — are not marked for redisplay. The caret-reveal
@@ -31,6 +33,55 @@ enum MarkdownTextStyler {
         // full redraw guarantees the blitted pixels are overdrawn before the frame
         // is shown, so no ghosts survive.
         textView.needsDisplay = true
+    }
+
+    /// Keeps AppKit's insertion attributes aligned with the styled source line.
+    /// `isRichText == false` does not infer these attributes from syntax styling,
+    /// so an input method otherwise renders its provisional Latin letters with
+    /// NSTextView's 12pt default even when the caret is in a 24pt heading.
+    @MainActor
+    static func synchronizeTypingAttributes(in textView: NSTextView) {
+        guard !textView.hasMarkedText(), let storage = textView.textStorage else { return }
+
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineSpacing = 4
+        paragraphStyle.paragraphSpacing = 7
+        var typingAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 16),
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: paragraphStyle
+        ]
+
+        if let index = insertionAttributeIndex(
+            at: textView.selectedRange().location,
+            in: storage.string as NSString
+        ) {
+            for key in [NSAttributedString.Key.font, .foregroundColor, .paragraphStyle] {
+                if let value = storage.attribute(key, at: index, effectiveRange: nil) {
+                    typingAttributes[key] = value
+                }
+            }
+        }
+
+        textView.typingAttributes = typingAttributes
+    }
+
+    /// Chooses the character whose visual style should be inherited at a caret.
+    /// At a line terminator/end-of-document the preceding character owns the
+    /// style; at a line start the following character does. Empty lines retain
+    /// the base style carried by their newline.
+    private static func insertionAttributeIndex(at location: Int, in string: NSString) -> Int? {
+        guard string.length > 0 else { return nil }
+        let clamped = max(0, min(location, string.length))
+        let newline = unichar(10)
+
+        if clamped < string.length, string.character(at: clamped) != newline {
+            return clamped
+        }
+        if clamped > 0, string.character(at: clamped - 1) != newline {
+            return clamped - 1
+        }
+        return min(clamped, string.length - 1)
     }
 
     private static func applyBlockStyles(to storage: NSTextStorage) {
@@ -48,6 +99,11 @@ enum MarkdownTextStyler {
             let fullLineRange = NSRange(enclosingRange, in: source)
             let line = String(source[substringRange])
             let trimmed = line.trimmingCharacters(in: .whitespaces)
+            // Preserve trailing whitespace for ATX heading recognition. A line
+            // containing only "## " is already a heading input context; trimming
+            // both ends turned it into "##" until the IME committed a character,
+            // so provisional letters were rendered with the body font.
+            let leadingTrimmed = String(line.drop { $0 == " " || $0 == "\t" })
 
             if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
                 activeFence.toggle()
@@ -60,7 +116,7 @@ enum MarkdownTextStyler {
                 return
             }
 
-            if let headingLevel = headingLevel(in: trimmed) {
+            if let headingLevel = headingLevel(in: leadingTrimmed) {
                 let size = max(17, 30 - CGFloat(headingLevel * 3))
                 storage.addAttributes([
                     .font: NSFont.boldSystemFont(ofSize: size),
