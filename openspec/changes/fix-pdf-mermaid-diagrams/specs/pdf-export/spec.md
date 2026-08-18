@@ -2,12 +2,11 @@
 
 ### Requirement: Mermaid diagrams keep their natural size in exported output
 
-The exported PDF and printed output SHALL render each Mermaid diagram at its
-natural size, exactly as the live preview does, rather than stretching it to the
-printable width. The print-time width override SHALL NOT override Mermaid's own
-inline sizing. A Mermaid diagram SHALL be scaled down only when its natural width
-exceeds the printable column width, and in that case it SHALL still fit within
-the printable column without horizontal clipping.
+The print-time width override SHALL NOT override Mermaid's own inline `max-width`
+cap. A Mermaid diagram whose natural width is less than the printable column
+SHALL render at its natural size rather than stretched to the printable width; a
+Mermaid diagram whose natural width exceeds the printable column SHALL be scaled
+down to fit within the printable column without horizontal clipping.
 
 #### Scenario: Narrow Mermaid flowchart keeps natural size
 

@@ -82,7 +82,7 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
     /// `createPDF` can capture nothing — which is why the first export of a new
     /// window produced no file while a retry (with WebKit warm) worked. A real
     /// window, parked far off-screen, makes WebKit lay it out and render.
-    private let hostWindow: NSWindow
+    let hostWindow: NSWindow  // internal so @testable tests can verify the forced-light appearance
     private let destinationURL: URL
     /// The active export profile: page geometry plus any page-number/header/footer
     /// configuration. Geometry is consumed in `init`; running-text settings are

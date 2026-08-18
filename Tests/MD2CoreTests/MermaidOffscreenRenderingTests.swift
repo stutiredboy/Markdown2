@@ -189,6 +189,76 @@ final class MermaidOffscreenRenderingTests: XCTestCase {
             "Mermaid must use its light 'default' theme under a forced light appearance")
     }
 
+    @MainActor
+    func testPDFExporterForcesLightAppearanceOnHostWindow() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed test."
+        )
+        _ = NSApplication.shared
+
+        // Constructing PDFExporter exercises the real production init — including
+        // the `hostWindow.appearance = NSAppearance(named: .aqua)` line. This guards
+        // against a maintainer deleting that load-bearing line: the mutation test
+        // confirmed no other test catches that deletion (the harness-based theme
+        // test sets appearance on its OWN window, not the exporter's).
+        let dest = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qa-appearance-\(UUID().uuidString).pdf")
+        let exporter = PDFExporter(destinationURL: dest)
+
+        guard let appearance = exporter.hostWindow.appearance else {
+            XCTFail("PDFExporter.init did not set an appearance on hostWindow — it must force .aqua so the offscreen render is dark-on-white")
+            return
+        }
+        XCTAssertEqual(
+            appearance.name, NSAppearance.Name.aqua,
+            "PDFExporter must force a light (aqua) appearance, not \(appearance.name.rawValue)"
+        )
+    }
+
+    @MainActor
+    func testNonMermaidMediaCappedUnderPrintOverride() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed test."
+        )
+        _ = NSApplication.shared
+
+        // A non-Mermaid diagram (flowchart.js) renders an <svg> inside
+        // `.diagram-flow` — which the print override's `svg:not(.diagram-mermaid
+        // svg)` selector must still reach. flow's width is also bounded by the
+        // base `.diagram svg { max-width:100% }` rule, so this primarily guards
+        // that non-Mermaid diagrams still RENDER and stay bounded under the print
+        // override — the regression surface a future selector refactor that
+        // over-excludes non-Mermaid SVGs would break.
+        let html = MarkdownRenderer().render("""
+        ```flow
+        st=>start: Begin
+        op=>operation: A moderately long operation label
+        e=>end: Finish
+        st->op->e
+        ```
+        """).html
+
+        let probe = """
+        (function () {
+          var svg = document.querySelector('.diagram-flow svg') || document.querySelector('svg:not(.diagram-mermaid svg)');
+          var r = svg ? svg.getBoundingClientRect() : null;
+          var main = document.querySelector('main') || document.body;
+          return { width: r ? Math.round(r.width) : 0, container: Math.round(main.getBoundingClientRect().width) };
+        })()
+        """
+        let result = try loadAndProbe(html: html, printOverride: true, probe: probe)
+
+        let width = CGFloat((result["width"] as? NSNumber)?.doubleValue ?? 0)
+        let container = CGFloat((result["container"] as? NSNumber)?.doubleValue ?? 600)
+        XCTAssertGreaterThan(width, 0, "flowchart (non-Mermaid) diagram did not render to an <svg>")
+        XCTAssertLessThanOrEqual(
+            width, container + 1,
+            "non-Mermaid SVG was not capped to the printable column (width=\(width), container=\(container))"
+        )
+    }
+
     // MARK: - Harness
 
     /// Loads `html` into an off-screen, window-hosted `WKWebView` (mirroring the
