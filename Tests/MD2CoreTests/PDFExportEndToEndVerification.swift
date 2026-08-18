@@ -210,6 +210,105 @@ final class PDFExportEndToEndVerification: XCTestCase {
         XCTAssertGreaterThan(bounds.width, bounds.height, "landscape pages are wider than tall")
     }
 
+    @MainActor
+    func testExportedPDFPageIsLightAndNonEmpty() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed export test."
+        )
+        _ = NSApplication.shared
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qa-pdf-light-\(UUID().uuidString)")
+        try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // A small Mermaid doc + body text so the diagram lands on page 1.
+        var md = "# Light PDF QA\n\n```mermaid\ngraph TD; A-->B; B-->C;\n```\n\n"
+        for i in 0..<40 { md += "Paragraph \(i): the quick brown fox jumps over the lazy dog.\n\n" }
+        let rendered = MarkdownRenderer().render(md)
+        let dest = dir.appendingPathComponent("light.pdf")
+
+        let exporter = PDFExporter(destinationURL: dest)
+        let done = expectation(description: "light-PDF export completes")
+        var outcome: Result<Void, Error>?
+        exporter.export(html: rendered.html, outline: rendered.outline, baseURL: nil) { result in
+            outcome = result
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 35)
+        guard case .success = outcome else {
+            XCTFail("export failed: \(String(describing: outcome))")
+            return
+        }
+
+        // Rasterize page 1 — the only test reaching the createPDF + compose OUTPUT
+        // pixels (the DOM-probe tests verify the webview, not the delivered PDF).
+        guard let bitmap = rasterizeFirstPage(of: dest, scale: 1.5) else {
+            XCTFail("could not rasterize exported page 1")
+            return
+        }
+        // A margin corner must be light: PDFExporter's forced-light appearance must
+        // reach the delivered PDF, not just the DOM. Catches a dark-inversion regression.
+        XCTAssertTrue(
+            isLight(bitmap.colorAt(x: 2, y: 2)),
+            "exported page 1 background is dark/inverted — PDFExporter's forced-light did not reach the PDF output"
+        )
+        // The page must contain dark content (text/diagram strokes) — createPDF
+        // captured something, not a blank page.
+        let darkPixels = countDarkPixels(in: bitmap)
+        XCTAssertGreaterThan(darkPixels, 50, "exported page 1 is blank — createPDF captured no content (darkPixels=\(darkPixels))")
+        print("QA-T5 light bg + \(darkPixels) dark content pixels")
+    }
+
+    /// Rasterize page 1 of the PDF at `url` into a bitmap (createPDF output, not DOM).
+    private func rasterizeFirstPage(of url: URL, scale: CGFloat) -> NSBitmapImageRep? {
+        guard let pdfDoc = CGDataProvider(url: url as CFURL).flatMap(CGPDFDocument.init),
+              let page = pdfDoc.page(at: 1) else { return nil }
+        let box = page.getBoxRect(.mediaBox)
+        let w = Int(box.width * scale), h = Int(box.height * scale)
+        guard w > 0, h > 0,
+              let ctx = CGContext(
+                  data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                  space: CGColorSpaceCreateDeviceRGB(),
+                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        ctx.setFillColor(red: 1, green: 1, blue: 1, alpha: 1)
+        ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        ctx.scaleBy(x: scale, y: scale)
+        ctx.drawPDFPage(page)
+        guard let cgImage = ctx.makeImage() else { return nil }
+        return NSBitmapImageRep(cgImage: cgImage)
+    }
+
+    private func isLight(_ color: NSColor?) -> Bool {
+        guard let c = color?.usingColorSpace(.deviceRGB) else { return false }
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0
+        c.getRed(&r, green: &g, blue: &b, alpha: nil)
+        return (r + g + b) / 3 >= 0.7
+    }
+
+    /// Count dark pixels on a coarse grid (text/diagram strokes); fast enough for a test.
+    private func countDarkPixels(in rep: NSBitmapImageRep) -> Int {
+        var dark = 0
+        let stepX = max(1, rep.pixelsWide / 60)
+        let stepY = max(1, rep.pixelsHigh / 80)
+        var y = 0
+        while y < rep.pixelsHigh {
+            var x = 0
+            while x < rep.pixelsWide {
+                if let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) {
+                    var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0
+                    c.getRed(&r, green: &g, blue: &b, alpha: nil)
+                    if (r + g + b) / 3 < 0.5 { dark += 1 }
+                }
+                x += stepX
+            }
+            y += stepY
+        }
+        return dark
+    }
+
     private func outlineLabels(_ root: PDFOutline?) -> [String] {
         guard let root else { return [] }
         var labels: [String] = []
