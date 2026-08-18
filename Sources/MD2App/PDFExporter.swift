@@ -177,6 +177,12 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
             defer: false
         )
         hostWindow.isReleasedWhenClosed = false
+        // Force a light appearance so the offscreen render — and therefore the
+        // exported/printed PDF — is deterministic dark-on-white regardless of the
+        // host's Dark Mode setting. This also makes Mermaid render its light
+        // `default` theme instead of its dark theme, whose light strokes would be
+        // near-invisible on a white page.
+        hostWindow.appearance = NSAppearance(named: .aqua)
         hostWindow.contentView = webView
         // Park the window far off every screen so it is never visible and never
         // steals key focus, while still counting as on-screen to WebKit.
@@ -648,7 +654,15 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
     /// line, long inline tokens break, and media/diagrams/math scale to 100% width.
     /// With unbreakable tokens broken (`overflow-wrap: anywhere`), nothing exceeds
     /// the layout width, so the capture maps 1:1 with no horizontal clipping.
-    private static let printStyleScript = """
+    ///
+    /// Mermaid is deliberately excluded from the media cap (`svg:not(.diagram-mermaid
+    /// svg)`): Mermaid emits `<svg width="100%" style="max-width:<naturalWidth>px">`,
+    /// using the inline `max-width` to keep small diagrams at natural size. Forcing
+    /// `max-width: 100% !important` over that inline cap strips it, so `width:100%`
+    /// wins and `height:auto` inflates the height to several pages — a small
+    /// flowchart then reads as missing. Mermaid's own `width="100%"` already shrinks
+    /// wide diagrams to the column, so nothing replaces the override for Mermaid.
+    static let printStyleScript = """
     (function () {
       if (!document.head) { return; }
       var style = document.createElement('style');
@@ -666,7 +680,7 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
         'pre code { white-space: pre-wrap !important; overflow-wrap: anywhere;' +
         ' word-break: break-word; }' +
         'code { overflow-wrap: anywhere; word-break: break-word; }' +
-        'svg, canvas, img { max-width: 100% !important; height: auto; }' +
+        'img, canvas, svg:not(.diagram-mermaid svg) { max-width: 100% !important; height: auto; }' +
         '.math-display { overflow: visible !important; }';
       document.head.appendChild(style);
     })();
