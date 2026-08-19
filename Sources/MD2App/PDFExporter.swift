@@ -699,7 +699,14 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
         ' word-break: break-word; }' +
         'code { overflow-wrap: anywhere; word-break: break-word; }' +
         'img, canvas, svg:not(.diagram-mermaid svg) { max-width: 100% !important; height: auto; }' +
-        '.math-display { overflow: visible !important; }';
+        '.math-display { overflow: visible !important; }' +
+        // The preview fades diagrams in via `transition: opacity 120ms`. In the
+        // offscreen export web view that transition never advances (WebKit
+        // throttles animation for offscreen content), so `.diagram-ready`'s
+        // `opacity: 1` never replaces `.diagram-pending`'s `opacity: 0` and the
+        // diagram is captured blank. Disable the transition so opacity flips
+        // immediately and the diagram paints.
+        '.diagram { transition: none !important; animation: none !important; }';
       document.head.appendChild(style);
     })();
     """

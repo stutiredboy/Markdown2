@@ -421,6 +421,61 @@ final class PDFExportEndToEndVerification: XCTestCase {
         print("FILEBACKED green pixels=\(green)")
     }
 
+    @MainActor
+    func testMermaidDiagramRendersInExportedPDF() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed export test."
+        )
+        _ = NSApplication.shared
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("md2-mermaid-pdf-\(UUID().uuidString)")
+        try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // A dark-styled subgraph: a blank diagram (the regression this guards)
+        // leaves only the heading's ~a few hundred dark pixels, while the rendered
+        // subgraph adds a large dark fill + strokes.
+        let markdown = """
+        # Diagram
+
+        ```mermaid
+        graph TD
+          subgraph AppLayer [应用层 App Layer]
+            A[服务 A] --> B[服务 B] --> C[业务逻辑]
+          end
+          style AppLayer fill:#1e293b,stroke:#38bdf8,color:#ffffff
+        ```
+        """
+        let rendered = MarkdownRenderer().render(markdown)
+        let dest = dir.appendingPathComponent("diagram.pdf")
+
+        let exporter = PDFExporter(destinationURL: dest)
+        let done = expectation(description: "mermaid-PDF export completes")
+        var outcome: Result<Void, Error>?
+        exporter.export(html: rendered.html, outline: rendered.outline, baseURL: dir) { result in
+            outcome = result
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 35)
+        guard case .success = outcome else {
+            XCTFail("export failed: \(String(describing: outcome))")
+            return
+        }
+
+        guard let bitmap = rasterizeFirstPage(of: dest, scale: 2.0) else {
+            XCTFail("could not rasterize exported page 1")
+            return
+        }
+        let dark = countDarkPixels(in: bitmap)
+        XCTAssertGreaterThan(
+            dark, 200,
+            "mermaid diagram did not render in the exported PDF (darkPixels=\(dark))"
+        )
+        print("MERMAID-PDF darkPixels=\(dark)")
+    }
+
     /// Rasterize page 1 of the PDF at `url` into a bitmap (createPDF output, not DOM).
     private func rasterizeFirstPage(of url: URL, scale: CGFloat) -> NSBitmapImageRep? {
         guard let pdfDoc = CGDataProvider(url: url as CFURL).flatMap(CGPDFDocument.init),
