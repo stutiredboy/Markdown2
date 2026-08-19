@@ -261,6 +261,166 @@ final class PDFExportEndToEndVerification: XCTestCase {
         print("QA-T5 light bg + \(darkPixels) dark content pixels")
     }
 
+    // MARK: Untitled-document image embedding (fix-pdf-untitled-image-export)
+
+    /// An untitled document (no `baseURL`) must still embed an absolute-path
+    /// image in the exported PDF. Before the fix, `PDFExporter.export`
+    /// short-circuited image rewriting when `baseURL` was nil, so the
+    /// `md2-local-image://` scheme was never wired and the image was blank.
+    /// The assertion counts the image's *distinctive color* (not generic dark
+    /// pixels) so body text — black on white — cannot satisfy it: the closed
+    /// form that does not false-pass.
+    @MainActor
+    func testUntitledExportEmbedsAbsolutePathImage() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed export test."
+        )
+        _ = NSApplication.shared
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("md2-untitled-abs-\(UUID().uuidString)")
+        try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let png = makeSolidColorPNG(width: 200, height: 200, color: NSColor(red: 1, green: 0, blue: 0, alpha: 1))
+        let imgPath = dir.appendingPathComponent("red.png")
+        try png.write(to: imgPath)
+
+        var md = "# Untitled Image Export\n\n"
+        md += "![red](\(imgPath.path))\n\n"
+        for i in 0..<20 { md += "Paragraph \(i): filler text so the page has body.\n\n" }
+        let rendered = MarkdownRenderer().render(md)
+
+        let dest = dir.appendingPathComponent("untitled-abs.pdf")
+        let exporter = PDFExporter(destinationURL: dest)
+        let done = expectation(description: "untitled absolute-image export completes")
+        var outcome: Result<Void, Error>?
+        exporter.export(html: rendered.html, outline: rendered.outline, baseURL: nil) { result in
+            outcome = result
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 35)
+        guard case .success = outcome else {
+            XCTFail("export failed: \(String(describing: outcome))")
+            return
+        }
+
+        guard let bitmap = rasterizeFirstPage(of: dest, scale: 1.5) else {
+            XCTFail("could not rasterize exported page 1")
+            return
+        }
+        let red = countColorPixels(in: bitmap, r: 1, g: 0, b: 0)
+        XCTAssertGreaterThan(
+            red, 500,
+            "absolute-path image did not render in an untitled document's export (red pixels=\(red))"
+        )
+        print("UNTITLED-ABS red pixels=\(red)")
+    }
+
+    /// A `file://` image reference in an untitled document must also embed. The
+    /// rewriter's `file://` branch (`LocalImageAccess.swift`) is a distinct code
+    /// path from the absolute-path branch, so it is asserted separately — the
+    /// spec requires this scenario.
+    @MainActor
+    func testUntitledExportEmbedsFileURLImage() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed export test."
+        )
+        _ = NSApplication.shared
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("md2-untitled-file-\(UUID().uuidString)")
+        try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let png = makeSolidColorPNG(width: 200, height: 200, color: NSColor(red: 0, green: 0, blue: 1, alpha: 1))
+        let imgPath = dir.appendingPathComponent("blue.png")
+        try png.write(to: imgPath)
+
+        var md = "# Untitled File URL Image\n\n"
+        md += "![blue](\(URL(fileURLWithPath: imgPath.path).absoluteString))\n\n"
+        for i in 0..<20 { md += "Paragraph \(i): filler text so the page has body.\n\n" }
+        let rendered = MarkdownRenderer().render(md)
+
+        let dest = dir.appendingPathComponent("untitled-file.pdf")
+        let exporter = PDFExporter(destinationURL: dest)
+        let done = expectation(description: "untitled file-URL image export completes")
+        var outcome: Result<Void, Error>?
+        exporter.export(html: rendered.html, outline: rendered.outline, baseURL: nil) { result in
+            outcome = result
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 35)
+        guard case .success = outcome else {
+            XCTFail("export failed: \(String(describing: outcome))")
+            return
+        }
+
+        guard let bitmap = rasterizeFirstPage(of: dest, scale: 1.5) else {
+            XCTFail("could not rasterize exported page 1")
+            return
+        }
+        let blue = countColorPixels(in: bitmap, r: 0, g: 0, b: 1)
+        XCTAssertGreaterThan(
+            blue, 500,
+            "file:// image did not render in an untitled document's export (blue pixels=\(blue))"
+        )
+        print("UNTITLED-FILE blue pixels=\(blue)")
+    }
+
+    /// A file-backed document (with a `baseURL`) must still embed images after
+    /// the export load-decision is realigned — guards the temp-file +
+    /// `loadFileRequest` path against regression.
+    @MainActor
+    func testFileBackedExportStillEmbedsImage() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed export test."
+        )
+        _ = NSApplication.shared
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("md2-filebacked-\(UUID().uuidString)")
+        try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let png = makeSolidColorPNG(width: 200, height: 200, color: NSColor(red: 0, green: 1, blue: 0, alpha: 1))
+        let imgPath = dir.appendingPathComponent("green.png")
+        try png.write(to: imgPath)
+
+        var md = "# File-Backed Image Export\n\n"
+        md += "![green](\(imgPath.path))\n\n"
+        for i in 0..<20 { md += "Paragraph \(i): filler text so the page has body.\n\n" }
+        let rendered = MarkdownRenderer().render(md)
+
+        let dest = dir.appendingPathComponent("filebacked.pdf")
+        let exporter = PDFExporter(destinationURL: dest)
+        let done = expectation(description: "file-backed image export completes")
+        var outcome: Result<Void, Error>?
+        exporter.export(html: rendered.html, outline: rendered.outline, baseURL: dir) { result in
+            outcome = result
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 35)
+        guard case .success = outcome else {
+            XCTFail("export failed: \(String(describing: outcome))")
+            return
+        }
+
+        guard let bitmap = rasterizeFirstPage(of: dest, scale: 1.5) else {
+            XCTFail("could not rasterize exported page 1")
+            return
+        }
+        let green = countColorPixels(in: bitmap, r: 0, g: 1, b: 0)
+        XCTAssertGreaterThan(
+            green, 500,
+            "image did not render in a file-backed document's export (green pixels=\(green))"
+        )
+        print("FILEBACKED green pixels=\(green)")
+    }
+
     /// Rasterize page 1 of the PDF at `url` into a bitmap (createPDF output, not DOM).
     private func rasterizeFirstPage(of url: URL, scale: CGFloat) -> NSBitmapImageRep? {
         guard let pdfDoc = CGDataProvider(url: url as CFURL).flatMap(CGPDFDocument.init),
@@ -309,6 +469,59 @@ final class PDFExportEndToEndVerification: XCTestCase {
         return dark
     }
 
+    /// Builds a solid-color PNG of the given size for image-render assertions.
+    /// Use a distinctive (non-gray) color so body text — black on white —
+    /// cannot satisfy a color-match assertion.
+    private func makeSolidColorPNG(width: Int, height: Int, color: NSColor) -> Data {
+        guard let ctx = CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            fatalError("could not create bitmap context for test image")
+        }
+        ctx.setFillColor((color.usingColorSpace(.deviceRGB) ?? color).cgColor)
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        guard let cgImage = ctx.makeImage() else {
+            fatalError("could not create image for test fixture")
+        }
+        let rep = NSBitmapImageRep(cgImage: cgImage)
+        guard let png = rep.representation(using: .png, properties: [:]) else {
+            fatalError("could not encode solid-color PNG for test image")
+        }
+        return png
+    }
+
+    /// Counts pixels matching the target RGB within `tolerance` on a coarse
+    /// grid. Color-specific, not dark-pixel-generic: counting a distinctive
+    /// color means body text cannot inflate the count, so a blank-image
+    /// regression fails the assertion instead of passing on text.
+    private func countColorPixels(
+        in rep: NSBitmapImageRep,
+        r: CGFloat, g: CGFloat, b: CGFloat,
+        tolerance: CGFloat = 0.2
+    ) -> Int {
+        var match = 0
+        let stepX = max(1, rep.pixelsWide / 120)
+        let stepY = max(1, rep.pixelsHigh / 160)
+        var y = 0
+        while y < rep.pixelsHigh {
+            var x = 0
+            while x < rep.pixelsWide {
+                if let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) {
+                    var cr: CGFloat = 0, cg: CGFloat = 0, cb: CGFloat = 0
+                    c.getRed(&cr, green: &cg, blue: &cb, alpha: nil)
+                    if abs(cr - r) <= tolerance && abs(cg - g) <= tolerance && abs(cb - b) <= tolerance {
+                        match += 1
+                    }
+                }
+                x += stepX
+            }
+            y += stepY
+        }
+        return match
+    }
+
     private func outlineLabels(_ root: PDFOutline?) -> [String] {
         guard let root else { return [] }
         var labels: [String] = []
@@ -326,4 +539,5 @@ final class PDFExportEndToEndVerification: XCTestCase {
         walk(root)
         return labels
     }
+
 }

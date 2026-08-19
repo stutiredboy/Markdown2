@@ -217,34 +217,52 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
         timeoutWorkItem = timeout
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.overallTimeout, execute: timeout)
 
-        guard let baseURL, baseURL.isFileURL else {
-            webView.loadHTMLString(html, baseURL: baseURL)
-            return
-        }
-
-        // `loadHTMLString` grants no file-system read access, so relative images
-        // never load. Mirror the preview: write the HTML into the document
-        // directory and load it via a file request. Local images, including
-        // parent-relative paths outside that directory, are rewritten to a local
-        // scheme whose handler serves only the exact files referenced by this render.
+        // Always rewrite local image sources and register the whitelist with the
+        // scheme handler (registered once in `init`) before choosing a load path.
+        // `LocalImageHTMLRewriter.rewrite` is nil-safe: with no base it still
+        // tokenizes absolute paths and `file://` URLs and only skips relative
+        // references that have no base to resolve against. This mirrors
+        // `MarkdownPreviewView.load`, which already does the same for the live
+        // preview — keep these two load-decision sites aligned; their drift is
+        // what blanked images in untitled-document exports.
         let rewritten = LocalImageHTMLRewriter.rewrite(html, baseURL: baseURL)
         localImageSchemeHandler.setAllowedImages(rewritten.allowedImages)
-        let renderURL = baseURL.appendingPathComponent(
-            "\(Self.renderFilePrefix)\(UUID().uuidString)\(Self.renderFileSuffix)"
-        )
-        do {
-            try rewritten.html.write(to: renderURL, atomically: true, encoding: .utf8)
-            temporaryHTMLURL = renderURL
-            webView.loadFileRequest(
-                URLRequest(url: renderURL),
-                allowingReadAccessTo: baseURL
+
+        if let baseURL, baseURL.isFileURL {
+            // A file-backed document has a base directory: write the rewritten
+            // HTML into it and load it via a file request. The web view gets a
+            // file:// origin and read access to the directory, so relative
+            // *non-image* resources the rewriter leaves untouched (styles,
+            // scripts) still resolve; local images are already tokenized and
+            // served by the scheme handler. Mirrors the preview's file-backed load.
+            let renderURL = baseURL.appendingPathComponent(
+                "\(Self.renderFilePrefix)\(UUID().uuidString)\(Self.renderFileSuffix)"
             )
-        } catch {
-            // A file-backed document may reference relative images that only
-            // resolve via the granted read access of `loadFileRequest`. Falling
-            // back to `loadHTMLString` would silently drop those images while
-            // still reporting success, so treat the failure as an export failure.
-            finish(.failure(ExportError.preparationFailed))
+            do {
+                try rewritten.html.write(to: renderURL, atomically: true, encoding: .utf8)
+                temporaryHTMLURL = renderURL
+                webView.loadFileRequest(
+                    URLRequest(url: renderURL),
+                    allowingReadAccessTo: baseURL
+                )
+            } catch {
+                // A file-backed document may reference relative images that only
+                // resolve via the granted read access of `loadFileRequest`. Falling
+                // back to `loadHTMLString` would silently drop those images while
+                // still reporting success, so treat the failure as an export failure.
+                finish(.failure(ExportError.preparationFailed))
+            }
+        } else {
+            // No base directory (an untitled document). Load the rewritten HTML
+            // directly: the rewriter already turned absolute-path and `file://`
+            // image references into `md2-local-image://` tokens, which the scheme
+            // handler (registered in `init`) serves by reading those exact files
+            // from disk — no web-view file access needed. Relative references are
+            // left as-is and stay unresolvable (no base to resolve against),
+            // matching the live preview's untitled-document behavior. (`baseURL`
+            // is nil here; the preview passes `baseURL: baseURL`, identical in
+            // this branch.)
+            webView.loadHTMLString(rewritten.html, baseURL: nil)
         }
     }
 
