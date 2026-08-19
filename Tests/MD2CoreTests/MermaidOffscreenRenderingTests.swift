@@ -261,6 +261,137 @@ final class MermaidOffscreenRenderingTests: XCTestCase {
 
     // MARK: - Harness
 
+    @MainActor
+    func testLongCJKMermaidLabelWrapsToBoundedWidth() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed test."
+        )
+
+        // The reference diagram: two `graph TD` subgraphs, each carrying a long
+        // plain-CJK note label. Before the wrap, Mermaid laid the notes out at
+        // their full un-wrapped length and the SVG's natural width ballooned to
+        // ~1378 px; wrapped, it should stay well below the printable column.
+        let src = """
+        graph TD
+            subgraph AppLayer [应用层业务 App Layer]
+                A[服务 A] --- B[服务 B] --- C[业务逻辑]
+                note1[特点：迭代更快、业务隔离、单点故障影响面局部、容错率相对较高]
+            end
+
+            subgraph InfraLayer [基础设施与运维]
+                D[物理服务器 / 虚机集群 / 容器集群 ]
+                E[核心网关与路由 / 云网关 / 负载均衡]
+                F[数据库 / 存储底座]
+                note2[特点：日常无感、全局底座、爆炸半径极广、误操作容错率为零]
+            end
+
+            AppLayer ==>|强依赖于| InfraLayer
+
+            style AppLayer fill:#1e293b,stroke:#38bdf8,stroke-width:2px,color:#fff
+            style InfraLayer fill:#0f172a,stroke:#ef4444,stroke-width:2px,color:#fff
+        """
+        let html = MarkdownRenderer().render("```mermaid\n\(src)\n```").html
+
+        let probe = """
+        (function () {
+          var svg = document.querySelector('.diagram-mermaid svg');
+          var vb = svg ? (svg.getAttribute('viewBox') || '') : '';
+          var parts = vb.split(' ');
+          return { width: parts.length > 2 ? (parseFloat(parts[2]) || 0) : 0 };
+        })()
+        """
+        let result = try loadAndProbe(html: html, probe: probe)
+        let width = CGFloat((result["width"] as? NSNumber)?.doubleValue ?? 0)
+        XCTAssertGreaterThan(width, 0, "reference Mermaid diagram did not render")
+        // Before the wrap the reference diagram's natural width was ~1378 px; the
+        // wrap bounds each long label to ~15 code points and brings it under
+        // ~1100 px. It cannot reach the ~523 px printable column because Mermaid
+        // still lays the two subgraphs side by side (layout is out of scope), but
+        // the regression (un-wrapped long labels) is clearly caught here.
+        XCTAssertLessThan(width, 1100, "long CJK note labels were not wrapped (natural width=\(width))")
+    }
+
+    @MainActor
+    func testLongLatinMermaidLabelWraps() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed test."
+        )
+
+        let src = """
+        flowchart LR
+          A[This is an extremely long label that just keeps going and going and would definitely need wrapping to fit on one line]
+        """
+        let html = MarkdownRenderer().render("```mermaid\n\(src)\n```").html
+
+        let probe = """
+        (function () {
+          var svg = document.querySelector('.diagram-mermaid svg');
+          var vb = svg ? (svg.getAttribute('viewBox') || '') : '';
+          var parts = vb.split(' ');
+          return { width: parts.length > 2 ? (parseFloat(parts[2]) || 0) : 0 };
+        })()
+        """
+        let result = try loadAndProbe(html: html, probe: probe)
+        let width = CGFloat((result["width"] as? NSNumber)?.doubleValue ?? 0)
+        XCTAssertGreaterThan(width, 0, "latin-label Mermaid diagram did not render")
+        XCTAssertLessThan(width, 500, "long latin label was not wrapped (natural width=\(width))")
+    }
+
+    @MainActor
+    func testWrapLeavesNonPlainLabelsUntouched() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed test."
+        )
+
+        // Every element the wrap must NOT touch: a short label, an HTML label
+        // with an explicit <br/>, a long edge label, a long subgraph title, and a
+        // style directive. If the wrap corrupted any of these, Mermaid would fall
+        // back to source text (error) or drop the title/style.
+        let src = """
+        graph TD
+            A[short]
+            B[x<br/>y]
+            A -->|a very long edge label that must stay intact| B
+            subgraph sg [这是一个很长的子图标题，用来验证它不会被自动换行处理]
+                C[服务]
+            end
+            style sg fill:#112233,stroke:#445566,color:#ffffff
+        """
+        let html = MarkdownRenderer().render("```mermaid\n\(src)\n```").html
+
+        let probe = """
+        (function () {
+          var el = document.querySelector('.diagram-mermaid');
+          var svg = el && el.querySelector('svg');
+          var labels = [];
+          if (svg) {
+            var divs = svg.querySelectorAll('foreignObject div');
+            for (var i = 0; i < divs.length; i++) { labels.push(divs[i].textContent || ''); }
+          }
+          return {
+            svg: !!svg,
+            error: !!(el && el.classList.contains('diagram-error')),
+            labels: labels
+          };
+        })()
+        """
+        let result = try loadAndProbe(html: html, probe: probe)
+        XCTAssertTrue(boolValue(result["svg"]), "diagram must render to an <svg>")
+        XCTAssertFalse(boolValue(result["error"]), "wrap corrupted a non-plain label into the error path")
+        let labels = (result["labels"] as? [String]) ?? []
+        XCTAssertTrue(
+            labels.contains { $0.contains("这是一个很长的子图标题") },
+            "long subgraph title must stay intact (labels=\(labels))"
+        )
+        XCTAssertTrue(
+            labels.contains { $0.contains("short") },
+            "short label must stay intact (labels=\(labels))"
+        )
+    }
+
     /// Loads `html` into an off-screen, window-hosted `WKWebView` (mirroring the
     /// exporter so WebKit lays out and runs the engines), polls the settle signal,
     /// then evaluates `probe` and returns its result dictionary.

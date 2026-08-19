@@ -2236,6 +2236,58 @@ public struct MarkdownRenderer: Sendable {
     // content without reloading the page. Called once over the whole document
     // at load. Engine guards (`typeof …`) keep it safe when an engine script
     // was not inlined (e.g. a diagram type added after the initial load).
+    // Mermaid sizes each node to its label's full un-wrapped width. Long plain
+    // labels — especially CJK, which has no spaces to break on and which
+    // Mermaid's `flowchart.wrappingWidth` never wraps — balloon a diagram's
+    // natural width, so a PDF export scales it down until the text is
+    // unreadable. Wrap long plain-text labels before render (Mermaid renders
+    // `<br/>` as a line break) so the diagram lays out at a bounded width.
+    function wrapLongLabels(source) {
+        var LABEL_MIN = 15;   // wrap only when the label exceeds this many code points
+        var LABEL_LINE = 15;  // break each display line at roughly this many code points
+        // Characters that mark a label as not plain text: HTML/markup, edge
+        // labels, markdown emphasis, or a fancier node shape (brackets inside
+        // the label). A label containing any of these is left untouched.
+        var FORBIDDEN = '<>|&"`*_(){}[]';
+        function isPlain(label) {
+            if (label.charAt(0) === "/") { return false; }  // parallelogram [/.../]
+            for (var i = 0; i < label.length; i++) {
+                if (FORBIDDEN.indexOf(label.charAt(i)) !== -1) { return false; }
+            }
+            return true;
+        }
+        function wrapText(label) {
+            var chars = Array.from(label);
+            var out = "";
+            var i = 0;
+            while (i < chars.length) {
+                var end = i + LABEL_LINE;
+                var cut = end;
+                if (end < chars.length) {
+                    // Latin: break at the last space before the limit. CJK has
+                    // no spaces, so fall through and break between characters.
+                    for (var j = end - 1; j > i; j--) {
+                        if (chars[j] === " ") { cut = j + 1; break; }
+                    }
+                }
+                out += chars.slice(i, cut).join("");
+                i = cut;
+                while (i < chars.length && chars[i] === " ") { i++; }
+                if (i < chars.length) { out += "<br/>"; }
+            }
+            return out;
+        }
+        function wrap(match, id, label, open, close) {
+            if (!isPlain(label) || Array.from(label).length <= LABEL_MIN) { return match; }
+            return id + open + wrapText(label) + close;
+        }
+        var s = source;
+        s = s.replace(/([A-Za-z0-9_][A-Za-z0-9_-]*)[[]([^\\]]+)]/g, function (m, id, label) { return wrap(m, id, label, "[", "]"); });
+        s = s.replace(/([A-Za-z0-9_][A-Za-z0-9_-]*)[(]([^)]+)[)]/g, function (m, id, label) { return wrap(m, id, label, "(", ")"); });
+        s = s.replace(/([A-Za-z0-9_][A-Za-z0-9_-]*)[{]([^}]+)[}]/g, function (m, id, label) { return wrap(m, id, label, "{", "}"); });
+        return s;
+    }
+
     window.__md2RenderDiagrams = function (root) {
         root = root || document;
         window.__md2MermaidSeq = window.__md2MermaidSeq || 0;
@@ -2312,7 +2364,7 @@ public struct MarkdownRenderer: Sendable {
             } catch (err) {}
             for (var k = 0; k < mers.length; k++) {
                 (function (el, idx) {
-                    var source = el.textContent;
+                    var source = wrapLongLabels(el.textContent);
                     window.__md2DiagramPending++;
                     try {
                         mermaid.render("md2-mermaid-" + idx, source).then(function (result) {
