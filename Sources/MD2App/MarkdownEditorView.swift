@@ -692,15 +692,20 @@ struct MarkdownEditorView: NSViewRepresentable {
                 ? matches[currentMatchIndex]
                 : nil
 
-            if let oldCurrent = paintedCurrentRange, oldCurrent != currentRange {
+            if let oldCurrent = paintedCurrentRange,
+               oldCurrent != currentRange,
+               let index = matches.firstIndex(of: oldCurrent) {
+                // Demote only while the range is still a match in the CURRENT
+                // coordinate space. A range that is no longer a match was already
+                // removed by the membership diff above; removing it again here
+                // would operate on a stale (pre-edit) range and could wipe a
+                // freshly-painted neighboring match.
                 layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: oldCurrent)
-                if let index = matches.firstIndex(of: oldCurrent) {
-                    layoutManager.addTemporaryAttribute(
-                        .backgroundColor,
-                        value: normalColor,
-                        forCharacterRange: matches[index]
-                    )
-                }
+                layoutManager.addTemporaryAttribute(
+                    .backgroundColor,
+                    value: normalColor,
+                    forCharacterRange: matches[index]
+                )
             }
             if let currentRange {
                 layoutManager.addTemporaryAttribute(

@@ -68,4 +68,31 @@ struct FindEditRebuildRegressionTests {
 
         #expect(highlighted(textView, at: 5))
     }
+
+    @Test func shiftingEditDoesNotTruncateANonCurrentMatchHighlight() {
+        var modelText = "xabc"
+        let coordinator = MarkdownEditorView.Coordinator(
+            text: Binding(get: { modelText }, set: { modelText = $0 })
+        )
+        let textView = makeTextView(modelText)
+
+        coordinator.updateFind(query: "abc", in: textView)
+        coordinator.flushPendingFindRebuild(in: textView)
+        // The current match "abc" at 1..<4 is highlighted (orange).
+        #expect(highlighted(textView, at: 1))
+
+        // Edit the document so "abc" appears at 0..<3 and 3..<6. The old painted
+        // current range (1..<4) lives in the previous coordinate space; the
+        // rebuild must not let its stale coordinates wipe the second match's
+        // freshly painted highlight.
+        textView.string = "abcabc"
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: textView))
+        coordinator.updateFind(query: "abc", in: textView)
+        coordinator.flushPendingFindRebuild(in: textView)
+
+        #expect(textView.string == "abcabc")
+        for index in 0..<6 {
+            #expect(highlighted(textView, at: index), "match highlight missing at index \(index)")
+        }
+    }
 }
