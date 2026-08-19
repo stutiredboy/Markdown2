@@ -438,7 +438,35 @@ struct MarkdownEditorView: NSViewRepresentable {
         private var matches: [NSRange] = []
         private var currentMatchIndex = -1
         private var highlightedRanges: [NSRange] = []
+        /// The match currently painted in the "current match" color, so the
+        /// highlight can be demoted to the normal color when the current match
+        /// moves.
+        private var paintedCurrentRange: NSRange?
         private var editViewportRestoreToken = UUID()
+        /// Monotonic revision of the (text, query) state that drives find
+        /// re-indexing. Bumped by `textDidChange` (document edits) and when the
+        /// query binding changes, so `updateFind` can detect "the document or
+        /// query changed" with an O(1) comparison instead of whole-document
+        /// string equality on every SwiftUI update.
+        private var findGeneration = 0
+        /// The generation whose index is currently painted on the text view.
+        private var appliedFindGeneration = -1
+        /// The generation for which a debounced rebuild is armed, if any.
+        private var scheduledFindGeneration: Int?
+        /// The query a pending rebuild will run for, and the preferred match it
+        /// will target. Cleared once the rebuild runs (scheduled or flushed).
+        private var scheduledFindQuery: String?
+        private var scheduledFindPreferredIndex: Int?
+        /// A token that supersedes a previously armed debounce, so a stale
+        /// scheduled rebuild can detect it was overtaken and drop itself.
+        private var pendingFindToken: UUID?
+        /// The query most recently observed by `updateFind` (schedule-time), used
+        /// to detect query changes without relying on the fire-time
+        /// `lastFindQuery`.
+        private var lastObservedQuery = ""
+        /// Debounce window for query/text-driven re-indexing. Internal so tests
+        /// can shorten it.
+        var findDebounceInterval: TimeInterval = 0.15
 
         init(text: Binding<String>) {
             _text = text
@@ -456,20 +484,101 @@ struct MarkdownEditorView: NSViewRepresentable {
             // Rebuilding highlights can select/reveal a match. Never do that
             // while the input method owns the selection for marked text.
             guard !textView.hasMarkedText() else { return }
-            let textChanged = textView.string != lastIndexedText
-            let queryChanged = query != lastFindQuery
-            guard textChanged || queryChanged else {
+
+            if query != lastObservedQuery {
+                lastObservedQuery = query
+                findGeneration += 1
+            }
+
+            // Idempotent: only re-index when the (text, query) state moved past
+            // what is already applied or already scheduled. `textDidChange` bumps
+            // the generation on document edits; a query change bumps it here.
+            // Comparing generations is O(1) and never reads the whole document.
+            let generation = findGeneration
+            guard generation != appliedFindGeneration,
+                  generation != scheduledFindGeneration else {
                 return
             }
 
-            rebuildFindIndex(
+            scheduleFindRebuild(
                 query: query,
                 in: textView,
-                preferredIndex: queryChanged ? 0 : currentMatchIndex
+                generation: generation,
+                preferredIndex: query != lastFindQuery ? 0 : currentMatchIndex
             )
         }
 
+        /// Arms the debounced rebuild for `query` on `generation`. Idempotent by
+        /// generation: a re-entrant `updateFind` for an already-armed generation
+        /// (e.g. the status-text re-render after a search result) neither cancels
+        /// nor re-arms it, so the search cannot starve in a SwiftUI update loop.
+        /// Re-arming for a newer generation replaces the token, so the older
+        /// scheduled closure detects the mismatch and drops itself.
+        @MainActor private func scheduleFindRebuild(
+            query: String,
+            in textView: NSTextView,
+            generation: Int,
+            preferredIndex: Int
+        ) {
+            scheduledFindGeneration = generation
+            scheduledFindQuery = query
+            scheduledFindPreferredIndex = preferredIndex
+            let token = UUID()
+            pendingFindToken = token
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + findDebounceInterval
+            ) { [weak self, weak textView] in
+                guard let self, let textView else { return }
+                guard self.pendingFindToken == token else { return }
+                self.flushScheduledFindRebuild(in: textView)
+            }
+        }
+
+        /// The debounce fire path: runs the armed rebuild for the query it was
+        /// scheduled with, re-checking the marked-text guard.
+        @MainActor private func flushScheduledFindRebuild(in textView: NSTextView) {
+            pendingFindToken = nil
+            guard let query = scheduledFindQuery else {
+                scheduledFindGeneration = nil
+                return
+            }
+            let preferredIndex = scheduledFindPreferredIndex ?? currentMatchIndex
+            scheduledFindQuery = nil
+            scheduledFindPreferredIndex = nil
+            scheduledFindGeneration = nil
+            performFindRebuild(query: query, in: textView, preferredIndex: preferredIndex)
+        }
+
+        /// Cancels any debounced rebuild and runs it synchronously for the current
+        /// query/text, so navigation and replace always operate on a current match
+        /// list even when a query edit has not settled yet. A no-op when nothing
+        /// is pending. Internal so the headless tests can drive it deterministically.
+        @MainActor func flushPendingFindRebuild(in textView: NSTextView) {
+            guard let query = scheduledFindQuery else { return }
+            pendingFindToken = nil
+            let preferredIndex = scheduledFindPreferredIndex ?? currentMatchIndex
+            scheduledFindQuery = nil
+            scheduledFindPreferredIndex = nil
+            scheduledFindGeneration = nil
+            performFindRebuild(query: query, in: textView, preferredIndex: preferredIndex)
+        }
+
+        /// Runs a find rebuild unless the input method owns the selection for
+        /// marked text, in which case the request is dropped (a later
+        /// `textDidChange` on commit re-arms it).
+        @MainActor private func performFindRebuild(
+            query: String,
+            in textView: NSTextView,
+            preferredIndex: Int
+        ) {
+            guard !textView.hasMarkedText() else { return }
+            rebuildFindIndex(query: query, in: textView, preferredIndex: preferredIndex)
+        }
+
         @MainActor func navigateFind(forward: Bool, in textView: NSTextView) {
+            // A pending query-driven rebuild must run first, or navigation would
+            // step through the previous query's match list.
+            flushPendingFindRebuild(in: textView)
             guard !matches.isEmpty else {
                 reportFindResult()
                 return
@@ -487,6 +596,9 @@ struct MarkdownEditorView: NSViewRepresentable {
             replacement: String,
             in textView: NSTextView
         ) {
+            // Replace must act on the current query's matches, never the previous
+            // query's list, so a pending query-driven rebuild is flushed first.
+            flushPendingFindRebuild(in: textView)
             guard !lastFindQuery.isEmpty, !matches.isEmpty else {
                 reportFindResult()
                 return
@@ -532,7 +644,6 @@ struct MarkdownEditorView: NSViewRepresentable {
             in textView: NSTextView,
             preferredIndex: Int
         ) {
-            clearFindHighlights(in: textView)
             lastFindQuery = query
             lastIndexedText = textView.string
             matches = TextSearch.matches(of: query, in: textView.string)
@@ -546,35 +657,71 @@ struct MarkdownEditorView: NSViewRepresentable {
             applyFindHighlights(in: textView)
             revealCurrentMatch(in: textView)
             reportFindResult()
+            appliedFindGeneration = findGeneration
         }
 
         @MainActor private func applyFindHighlights(in textView: NSTextView) {
             guard let layoutManager = textView.layoutManager else { return }
-            highlightedRanges = matches
             let normalColor = NSColor.systemYellow.withAlphaComponent(0.45)
             let currentColor = NSColor.systemOrange.withAlphaComponent(0.6)
 
-            for (index, range) in matches.enumerated() {
+            // Repaint only the ranges whose match membership changed. When the set
+            // is identical (navigation, or a rebuild that produced the same
+            // matches), no temporary attribute churn happens at all — only the
+            // current-match color below is touched. This keeps layout invalidation
+            // proportional to the change instead of to the whole match set.
+            if highlightedRanges != matches {
+                let diff = FindHighlightDiff.diff(from: highlightedRanges, to: matches)
+                for range in diff.removed {
+                    layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: range)
+                }
+                for range in diff.added {
+                    layoutManager.addTemporaryAttribute(
+                        .backgroundColor,
+                        value: normalColor,
+                        forCharacterRange: range
+                    )
+                }
+                highlightedRanges = matches
+            }
+
+            // The current match is orange; the previous current match falls back
+            // to the normal highlight if it is still a match.
+            let currentRange: NSRange? =
+                (currentMatchIndex >= 0 && currentMatchIndex < matches.count)
+                ? matches[currentMatchIndex]
+                : nil
+
+            if let oldCurrent = paintedCurrentRange, oldCurrent != currentRange {
+                layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: oldCurrent)
+                if let index = matches.firstIndex(of: oldCurrent) {
+                    layoutManager.addTemporaryAttribute(
+                        .backgroundColor,
+                        value: normalColor,
+                        forCharacterRange: matches[index]
+                    )
+                }
+            }
+            if let currentRange {
                 layoutManager.addTemporaryAttribute(
                     .backgroundColor,
-                    value: index == currentMatchIndex ? currentColor : normalColor,
-                    forCharacterRange: range
+                    value: currentColor,
+                    forCharacterRange: currentRange
                 )
             }
-        }
-
-        @MainActor private func clearFindHighlights(in textView: NSTextView) {
-            guard let layoutManager = textView.layoutManager else { return }
-            for range in highlightedRanges {
-                layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: range)
-            }
-            highlightedRanges = []
+            paintedCurrentRange = currentRange
         }
 
         @MainActor private func revealCurrentMatch(in textView: NSTextView) {
             guard currentMatchIndex >= 0, currentMatchIndex < matches.count else { return }
             let range = matches[currentMatchIndex]
-            textView.setSelectedRange(range)
+            // Reveal with a collapsed caret at the END of the match rather than a
+            // full-range selection, so an immediate Backspace deletes only the
+            // character before the caret — never the whole matched word. The
+            // current-match highlight still identifies the active match visually,
+            // and Reveal does not move first responder: the find query field keeps
+            // focus until the user clicks back into the editor.
+            textView.setSelectedRange(FindReveal.caretRange(for: range))
             // Find reveals are programmatic scrolls: suppress anchor reporting
             // until they settle so they cannot become a stale mode-switch anchor.
             if let scrollView = textView.enclosingScrollView {
@@ -913,6 +1060,7 @@ struct MarkdownEditorView: NSViewRepresentable {
 
         deinit {
             NotificationCenter.default.removeObserver(self)
+            pendingFindToken = nil
         }
 
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
@@ -950,6 +1098,9 @@ struct MarkdownEditorView: NSViewRepresentable {
                 editViewportRestoreToken = UUID()
                 return
             }
+            // A committed text edit makes the previous find index stale. Bump the
+            // generation so the next `updateFind` schedules a rebuild.
+            findGeneration += 1
             let visibleOrigin = scrollView?.contentView.bounds.origin
             // The caret reflects the post-edit position (textDidChange fires after
             // the change), so its source line is where the user is writing — the

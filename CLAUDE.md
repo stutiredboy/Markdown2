@@ -21,3 +21,11 @@ GUI 测试通过 `MD2_RUN_GUI_TESTS=1` 选择性开启，`swift test` 与 CI 默
 - `printStyleScript` 里的 `img, canvas, svg:not(.diagram-mermaid svg)` 选择器 —— 保留 Mermaid 自然尺寸（守：`testNarrowMermaidKeepsNaturalSizeUnderPrintOverride`、`testWideMermaidFitsPrintableColumnUnderPrintOverride`、`testNonMermaidMediaCappedUnderPrintOverride`）
 
 另见 `TODOS.md`：无头 GUI CI lane（让 `MD2_RUN_GUI_TESTS` 在 CI 自动跑）尚未实现。
+
+Find/delete GUI guards: the delete-after-reveal test and the find responsiveness
+benchmark in `Tests/MD2CoreTests/` are `MD2_RUN_GUI_TESTS`-gated and skipped by
+`swift test` and CI. After changing the find/reveal/highlight path in
+`Sources/MD2App/MarkdownEditorView.swift`, run
+`MD2_RUN_GUI_TESTS=1 swift test --filter FindFindDeleteGUITests` locally before landing —
+this path fails silently (Backspace deletes a whole word, find-mode stutter), and
+only the GUI tests or manual use catch it.
