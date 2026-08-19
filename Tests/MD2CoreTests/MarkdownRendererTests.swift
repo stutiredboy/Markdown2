@@ -99,6 +99,20 @@ struct MarkdownRendererTests {
         #expect(document.html.contains(#"<a href="docs/open_spec_v1.html"><strong>Open</strong> spec</a>"#))
     }
 
+    @Test func angleBracketLinkDestinationAllowsSpacesInsideTableCell() {
+        let markdown = #"""
+        | 资料 | 说明 |
+        | --- | --- |
+        | [低健康度服务器治理](</Users/tiredboy/work/git-sa/infra-management/fms/ServerHealth/[202506]低健康度服务器治理.xlsx>) | 第一条 |
+        | [重点项目健康度协作](</Users/tiredboy/work/git-sa/infra-management/fms/ServerHealth/[202603]第1 2梯队项目健康度达标率提升协作.xlsx>) | 第二条 |
+        """#
+
+        let html = MarkdownRenderer().render(markdown).html.withoutSourceLineMetadata
+
+        #expect(html.contains(#"<a href="/Users/tiredboy/work/git-sa/infra-management/fms/ServerHealth/[202506]低健康度服务器治理.xlsx">低健康度服务器治理</a>"#))
+        #expect(html.contains(#"<a href="/Users/tiredboy/work/git-sa/infra-management/fms/ServerHealth/[202603]第1 2梯队项目健康度达标率提升协作.xlsx">重点项目健康度协作</a>"#))
+    }
+
     @Test func infersImageDimensionsFromSizedURLPath() {
         let document = MarkdownRenderer().render(#"![Sample](https://via.placeholder.com/200x100 "Placeholder image")"#)
 

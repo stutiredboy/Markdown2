@@ -51,6 +51,19 @@ struct MathRenderingTests {
         #expect(!html.contains("<p>$$"))
     }
 
+    @Test func rendersBracketDelimitedDisplayMath() {
+        let markdown = #"""
+        \[
+        C^{availability}_t=\frac{A_t}{H_t}\times 100
+        \]
+        """#
+
+        let html = MarkdownRenderer().render(markdown).html.withoutSourceLineMetadata
+
+        #expect(html.contains(#"<div class="math math-display">C^{availability}_t=\frac{A_t}{H_t}\times 100</div>"#))
+        #expect(!html.contains(#"<p>\["#))
+    }
+
     @Test func displayMathSeparatesFromSurroundingParagraphs() {
         let markdown = """
         Before the equation.

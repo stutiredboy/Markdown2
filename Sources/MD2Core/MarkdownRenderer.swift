@@ -315,26 +315,33 @@ public struct MarkdownRenderer: Sendable {
         return ("<pre><code>\(escapeHTML(code.joined(separator: "\n")))</code></pre>", index)
     }
 
-    /// Detects a display math block delimited by `$$` and returns its raw TeX.
+    /// Detects a display math block delimited by `$$` or `\[` / `\]` and
+    /// returns its raw TeX.
     ///
-    /// Handles both a single line such as `$$a^2 + b^2 = c^2$$` and a multi-line
-    /// block whose opening line starts with `$$` and whose content runs until a
-    /// line ending in `$$`. Returns `nil` when there is no closing `$$`, so the
-    /// text falls through to normal paragraph handling. The raw TeX is exposed
-    /// (rather than finished HTML) so both the label pre-scan and the render walk
-    /// can inspect it for `\label`/`\tag`.
+    /// Handles both single-line and multi-line forms. Returns `nil` when the
+    /// matching closing delimiter is absent, so the text falls through to normal
+    /// paragraph handling. The raw TeX is exposed (rather than finished HTML) so
+    /// both the label pre-scan and the render walk can inspect it for
+    /// `\label`/`\tag`.
     private func mathBlockContent(from lines: [String], startIndex: Int) -> (tex: String, nextIndex: Int)? {
         let trimmed = lines[startIndex].trimmedMarkdownLine
-        guard trimmed.hasPrefix("$$") else { return nil }
-
-        let afterOpen = String(trimmed.dropFirst(2))
-
-        // Single-line block: `$$ ... $$`
-        if afterOpen.hasSuffix("$$"), afterOpen.count >= 2 {
-            return (String(afterOpen.dropLast(2)), startIndex + 1)
+        let delimiters: (open: String, close: String)
+        if trimmed.hasPrefix("$$") {
+            delimiters = ("$$", "$$")
+        } else if trimmed.hasPrefix(#"\["#) {
+            delimiters = (#"\["#, #"\]"#)
+        } else {
+            return nil
         }
 
-        // Multi-line block: collect lines until one ends with `$$`.
+        let afterOpen = String(trimmed.dropFirst(delimiters.open.count))
+
+        // Single-line block: `$$ ... $$` or `\[ ... \]`.
+        if afterOpen.hasSuffix(delimiters.close), afterOpen.count >= delimiters.close.count {
+            return (String(afterOpen.dropLast(delimiters.close.count)), startIndex + 1)
+        }
+
+        // Multi-line block: collect lines until one ends with the matching close.
         var content: [String] = []
         if !afterOpen.isEmpty {
             content.append(afterOpen)
@@ -343,8 +350,8 @@ public struct MarkdownRenderer: Sendable {
         var index = startIndex + 1
         while index < lines.count {
             let lineTrimmed = lines[index].trimmedMarkdownLine
-            if lineTrimmed.hasSuffix("$$") {
-                let beforeClose = String(lineTrimmed.dropLast(2))
+            if lineTrimmed.hasSuffix(delimiters.close) {
+                let beforeClose = String(lineTrimmed.dropLast(delimiters.close.count))
                 if !beforeClose.isEmpty {
                     content.append(beforeClose)
                 }
@@ -1687,24 +1694,34 @@ public struct MarkdownRenderer: Sendable {
         return value
     }
 
-    /// Inline links `[label](href "title")`. Links whose scheme could execute
-    /// script are dropped, keeping the label as inert text.
+    /// Inline links `[label](href "title")`. Angle-bracket destinations may
+    /// contain spaces (`[label](<local path>)`); the brackets delimit the
+    /// destination and are not part of the resulting href. Links whose scheme
+    /// could execute script are dropped, keeping the label as inert text.
     private func renderLinks(_ text: String, protector: InlineProtector) -> String {
-        replaceMatches(in: text, pattern: #"\[([^\]]+)\]\((\S+?)(?:\s+&quot;(.+?)&quot;)?\)"#) { match, source in
-            guard let labelRange = Range(match.range(at: 1), in: source),
-                  let hrefRange = Range(match.range(at: 2), in: source) else {
+        replaceMatches(
+            in: text,
+            pattern: #"\[([^\]]+)\]\((?:&lt;(.+?)&gt;|(\S+?))(?:\s+&quot;(.+?)&quot;)?\)"#
+        ) { match, source in
+            guard let labelRange = Range(match.range(at: 1), in: source) else {
                 return matchText(match, in: source)
             }
 
             // Drop links whose scheme could execute script (javascript:, etc.),
             // keeping the visible label as inert text so the content survives.
+            let hrefRange = match.range(at: 2).location != NSNotFound
+                ? match.range(at: 2)
+                : match.range(at: 3)
+            guard let hrefRange = Range(hrefRange, in: source) else {
+                return matchText(match, in: source)
+            }
             let href = String(source[hrefRange])
             guard !isDangerousLinkHref(href) else {
                 return String(source[labelRange])
             }
 
             let title: String
-            if match.range(at: 3).location != NSNotFound, let titleRange = Range(match.range(at: 3), in: source) {
+            if match.range(at: 4).location != NSNotFound, let titleRange = Range(match.range(at: 4), in: source) {
                 title = " title=\"\(source[titleRange])\""
             } else {
                 title = ""
