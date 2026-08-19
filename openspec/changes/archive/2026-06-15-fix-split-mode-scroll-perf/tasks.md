@@ -11,7 +11,7 @@
       characters appear without waiting on the render) and that `isDirty` /
       autosave still fire correctly after the debounced render.
 - [x] 1.4 Measure typing latency in Side by Side on a ~600-line document
-      (e.g. `/Users/tiredboy/Downloads/matrix-cli-security.md`) before/after and
+      (e.g. `/Users/user/Downloads/example-security-report.md`) before/after and
       confirm the editor keeps up with sustained typing.
 
 ## 2. Edits must not move the editor pane (issue 2 / D2)

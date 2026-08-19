@@ -103,14 +103,14 @@ struct MarkdownRendererTests {
         let markdown = #"""
         | 资料 | 说明 |
         | --- | --- |
-        | [低健康度服务器治理](</Users/tiredboy/work/git-sa/infra-management/fms/ServerHealth/[202506]低健康度服务器治理.xlsx>) | 第一条 |
-        | [重点项目健康度协作](</Users/tiredboy/work/git-sa/infra-management/fms/ServerHealth/[202603]第1 2梯队项目健康度达标率提升协作.xlsx>) | 第二条 |
+        | [第一份报告](</Users/user/Documents/[202506]第一份报告.xlsx>) | 第一条 |
+        | [第二份报告](</Users/user/Documents/[202603]第1 2季度协作报告.xlsx>) | 第二条 |
         """#
 
         let html = MarkdownRenderer().render(markdown).html.withoutSourceLineMetadata
 
-        #expect(html.contains(#"<a href="/Users/tiredboy/work/git-sa/infra-management/fms/ServerHealth/[202506]低健康度服务器治理.xlsx">低健康度服务器治理</a>"#))
-        #expect(html.contains(#"<a href="/Users/tiredboy/work/git-sa/infra-management/fms/ServerHealth/[202603]第1 2梯队项目健康度达标率提升协作.xlsx">重点项目健康度协作</a>"#))
+        #expect(html.contains(#"<a href="/Users/user/Documents/[202506]第一份报告.xlsx">第一份报告</a>"#))
+        #expect(html.contains(#"<a href="/Users/user/Documents/[202603]第1 2季度协作报告.xlsx">第二份报告</a>"#))
     }
 
     @Test func infersImageDimensionsFromSizedURLPath() {
@@ -225,18 +225,18 @@ struct MarkdownRendererTests {
 
     @Test func monthlyReportTwoSpaceNestedBulletsStayUnderBoldParents() {
         let markdown = """
-        - **重点故障与隐患**：
-          - 5月18日及6月18日，东冠 M02（9.5 年）与滨安 M01（7.8 年）两台 H3C 核心交换机相继出现管理平面“假死”与配置保存失败故障。
-        - **告警与工单**：
-          - 5月人工处理 L1/L2 告警共 **5,586 次**
+        - **重要事项**：
+          - 第一项说明内容，含一些细节。
+        - **补充说明**：
+          - 第二项说明内容，含 **加粗** 文字。
         """
 
         let html = MarkdownRenderer().render(markdown).html.withoutSourceLineMetadata
 
-        #expect(html.contains("<ul>\n<li><strong>重点故障与隐患</strong>：\n<ul>"))
-        #expect(html.contains("<li>5月18日及6月18日，东冠 M02"))
-        #expect(html.contains("</ul></li>\n<li><strong>告警与工单</strong>：\n<ul>"))
-        #expect(html.contains("<li>5月人工处理 L1/L2 告警共 <strong>5,586 次</strong></li>"))
+        #expect(html.contains("<ul>\n<li><strong>重要事项</strong>：\n<ul>"))
+        #expect(html.contains("<li>第一项说明内容，含一些细节。"))
+        #expect(html.contains("</ul></li>\n<li><strong>补充说明</strong>：\n<ul>"))
+        #expect(html.contains("<li>第二项说明内容，含 <strong>加粗</strong> 文字。</li>"))
     }
 
     @Test func unindentedImagesBetweenNestedSiblingItemsDoNotBreakChildList() {

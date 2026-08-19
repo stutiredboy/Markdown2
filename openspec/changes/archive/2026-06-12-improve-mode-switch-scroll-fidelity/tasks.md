@@ -32,7 +32,7 @@
 ## 5. Verification
 
 - [x] 5.1 Add or update unit tests for short-document clamping and long-document viewport-anchor target line resolution.
-- [x] 5.2 Manually verify `/Users/tiredboy/Downloads/find_bugs_dsv4pro.md` at the top, middle body text, long code examples, section boundaries, and bottom summary.
+- [x] 5.2 Manually verify `/Users/user/Downloads/example-document.md` at the top, middle body text, long code examples, section boundaries, and bottom summary.
 - [x] 5.3 Manually verify a sparse-heading document where one heading contains many paragraphs; switching must preserve the local paragraph rather than the heading.
 - [x] 5.4 Manually verify a no-heading document still uses proportional fallback and never resets to the top.
 - [x] 5.5 Run `swift test` and a packaged `/Applications/Markdown2.app` smoke test for Write↔Read round trips.

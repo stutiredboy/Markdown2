@@ -31,6 +31,6 @@
 
 ## 6. Verify against the reference document
 
-- [x] 6.1 Re-export `/Users/tiredboy/Downloads/matrix-cli-security.md` and confirm: the four-column P3 table shows all columns within the page width (now p22, with the previously-lost 修复 column wrapping); the `replace … golang-jwt/jwt/v4 v4.5.1` line is complete (wrapped, not truncated); the `修复: 运行时阶段添加:` last line is intact with no clipped descenders. ✓ Verified via the real `PDFExporter` against the document.
+- [x] 6.1 Re-export `/Users/user/Downloads/example-security-report.md` and confirm: the four-column P3 table shows all columns within the page width (now p22, with the previously-lost 修复 column wrapping); the `replace … golang-jwt/jwt/v4 v4.5.1` line is complete (wrapped, not truncated); the `修复: 运行时阶段添加:` last line is intact with no clipped descenders. ✓ Verified via the real `PDFExporter` against the document.
 - [x] 6.2 Spot-check a math-heavy / long-token document: wide display math now scales to fit (a 14-term polynomial that was clipped at `a₈x⁸` renders in full) and a long unbreakable inline token wraps. NOTE: Mermaid diagrams do not render in the offscreen export web view — confirmed pre-existing (reproduces on `HEAD` in a clean worktree), a separate engine-execution issue out of scope for this clipping change; the reference document has no diagrams.
 - [x] 6.3 Run `swift build` and `swift test`; confirm the suite passes.

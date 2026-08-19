@@ -49,10 +49,10 @@ The system SHALL determine each list item's nesting level from its leading-white
 #### Scenario: Monthly report nested bullet items remain indented
 - **WHEN** the source contains:
   ```
-  - **重点故障与隐患**：
-    - 5月18日及6月18日，东冠 M02（9.5 年）与滨安 M01（7.8 年）两台 H3C 核心交换机相继出现管理平面“假死”与配置保存失败故障。
-  - **告警与工单**：
-    - 5月人工处理 L1/L2 告警共 **5,586 次**
+  - **重要事项**：
+    - 第一项说明内容，含一些细节。
+  - **补充说明**：
+    - 第二项说明内容，含 **加粗** 文字。
   ```
 - **THEN** the preview renders exactly two top-level list items
 - **AND** each top-level item contains a nested `<ul>` with its detail item

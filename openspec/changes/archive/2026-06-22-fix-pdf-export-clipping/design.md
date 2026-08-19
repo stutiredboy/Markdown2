@@ -7,7 +7,7 @@ print stylesheet, runs a JavaScript break-probe to find safe split offsets,
 captures each page band with `WKWebView.createPDF(configuration:)`, and composes
 the bands onto fixed A4 pages with Core Graphics.
 
-Exporting the real document `matrix-cli-security.md` (24 pages) surfaced concrete
+Exporting the real document `example-security-report.md` (24 pages) surfaced concrete
 defects, confirmed by rendering the output pages to images:
 
 1. **Wide content is clipped at the right margin and lost.** The web view is laid
@@ -195,7 +195,7 @@ offscreen export web view (the `.diagram` box stays blank; KaTeX math, by
 contrast, renders). This reproduces on the **pre-change** code (confirmed in a
 clean worktree at `HEAD`), so it is a pre-existing engine-execution problem, not a
 clipping/pagination one — the diagram-fit code added here is correct for when a
-diagram *does* render. The reference document `matrix-cli-security.md` contains no
+diagram *does* render. The reference document `example-security-report.md` contains no
 diagrams, so it is unaffected. Fixing offscreen Mermaid execution is a distinct
 concern (engine bootstrap/visibility in a window-less `WKWebView`) and belongs in
 its own change; it is intentionally not addressed here.

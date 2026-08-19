@@ -1,6 +1,6 @@
 ## Why
 
-The existing mode-switch sync prevents a full reset to the top, but real use on `/Users/tiredboy/Downloads/find_bugs_dsv4pro.md` still feels disruptive because the viewport snaps to the nearest section heading instead of the paragraph, list item, or code block the user was actually reading or editing. On long sections this can move the user dozens of source lines upward, and quick Read↔Write round trips can leave the editor briefly overscrolled or with no valid visible text range.
+The existing mode-switch sync prevents a full reset to the top, but real use on `/Users/user/Downloads/example-document.md` still feels disruptive because the viewport snaps to the nearest section heading instead of the paragraph, list item, or code block the user was actually reading or editing. On long sections this can move the user dozens of source lines upward, and quick Read↔Write round trips can leave the editor briefly overscrolled or with no valid visible text range.
 
 ## What Changes
 
