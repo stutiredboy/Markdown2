@@ -380,6 +380,10 @@ struct ContentView: View {
             } else {
                 showEditorFind(showsReplace: editorFindShowsReplace)
             }
+        case .search:
+            // Produced only by the find bar's Return, which routes directly to
+            // the editor through `editorFindNavigation`; the menu never emits it.
+            break
         }
     }
 
@@ -416,6 +420,10 @@ struct ContentView: View {
             if previewFindVisible {
                 previewFindNavigation = FindCommand(action)
             }
+        case .search:
+            // Produced only by the find bar's Return, which routes directly to
+            // the preview through `previewFindNavigation`; the menu never emits it.
+            break
         }
     }
 
@@ -638,6 +646,7 @@ struct ContentView: View {
                     focusToken: editorFindFocusToken,
                     statusText: editorStatusText,
                     settings: settings,
+                    onSubmitQuery: { editorFindNavigation = FindCommand(.search) },
                     onNext: { editorFindNavigation = FindCommand(.next) },
                     onPrevious: { editorFindNavigation = FindCommand(.previous) },
                     onReplace: { editorReplaceCommand = FindReplaceCommand(.current) },
@@ -705,6 +714,7 @@ struct ContentView: View {
                     focusToken: previewFindFocusToken,
                     statusText: previewStatusText,
                     settings: settings,
+                    onSubmitQuery: { previewFindNavigation = FindCommand(.search) },
                     onNext: { previewFindNavigation = FindCommand(.next) },
                     onPrevious: { previewFindNavigation = FindCommand(.previous) },
                     onClose: { dismissPreviewFind(refocusPreview: true) }

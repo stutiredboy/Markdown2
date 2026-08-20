@@ -11,6 +11,7 @@ struct PreviewFindBar: View {
     /// Localized match status, e.g. "2 of 7", "No results", or empty.
     let statusText: String
     let settings: AppSettings
+    let onSubmitQuery: () -> Void
     let onNext: () -> Void
     let onPrevious: () -> Void
     let onClose: () -> Void
@@ -26,7 +27,7 @@ struct PreviewFindBar: View {
                 .textFieldStyle(.plain)
                 .focused($fieldFocused)
                 .frame(minWidth: 160)
-                .onSubmit(onNext)
+                .onSubmit(onSubmitQuery)
 
             if !statusText.isEmpty {
                 Text(statusText)

@@ -101,6 +101,108 @@ final class FindFindDeleteGUITests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testEditingUnderOpenFindBarDoesNotJumpCaretInKeyWindow() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this find/edit GUI test."
+        )
+        _ = NSApplication.shared
+
+        // Matches far apart vertically so a reveal that wrongly ran would scroll.
+        var lines = [String]()
+        for i in 0..<80 {
+            lines.append(i == 0 ? "abc" : i == 60 ? "abc" : "line \(i)")
+        }
+        var modelText = lines.joined(separator: "\n")
+        let coordinator = MarkdownEditorView.Coordinator(
+            text: Binding(get: { modelText }, set: { modelText = $0 })
+        )
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 380, height: 280))
+        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 380, height: 4000))
+        textView.isRichText = false
+        textView.string = modelText
+        textView.delegate = coordinator
+        scrollView.documentView = textView
+        window.contentView = scrollView
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+
+        coordinator.observe(scrollView: scrollView)
+        coordinator.updateFind(query: "abc", in: textView)
+        coordinator.flushPendingFindRebuild(in: textView)
+        XCTAssertTrue(window.makeFirstResponder(textView), "editor should become first responder")
+
+        // Caret collapsed at the end of the first match (3); delete the "c".
+        textView.setSelectedRange(NSRange(location: 3, length: 0))
+        let originBeforeEdit = scrollView.contentView.bounds.origin
+        textView.deleteBackward(nil)
+        // The coordinator's textDidChange (via the delegate) bumps the find
+        // generation. SwiftUI would call updateFind after the edit; drive it.
+        coordinator.updateFind(query: "abc", in: textView)
+        coordinator.flushPendingFindRebuild(in: textView)
+
+        // The caret stays where the delete left it (2) — not jumped to the next
+        // match on line 60.
+        XCTAssertEqual(textView.selectedRange().location, 2, "caret must not jump to the next match")
+        XCTAssertEqual(textView.selectedRange().length, 0, "caret stays collapsed after delete")
+
+        // A document-edit rebuild suppresses reveal, so the re-index must not
+        // scroll. The suppression is synchronous (revealCurrentMatch is skipped),
+        // so the clip origin is checked right after the rebuild — no runloop spin
+        // (spinning here would race AppKit's window-animation teardown in CI).
+        let settledOrigin = scrollView.contentView.bounds.origin
+        XCTAssertLessThan(
+            abs(settledOrigin.y - originBeforeEdit.y), 1.0,
+            "a document-edit re-index must not scroll (origin \(settledOrigin) vs \(originBeforeEdit))"
+        )
+    }
+
+    @MainActor
+    func testReturnInQueryFieldDoesNotAdvanceInKeyWindow() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this find Return GUI test."
+        )
+        _ = NSApplication.shared
+
+        var modelText = "abc abc"
+        let coordinator = MarkdownEditorView.Coordinator(
+            text: Binding(get: { modelText }, set: { modelText = $0 })
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 380, height: 280))
+        textView.isRichText = false
+        textView.string = modelText
+        window.contentView = textView
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+
+        coordinator.updateFind(query: "abc", in: textView)
+        coordinator.flushPendingFindRebuild(in: textView)
+        // Move to the second match.
+        coordinator.navigateFind(forward: true, in: textView)
+        XCTAssertEqual(textView.selectedRange().location, 7)
+
+        // Return in the query field routes to `.search` (the seam `updateNSView`
+        // calls): run the current search now, never advance to the next match.
+        coordinator.handleFindNavigation(.search, in: textView)
+        coordinator.handleFindNavigation(.search, in: textView)
+        XCTAssertEqual(textView.selectedRange().location, 7, "Return must not advance to the next match")
+    }
+
     private static func seconds(_ duration: Duration) -> Double {
         let components = duration.components
         return Double(components.seconds) + Double(components.attoseconds) / 1e18

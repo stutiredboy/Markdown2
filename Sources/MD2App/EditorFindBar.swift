@@ -8,6 +8,7 @@ struct EditorFindBar: View {
     let focusToken: UUID
     let statusText: String
     let settings: AppSettings
+    let onSubmitQuery: () -> Void
     let onNext: () -> Void
     let onPrevious: () -> Void
     let onReplace: () -> Void
@@ -31,7 +32,7 @@ struct EditorFindBar: View {
                     .textFieldStyle(.plain)
                     .focused($focusedField, equals: .query)
                     .frame(minWidth: 170)
-                    .onSubmit(onNext)
+                    .onSubmit(onSubmitQuery)
 
                 if !statusText.isEmpty {
                     Text(statusText)

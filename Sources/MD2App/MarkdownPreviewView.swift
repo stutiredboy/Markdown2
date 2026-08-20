@@ -760,7 +760,18 @@ struct MarkdownPreviewView: NSViewRepresentable {
         if let navigation = findNavigation,
            context.coordinator.lastFindNavigationToken != navigation.token {
             context.coordinator.lastFindNavigationToken = navigation.token
-            navigateFind(navigation, in: webView, coordinator: context.coordinator)
+            switch navigation.action {
+            case .search:
+                // Return in the preview query field is a no-op: the live
+                // query-change path already re-ran the search, and re-running
+                // `window.__md2Find` would reset the current match to 1 and
+                // scroll — the same auto-jump this change removes, just backward.
+                break
+            case .next, .previous:
+                navigateFind(navigation, in: webView, coordinator: context.coordinator)
+            case .show, .showReplace:
+                break // bar presentation is handled at the ContentView level
+            }
         }
 
         if context.coordinator.lastFocusToken != focusToken {

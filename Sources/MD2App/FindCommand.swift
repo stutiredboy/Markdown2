@@ -11,6 +11,10 @@ struct FindCommand: Equatable {
         case showReplace
         case next
         case previous
+        /// Return in the query field: run/confirm the search for the current
+        /// query without advancing to the next match. Produced only by the find
+        /// bar's Return; the menu never emits it.
+        case search
     }
 
     let action: Action
