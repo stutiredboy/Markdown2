@@ -24,7 +24,7 @@
 - [x] 2.3 In `ContentView`, wire `onSubmitQuery` on both bars (`editorFindNavigation = FindCommand(.search)` / `previewFindNavigation = FindCommand(.search)`) and add exhaustive `.search` no-op cases to `handleEditorFindAction` and `handlePreviewFindAction` (the menu cannot produce `.search`).
 - [x] 2.4 In `MarkdownEditorView.updateNSView`, replace the `navigateFind(forward: findNavigation.action != .previous)` line with an explicit switch: `.next`/`.previous` navigate as today; `.search` calls `coordinator.flushPendingFindRebuild(in: textView)` (never `navigateFind`); `.show`/`.showReplace` are no-ops here.
 - [x] 2.5 In `MarkdownPreviewView.updateNSView`, switch on the action: `.search` is a no-op (the live query-change path already re-runs the search; re-running `__md2Find` would reset the current match to 1 and scroll — leave a comment saying so); `.next`/`.previous` navigate; `.show`/`.showReplace` are no-ops.
-- [ ] 2.6 Manual smoke: search a multi-match query, press Return twice in the query field — results appear immediately and the caret never advances to a later match; navigate to match 2 in the preview and press Return — the preview stays put; ⌘G/⇧⌘G and the chevron buttons still navigate.
+- [x] 2.6 Manual smoke: search a multi-match query, press Return twice in the query field — results appear immediately and the caret never advances to a later match; navigate to match 2 in the preview and press Return — the preview stays put; ⌘G/⇧⌘G and the chevron buttons still navigate.
 
 ## 3. Spec delta
 
@@ -34,4 +34,4 @@
 
 - [x] 4.1 Run `swift test` (non-GUI) — existing find tests (`TextSearchTests`, `FindDeleteRegressionTests`, `FindEditRebuildRegressionTests`, `FindRevealTests`, `FindHighlightDiffTests`) plus the new 1.6 tests pass.
 - [x] 4.2 Run the GUI suite `MD2_RUN_GUI_TESTS=1 swift test --filter FindFindDeleteGUITests` locally — the new 1.7 tests and the existing delete/benchmark tests pass (required before landing; `swift test` and CI skip these).
-- [ ] 4.3 Manual end-to-end: search `abc` in a document containing `abc abc`, click into the editor at the first match, backspace the `c` — the caret stays put and does not jump to the second `abc`; type ` abc` at the caret — the new match becomes the orange current match without the caret moving; press Return in the query field twice — no advance; in the preview navigate to match 2 and press Return — stays on match 2.
+- [x] 4.3 Manual end-to-end: search `abc` in a document containing `abc abc`, click into the editor at the first match, backspace the `c` — the caret stays put and does not jump to the second `abc`; type ` abc` at the caret — the new match becomes the orange current match without the caret moving; press Return in the query field twice — no advance; in the preview navigate to match 2 and press Return — stays on match 2.
