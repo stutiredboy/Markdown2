@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import WebKit
 import XCTest
 import MD2Core
 @testable import MD2App
@@ -201,6 +202,105 @@ final class FindFindDeleteGUITests: XCTestCase {
         coordinator.handleFindNavigation(.search, in: textView)
         coordinator.handleFindNavigation(.search, in: textView)
         XCTAssertEqual(textView.selectedRange().location, 7, "Return must not advance to the next match")
+    }
+
+    // Regression: ISSUE-001 — the preview Return routing had no automated guard
+    // Found by /qa on 2026-08-20
+    // Report: .gstack/qa-reports/qa-report-markdown2-local-2026-08-20.md
+    @MainActor
+    func testReturnInPreviewQueryFieldIsANoOp() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this preview find Return GUI test."
+        )
+        _ = NSApplication.shared
+
+        // Window-hosted off-screen WKWebView (the Mermaid offscreen pattern) so
+        // the preview coordinator's routing runs against a real page environment.
+        let configuration = WKWebViewConfiguration()
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        let frame = NSRect(x: 0, y: 0, width: 400, height: 300)
+        let webView = WKWebView(frame: frame, configuration: configuration)
+        let window = NSWindow(
+            contentRect: frame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentView = webView
+        window.setFrameOrigin(NSPoint(x: -30_000, y: -30_000))
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+
+        let coordinator = MarkdownPreviewView.Coordinator()
+        var lastReport: (total: Int, index: Int)?
+        coordinator.onFindResult = { total, index in lastReport = (total, index) }
+
+        // The routing test only needs the call interface the page exposes, so a
+        // stub replaces the production find script (injected by the real load
+        // path) with the same contract: `__md2Find` resets the current match to
+        // 1 when re-run, `__md2FindNext` advances the index.
+        let stubInstalled = expectation(description: "find stub installed")
+        var stubError: Error?
+        webView.evaluateJavaScript("""
+            window.__md2FindState = { current: 1, total: 3 };
+            window.__md2FindRuns = 0;
+            window.__md2Find = function (query) {
+                window.__md2FindRuns += 1;
+                window.__md2FindState.current = 0;
+                return { total: 3, index: 1 };
+            };
+            window.__md2FindNext = function (forward) {
+                window.__md2FindState.current =
+                    ((window.__md2FindState.current + (forward ? 1 : -1)) % 3 + 3) % 3;
+                return { total: 3, index: window.__md2FindState.current + 1 };
+            };
+            true;
+        """) { _, error in
+            stubError = error
+            stubInstalled.fulfill()
+        }
+        wait(for: [stubInstalled], timeout: 10)
+        XCTAssertNil(stubError, "stub install must not fail")
+
+        func evaluate(_ script: String) throws -> String? {
+            let done = expectation(description: "evaluate: \(script.prefix(40))")
+            var value: Any?
+            var error: Error?
+            webView.evaluateJavaScript(script) { result, jsError in
+                value = result
+                error = jsError
+                done.fulfill()
+            }
+            wait(for: [done], timeout: 10)
+            if let error { throw error }
+            return value as? String
+        }
+
+        // Two Returns in the query field must do nothing: no search re-run (the
+        // production script would reset to match 1 and scroll), no navigation.
+        coordinator.handleFindNavigation(.search, in: webView)
+        coordinator.handleFindNavigation(.search, in: webView)
+        let stateAfterReturn = try XCTUnwrap(
+            evaluate("JSON.stringify(window.__md2FindState) + '|' + window.__md2FindRuns"),
+            "stub state must be readable"
+        )
+        XCTAssertEqual(
+            stateAfterReturn,
+            "{\"current\":1,\"total\":3}|0",
+            "Return must not re-run the search or advance on the preview"
+        )
+
+        // Find Next still navigates through the same seam.
+        coordinator.handleFindNavigation(.next, in: webView)
+        let stateAfterNext = try XCTUnwrap(
+            evaluate("JSON.stringify(window.__md2FindState)"),
+            "stub state must be readable"
+        )
+        XCTAssertEqual(stateAfterNext, "{\"current\":2,\"total\":3}", "Find Next still advances on the preview")
+        XCTAssertEqual(lastReport?.index, 3, "navigation reports the new position")
+        XCTAssertEqual(lastReport?.total, 3)
     }
 
     private static func seconds(_ duration: Duration) -> Double {

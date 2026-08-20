@@ -760,18 +760,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         if let navigation = findNavigation,
            context.coordinator.lastFindNavigationToken != navigation.token {
             context.coordinator.lastFindNavigationToken = navigation.token
-            switch navigation.action {
-            case .search:
-                // Return in the preview query field is a no-op: the live
-                // query-change path already re-ran the search, and re-running
-                // `window.__md2Find` would reset the current match to 1 and
-                // scroll — the same auto-jump this change removes, just backward.
-                break
-            case .next, .previous:
-                navigateFind(navigation, in: webView, coordinator: context.coordinator)
-            case .show, .showReplace:
-                break // bar presentation is handled at the ContentView level
-            }
+            context.coordinator.handleFindNavigation(navigation.action, in: webView)
         }
 
         if context.coordinator.lastFocusToken != focusToken {
@@ -791,14 +780,6 @@ struct MarkdownPreviewView: NSViewRepresentable {
         let escaped = Self.escapeForJS(query)
         webView.evaluateJavaScript("window.__md2Find('\(escaped)');") { result, _ in
             completion(result)
-        }
-    }
-
-    /// Moves to the next or previous match and reports the result.
-    private func navigateFind(_ command: FindCommand, in webView: WKWebView, coordinator: Coordinator) {
-        let forward = command.action != .previous
-        webView.evaluateJavaScript("window.__md2FindNext(\(forward));") { result, _ in
-            coordinator.reportFindResult(result)
         }
     }
 
@@ -1166,6 +1147,26 @@ struct MarkdownPreviewView: NSViewRepresentable {
             let total = (dict["total"] as? NSNumber)?.intValue ?? 0
             let index = (dict["index"] as? NSNumber)?.intValue ?? 0
             onFindResult(total, index)
+        }
+
+        /// Dispatches a find command produced by the find bar or the ⌘G/⇧⌘G
+        /// shortcuts. `.search` (Return in the query field) is a no-op on the
+        /// preview: the live query-change path already re-ran the search, and
+        /// re-running `window.__md2Find` would reset the current match to 1 and
+        /// scroll — the same auto-jump this change removes, just backward.
+        /// Internal so tests can drive the routing deterministically.
+        @MainActor func handleFindNavigation(_ action: FindCommand.Action, in webView: WKWebView) {
+            switch action {
+            case .search:
+                break
+            case .next, .previous:
+                let forward = action == .next
+                webView.evaluateJavaScript("window.__md2FindNext(\(forward));") { [weak self] result, _ in
+                    self?.reportFindResult(result)
+                }
+            case .show, .showReplace:
+                break // bar presentation is handled at the ContentView level
+            }
         }
 
         func applyFrontMatterVisibility(in webView: WKWebView) {
