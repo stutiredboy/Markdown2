@@ -39,6 +39,8 @@ See [Docs/MarkdownSupport.md](Docs/MarkdownSupport.md) for the tested Markdown/T
 
 ## Install
 
+Requires macOS 15 or later.
+
 Download the latest `Markdown2.app` from [Releases](https://github.com/stutiredboy/md2/releases), then drag it to `/Applications`.
 
 > [!NOTE]

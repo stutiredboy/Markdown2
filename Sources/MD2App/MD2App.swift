@@ -50,6 +50,18 @@ struct MD2Application: App {
                 onRequestRelaunch: { appDelegate.requestLanguageRelaunch() }
             )
         }
+        // Document windows are AppKit-managed, so this Settings scene is the
+        // app's ONLY SwiftUI scene — and SwiftUI presents an app's only scene at
+        // launch when the binary is linked below the macOS 15 SDK (SwiftPM
+        // records the deployment target as the SDK version, which is how the
+        // pre-floor builds got there). Without this the Settings window opens by
+        // itself on every launch, including Finder opens, which launch the app.
+        //
+        // Kept even though the macOS 15 floor also makes the binary "linked on
+        // 15": it states the intent independently of the linkage, and it is what
+        // keeps the window from coming back if the floor is ever lowered.
+        // Guarded by SettingsWindowPresentationGUITests.
+        .defaultLaunchBehavior(.suppressed)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button(appDelegate.settings.text(.new)) {

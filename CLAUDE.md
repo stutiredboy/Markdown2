@@ -44,6 +44,25 @@ re-clip to the dirty rect or its painting in the container inset is discarded;
 and the clipboard/find paths must never see the digits, which is why they are CSS
 generated content rather than text nodes.
 
+Settings-window launch guard: `Sources/MD2App/MD2App.swift` declares `Settings`
+as the app's only SwiftUI scene (document windows are AppKit-managed), and
+SwiftUI presents an app's only scene at launch when the binary is linked below
+the macOS 15 SDK — so without the `.defaultLaunchBehavior(.suppressed)` opt-out
+the Settings window opens by itself on every launch, including the Finder opens
+that launch the app. The macOS 15 platform floor (`Package.swift`,
+`DirectLaunchBootstrap`'s generated plist, and `Scripts/package_app.sh`) is what
+that API requires, and it is also what makes SwiftPM link the binary as `sdk 15`;
+both layers are deliberate, and the floor must not be lowered without keeping the
+opt-out. After changing launch wiring, that scene/command tree, or the Settings
+window, run
+`MD2_RUN_GUI_TESTS=1 swift test --filter SettingsWindowPresentationGUITests`
+locally before landing. The failure is silent — a window that reappears throws
+nothing. It is the repo's first multi-process GUI test (it builds and launches a
+real app bundle under its own bundle identifier, never the developer's app
+state), and its Settings-command cases need Accessibility trust: without it they
+skip loudly rather than pass one-sided. Grant it to whatever runs `swift test`
+(System Settings ▸ Privacy & Security ▸ Accessibility).
+
 ## Skill routing
 
 When the user's request matches an available skill, invoke it via the Skill tool. When in doubt, invoke the skill.

@@ -133,6 +133,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
             documentWindows.last?.window.makeKeyAndOrderFront(nil)
         }
         activationController.activateAfterLaunch()
+        LaunchHealthReporter.write("reopen")
         return true
     }
 
@@ -141,6 +142,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
             openInNewWindow(url)
         }
         activationController.activateAfterLaunch()
+        LaunchHealthReporter.write("openURLs")
     }
 
     // MARK: - Document actions

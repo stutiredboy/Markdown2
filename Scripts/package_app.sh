@@ -102,7 +102,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
     <key>CFBundleVersion</key>
     <string>$VERSION</string>
     <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
+    <string>15.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSHumanReadableCopyright</key>
@@ -143,7 +143,29 @@ CODESIGN_IDENTITY="${MARKDOWN2_CODESIGN_IDENTITY:--}"
 codesign --force --deep --sign "$CODESIGN_IDENTITY" "$APP_DIR"
 codesign --verify --deep --strict "$APP_DIR"
 
-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_DIR" >/dev/null 2>&1 || true
+# Launch Services bookkeeping.
+#
+# dist/ is a build artifact, not an install. Finder's "Open With" menu lists
+# every registered copy of the app, so registering dist/ adds one more menu entry
+# per build. Register only the installed copy instead, and drop whatever
+# registration the dist bundle picked up previously.
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+INSTALL_APP="${MARKDOWN2_INSTALL_APP:-/Applications/$DISPLAY_NAME.app}"
+
+# CI only needs the dist/ artifact; installing into /Applications is local-only.
+if [ -z "${CI:-}" ]; then
+    case "$INSTALL_APP" in
+        *.app) ;;
+        *) echo "MARKDOWN2_INSTALL_APP must end in .app (got: $INSTALL_APP)" >&2; exit 1 ;;
+    esac
+    rm -rf "$INSTALL_APP"
+    # ditto, not cp: it carries the bundle's code signature and extended
+    # attributes over intact, which a fresh ad-hoc-signed build depends on.
+    ditto "$APP_DIR" "$INSTALL_APP"
+    "$LSREGISTER" -f "$INSTALL_APP" >/dev/null 2>&1 || true
+fi
+"$LSREGISTER" -u "$APP_DIR" >/dev/null 2>&1 || true
+
 swift - >/dev/null 2>&1 <<'SWIFT' || true
 import CoreServices
 import Foundation
@@ -155,3 +177,6 @@ for contentType in ["net.daringfireball.markdown", "public.markdown"] {
 SWIFT
 
 echo "Built $APP_DIR"
+if [ -z "${CI:-}" ]; then
+    echo "Installed $INSTALL_APP"
+fi

@@ -6,7 +6,7 @@ Tracked work considered and explicitly deferred from in-flight changes. Each ite
 
 **What:** Add a macOS GUI-capable CI runner that runs `MD2_RUN_GUI_TESTS=1 swift test` on every PR.
 
-**Why:** All regression guards for the PDF/print Mermaid fix (and the existing offscreen/E2E tests in `Tests/MD2CoreTests/`) are GUI-gated and skipped by plain `swift test`. CI never runs them, so a silent regression — dark/inverted PDFs, disappearing Mermaid diagrams, clipped flow/sequence/KaTeX media — lands green unless a human ran the GUI suite. The fixes fail SILENTLY (no error thrown), which is exactly the failure class CI-blindness makes dangerous.
+**Why:** All regression guards for the PDF/print Mermaid fix (and the existing offscreen/E2E tests in `Tests/MD2CoreTests/`) are GUI-gated and skipped by plain `swift test`. CI never runs them, so a silent regression — dark/inverted PDFs, disappearing Mermaid diagrams, clipped flow/sequence/KaTeX media — lands green unless a human ran the GUI suite. The fixes fail SILENTLY (no error thrown), which is exactly the failure class CI-blindness makes dangerous. The `settings-window-presentation` guard from `fix-settings-window-on-launch` adds a second reason: all its behavioral evidence was gathered on macOS 26, and this lane — landing on `macos-15` runners, the same image `release.yml` builds on — is the planned place to verify the suppression behavior on macOS 15 itself.
 
 **Current state (the in-scope guard shipped with the fix):** A pre-ship checklist note in CLAUDE.md's testing section plus load-bearing comments at the two silent-failure lines in `PDFExporter.swift` (the `printStyleScript` selector and `hostWindow.appearance = .aqua`). These rely on humans following the note.
 

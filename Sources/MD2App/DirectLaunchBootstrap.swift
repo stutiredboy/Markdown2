@@ -150,6 +150,12 @@ private final class LaunchResult: @unchecked Sendable {
 }
 
 struct RuntimeAppBundleBuilder {
+    /// Bundle identifier written into the generated `Info.plist`. Overridable so
+    /// a test can build an app with an identity of its own: the GUI guard for the
+    /// Settings launch presentation must launch a real app without touching the
+    /// developer's own preferences domain.
+    var bundleIdentifier: String = "dev.codex.md2.debug"
+
     func build(bundleURL: URL, executableURL: URL) throws {
         let fileManager = FileManager.default
         let contentsURL = bundleURL.appendingPathComponent("Contents", isDirectory: true)
@@ -217,6 +223,11 @@ struct RuntimeAppBundleBuilder {
         }
     }
 
+    /// Rank `None` on the document type below is deliberate. Launch Services
+    /// lists every app that claims the type in Finder's "Open With" menu, so any
+    /// higher rank makes each dev build (and each GUI-test guard bundle) appear
+    /// as one more "Markdown2" entry beside the installed copy in /Applications,
+    /// which is the one that owns the type.
     private var infoPlist: String {
         """
         <?xml version="1.0" encoding="UTF-8"?>
@@ -251,13 +262,13 @@ struct RuntimeAppBundleBuilder {
                         <string>public.plain-text</string>
                     </array>
                     <key>LSHandlerRank</key>
-                    <string>Alternate</string>
+                    <string>None</string>
                 </dict>
             </array>
             <key>CFBundleExecutable</key>
             <string>Markdown2</string>
             <key>CFBundleIdentifier</key>
-            <string>dev.codex.md2.debug</string>
+            <string>\(bundleIdentifier)</string>
             <key>CFBundleIconFile</key>
             <string>AppIcon</string>
             <key>CFBundleIconName</key>
@@ -273,7 +284,7 @@ struct RuntimeAppBundleBuilder {
             <key>CFBundleVersion</key>
             <string>0.0.0-dev</string>
             <key>LSMinimumSystemVersion</key>
-            <string>14.0</string>
+            <string>15.0</string>
             <key>NSHighResolutionCapable</key>
             <true/>
             <key>NSHumanReadableCopyright</key>

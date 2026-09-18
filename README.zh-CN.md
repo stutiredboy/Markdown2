@@ -39,6 +39,8 @@
 
 ## 安装
 
+需要 macOS 15 或更高版本。
+
 从 [Releases](https://github.com/stutiredboy/md2/releases) 下载最新的 `Markdown2.app`，拖入 `/Applications` 即可。
 
 > [!NOTE]
