@@ -200,6 +200,11 @@ struct MarkdownEditorView: NSViewRepresentable {
             let selectedRanges = textView.selectedRanges
             textView.string = text
             MarkdownTextStyler.apply(to: textView)
+            // A wholesale replacement shifts every line, but it never reaches
+            // `textDidChange` and TextKit's own display invalidation is
+            // glyph-scoped — it never covers the gutter strip. Ask for it
+            // explicitly or the numbers stay stale until the next user edit.
+            (textView as? MarkdownSourceTextView)?.invalidateGutter()
             // Programmatic replacement bypasses `textDidChange`, so tell the find
             // index it moved; the next update re-indexes without revealing.
             context.coordinator.noteExternalTextChange()
