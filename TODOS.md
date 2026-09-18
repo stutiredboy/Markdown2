@@ -46,3 +46,23 @@ Tracked work considered and explicitly deferred from in-flight changes. Each ite
 **Depends on:** `add-line-numbers` implemented first; a product decision on per-item density (maybe limit to items above a length threshold, or multi-line items only).
 
 **Start here:** extend the top-level block emitter to stamp `li` elements (mirroring the footnote `li` path at `:980`), update `MetadataInvariantTests`' exception list, then extend `__md2RenderLineNumbers`' eligibility rules to nested `li` anchors.
+
+## GUI suites crash when run in one combined invocation (window-animation teardown)
+
+**What:** Running `FindFindDeleteGUITests` and the line-number GUI suites (`EditorLineNumberGutterGUITests` / `LineNumberGutterGUITests`) in the SAME `xctest` process segfaults: `objc_release` on a deallocated `_NSWindowTransformAnimation` during a CoreAnimation transaction commit, right when the suite after the find tests creates its own host window.
+
+**Why:** Every documented per-surface command (CLAUDE.md guards, task 5.2) passes, so this hides today — but the headless-GUI CI lane, when built, will be tempted to run one combined `MD2_RUN_GUI_TESTS=1 swift test` invocation and will inherit a deterministic, confusing signal 11. Found by /qa on 2026-09-18 (2/2 deterministic reproductions with the 5-suite filter; each suite green alone; report: `.gstack/qa-reports/qa-report-markdown2-add-line-numbers-2026-09-18.md`).
+
+**Fix shape:** either make each guard suite its own CI invocation step (cheap, matches today's documented convention), or harden the window teardown in the window-hosted tests (close windows without ordering animations, or spin the runloop to let `_NSWindowTransformAnimation` complete before the next suite starts — the same teardown fragility the 2026-08-20 QA documented).
+
+**Depends on:** nothing; must be resolved before (or at the same time as) the headless GUI CI lane.
+
+## Pandoc 3.11 broke `testRealConversionDeletesPartialOutputOnFailure`'s premise
+
+**What:** The test expects pandoc to FAIL when the destination's parent directory does not exist; pandoc 3.11 now creates missing parent directories for `--output` (verified: `pandoc doc.md -t docx -o missing-subdir/out.docx` → exit 0, file created). The test fails deterministically on machines with pandoc 3.11 while passing wherever older pandoc is installed.
+
+**Why:** A green local run and a red CI run (or vice versa) will disagree purely on installed pandoc version — an environment-flake trap. Found by /qa on 2026-09-18; the failure was present at that session's baseline (not caused by any in-flight change).
+
+**Fix shape:** keep the partial-output-deletion guarantee tested but trigger failure via a mechanism no pandoc version can override — a read-only parent directory (chmod 0500) as the destination's parent — and assert the conversion fails and no partial file survives. Note: `PandocConverter` may also want to pre-validate the destination directory so the app gives a clean error instead of relying on pandoc's failure.
+
+**Depends on:** nothing; one test edit plus optionally a converter guard.
