@@ -84,6 +84,10 @@ struct MarkdownEditorView: NSViewRepresentable {
     /// or a write failure). The editor inserts the returned text on the native
     /// edit path so dirty marking, styling, autosave, selection, and undo apply.
     var onInsertImageAttachments: (_ sources: [ImageAttachmentSource]) -> String? = { _ in nil }
+    /// Whether the source line-number gutter is drawn in the text view's left
+    /// inset. Display-only: it changes no text, selection, or geometry, so
+    /// toggling it cannot re-wrap the document.
+    var showsLineNumbers: Bool = false
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
@@ -122,6 +126,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         textView.isAutomaticTextReplacementEnabled = false
         textView.isContinuousSpellCheckingEnabled = true
         textView.textContainerInset = NSSize(width: 58, height: 48)
+        textView.showsLineNumbers = showsLineNumbers
         textView.backgroundColor = .textBackgroundColor
         textView.drawsBackground = true
         textView.textContainer?.widthTracksTextView = true
@@ -188,6 +193,7 @@ struct MarkdownEditorView: NSViewRepresentable {
                 context.coordinator.onFindShortcut(action)
             }
             sourceTextView.onInsertImageAttachments = onInsertImageAttachments
+            sourceTextView.showsLineNumbers = showsLineNumbers
         }
 
         if context.coordinator.shouldApplyBoundText(text, to: textView) {
@@ -1147,6 +1153,64 @@ struct MarkdownEditorView: NSViewRepresentable {
             return NSRange(location: lineStart, length: max(0, lineEnd - lineStart))
         }
 
+        /// Maps visible line-fragment start offsets to the source line each one
+        /// begins, for the gutter to draw. The result is parallel to
+        /// `fragmentStarts`: an entry is `nil` when that fragment continues a
+        /// soft-wrapped line, which is the same source line and must not be
+        /// numbered twice.
+        ///
+        /// Numbering follows the renderer's convention
+        /// (`String.normalizedMarkdownLines`): LF, CRLF, and a bare CR each count
+        /// as one line break, so the editor gutter and the preview's block
+        /// numbers agree on every document — including bare-CR files, which the
+        /// `\n`-only helpers above would number differently.
+        ///
+        /// Fragments arrive in document order, so the breaks are counted once
+        /// across the gaps between consecutive starts: one pass over the document
+        /// per redraw, rather than one scan per fragment.
+        static func gutterRows(forFragmentStarts fragmentStarts: [Int], in string: NSString) -> [Int?] {
+            var rows: [Int?] = []
+            rows.reserveCapacity(fragmentStarts.count)
+            var line = 1
+            var scanned = 0
+            var lineStart = 0
+
+            for start in fragmentStarts {
+                let clamped = max(0, min(start, string.length))
+                // Never scan backwards. A caller handing fragments out of order
+                // gets a continuation rather than a corrupted running count.
+                guard clamped >= scanned else {
+                    rows.append(nil)
+                    continue
+                }
+
+                var location = scanned
+                while location < clamped {
+                    let character = string.character(at: location)
+                    if character == 0x0A { // LF
+                        location += 1
+                        line += 1
+                        lineStart = location
+                    } else if character == 0x0D { // CR, or the CR of a CRLF pair
+                        // Peek one past the gap so a CRLF straddling the boundary
+                        // counts as a single break instead of two.
+                        let isCRLF = location + 1 < string.length
+                            && string.character(at: location + 1) == 0x0A
+                        location += isCRLF ? 2 : 1
+                        line += 1
+                        lineStart = location
+                    } else {
+                        location += 1
+                    }
+                }
+                scanned = max(location, clamped)
+
+                rows.append(clamped == lineStart ? line : nil)
+            }
+
+            return rows
+        }
+
         deinit {
             NotificationCenter.default.removeObserver(self)
             pendingFindToken = nil
@@ -1180,6 +1244,11 @@ struct MarkdownEditorView: NSViewRepresentable {
 
         @MainActor func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
+            // The gutter's numbers depend on line breaks, and marked text returns
+            // below without restyling — so composition could otherwise change the
+            // text under a gutter that is never asked to redraw. Text redraws are
+            // glyph-scoped and never reach the strip, so ask explicitly.
+            (textView as? MarkdownSourceTextView)?.invalidateGutter()
             // Marked text is the input method's private, provisional buffer. It
             // must not enter the document binding, Markdown restyling, preview
             // rendering, autosave, or selection restoration before commit.
@@ -1263,6 +1332,119 @@ private final class MarkdownSourceTextView: NSTextView {
     /// Turns pasted/dropped image sources into stored attachments and returns the
     /// Markdown to insert, or `nil` to insert nothing. Set by `MarkdownEditorView`.
     var onInsertImageAttachments: (([ImageAttachmentSource]) -> String?)?
+
+    /// Whether the source line-number gutter is drawn. Setting it only
+    /// invalidates the gutter strip — the text container's geometry is never
+    /// touched, so the document cannot re-wrap or shift when it changes.
+    var showsLineNumbers = false {
+        didSet {
+            guard showsLineNumbers != oldValue else { return }
+            invalidateGutter()
+        }
+    }
+
+    /// Right margin between a gutter number and the text container's left edge.
+    private static let gutterTrailingInset: CGFloat = 8
+    /// Gutter numbers use the body size with monospaced digits, so they line up
+    /// on their last digit and stay inside the 58pt inset for five-digit lines.
+    private static let gutterFontSize: CGFloat = 16
+
+    /// Invalidates just the gutter strip. Text redraws are glyph-scoped and start
+    /// at the container origin, so they never cover the strip; anything that
+    /// changes the gutter outside the styling pass (which already invalidates the
+    /// whole view) has to ask for it explicitly.
+    func invalidateGutter() {
+        guard showsLineNumbers, textContainerInset.width > 0 else { return }
+        setNeedsDisplay(NSRect(
+            x: 0,
+            y: bounds.minY,
+            width: textContainerInset.width,
+            height: bounds.height
+        ))
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard showsLineNumbers else { return }
+        // `NSTextView` clips its drawing to the text container, so the container
+        // inset the gutter lives in is outside the clip it leaves behind — and
+        // anything painted there is discarded. Re-clip to the rect we were asked
+        // to draw (the inset included) and, since its own drawing can also leave a
+        // different context current, put ours back first.
+        if let context = NSGraphicsContext.current {
+            context.cgContext.resetClip()
+            context.cgContext.clip(to: dirtyRect)
+        }
+        drawLineNumbers(clippedTo: dirtyRect)
+    }
+
+    /// Draws the source line number for each line fragment whose first visual row
+    /// begins a source line, right-aligned in the inset left of the text.
+    private func drawLineNumbers(clippedTo dirtyRect: NSRect) {
+        let stripWidth = textContainerInset.width
+        guard stripWidth > 0,
+              let layoutManager,
+              let textContainer else { return }
+        let origin = textContainerOrigin
+
+        // The strip lies outside the text container, so a fragment query against
+        // it would intersect no glyphs. Query the dirty rect's vertical interval
+        // extended across the container's full width (the same origin conversion
+        // `topVisibleLine` performs), then clip painting to the strip.
+        var probe = dirtyRect
+        probe.origin.x -= origin.x
+        probe.origin.y -= origin.y
+        probe.size.width = textContainer.size.width
+
+        layoutManager.ensureLayout(for: textContainer)
+        let glyphRange = layoutManager.glyphRange(forBoundingRect: probe, in: textContainer)
+
+        var fragmentStarts: [Int] = []
+        var fragmentRects: [NSRect] = []
+        layoutManager.enumerateLineFragments(forGlyphRange: glyphRange) { _, usedRect, _, fragmentGlyphRange, _ in
+            let charRange = layoutManager.characterRange(
+                forGlyphRange: fragmentGlyphRange,
+                actualGlyphRange: nil
+            )
+            fragmentStarts.append(charRange.location)
+            fragmentRects.append(usedRect)
+        }
+
+        // A document ending in a newline has a final empty line with no glyphs:
+        // TextKit exposes it as the extra line fragment. It is numbered like any
+        // other line, so the gutter's last number always equals the line count
+        // the status bar, find, and the outline report.
+        if layoutManager.extraLineFragmentTextContainer != nil {
+            let extra = layoutManager.extraLineFragmentUsedRect
+            if probe.intersects(extra) {
+                fragmentStarts.append((string as NSString).length)
+                fragmentRects.append(extra)
+            }
+        }
+
+        let rows = MarkdownEditorView.Coordinator.gutterRows(
+            forFragmentStarts: fragmentStarts,
+            in: string as NSString
+        )
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: Self.gutterFontSize, weight: .regular),
+            .foregroundColor: NSColor.secondaryLabelColor
+        ]
+
+        for (index, row) in rows.enumerated() {
+            guard let line = row else { continue }
+            var rect = fragmentRects[index]
+            rect.origin.x += origin.x
+            rect.origin.y += origin.y
+            guard rect.intersects(dirtyRect) else { continue }
+
+            let label = "\(line)" as NSString
+            let size = label.size(withAttributes: attributes)
+            let x = stripWidth - Self.gutterTrailingInset - size.width
+            let y = rect.minY + max(0, (rect.height - size.height) / 2)
+            label.draw(at: NSPoint(x: max(0, x), y: y), withAttributes: attributes)
+        }
+    }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if let action = findAction(for: event) {

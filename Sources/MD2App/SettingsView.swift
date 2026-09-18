@@ -39,6 +39,8 @@ struct SettingsView: View {
 
                 Toggle(settings.text(.openBlankOnLaunch), isOn: $settings.opensBlankDocumentOnLaunch)
 
+                lineNumberSettings
+
                 VStack(alignment: .leading, spacing: 4) {
                     TextField(settings.text(.attachmentFolder), text: $settings.attachmentFolder)
                         .textFieldStyle(.roundedBorder)
@@ -72,6 +74,17 @@ struct SettingsView: View {
         // localization, so a language change needs a restart to re-localize it.
         .onChange(of: settings.language) { _, _ in
             presentLanguageRestartPrompt()
+        }
+    }
+
+    /// The two line-number scopes. They are independent on purpose: enabling one
+    /// leaves the other alone, and both can be on — Side by Side then shows each
+    /// pane per its own preference.
+    private var lineNumberSettings: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(settings.text(.lineNumbers))
+            Toggle(settings.text(.lineNumbersInEditor), isOn: $settings.showsLineNumbersInEditor)
+            Toggle(settings.text(.lineNumbersInPreview), isOn: $settings.showsLineNumbersInPreview)
         }
     }
 

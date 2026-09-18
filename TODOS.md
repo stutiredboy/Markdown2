@@ -16,3 +16,33 @@ Tracked work considered and explicitly deferred from in-flight changes. Each ite
 **Depends on:** nothing blocking; pure CI infrastructure work, independent of any code fix.
 
 **Start here:** pick a runner strategy (self-hosted mac with a `loginwindow`/`launchctl` GUI session vs. macOS-cloud), wire `MD2_RUN_GUI_TESTS=1` into the test step, and gate merge on it.
+
+## Click a line-number gutter number to jump to that line
+
+**What:** Make gutter numbers interactive. In the editor, clicking a number selects that source line and scrolls it into view; in the preview, clicking a block's number opens/selects that line in the editor pane (relevant in Side by Side and on mode switch).
+
+**Why:** Completes the "locate" story the line-numbers feature starts. Preview numbers are block-start annotations by design (a 400-line code block shows one number), so precise in-block location has no affordance today; click-to-jump is the deferred follow-up named in the feature's proposal and Open Questions.
+
+**Current state:** The `add-line-numbers` change ships gutters as display-only (`pointer-events: none` in the preview; plain drawing in the editor inset). No interaction surface exists.
+
+**Pros:** Turns passive numbers into navigation; directly answers "I see line 214 in the preview, take me there"; small AppKit hit-test + focus-routing change.
+**Cons / cost:** New interaction semantics must coexist with existing editor gestures (Esc, find, mode shortcuts — the reason the feature deferred it); preview-side click needs a focus handoff from WKWebView to the editor. (human: ~2-4h / CC: ~30-60min)
+
+**Depends on:** `add-line-numbers` implemented and archived (the gutter geometry and preview spans are the substrate).
+
+**Start here:** editor side: hit-testing `x < textContainerInset.width` in `MarkdownSourceTextView` (mouseDown override, mirroring the existing `performKeyEquivalent` interception pattern); preview side: make spans `pointer-events: auto` with a JS bridge to the coordinator, reusing the existing `evaluateJavaScript` round-trip pattern.
+
+## Number nested preview blocks (list items) in the gutter
+
+**What:** Emit `data-md2-source-line` on regular list items (today only footnote `<li>`s carry it) and render a gutter number beside each `<li>` in the preview.
+
+**Why:** A 60-item list is the same locate problem as a 400-line code block: one number for the whole block, nothing for the items inside. The feature's Open Questions deferred it rather than expanding the renderer mid-feature.
+
+**Current state:** `MarkdownRenderer` stamps top-level blocks only (plus footnote `<li>`s, `MarkdownRenderer.swift:980`); `MetadataInvariantTests` invariant-tests the coverage and documents the footnotes/bibliography wrapper exceptions.
+
+**Pros:** Fills the biggest remaining coverage gap in the preview gutter; the overlay mechanism (direct-children spans) extends naturally to `li` anchors.
+**Cons / cost:** Renderer change (Decision 6 of the feature said "no renderer change" — this deliberately revisits that for a scoped case); the metadata invariant corpus and tests need extending; exported-HTML neutrality must be re-verified (attribute-only emission is safe — it ships today for footnotes); an open product call: is a number on every list item signal or noise? (human: ~1-2 days / CC: ~2-3h)
+
+**Depends on:** `add-line-numbers` implemented first; a product decision on per-item density (maybe limit to items above a length threshold, or multi-line items only).
+
+**Start here:** extend the top-level block emitter to stamp `li` elements (mirroring the footnote `li` path at `:980`), update `MetadataInvariantTests`' exception list, then extend `__md2RenderLineNumbers`' eligibility rules to nested `li` anchors.

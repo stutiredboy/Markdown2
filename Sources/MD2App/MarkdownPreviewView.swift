@@ -55,6 +55,11 @@ struct MarkdownPreviewView: NSViewRepresentable {
     /// Whether the preview should show a rendered leading YAML front-matter block.
     /// The shared renderer still emits it; this is a preview-only visibility state.
     var showsFrontMatter: Bool = true
+    /// Whether the preview shows the starting source line beside each rendered
+    /// block. Preview-only: the gutter lives in the injected user script, which
+    /// the PDF exporter and the HTML builder never receive, so exported output is
+    /// unaffected. Independent of the editor's own line-number preference.
+    var showsLineNumbers: Bool = false
     @Binding var jumpHeadingID: String?
     /// Fraction (0...1) to scroll to after load when no heading anchor applies.
     @Binding var jumpFraction: Double?
@@ -161,6 +166,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             };
             window.__md2SetFrontMatterVisible(\(Self.jsBoolean(showsFrontMatter)));
         })();
+        \(Self.lineNumberGutterScript(showsLineNumbers: showsLineNumbers))
         (function () {
             // Suppress anchor reporting while we are programmatically scrolling,
             // so a mode-switch scroll is never captured back as the user's anchor.
@@ -439,6 +445,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 main.innerHTML = bodyHTML;
                 if (window.__md2RenderMath) { window.__md2RenderMath(main); }
                 if (window.__md2RenderDiagrams) { window.__md2RenderDiagrams(main); }
+                // The swap above destroys the gutter layer along with the old
+                // content, so rebuild it. Math and diagrams settle later; the
+                // gutter's ResizeObserver picks up the resulting height changes.
+                if (window.__md2RenderLineNumbers) { window.__md2RenderLineNumbers(); }
             };
 
             // --- Find (preview, read-only) --------------------------------
@@ -651,6 +661,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         context.coordinator.onFindShortcut = onFindShortcut
         context.coordinator.onFindResult = onFindResult
         context.coordinator.showsFrontMatter = showsFrontMatter
+        context.coordinator.showsLineNumbers = showsLineNumbers
 
         if let previewWebView = webView as? PreviewWebView {
             previewWebView.onFindAction = { action in
@@ -684,6 +695,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         let htmlChanged = context.coordinator.lastHTML != html
         let baseURLChanged = context.coordinator.lastBaseURL != baseURL
         context.coordinator.applyFrontMatterVisibility(in: webView)
+        context.coordinator.applyLineNumbersVisibility(in: webView)
         if htmlChanged || baseURLChanged {
             // In Side by Side mode, a content-only change (same document, no new
             // diagram engine needed) is applied in place so typing does not
@@ -808,6 +820,149 @@ struct MarkdownPreviewView: NSViewRepresentable {
 
     static func jsBoolean(_ value: Bool) -> String {
         value ? "true" : "false"
+    }
+
+    /// The preview-only line-number gutter: its styles plus the render entry
+    /// points. Kept as its own unit so the GUI tests can inject exactly this code
+    /// into an offscreen web view and drive the real implementation.
+    ///
+    /// Numbers come from the `data-md2-source-line` metadata every top-level block
+    /// already carries. This script is injected only into the preview web view,
+    /// never into the shared rendered HTML, so exported PDFs, prints, and exported
+    /// HTML are unaffected — the same contract the broken-image and front-matter
+    /// rules rely on.
+    static func lineNumberGutterScript(showsLineNumbers: Bool) -> String {
+        """
+        (function () {
+            // The digits are CSS generated content, never text nodes: the preview's
+            // find walks `document.body` text nodes, so real nodes here would be
+            // matched by find and would be merged by `clearFind`'s normalize().
+            var style = document.createElement('style');
+            style.textContent =
+                ':root{--md2-gutter-width:46px;}' +
+                'main{position:relative;}' +
+                '.md2-line-gutter{position:absolute;inset:0;pointer-events:none;display:none;}' +
+                'html.md2-line-numbers .md2-line-gutter{display:block;}' +
+                '.md2-line-gutter span{position:absolute;' +
+                'left:max(clamp(28px,4vw,64px) - var(--md2-gutter-width),0px);' +
+                'width:calc(var(--md2-gutter-width) - 8px);text-align:right;' +
+                'font-size:0.78rem;line-height:1.25;color:var(--muted);' +
+                'font-variant-numeric:tabular-nums;}' +
+                '.md2-line-gutter span::before{content:attr(data-md2-gutter);}' +
+                // Reserve the gutter by raising the column's own padding, so no
+                // horizontal scrolling can appear. Gated on the switch class, so
+                // with numbers off the base rules apply byte-identically. The media
+                // query mirrors the renderer's own 720px breakpoint.
+                'html.md2-line-numbers main{padding-left:max(clamp(28px,4vw,64px),var(--md2-gutter-width));}' +
+                '@media (max-width:720px){html.md2-line-numbers main{padding-left:max(24px,var(--md2-gutter-width));}}';
+            document.head.appendChild(style);
+
+            var lineNumberObserver = null;
+            var lineNumberRenderScheduled = false;
+
+            function scheduleLineNumberRender() {
+                if (lineNumberRenderScheduled) { return; }
+                lineNumberRenderScheduled = true;
+                requestAnimationFrame(function () {
+                    lineNumberRenderScheduled = false;
+                    window.__md2RenderLineNumbers();
+                });
+            }
+
+            function isGutterLayer(node) {
+                return !!node.classList && node.classList.contains('md2-line-gutter');
+            }
+
+            function gutterLayerIn(main) {
+                for (var i = 0; i < main.children.length; i++) {
+                    if (isGutterLayer(main.children[i])) { return main.children[i]; }
+                }
+                return null;
+            }
+
+            // Eligible blocks are the *direct children* of <main> carrying
+            // source-line metadata. A subtree query would also match footnote list
+            // items — which carry the attribute too — and number them twice.
+            function gutterBlocks(main) {
+                var blocks = [];
+                for (var i = 0; i < main.children.length; i++) {
+                    var child = main.children[i];
+                    if (isGutterLayer(child)) { continue; }
+                    if (child.hasAttribute('data-md2-source-line')) { blocks.push(child); }
+                }
+                return blocks;
+            }
+
+            // Watch the blocks the numbers are positioned against, not just <main>:
+            // math and diagrams settle asynchronously, and one block can grow while
+            // another shrinks by the same amount, leaving <main>'s own box unchanged
+            // while every number below the pair goes stale.
+            function observeGutterBlocks(blocks) {
+                if (typeof ResizeObserver === 'undefined') { return; }
+                if (!lineNumberObserver) {
+                    lineNumberObserver = new ResizeObserver(scheduleLineNumberRender);
+                }
+                lineNumberObserver.disconnect();
+                for (var i = 0; i < blocks.length; i++) {
+                    lineNumberObserver.observe(blocks[i]);
+                }
+            }
+
+            window.__md2RenderLineNumbers = function () {
+                var main = document.querySelector('main');
+                if (!main) { return 0; }
+                if (!document.documentElement.classList.contains('md2-line-numbers')) { return 0; }
+
+                var layer = gutterLayerIn(main);
+                if (!layer) {
+                    layer = document.createElement('div');
+                    layer.className = 'md2-line-gutter';
+                    layer.setAttribute('aria-hidden', 'true');
+                    main.appendChild(layer);
+                }
+                while (layer.firstChild) { layer.removeChild(layer.firstChild); }
+
+                var blocks = gutterBlocks(main);
+                var mainTop = main.getBoundingClientRect().top;
+                var count = 0;
+                for (var i = 0; i < blocks.length; i++) {
+                    var block = blocks[i];
+                    var rect = block.getBoundingClientRect();
+                    // A hidden block reports a zero rect — the front-matter block is
+                    // display:none when metadata is hidden, and numbering it would
+                    // pin a garbage number at the top of the document.
+                    if (rect.width === 0 && rect.height === 0) { continue; }
+                    var sourceLine = block.getAttribute('data-md2-source-line');
+                    if (!sourceLine) { continue; }
+
+                    var span = document.createElement('span');
+                    span.setAttribute('data-md2-gutter', sourceLine);
+                    // The layer is positioned against <main>'s padding box, so a
+                    // viewport-relative difference is scroll-independent: numbers
+                    // move with their content without a scroll listener.
+                    span.style.top = (rect.top - mainTop) + 'px';
+                    layer.appendChild(span);
+                    count += 1;
+                }
+
+                observeGutterBlocks(blocks);
+                return count;
+            };
+
+            window.__md2SetLineNumbersVisible = function (visible) {
+                var on = !!visible;
+                var changed = document.documentElement.classList.contains('md2-line-numbers') !== on;
+                document.documentElement.classList.toggle('md2-line-numbers', on);
+                // Only a real change needs a pass: `updateNSView` pushes this
+                // value on every SwiftUI update, and rebuilding the layer each
+                // time would add a redundant round trip per keystroke.
+                if (on && changed) { window.__md2RenderLineNumbers(); }
+            };
+
+            window.addEventListener('resize', scheduleLineNumberRender);
+            window.__md2SetLineNumbersVisible(\(jsBoolean(showsLineNumbers)));
+        })();
+        """
     }
 
     enum ImageFailureKind: Equatable {
@@ -943,6 +1098,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         var onFindResult: (_ total: Int, _ index: Int) -> Void = { _, _ in }
         let localImageSchemeHandler = LocalImageSchemeHandler()
         var showsFrontMatter = true
+        var showsLineNumbers = false
         var lastFindQuery: String?
         var lastFocusToken: UUID?
         /// Token of the most recently consumed find-navigation command, so it runs
@@ -1176,6 +1332,16 @@ struct MarkdownPreviewView: NSViewRepresentable {
             )
         }
 
+        /// Flips the preview gutter's switch class. Toggling never reloads or
+        /// re-renders the document — the layer is already built, and the numbers
+        /// are generated content, so showing them is a class change.
+        func applyLineNumbersVisibility(in webView: WKWebView) {
+            guard isLoaded else { return }
+            webView.evaluateJavaScript(
+                "window.__md2SetLineNumbersVisible ? window.__md2SetLineNumbersVisible(\(MarkdownPreviewView.jsBoolean(showsLineNumbers))) : null;"
+            )
+        }
+
         func userContentController(
             _ userContentController: WKUserContentController,
             didReceive message: WKScriptMessage
@@ -1294,6 +1460,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             isLoaded = true
             applyFrontMatterVisibility(in: webView)
+            applyLineNumbersVisibility(in: webView)
             applyPendingScroll(in: webView, consume: true)
             applyPendingFind(in: webView)
         }

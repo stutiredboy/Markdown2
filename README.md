@@ -31,7 +31,8 @@
 - **Quick mode switching** — press `Esc` in the editor to switch to preview; `Cmd+double-click` in preview to jump back to edit; or select Side by Side from the toolbar to see both at once.
 - **Bidirectional scroll sync** — in Side by Side mode, scrolling either pane keeps the other aligned to the same content.
 - **Find and Replace** — `Cmd+F` opens the find bar in editor or preview; navigate matches with next/previous, replace single or all occurrences.
-- **App settings** for language, default open mode (Edit / Side by Side / Preview), default outline visibility, and the export profile (page size, orientation, margins, page numbers, headers/footers).
+- **Line numbers** — optionally show source line numbers in the editor, in the preview, or both. The editor numbers each line in a gutter beside the text (a soft-wrapped line is numbered once); the preview shows the starting source line of each rendered block, so a number read while reading is the line to open in the editor. Toggle either scope from the toolbar or in Settings; numbers are display-only and never appear in exported PDF, print, or HTML.
+- **App settings** for language, default open mode (Edit / Side by Side / Preview), default outline visibility, line numbers (editor and preview), and the export profile (page size, orientation, margins, page numbers, headers/footers).
 - **Markdown file type declaration** for `.md` and `.markdown` files when packaged.
 
 See [Docs/MarkdownSupport.md](Docs/MarkdownSupport.md) for the tested Markdown/Typora support matrix.

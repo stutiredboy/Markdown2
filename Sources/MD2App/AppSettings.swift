@@ -48,6 +48,23 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    /// Whether the editor draws a source line-number gutter in its left inset.
+    /// Display-only: it never changes the text, selection, or any geometry.
+    @Published var showsLineNumbersInEditor: Bool {
+        didSet {
+            defaults.set(showsLineNumbersInEditor, forKey: Keys.showsLineNumbersInEditor)
+        }
+    }
+
+    /// Whether the preview shows the starting source line beside each rendered
+    /// block. Independent of `showsLineNumbersInEditor`, so both surfaces can be
+    /// on at once (and Side by Side shows each pane per its own preference).
+    @Published var showsLineNumbersInPreview: Bool {
+        didSet {
+            defaults.set(showsLineNumbersInPreview, forKey: Keys.showsLineNumbersInPreview)
+        }
+    }
+
     /// Document-relative folder where raw clipboard images are stored, e.g.
     /// `assets` or `images/screenshots`. Dropped/pasted image files are linked
     /// in place. The raw user value is kept as-typed; it is normalized
@@ -117,6 +134,18 @@ final class AppSettings: ObservableObject {
             opensBlankDocumentOnLaunch = false
         } else {
             opensBlankDocumentOnLaunch = defaults.bool(forKey: Keys.opensBlankDocumentOnLaunch)
+        }
+
+        if defaults.object(forKey: Keys.showsLineNumbersInEditor) == nil {
+            showsLineNumbersInEditor = false
+        } else {
+            showsLineNumbersInEditor = defaults.bool(forKey: Keys.showsLineNumbersInEditor)
+        }
+
+        if defaults.object(forKey: Keys.showsLineNumbersInPreview) == nil {
+            showsLineNumbersInPreview = false
+        } else {
+            showsLineNumbersInPreview = defaults.bool(forKey: Keys.showsLineNumbersInPreview)
         }
 
         let storedFolder = defaults.string(forKey: Keys.attachmentFolder)
@@ -251,6 +280,8 @@ private enum Keys {
     static let modeShortcuts = "MD2.ModeShortcuts"
     static let showsOutlineByDefault = "MD2.ShowsOutlineByDefault"
     static let opensBlankDocumentOnLaunch = "MD2.OpensBlankDocumentOnLaunch"
+    static let showsLineNumbersInEditor = "MD2.ShowsLineNumbersInEditor"
+    static let showsLineNumbersInPreview = "MD2.ShowsLineNumbersInPreview"
     static let attachmentFolder = "MD2.AttachmentFolder"
     static let exportProfile = "MD2.ExportProfile"
     static let citationStyle = "MD2.CitationStyle"
@@ -281,7 +312,7 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     }
 }
 
-enum L10nKey: String {
+enum L10nKey: String, CaseIterable {
     case new
     case open
     case openRecent
@@ -398,6 +429,10 @@ enum L10nKey: String {
     case citationNumeric
     case numberAllEquations
     case academicHelp
+    case lineNumbers
+    case lineNumbersInEditor
+    case lineNumbersInPreview
+    case lineNumbersHelp
 }
 
 enum L10n {
@@ -407,6 +442,21 @@ enum L10n {
             zhHans[key] ?? english[key] ?? key.rawValue
         case .system, .english:
             english[key] ?? key.rawValue
+        }
+    }
+
+    /// Whether `key` has an entry in `language`'s dictionary. The two tables are
+    /// authored by hand and `text` falls back silently
+    /// (`zhHans[key] ?? english[key] ?? key.rawValue`), so a missing entry ships
+    /// as English — or a raw enum string — to users of that language. Exposing
+    /// the check keeps the completeness test able to guard every key, including
+    /// ones added later.
+    static func hasTranslation(_ key: L10nKey, language: AppLanguage) -> Bool {
+        switch language {
+        case .zhHans:
+            zhHans[key] != nil
+        case .system, .english:
+            english[key] != nil
         }
     }
 
@@ -526,7 +576,11 @@ enum L10n {
         .citationAuthorYear: "Author-Year",
         .citationNumeric: "Numeric",
         .numberAllEquations: "Number All Equations",
-        .academicHelp: "Citations load from a bibliography: front-matter field or a references.bib next to the document."
+        .academicHelp: "Citations load from a bibliography: front-matter field or a references.bib next to the document.",
+        .lineNumbers: "Line Numbers",
+        .lineNumbersInEditor: "Show in the editor",
+        .lineNumbersInPreview: "Show in the preview",
+        .lineNumbersHelp: "Show source line numbers in the editor, the preview, or both."
     ]
 
     private static let zhHans: [L10nKey: String] = [
@@ -645,6 +699,10 @@ enum L10n {
         .citationAuthorYear: "作者-年份",
         .citationNumeric: "数字编号",
         .numberAllEquations: "为所有公式编号",
-        .academicHelp: "引用会从 front-matter 的 bibliography: 字段或文档同目录下的 references.bib 加载。"
+        .academicHelp: "引用会从 front-matter 的 bibliography: 字段或文档同目录下的 references.bib 加载。",
+        .lineNumbers: "行号",
+        .lineNumbersInEditor: "在编辑模式显示",
+        .lineNumbersInPreview: "在预览模式显示",
+        .lineNumbersHelp: "在编辑、预览或两者中显示源码行号。"
     ]
 }

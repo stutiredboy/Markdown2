@@ -217,6 +217,27 @@ struct ContentView: View {
                 .labelStyle(.titleAndIcon)
                 .accessibilityLabel(showsOutline ? settings.text(.hideOutline) : settings.text(.showOutline))
                 .help(showsOutline ? settings.text(.hideOutline) : settings.text(.showOutline))
+
+                // Two independent scopes, so this is a menu rather than a single
+                // toggle: one button could only express one of them, and would
+                // have to overwrite the other (or guess, in Side by Side where
+                // both panes are visible). It writes the same preferences the
+                // Settings window does, so the two can never disagree.
+                Menu {
+                    Toggle(
+                        settings.text(.lineNumbersInEditor),
+                        isOn: $settings.showsLineNumbersInEditor
+                    )
+                    Toggle(
+                        settings.text(.lineNumbersInPreview),
+                        isOn: $settings.showsLineNumbersInPreview
+                    )
+                } label: {
+                    Label(settings.text(.lineNumbers), systemImage: "list.number")
+                }
+                .labelStyle(.titleAndIcon)
+                .accessibilityLabel(settings.text(.lineNumbers))
+                .help(settings.text(.lineNumbersHelp))
             }
 
             ToolbarItemGroup(placement: .primaryAction) {
@@ -635,7 +656,8 @@ struct ContentView: View {
                 },
                 onInsertImageAttachments: { sources in
                     document.insertImageAttachments(sources, folder: settings.attachmentFolder)
-                }
+                },
+                showsLineNumbers: settings.showsLineNumbersInEditor
             )
 
             if editorFindVisible {
@@ -672,6 +694,7 @@ struct ContentView: View {
                 baseURL: document.baseURL,
                 liveUpdate: inSplit,
                 showsFrontMatter: showsFrontMatterInPreview,
+                showsLineNumbers: settings.showsLineNumbersInPreview,
                 jumpHeadingID: $document.jumpHeadingID,
                 jumpFraction: $document.jumpFraction,
                 jumpAnchor: $document.previewJumpAnchor,

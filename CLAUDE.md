@@ -30,6 +30,20 @@ benchmark in `Tests/MD2CoreTests/` are `MD2_RUN_GUI_TESTS`-gated and skipped by
 this path fails silently (Backspace deletes a whole word, find-mode stutter), and
 only the GUI tests or manual use catch it.
 
+Line-number guards: the editor gutter (`MarkdownSourceTextView` draw path in
+`Sources/MD2App/MarkdownEditorView.swift`) and the preview gutter
+(`__md2RenderLineNumbers` in `Sources/MD2App/MarkdownPreviewView.swift`) are
+covered by GUI-gated suites that `swift test` skips. After changing either
+surface — or the export-isolation boundary they depend on — run
+`MD2_RUN_GUI_TESTS=1 swift test --filter EditorLineNumberGutterGUITests --filter LineNumberGutterGUITests`
+locally before landing. The guarded failures are silent: a gutter that stops
+drawing, numbers that drift from their lines after an edit, or preview digits
+that leak into exported PDF/HTML. Two non-obvious constraints those tests pin
+down: `NSTextView` clips its drawing to the text container, so the gutter must
+re-clip to the dirty rect or its painting in the container inset is discarded;
+and the clipboard/find paths must never see the digits, which is why they are CSS
+generated content rather than text nodes.
+
 ## Skill routing
 
 When the user's request matches an available skill, invoke it via the Skill tool. When in doubt, invoke the skill.
