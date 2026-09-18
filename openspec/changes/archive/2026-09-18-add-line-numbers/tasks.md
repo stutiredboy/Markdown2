@@ -46,8 +46,8 @@
 
 - [x] 5.1 Run the non-GUI suite: `swift test`.
 - [x] 5.2 Run the GUI suite for the new surface and the paths it touches: `MD2_RUN_GUI_TESTS=1 swift test --filter LineNumberGutterGUITests --filter MermaidOffscreenRenderingTests --filter PDFExportEndToEndVerification`.
-- [ ] 5.3 Manually verify export isolation: export the same document to PDF and to HTML with numbers on and off, and confirm the layout is identical and no gutter appears.
-- [ ] 5.4 Manually verify the mode-switch and Side by Side scroll sync still behave (numbers on and off), since the preview script gained a new injection pass.
+- [x] 5.3 Manually verify export isolation: export the same document to PDF and to HTML with numbers on and off, and confirm the layout is identical and no gutter appears.
+- [x] 5.4 Manually verify the mode-switch and Side by Side scroll sync still behave (numbers on and off), since the preview script gained a new injection pass.
 - [x] 5.5 Update the feature lists in `README.md` / `README.zh-CN.md` if they enumerate display preferences.
 - [x] 5.6 Run `openspec validate add-line-numbers` and confirm it passes.
 - [x] 5.7 Add the CLAUDE.md Testing-section note for the new GUI guards (same pattern as the `FindFindDeleteGUITests` note): after changing the line-number surfaces (`MarkdownSourceTextView` draw path, preview `__md2RenderLineNumbers`, export-isolation assertions), run `MD2_RUN_GUI_TESTS=1 swift test --filter LineNumberGutterGUITests` locally before landing — the guarded failures are silent (stale numbers after edits, export leak).
