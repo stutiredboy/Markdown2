@@ -15,7 +15,8 @@ Two facts were **measured against the bundled engine (KaTeX 0.16.11)** rather th
 | --- | --- |
 | `align`, `align*`, `alignat`, `gather`, `gather*`, `equation`, `equation*`, `aligned`, `split`, `cases`, `array`, matrices | typeset |
 | `multline`, `eqnarray`, `displaymath`, `subequations` | `No such environment` error |
-| `align` / `equation` **without** `\tag{}` | **no visible number** — the `class="tag"` markup is an empty layout slot, not a number |
+| `align` / `equation` **without** `\tag{}` | **numbered anyway** — the generated HTML carries an *empty* `.eqn-num` slot, so this is invisible to a string probe; the stylesheet fills it from a CSS counter at paint time (see Decision 5) |
+| `align*` / `equation*` | no `.eqn-num` slot at all, and `\tag{9}` still renders `(9)` |
 | `\tag{3.1}` | renders the visible number `(3.1)` |
 | `\label{eq:e}` | `Undefined control sequence: \label` |
 | `\begin{align}` … nested `\begin{cases}` … `\end{cases}` … `\end{align}` | typesets; inner close does not end the outer |
@@ -73,21 +74,43 @@ The recognized set is a single enumerated constant: the display environments `al
 
 `multline`, `eqnarray`, `displaymath`, and `subequations` are added to the recognized set even though the engine rejects them.
 
-Today those blocks render as mangled prose — `\begin{eqnarray} a &=& b \end{eqnarray}` loses its backslashes to the escape pass and reaches the reader as `begin{eqnarray} a &=& b end{eqnarray}`. That silent corruption is the reported defect. Routing them to the engine produces a visible error carrying the source, which is what the existing "graceful error handling" requirement already asks for.
+Measured, not assumed (D3): today a bare `\begin{eqnarray}` block renders as a **paragraph of literal source** — `<p>\begin{eqnarray}<br>a &amp;=&amp; b<br>\end{eqnarray}</p>`. The environment commands survive, because the escape pattern matches only backslash-plus-punctuation and `b`/`e` are letters; what the escape pass does consume is the `\\` row separator, collapsing it to a single `\`, while `&` is HTML-escaped and every line becomes a `<br>` soft break. So the defect is not "mangled into `begin{eqnarray}`" (an earlier draft said that and was wrong) — it is that the equation is silently **not typeset at all** and its source is shown as prose. Routing those blocks to the engine produces a visible error carrying the source, which is what the existing "graceful error handling" requirement already asks for.
 
 *Alternative rejected:* leaving them to fall through as text — that is the bug, not a fallback.
 
-### 5. Numbering is reused verbatim, because the engine does not compete
+### 5. Numbering is reused verbatim, and the engine's own numbering is suppressed
 
-`mathDisplayBlockHTML` and `equationLabelTag` are reused with no new numbering logic. The probe settles the obvious hazard: KaTeX 0.16.11 does **not** auto-number `align` or `equation`, so there is no double-numbering to suppress and no need to rewrite `align` → `align*` or inject `\notag`. The engine renders a number only for an explicit `\tag{}`, which the existing code already treats as the manual-number path.
+`mathDisplayBlockHTML` and `equationLabelTag` are reused with no new numbering logic. `\label` stripping is mandatory rather than cosmetic — the engine raises `Undefined control sequence: \label`, and the existing helper removes it before typesetting while registering it for `\ref{}`.
 
-`\label` stripping is likewise mandatory rather than cosmetic — the engine raises `Undefined control sequence: \label`, and the existing helper already removes it before typesetting while registering it for `\ref{}`.
+**Correction to an earlier draft of this decision.** It claimed the engine "does not auto-number `align` or `equation`, so there is no double-numbering to suppress and no need to rewrite `align` → `align*`". That was wrong, and the mistake is instructive: `renderToString` output contains an *empty* `<span class="eqn-num"></span>` with no visible digits, so probing the generated HTML says "no numbering". The number is supplied by the engine's stylesheet:
+
+```css
+.katex .eqn-num:before { content: "(" counter(katexEqnNo) ")"; counter-increment: katexEqnNo }
+```
+
+So the numbering exists only once something paints the page. It surfaced from the exported PDF's text layer — a labeled `align` would have shown Markdown2's `(n)` **and** the engine's row numbers simultaneously. The engine's own rule for which environments it numbers is `!name.contains("ed") && !name.contains("*")`, selecting `align`, `alignat`, `gather`, `equation`.
+
+Fix: `suppressingEngineNumbering` rewrites a recognized block's opening and closing commands into the starred form (`\begin{align}` → `\begin{align*}`), covering every occurrence of the name so a same-name nested environment is included. Starring stops the counter while leaving an explicit `\tag{}` working (probe-verified: `align*` yields zero `.eqn-num` slots, and `align*` + `\tag{9}` still renders `(9)`). Display numbering therefore has exactly one authority — Markdown2's — for `$$` blocks and environments alike: unnumbered unless labeled or `numberAllEquations`.
+
+*Alternative rejected:* leave the engine's numbering and drop Markdown2's for environments — that would break the `\label`/`\ref{}` requirement, since references resolve through Markdown2's counter. Per-row numbering that *does* integrate with `\ref{}` remains deferred (see Open Questions).
 
 Scope limit (outside-voice finding): the "extends for free" claim covers **top-level blocks**. The label pre-scan does not traverse blockquotes or dedented list content, so a forward `\ref{}` targeting an equation inside a container may stay unresolved — a pre-existing `$$` asymmetry the env syntax inherits. This change documents the boundary in the matrix text and pins it with a test; fixing the pre-scan's traversal is deferred (TODOS).
 
 ### 6. Reuse the existing DOM contract
 
 New forms emit the same `math math-inline` / `math math-display` classes and, when labeled, the same `numbered-equation` wrapper. `__md2RenderMath` and the numbering CSS are untouched.
+
+### 7. Link and image destinations outrank the paren delimiter
+
+Found during implementation, not foreseen by the review: making `\(` a math opener regressed two pinned CommonMark reference examples — `[link](\(foo\))` (expected `<a href="(foo)">`) and `[link](foo\(and\(bar\))` (expected `<a href="foo(and(bar)">`). The conformance baseline caught it (`CommonMark#495`, `#498` flipped from `reference-match` to `known-incomplete`).
+
+The mechanism: `renderLinks` matches a destination on text that the **escape** pass has already tokenized, so `\(` must survive until then to become a literal `(` in the `href`. The paren-math pass runs ahead of the escape pass by necessity (Decision 2) and therefore stole the delimiter first. Inside `](…)` a `\(` is a CommonMark escape, never a math delimiter, so the pass must not claim it.
+
+Fix: before emitting a span, test whether the match starts inside a link/image destination, by scanning back to the nearest `](` and forward from it tracking paren depth while skipping escaped characters. A `)` that closes the destination before the match means the match is outside it. Depth tracking (rather than "any `)` in between") is what keeps a destination's own balanced parens from being mistaken for the closing one.
+
+*Alternatives rejected:* deferring the paren pass until after link rendering (impossible — the escape pass would already have consumed `\(`); requiring the opener not be preceded by `(` (fails on `[link](foo\(and\(bar\))`, where it is preceded by a letter); regenerating the conformance baseline to accept the divergence (that would downgrade `links`, a Supported construct, to satisfy a new feature — the wrong trade).
+
+*Known residual:* a destination with nested parens before the escaped pair, e.g. `[link](b(c)\(d\))`, still parses to `href="b(c"` — that is the pre-existing destination regex stopping at the first `)`, unchanged by this decision and out of scope here. The exclusion still correctly prevents the escaped pair from becoming math.
 
 ## Risks / Trade-offs
 

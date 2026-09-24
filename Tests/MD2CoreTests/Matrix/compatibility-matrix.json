@@ -351,10 +351,10 @@
       "sections": [],
       "tier": "Supported",
       "baselineRelationship": "not-in-corpus",
-      "declaredBehavior": "Inline `$…$` and display `$$…$$` TeX are typeset offline with bundled KaTeX (incl. mhchem).",
-      "boundary": "Commands outside KaTeX's subset render as an inline KaTeX error rather than blanking; currency `$` and `$` in code stay literal.",
+      "declaredBehavior": "Inline `$…$` / `\\(…\\)` and display `$$…$$` / `\\[…\\]` TeX, plus bare `\\begin{env}…\\end{env}` environments, are typeset offline with bundled KaTeX (incl. mhchem).",
+      "boundary": "Commands outside KaTeX's subset render as an inline KaTeX error rather than blanking; currency `$` and `$` in code stay literal; a `\\(…\\)` inside a link destination stays a literal-parenthesis escape. A recognized environment is typeset in its starred form, which suppresses the engine's own CSS-counter row numbering so Markdown2 stays the only authority (an explicit `\\tag{}` still renders); one label per environment block yields one number, and engine-rejected environments (`multline`, `eqnarray`, `displaymath`, `subequations`) are reported rather than typeset. Numbering and `\\ref{}` pre-registration cover top-level blocks: an equation inside a blockquote or list is numbered, but a forward `\\ref{}` to it stays unresolved. A closer scan bails at a fenced-code boundary, and `$…$` nested inside `\\(…\\)` loses its dollar signs to the earlier inline pass.",
       "docLabel": "Supported",
-      "localTests": ["MathRenderingTests"]
+      "localTests": ["MathRenderingTests", "MathEngineConformanceTests"]
     },
     {
       "id": "diagrams",

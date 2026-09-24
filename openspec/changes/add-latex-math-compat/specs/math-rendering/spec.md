@@ -39,6 +39,8 @@ The system SHALL detect block/display math in any of the following forms and SHA
 
 An environment SHALL be recognized only when the opening and closing environment names match, an inner environment that closes inside the block SHALL NOT terminate the block early, and same-name nested environments SHALL be captured in full via depth counting. A candidate block whose scan encounters a fenced-code opener before its matching closer SHALL NOT be treated as math. Environments the bundled engine can typeset — `align`, `align*`, `alignat`, `alignat*`, `gather`, `gather*`, `equation`, `equation*`, and the standalone inner environments it accepts, enumerated as `aligned`, `alignedat`, `split`, `cases`, `array`, `matrix`, `pmatrix`, `bmatrix`, `Bmatrix`, `vmatrix`, `Vmatrix`, `smallmatrix` — SHALL be typeset, with the environment commands retained in the TeX handed to the engine. Environments the bundled engine does not implement, such as `multline` and `eqnarray`, SHALL also be recognized as display math blocks so that the engine reports them visibly rather than their source being consumed as ordinary prose.
 
+The bundled engine's own display numbering SHALL be suppressed for recognized environments, so that a display equation never carries two numbers: the sequential number the system assigns, or a manual `\tag{}`, and never both. An explicit `\tag{}` SHALL keep rendering.
+
 #### Scenario: Multi-line display block is typeset
 - **WHEN** the source contains a block opening with a line `$$`, then `\int_0^1 x^2 \, dx`, then a closing line `$$`
 - **THEN** the preview renders the integral as a centered display equation
@@ -65,6 +67,20 @@ An environment SHALL be recognized only when the opening and closing environment
 #### Scenario: Starred environment is unnumbered
 - **WHEN** the source contains `\begin{equation*}E = mc^2\end{equation*}` with no `\label{}`
 - **THEN** the preview renders the equation without a number
+
+#### Scenario: Environment carries at most one number
+- **WHEN** the source contains a labeled `align` environment
+- **THEN** the rendered equation carries exactly one number — the sequential number assigned to its label
+- **AND** the engine does not additionally number the environment's rows
+
+#### Scenario: Unlabeled environment stays unnumbered by default
+- **WHEN** the source contains `\begin{align}` with no `\label{}` and the number-all setting is off
+- **THEN** the preview renders the equation without any number
+
+#### Scenario: Manual tag still renders in a recognized environment
+- **WHEN** the source contains `\begin{align}` whose content carries `\tag{3.1}`
+- **THEN** the preview renders the manual number `(3.1)`
+- **AND** no additional sequential number is applied to the same equation
 
 #### Scenario: Nested inner environment does not close the outer block
 - **WHEN** the source contains `\begin{align}`, then `x &= \begin{cases} 1 & a \\ 2 & b \end{cases}`, then `\end{align}`
@@ -112,7 +128,7 @@ An environment SHALL be recognized only when the opening and closing environment
 - **AND** the surrounding document still renders normally
 
 ### Requirement: Avoid false-positive math detection
-The system SHALL NOT treat ordinary dollar-sign usage as math. An escaped `\$`, a dollar sign immediately followed by whitespace at the open, a dollar sign immediately preceded by whitespace at the close, and an unmatched lone `$` on a line SHALL all remain literal text. Likewise, a `\(` with no matching `\)`, a `\begin{<env>}` whose matching `\end{<env>}` never appears, and an opening and closing whose environment names differ SHALL NOT open a math span or a display math block.
+The system SHALL NOT treat ordinary dollar-sign usage as math. An escaped `\$`, a dollar sign immediately followed by whitespace at the open, a dollar sign immediately preceded by whitespace at the close, and an unmatched lone `$` on a line SHALL all remain literal text. Likewise, a `\(` with no matching `\)`, a `\begin{<env>}` whose matching `\end{<env>}` never appears, and an opening and closing whose environment names differ SHALL NOT open a math span or a display math block. A `\(` occurring inside an inline link or image destination SHALL NOT open a math span, because inside a destination's `(…)` it is a literal-parenthesis escape rather than a math delimiter.
 
 #### Scenario: Currency text is not math
 - **WHEN** a paragraph contains `It costs $5 today and $10 tomorrow.`
@@ -123,6 +139,21 @@ The system SHALL NOT treat ordinary dollar-sign usage as math. An escaped `\$`, 
 - **WHEN** a paragraph contains `Price: \$x`
 - **THEN** a literal `$x` is rendered as text
 - **AND** no math span is created
+
+#### Scenario: Escaped parens in a link destination are not math
+- **WHEN** a paragraph contains `[link](\(foo\))`
+- **THEN** the output contains a link whose destination is the literal `(foo)`
+- **AND** no math span is produced
+
+#### Scenario: Escaped parens in a nested link destination are not math
+- **WHEN** a paragraph contains `[link](foo\(and\(bar\))`
+- **THEN** the output contains a link whose destination retains the authored parens
+- **AND** no math span is produced
+
+#### Scenario: Math after a link on the same line still renders
+- **WHEN** a paragraph contains `[a](b) then \(x + y\) end`
+- **THEN** the link renders as a link
+- **AND** `\(x + y\)` renders as an inline math span
 
 #### Scenario: Unterminated environment is not a math block
 - **WHEN** a paragraph mentions `\begin{align}` with no `\end{align}` anywhere in the document

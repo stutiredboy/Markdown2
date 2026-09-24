@@ -29,6 +29,8 @@ struct DeclaredBoundaryTests {
         .init(constructID: "gfm-tables", markdown: "| a | b |\n| --- | --- |\n| 1 | 2 |", tagPrefix: "<table", multiLine: true),
         .init(constructID: "gfm-task-lists", markdown: "- [ ] task\n- [x] done", tagPrefix: "<ul", multiLine: true),
         .init(constructID: "tex-math", markdown: "$$\na^2\n$$", tagPrefix: "<div class=\"math", multiLine: true),
+        // A bare environment is the same block construct as `$$`, with no wrapper.
+        .init(constructID: "tex-math", markdown: "\\begin{align}\na &= b\n\\end{align}", tagPrefix: "<div class=\"math", multiLine: true),
         .init(constructID: "diagrams", markdown: "```mermaid\ngraph TD; A-->B;\n```", tagPrefix: "<div class=\"diagram", multiLine: true),
         .init(constructID: "footnotes", markdown: "Body[^a]\n\n[^a]: note", tagPrefix: "<li id=\"fn-", multiLine: false)
     ]
@@ -69,6 +71,8 @@ struct DeclaredBoundaryTests {
         .init(constructID: "backslash-escapes", markdown: "\\*x\\*", mustContain: "*x*", mustNotContain: "<em>"),
         // Inline math protects its content from emphasis.
         .init(constructID: "tex-math", markdown: "$a*b*c$", mustContain: "math-inline", mustNotContain: "<em>"),
+        // The paren delimiter is the same inline construct with the same precedence.
+        .init(constructID: "tex-math", markdown: #"\(a*b*c\)"#, mustContain: "math-inline", mustNotContain: "<em>"),
         // Emphasis is resolved inside link text.
         .init(constructID: "links", markdown: "[*x*](u)", mustContain: "<em>x</em>", mustNotContain: nil),
         // Images emit <img> with the source.

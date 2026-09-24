@@ -476,6 +476,74 @@ final class PDFExportEndToEndVerification: XCTestCase {
         print("MERMAID-PDF darkPixels=\(dark)")
     }
 
+    /// The LaTeX-flavored delimiters added by `add-latex-math-compat`: inline
+    /// `\(...\)` and a bare `\begin{align}` environment with no `$$` wrapper. The
+    /// main fixture above only covers `$…$` / `$$…$$`, so without this the new
+    /// syntax could reach the PDF as unrendered source and nothing would notice.
+    @MainActor
+    func testLatexDelimitersAndEnvironmentRenderInExportedPDF() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed export test."
+        )
+        _ = NSApplication.shared
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("md2-latex-pdf-\(UUID().uuidString)")
+        try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // The `\text{}` markers give text extraction a stable ASCII token to find:
+        // the typeset glyphs are the evidence the math rendered rather than the
+        // source being echoed.
+        let markdown = #"""
+        # Formula
+
+        Inline \(P = \text{INLINEMARK}\) here.
+
+        \begin{align}
+        a &= b \text{ALIGNMARK} \\
+        c &= d
+        \end{align}
+        """#
+        let rendered = MarkdownRenderer().render(markdown)
+        let destination = dir.appendingPathComponent("latex.pdf")
+
+        let exporter = PDFExporter(destinationURL: destination)
+        let done = expectation(description: "latex-math export completes")
+        var outcome: Result<Void, Error>?
+        exporter.export(html: rendered.html, outline: rendered.outline, baseURL: dir) { result in
+            outcome = result
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 35)
+
+        guard case .success = outcome else {
+            XCTFail("export failed: \(String(describing: outcome))")
+            return
+        }
+
+        let document = try XCTUnwrap(PDFDocument(url: destination))
+        let text = (document.string ?? "").replacingOccurrences(of: " ", with: "")
+
+        XCTAssertTrue(
+            text.contains("INLINEMARK"),
+            "inline \\(...\\) math did not reach the exported PDF; page text=\(text.prefix(400))"
+        )
+        XCTAssertTrue(
+            text.contains("ALIGNMARK"),
+            "bare align environment did not reach the exported PDF; page text=\(text.prefix(400))"
+        )
+        // The unlabeled environment must carry no number. The engine's own row
+        // numbering lives in a CSS counter, so it shows up here as painted text
+        // even though the generated HTML contains no digits — this is the only
+        // place that regression is visible.
+        XCTAssertFalse(
+            text.contains("(1)"),
+            "unlabeled align environment was numbered in the export; page text=\(text.prefix(400))"
+        )
+    }
+
     /// Rasterize page 1 of the PDF at `url` into a bitmap (createPDF output, not DOM).
     private func rasterizeFirstPage(of url: URL, scale: CGFloat) -> NSBitmapImageRep? {
         guard let pdfDoc = CGDataProvider(url: url as CFURL).flatMap(CGPDFDocument.init),

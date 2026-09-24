@@ -315,8 +315,9 @@ public struct MarkdownRenderer: Sendable {
         return ("<pre><code>\(escapeHTML(code.joined(separator: "\n")))</code></pre>", index)
     }
 
-    /// Detects a display math block delimited by `$$` or `\[` / `\]` and
-    /// returns its raw TeX.
+    /// Detects a display math block — delimited by `$$`, by `\[` / `\]`, or by a
+    /// native LaTeX environment (`\begin{align}` … `\end{align}`) — and returns its
+    /// raw TeX.
     ///
     /// Handles both single-line and multi-line forms. Returns `nil` when the
     /// matching closing delimiter is absent, so the text falls through to normal
@@ -331,7 +332,7 @@ public struct MarkdownRenderer: Sendable {
         } else if trimmed.hasPrefix(#"\["#) {
             delimiters = (#"\["#, #"\]"#)
         } else {
-            return nil
+            return mathEnvironmentContent(from: lines, startIndex: startIndex)
         }
 
         let afterOpen = String(trimmed.dropFirst(delimiters.open.count))
@@ -363,6 +364,132 @@ public struct MarkdownRenderer: Sendable {
         }
 
         return nil
+    }
+
+    /// Environment names that open a display math block with no `$$` or `\[`
+    /// wrapper.
+    ///
+    /// The first group is the display environments the bundled engine typesets and
+    /// the second is the standalone inner environments it also accepts at top
+    /// level. The third group is environments real LaTeX documents carry that the
+    /// engine rejects: recognizing those routes them to the engine so the failure
+    /// is reported in place, rather than their source being read as ordinary prose.
+    private static let mathEnvironments: Set<String> = [
+        "align", "align*", "alignat", "alignat*", "gather", "gather*", "equation", "equation*",
+        "aligned", "alignedat", "split", "cases", "array",
+        "matrix", "pmatrix", "bmatrix", "Bmatrix", "vmatrix", "Vmatrix", "smallmatrix",
+        "multline", "multline*", "eqnarray", "eqnarray*", "displaymath", "subequations"
+    ]
+
+    /// Display environments the engine numbers **itself**, by rendering a
+    /// `.eqn-num` slot that its stylesheet fills from a CSS counter:
+    /// `.katex .eqn-num:before { content: "(" counter(katexEqnNo) ")" }`.
+    ///
+    /// The engine's rule is "a name with neither a `*` nor an `ed` suffix", which
+    /// selects exactly these. The number is invisible to the generated HTML (the
+    /// span is empty until CSS runs), so it only ever appears once the preview or
+    /// an export paints the page.
+    private static let engineNumberedEnvironments: Set<String> = ["align", "alignat", "gather", "equation"]
+
+    /// Detects a display math block written as a native LaTeX environment, with no
+    /// `$$` or `\[` wrapper.
+    ///
+    /// Unlike the `$$`/`\[` branches, the returned TeX **keeps** both environment
+    /// commands: the engine needs them to parse the block, and the stripped form
+    /// (`a&=b` on its own) is a parse error.
+    ///
+    /// The scan counts depth for the opening environment's own name, because
+    /// same-name nesting (`\begin{matrix}` inside `\begin{matrix}`) is valid and
+    /// must not close the block early; an inner environment whose name differs
+    /// never matches the closer string, so it cannot terminate the block either. A
+    /// fenced-code opener encountered by the scan bails out and returns `nil`: a
+    /// real environment never contains a fence, and without the bail a prose line
+    /// mentioning `\begin{align}` would swallow a later fenced sample that happens
+    /// to contain `\end{align}`.
+    private func mathEnvironmentContent(from lines: [String], startIndex: Int) -> (tex: String, nextIndex: Int)? {
+        let opened = lines[startIndex].trimmedMarkdownLine
+        guard let name = mathEnvironmentName(opening: opened) else { return nil }
+
+        let open = "\\begin{\(name)}"
+        let close = "\\end{\(name)}"
+
+        // Single-line form: `\begin{equation}E = mc^2\end{equation}`.
+        if opened.hasSuffix(close), opened.count >= open.count + close.count {
+            return (suppressingEngineNumbering(in: opened, environment: name), startIndex + 1)
+        }
+
+        // Multi-line form: keep the opening line, then scan for the matching close.
+        var content = [opened]
+        var depth = 1
+        var index = startIndex + 1
+
+        while index < lines.count {
+            if MarkdownLine.fenceMarker(in: lines[index]) != nil {
+                return nil
+            }
+
+            let lineTrimmed = lines[index].trimmedMarkdownLine
+            depth += occurrences(of: open, in: lineTrimmed)
+            depth -= occurrences(of: close, in: lineTrimmed)
+            content.append(lines[index])
+
+            if depth <= 0, lineTrimmed.hasSuffix(close) {
+                return (
+                    suppressingEngineNumbering(in: content.joined(separator: "\n"), environment: name),
+                    index + 1
+                )
+            }
+
+            index += 1
+        }
+
+        return nil
+    }
+
+    /// Rewrites an engine-numbered display environment into its starred form.
+    ///
+    /// Left alone, the engine numbers every row of an `align`/`gather`/`equation`
+    /// block through its own CSS counter — numbering Markdown2 neither controls nor
+    /// ties to `\ref{}`, and which would render *alongside* the `(n)` Markdown2
+    /// assigns to a labeled equation. Starring the environment suppresses the
+    /// engine's counter while keeping an explicit `\tag{}` working, so display
+    /// numbering has exactly one authority — Markdown2's — for `$$` blocks and
+    /// environments alike: unnumbered unless labeled or `numberAllEquations`.
+    ///
+    /// Every occurrence of the name in the block is rewritten, so a same-name
+    /// nested environment is covered too.
+    private func suppressingEngineNumbering(in tex: String, environment name: String) -> String {
+        guard Self.engineNumberedEnvironments.contains(name) else { return tex }
+
+        return tex
+            .replacingOccurrences(of: "\\begin{\(name)}", with: "\\begin{\(name)*}")
+            .replacingOccurrences(of: "\\end{\(name)}", with: "\\end{\(name)*}")
+    }
+
+    /// The environment name when `line` opens a recognized display-math
+    /// environment, or `nil` when it does not.
+    private func mathEnvironmentName(opening line: String) -> String? {
+        let prefix = #"\begin{"#
+        guard line.hasPrefix(prefix) else { return nil }
+
+        let afterOpen = line.dropFirst(prefix.count)
+        guard let closingBrace = afterOpen.firstIndex(of: "}") else { return nil }
+
+        let name = String(afterOpen[afterOpen.startIndex..<closingBrace])
+        return Self.mathEnvironments.contains(name) ? name : nil
+    }
+
+    /// Counts non-overlapping occurrences of a literal substring.
+    private func occurrences(of needle: String, in haystack: String) -> Int {
+        var count = 0
+        var searchStart = haystack.startIndex
+
+        while let found = haystack.range(of: needle, range: searchStart..<haystack.endIndex) {
+            count += 1
+            searchStart = found.upperBound
+        }
+
+        return count
     }
 
     /// Thin wrapper kept for the paragraph-break and footnote-scan call sites that
@@ -1166,12 +1293,17 @@ public struct MarkdownRenderer: Sendable {
     /// the protected fragments are restored. Each pass is a named method below, so
     /// adding a new inline construct means inserting one entry at the right point
     /// in this list.
+    ///
+    /// Both math passes sit ahead of ``protectBackslashEscapes`` on purpose: their
+    /// delimiters (`$`, `\(`, `\)`) are built from backslash-escapable punctuation,
+    /// so the escape pass would otherwise dismantle them before math ever saw them.
     private func inlineHTML(_ markdown: String, context: InlineContext? = nil) -> String {
         let protector = InlineProtector()
 
         let pipeline: [(String) -> String] = [
             { protectCodeSpans($0, protector: protector) },
             { protectInlineMath($0, protector: protector) },
+            { protectInlineParenMath($0, protector: protector) },
             { protectBackslashEscapes($0, protector: protector) },
             { protectHTMLEntities($0, protector: protector) },
             { protectAutolinks($0, protector: protector) },
@@ -1229,6 +1361,72 @@ public struct MarkdownRenderer: Sendable {
 
             return protector.protect("<span class=\"\(PreviewClass.math) \(PreviewClass.mathInline)\">\(escapeHTML(String(source[range])))</span>")
         }
+    }
+
+    /// Inline math `\(...\)`, the LaTeX spelling of `$...$`. It shares
+    /// ``protectInlineMath``'s pipeline slot for the same reason: `(` and `)` are
+    /// both backslash-escapable punctuation, so if the escape pass ran first it
+    /// would consume the delimiters and the span would degrade to a literal
+    /// parenthesized expression — the exact defect this pass exists to fix.
+    ///
+    /// The pattern opens on `\(` only when that backslash is not itself escaped
+    /// (`\\(`), so an authored literal backslash does not start a span. Inside the
+    /// span a backslash is consumed together with the following character, so
+    /// `\(a\\ b\)` keeps the row separator verbatim while an interior `\)` cannot
+    /// close the span early. Spaces are permitted at both ends (LaTeX allows
+    /// `\( x \)`), and an empty span is left literal.
+    ///
+    /// Link and image destinations are excluded: inside `](…)` a `\(` is a
+    /// CommonMark escape for a literal paren, not a math delimiter. Claiming it
+    /// here would break `[link](\(foo\))`, whose destination must stay `(foo)` —
+    /// the escape pass is what feeds those parens through to the `href`.
+    private func protectInlineParenMath(_ text: String, protector: InlineProtector) -> String {
+        replaceMatches(in: text, pattern: #"(?<!\\)\\\(((?:\\.|[^\\])+?)\\\)"#) { match, source in
+            guard let range = Range(match.range(at: 1), in: source),
+                  let matchRange = Range(match.range, in: source),
+                  !isInsideLinkDestination(source, at: matchRange.lowerBound) else {
+                return matchText(match, in: source)
+            }
+
+            return protector.protect("<span class=\"\(PreviewClass.math) \(PreviewClass.mathInline)\">\(escapeHTML(String(source[range])))</span>")
+        }
+    }
+
+    /// Whether `index` falls inside an inline link or image destination — the
+    /// `(…)` that follows a `](`.
+    ///
+    /// Scans back to the nearest `](`, then forward from it tracking paren depth
+    /// (skipping escaped characters, so the `\(` / `\)` under test never move the
+    /// depth) until the match. A `)` that closes the destination before the match
+    /// means the position is outside it.
+    private func isInsideLinkDestination(_ text: String, at index: String.Index) -> Bool {
+        guard let opener = text.range(of: "](", options: .backwards, range: text.startIndex..<index) else {
+            return false
+        }
+
+        var depth = 0
+        var cursor = opener.upperBound
+
+        while cursor < index {
+            let character = text[cursor]
+
+            if character == "\\" {
+                guard let next = text.index(cursor, offsetBy: 2, limitedBy: index) else { return true }
+                cursor = next
+                continue
+            }
+            if character == "(" {
+                depth += 1
+            }
+            if character == ")" {
+                guard depth > 0 else { return false }
+                depth -= 1
+            }
+
+            cursor = text.index(after: cursor)
+        }
+
+        return true
     }
 
     /// Pre-existing HTML entities (`&amp;`, `&#960;`, …), protected so the later

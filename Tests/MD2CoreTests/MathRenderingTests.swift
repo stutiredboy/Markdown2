@@ -252,4 +252,431 @@ struct MathRenderingTests {
 
         #expect(html.contains("window.__md2InitialMacros = {};"))
     }
+
+    // MARK: Paren-delimited inline math (LaTeX spelling)
+
+    @Test func rendersParenDelimitedInlineMath() {
+        let document = MarkdownRenderer().render(#"The mass is \(E = mc^2\) today."#)
+
+        #expect(document.html.contains(#"<span class="math math-inline">E = mc^2</span>"#))
+        #expect(document.html.contains("The mass is <span"))
+        #expect(document.html.contains("</span> today."))
+    }
+
+    @Test func parenDelimitedInlineMathAcceptsSurroundingSpaces() {
+        let document = MarkdownRenderer().render(#"\( x + y \)"#)
+
+        #expect(document.html.contains(#"<span class="math math-inline"> x + y </span>"#))
+    }
+
+    @Test func backslashTeXCommandsSurviveInsideParenDelimitedMath() {
+        let document = MarkdownRenderer().render(#"\(0.25\,C_\text{eff}\)"#)
+
+        // `\(` is not eaten as a Markdown escape, and `\,` reaches KaTeX verbatim.
+        #expect(document.html.contains(#"<span class="math math-inline">0.25\,C_\text{eff}</span>"#))
+        #expect(!document.html.contains("MD2-"))
+    }
+
+    @Test func unterminatedParenDelimiterIsNotMath() {
+        let document = MarkdownRenderer().render(#"see \(x + y"#)
+
+        #expect(!document.html.contains("class=\"math"))
+        #expect(document.html.contains("see (x + y"))
+    }
+
+    @Test func escapedBackslashBeforeParenDoesNotOpenMath() {
+        let document = MarkdownRenderer().render(#"Escaped \\(x\\) here."#)
+
+        #expect(!document.html.contains("class=\"math"))
+    }
+
+    @Test func twoParenDelimitedSpansOnOneLineBothRender() {
+        let document = MarkdownRenderer().render(#"\(a\) text \(b\)"#)
+
+        #expect(document.html.contains(#"<span class="math math-inline">a</span>"#))
+        #expect(document.html.contains(#"<span class="math math-inline">b</span>"#))
+    }
+
+    @Test func rowSeparatorSurvivesInsideParenDelimitedMath() {
+        let document = MarkdownRenderer().render(#"\(a\\ b\) end"#)
+
+        // The `\\` pair is consumed as TeX, so it reaches KaTeX intact.
+        #expect(document.html.contains(#"<span class="math math-inline">a\\ b</span>"#))
+    }
+
+    @Test func trailingBackslashBeforeCloserLeavesSpanLiteral() {
+        // `\(a\\)` consumes `\\` as TeX, leaving no closer: the span stays literal.
+        let document = MarkdownRenderer().render(#"\(a\\) end"#)
+
+        #expect(!document.html.contains("class=\"math"))
+    }
+
+    @Test func emptyParenPairIsNotMath() {
+        let document = MarkdownRenderer().render(#"\(\)"#)
+
+        #expect(!document.html.contains("class=\"math"))
+        #expect(document.html.contains("()"))
+    }
+
+    @Test func dollarMathNestedInParenDelimitedMathDoesNotBreakTheDocument() {
+        // Declared cross-delimiter boundary: the `$` pass runs first and claims the
+        // inner span, so the outer span's text content drops the `$` signs. This
+        // pins "no crash, nothing blanked" rather than a typeset result.
+        let document = MarkdownRenderer().render(#"Outer \( x $y$ z \) end."#)
+
+        #expect(document.html.contains(#"<span class="math math-inline">y</span>"#))
+        #expect(document.html.contains("Outer"))
+        #expect(document.html.contains("end."))
+    }
+
+    @Test func parenDelimitedMathInsideInlineCodeStaysLiteral() {
+        let document = MarkdownRenderer().render(#"use `\(x\)` here"#)
+
+        #expect(!document.html.contains("class=\"math"))
+        #expect(document.html.contains(#"<code>\(x\)</code>"#))
+    }
+
+    @Test func escapedParensInLinkDestinationAreNotMath() {
+        // Inside `](…)` a `\(` is a CommonMark escape, not a math delimiter: the
+        // destination must survive as a literal parenthesized href.
+        let document = MarkdownRenderer().render(#"[link](\(foo\))"#)
+
+        #expect(!document.html.contains("class=\"math"))
+        #expect(document.html.contains(##"<a href="(foo)">link</a>"##))
+    }
+
+    @Test func escapedParensInNestedLinkDestinationAreNotMath() {
+        let document = MarkdownRenderer().render(#"[link](foo\(and\(bar\))"#)
+
+        #expect(!document.html.contains("class=\"math"))
+        #expect(document.html.contains(##"<a href="foo(and(bar)">link</a>"##))
+    }
+
+    @Test func escapedParensAfterBalancedDestinationParensAreNotMath() {
+        // Nested parens in a link destination are a pre-existing link-parsing
+        // boundary (the destination regex stops at the first `)`). What this pins
+        // is the part this change owns: the escaped pair does not become math.
+        let document = MarkdownRenderer().render(#"[link](b(c)\(d\))"#)
+
+        #expect(!document.html.contains("class=\"math"))
+    }
+
+    @Test func mathAfterALinkOnTheSameLineStillRenders() {
+        let document = MarkdownRenderer().render(#"[a](b) then \(x + y\) end"#)
+
+        #expect(document.html.contains(##"<a href="b">a</a>"##))
+        #expect(document.html.contains(#"<span class="math math-inline">x + y</span>"#))
+    }
+
+    @Test func parenDelimitedMathInsideLinkLabelStillRenders() {
+        // The label sits before `](`, so it is not part of any destination.
+        let document = MarkdownRenderer().render(#"[\(x\)](url)"#)
+
+        #expect(document.html.contains(#"<span class="math math-inline">x</span>"#))
+        #expect(document.html.contains(##"<a href="url">"##))
+    }
+
+    // MARK: Native math environments (no `$$` wrapper)
+
+    @Test func rendersMultiLineAlignEnvironment() {
+        let markdown = #"""
+        \begin{align}
+        a &= b \\
+        c &= d
+        \end{align}
+        """#
+
+        let body = MarkdownRenderer().render(markdown).body.withoutSourceLineMetadata
+
+        // The environment is retained so the engine can parse the block, in its
+        // starred form so the engine's own row numbering stays out of the way.
+        #expect(body.contains(#"<div class="math math-display">\begin{align*}"#))
+        #expect(body.contains(#"\end{align*}</div>"#))
+        #expect(!body.contains("<p>"))
+    }
+
+    @Test func singleLineEquationEnvironmentKeepsItsWrappersStarred() {
+        let body = MarkdownRenderer().render(#"\begin{equation}E = mc^2\end{equation}"#).body.withoutSourceLineMetadata
+
+        #expect(body.contains(#"<div class="math math-display">\begin{equation*}E = mc^2\end{equation*}</div>"#))
+    }
+
+    @Test func engineNumberedEnvironmentsAreStarred() {
+        // The engine numbers align/alignat/gather/equation rows itself, through a
+        // CSS counter that fills its `.eqn-num` slot — invisible in the generated
+        // HTML but painted in the preview and in exports. Starring the environment
+        // keeps display numbering under one authority.
+        for name in ["align", "alignat", "gather", "equation"] {
+            let body = MarkdownRenderer().render("\\begin{\(name)}\na &= b\n\\end{\(name)}").body
+
+            #expect(body.contains("\\begin{\(name)*}"), "\(name) opener was not starred: \(body)")
+            #expect(body.contains("\\end{\(name)*}"), "\(name) closer was not starred: \(body)")
+        }
+    }
+
+    @Test func starredEnvironmentIsNotDoubleStarred() {
+        let body = MarkdownRenderer().render(#"\begin{align*}a &= b\end{align*}"#).body
+
+        #expect(body.contains(#"\begin{align*}"#))
+        #expect(!body.contains(#"align**"#))
+    }
+
+    @Test func labelledEnvironmentCarriesExactlyOneNumber() {
+        // Markdown2 supplies the number for a labeled equation; the engine must not
+        // also number the rows.
+        let markdown = #"""
+        \begin{align}
+        a &= b \label{eq:one} \\
+        c &= d
+        \end{align}
+        """#
+
+        let body = MarkdownRenderer().render(markdown).body.withoutSourceLineMetadata
+
+        #expect(body.contains(#"<span class="eq-number">(1)</span>"#))
+        #expect(body.contains(#"\begin{align*}"#))
+    }
+
+    @Test func manualTagStillRendersInAStarredEnvironment() {
+        // Starring suppresses the engine's automatic counter without breaking an
+        // explicit `\tag{}`.
+        let markdown = #"""
+        \begin{align}
+        a &= b \tag{3.1}
+        \end{align}
+        """#
+
+        let body = MarkdownRenderer().render(markdown).body.withoutSourceLineMetadata
+
+        #expect(body.contains(#"\tag{3.1}"#))
+        #expect(body.contains(#"\begin{align*}"#))
+        #expect(!body.contains("eq-number"))
+    }
+
+    @Test func starredEnvironmentIsUnnumbered() {
+        let body = MarkdownRenderer().render(#"\begin{equation*}E = mc^2\end{equation*}"#).body.withoutSourceLineMetadata
+
+        #expect(body.contains("math-display"))
+        #expect(!body.contains("eq-number"))
+    }
+
+    @Test func nestedInnerEnvironmentDoesNotCloseTheBlockEarly() {
+        let markdown = #"""
+        \begin{align}
+        x &= \begin{cases} 1 & a \\ 2 & b \end{cases} \\
+        y &= 2
+        \end{align}
+        """#
+
+        let body = MarkdownRenderer().render(markdown).body.withoutSourceLineMetadata
+
+        #expect(body.contains(#"\begin{cases}"#))
+        #expect(body.contains("y &amp;= 2"))
+        #expect(!body.contains("<p>"))
+    }
+
+    @Test func nestedSameNameEnvironmentTypesetsAsOneBlock() {
+        let markdown = #"""
+        \begin{matrix}
+        \begin{matrix} a \end{matrix}
+        \end{matrix}
+        """#
+
+        let body = MarkdownRenderer().render(markdown).body.withoutSourceLineMetadata
+
+        // Both the inner and outer closers stay inside the block — none is
+        // orphaned as literal text.
+        #expect(body.contains(#"<div class="math math-display">"#))
+        #expect(!body.contains("<p>"))
+        #expect(body.components(separatedBy: #"\end{matrix}"#).count - 1 == 2)
+    }
+
+    @Test func fencedCodeCloserDoesNotCaptureAProseLine() {
+        let markdown = #"""
+        \begin{align}
+        prose line
+
+        ```
+        sample
+        \end{align}
+        ```
+        """#
+
+        let body = MarkdownRenderer().render(markdown).body.withoutSourceLineMetadata
+
+        // The scan bails at the fence, so the prose stays prose and the fence stays code.
+        #expect(!body.contains("math-display"))
+        #expect(body.contains("<pre><code>"))
+        #expect(body.contains("prose line"))
+    }
+
+    @Test func paragraphAdjacentToEnvironmentKeepsItsBoundaries() {
+        let markdown = #"""
+        Some prose.
+        \begin{align}
+        a &= b
+        \end{align}
+        Trailing text.
+        """#
+
+        let html = MarkdownRenderer().render(markdown).html.withoutSourceLineMetadata
+
+        #expect(html.contains("<p>Some prose.</p>"))
+        #expect(html.contains("math-display"))
+        #expect(html.contains("<p>Trailing text.</p>"))
+    }
+
+    @Test func unterminatedEnvironmentFallsBackToText() {
+        let markdown = #"""
+        \begin{align}
+        a &= b
+        """#
+
+        let body = MarkdownRenderer().render(markdown).body.withoutSourceLineMetadata
+
+        #expect(!body.contains("math-display"))
+        #expect(body.contains(#"\begin{align}"#))
+    }
+
+    @Test func mismatchedEnvironmentNamesAreNotABlock() {
+        let markdown = #"""
+        \begin{align}
+        a &= b
+        \end{gather}
+        """#
+
+        let body = MarkdownRenderer().render(markdown).body.withoutSourceLineMetadata
+
+        #expect(!body.contains("math-display"))
+        #expect(body.contains(#"\end{gather}"#))
+    }
+
+    @Test func engineRejectedEnvironmentIsReportedRatherThanMangled() {
+        let markdown = #"""
+        \begin{eqnarray}
+        a &=& b
+        \end{eqnarray}
+        """#
+
+        let body = MarkdownRenderer().render(markdown).body.withoutSourceLineMetadata
+
+        // Recognized, then handed to the engine so its refusal is reported in place
+        // instead of the source being read as ordinary prose.
+        #expect(body.contains(#"<div class="math math-display">"#))
+        #expect(body.contains(#"\begin{eqnarray}"#))
+        #expect(!body.contains("<p>"))
+    }
+
+    @Test func labeledEnvironmentIsNumberedAndRegistered() {
+        let markdown = #"""
+        \begin{equation}
+        E = mc^2 \label{eq:energy}
+        \end{equation}
+        """#
+
+        let body = MarkdownRenderer().render(markdown).body.withoutSourceLineMetadata
+
+        #expect(body.contains(#"<span class="eq-number">(1)</span>"#))
+        #expect(body.contains(#"id="eq:energy""#))
+        // The label command must not reach the engine.
+        #expect(!body.contains(#"\label"#))
+    }
+
+    @Test func forwardReferenceAboveLabeledEnvironmentResolves() {
+        let markdown = #"""
+        See \ref{eq:energy} above.
+
+        \begin{equation}
+        E = mc^2 \label{eq:energy}
+        \end{equation}
+        """#
+
+        let body = MarkdownRenderer().render(markdown).body.withoutSourceLineMetadata
+
+        #expect(body.contains(##"<a class="cross-ref" href="#eq:energy">1</a>"##))
+        #expect(!body.contains(#"\ref{eq:energy}"#))
+    }
+
+    @Test func numberAllEquationsSettingNumbersUnlabeledEnvironment() {
+        let markdown = #"""
+        \begin{equation}
+        E = mc^2
+        \end{equation}
+        """#
+
+        let body = MarkdownRenderer().render(markdown, config: RenderConfig(numberAllEquations: true))
+            .body.withoutSourceLineMetadata
+
+        #expect(body.contains(#"<span class="eq-number">(1)</span>"#))
+    }
+
+    @Test func footnoteShapedLineInsideEnvironmentIsNotADefinition() {
+        let markdown = #"""
+        \begin{align}
+        a &= b \\
+        [^x]: not a footnote
+        \end{align}
+        """#
+
+        let body = MarkdownRenderer().render(markdown).body.withoutSourceLineMetadata
+
+        #expect(body.contains("math-display"))
+        #expect(!body.contains("fn-"))
+    }
+
+    @Test func unlabeledEnvironmentIsUnnumberedByDefault() {
+        let markdown = #"""
+        \begin{equation}
+        E = mc^2
+        \end{equation}
+        """#
+
+        let body = MarkdownRenderer().render(markdown).body.withoutSourceLineMetadata
+
+        #expect(body.contains("math-display"))
+        #expect(!body.contains("eq-number"))
+    }
+
+    @Test func environmentInsideFencedCodeStaysLiteral() {
+        let markdown = #"""
+        ```
+        \begin{align}
+        \end{align}
+        ```
+        """#
+
+        let body = MarkdownRenderer().render(markdown).body.withoutSourceLineMetadata
+
+        #expect(!body.contains("class=\"math"))
+        #expect(body.contains(#"\begin{align}"#))
+    }
+
+    @Test func indentedEnvironmentIsCodeNotMath() {
+        // Indented code is checked ahead of math in the render walk, so a
+        // four-space-indented environment stays code.
+        let markdown = "    \\begin{align}\n    a &= b\n    \\end{align}"
+
+        let body = MarkdownRenderer().render(markdown).body.withoutSourceLineMetadata
+
+        #expect(body.contains("<pre><code>"))
+        #expect(!body.contains("math-display"))
+    }
+
+    @Test func equationInsideBlockquoteIsNotPreRegistered() {
+        // Declared limitation: the label pre-scan does not traverse blockquotes, so
+        // the container's equation is numbered and labeled, but a forward `\ref{}`
+        // from outside it stays unresolved.
+        let markdown = #"""
+        See \ref{eq:q}.
+
+        > \begin{equation}
+        > E = mc^2 \label{eq:q}
+        > \end{equation}
+        """#
+
+        let body = MarkdownRenderer().render(markdown).body.withoutSourceLineMetadata
+
+        #expect(body.contains(#"id="eq:q""#))
+        #expect(body.contains(#"\ref{eq:q}"#))
+    }
 }
