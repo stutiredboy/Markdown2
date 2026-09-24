@@ -134,12 +134,24 @@ final class PandocConverterTests: XCTestCase {
     @MainActor
     func testRealConversionDeletesPartialOutputOnFailure() throws {
         try XCTSkipUnless(PandocConverter.isAvailable(), "Pandoc not installed.")
+        // Root bypasses permission checks, so the read-only barrier below cannot
+        // make the destination unwritable; skip rather than fail confusingly.
+        try XCTSkipIf(geteuid() == 0, "Permission-based failure requires a non-root runner.")
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
-        // A destination inside a non-existent directory makes Pandoc fail to write.
-        let destination = dir
-            .appendingPathComponent("missing-subdir", isDirectory: true)
-            .appendingPathComponent("out.docx")
+        // A destination inside a read-only directory makes Pandoc fail to write.
+        // A missing parent directory no longer works as the failure mechanism:
+        // pandoc 3.11 creates missing parent directories for `--output`, so only
+        // a permission barrier holds on every pandoc version.
+        let locked = dir.appendingPathComponent("locked-subdir", isDirectory: true)
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: false)
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: locked.path)
+        // Restore permissions before the outer cleanup (defers run LIFO) so the
+        // temp directory can always be removed.
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path)
+        }
+        let destination = locked.appendingPathComponent("out.docx")
 
         let result = runConversion(
             markdown: "# Doc\n",

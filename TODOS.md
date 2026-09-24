@@ -57,16 +57,6 @@ Tracked work considered and explicitly deferred from in-flight changes. Each ite
 
 **Depends on:** nothing; must be resolved before (or at the same time as) the headless GUI CI lane.
 
-## Pandoc 3.11 broke `testRealConversionDeletesPartialOutputOnFailure`'s premise
-
-**What:** The test expects pandoc to FAIL when the destination's parent directory does not exist; pandoc 3.11 now creates missing parent directories for `--output` (verified: `pandoc doc.md -t docx -o missing-subdir/out.docx` → exit 0, file created). The test fails deterministically on machines with pandoc 3.11 while passing wherever older pandoc is installed.
-
-**Why:** A green local run and a red CI run (or vice versa) will disagree purely on installed pandoc version — an environment-flake trap. Found by /qa on 2026-09-18; the failure was present at that session's baseline (not caused by any in-flight change).
-
-**Fix shape:** keep the partial-output-deletion guarantee tested but trigger failure via a mechanism no pandoc version can override — a read-only parent directory (chmod 0500) as the destination's parent — and assert the conversion fails and no partial file survives. Note: `PandocConverter` may also want to pre-validate the destination directory so the app gives a clean error instead of relying on pandoc's failure.
-
-**Depends on:** nothing; one test edit plus optionally a converter guard.
-
 ## Pre-scan doesn't traverse containers (forward `\ref` into quoted/list equations unresolved)
 
 **What:** Make `collectCrossReferenceLabels` (the whole-document pre-scan that pre-registers equation/figure/table numbers) walk blockquotes and dedented list content exactly as the render walk does, so labels inside containers are registered and forward `\ref{}`s to them resolve.
