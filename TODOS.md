@@ -66,3 +66,33 @@ Tracked work considered and explicitly deferred from in-flight changes. Each ite
 **Fix shape:** keep the partial-output-deletion guarantee tested but trigger failure via a mechanism no pandoc version can override — a read-only parent directory (chmod 0500) as the destination's parent — and assert the conversion fails and no partial file survives. Note: `PandocConverter` may also want to pre-validate the destination directory so the app gives a clean error instead of relying on pandoc's failure.
 
 **Depends on:** nothing; one test edit plus optionally a converter guard.
+
+## Pre-scan doesn't traverse containers (forward `\ref` into quoted/list equations unresolved)
+
+**What:** Make `collectCrossReferenceLabels` (the whole-document pre-scan that pre-registers equation/figure/table numbers) walk blockquotes and dedented list content exactly as the render walk does, so labels inside containers are registered and forward `\ref{}`s to them resolve.
+
+**Why:** The render walk descends into blockquotes (recursive render) and dedented list content; the label pre-scan (`Sources/MD2Core/MarkdownRenderer.swift:1452`) checks only fences, indented code, top-level math, and tables. An equation inside a blockquote renders numbered, but a `\ref{}` appearing earlier in the document stays a dead link, and numbering can disagree when nested equations precede top-level ones. Pre-existing for `$$` blocks; bare `\begin{env}` blocks inherit it. Surfaced by the Codex outside voice during the `add-latex-math-compat` eng review (2026-09-24) and documented there as a declared boundary rather than fixed.
+
+**Current state:** The change's matrix boundary text scopes the numbering/`\ref{}` guarantee to top-level blocks, and a test pins the quoted-env limitation.
+
+**Pros:** Forward references resolve everywhere; numbering is consistent in all containers; the pre-scan and render walk share one traversal shape.
+**Cons / cost:** Traversal rework in the cross-reference path plus nested-numbering tests; must keep `resetCounters()` rewind semantics intact so render-walk numbers stay identical. (human: ~1 day / CC: ~1-2h)
+
+**Depends on:** nothing; independent of the latex-math change (which only documents the limitation).
+
+**Start here:** extract the render walk's container traversal (blockquote recursion, list dedent) into a shape the pre-scan can share, then assert pre-scan/render numbering parity for documents with equations inside containers.
+
+## Left-to-right delimiter ownership scan (inline pipeline)
+
+**What:** Replace the independent inline passes for code/math (`protectCodeSpans`, `protectInlineMath`, and the new `protectInlineParenMath`) with one left-to-right scan that establishes delimiter ownership by position, then applies each delimiter's own rules.
+
+**Why:** Independent sequential passes cannot establish ownership. A `$...$` span inside a prospective `\(...\)` span is claimed first, and its protection token (`\u{E000}MD2-<n>\u{E000}`, `MarkdownRenderer.swift:2522`) restores as nested HTML — the outer math span's `textContent` then drops the inner markup, silently altering valid input (`\text{$x$}` reaches the engine as `\text{x}`). The same class exists today for code spans inside `$...$` math. Demonstrated against the bundled KaTeX by the Codex outside voice during the `add-latex-math-compat` eng review (2026-09-24).
+
+**Current state:** Declared boundary in the change's design (cross-delimiter risk text) plus a test pinning current behavior (span produced, inner span nests on restore, no crash). That test is the regression baseline for this refactor.
+
+**Pros:** The verbatim-TeX guarantee holds for every nesting combination; removes the whole silent-alteration class rather than one instance; one ownership scanner replaces N passes whose order is only comments.
+**Cons / cost:** Touches the most regression-sensitive inline machinery in the renderer; every existing math/code-span test needs re-verification against the new scanner. (human: ~2-3 days / CC: ~2-4h)
+
+**Depends on:** `add-latex-math-compat` landing (its boundary test is the before-state proof).
+
+**Start here:** scan once for code spans and both math delimiter pairs in reading order; the earliest opener owns the span; apply the matched delimiter's guards (currency/`$$`/whitespace rules for `$`, none for `\(`).
