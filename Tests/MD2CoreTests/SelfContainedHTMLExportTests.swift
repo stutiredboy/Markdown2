@@ -89,7 +89,7 @@ struct SelfContainedHTMLExportTests {
 
     // MARK: - DocumentStore.exportHTML integration
 
-    @Test func exportHTMLWritesSelfContainedFileAndPreservesDocumentState() throws {
+    @Test func exportHTMLWritesSelfContainedFileAndPreservesDocumentState() async throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         try writePNG(named: "pic.png", into: dir)
@@ -114,7 +114,7 @@ struct SelfContainedHTMLExportTests {
 
         let fileURLBefore = store.fileURL
         let dirtyBefore = store.isDirty
-        store.exportHTML()
+        await store.exportHTML()
 
         // Document state is untouched (derived artifact).
         #expect(store.fileURL == fileURLBefore)
@@ -130,7 +130,7 @@ struct SelfContainedHTMLExportTests {
         #expect(exported.contains("__md2RenderDiagrams"))
     }
 
-    @Test func exportHTMLOnUntitledDocumentSucceedsWithoutInliningImages() throws {
+    @Test func exportHTMLOnUntitledDocumentSucceedsWithoutInliningImages() async throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         let destination = dir.appendingPathComponent("untitled.html")
@@ -140,7 +140,7 @@ struct SelfContainedHTMLExportTests {
         store.text = "# Untitled\n\n![pic](pic.png)\n"
 
         #expect(store.fileURL == nil)
-        store.exportHTML()
+        await store.exportHTML()
 
         #expect(store.alert == nil)
         #expect(FileManager.default.fileExists(atPath: destination.path))

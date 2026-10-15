@@ -34,8 +34,7 @@ final class DocumentStore: ObservableObject {
             // The expensive full-document render that feeds the preview/stats is
             // coalesced off the keystroke path (see `scheduleRender`) so sustained
             // typing is never blocked by a whole-document re-render on every
-            // character. The load path (`setDocumentText`) renders synchronously
-            // itself, so skip scheduling while loading.
+            // character. Loads schedule their own render after updating the file URL.
             guard !isLoading else { return }
             isDirty = true
             scheduleRender()
@@ -78,6 +77,11 @@ final class DocumentStore: ObservableObject {
     @Published var modeCommand: ModeCommand?
 
     private let renderer = MarkdownRenderer()
+    private let renderWorker = DocumentRenderWorker()
+    private var renderTask: Task<Void, Never>?
+    private var renderDebounceTask: Task<Void, Never>?
+    private var isDebouncingRender = false
+    private var preparingDerivedArtifact = false
     /// Retains the in-flight PDF export for its (asynchronous) lifetime; cleared
     /// when the export completes. PDF is a derived artifact — exporting never
     /// touches `fileURL`, `isDirty`, or autosave.
@@ -119,9 +123,9 @@ final class DocumentStore: ObservableObject {
     /// True while any derived-artifact job (PDF export, Print, or DOCX/EPUB
     /// conversion) is in flight. All export/print operations are mutually
     /// exclusive — each produces a file from the document's current state — so each
-    /// guards on this. (HTML export is synchronous, so its start-guard suffices.)
+    /// guards on this, including the background preparation stage.
     private var isProducingDerivedArtifact: Bool {
-        pdfExporter != nil || documentPrinter != nil || documentConverter != nil
+        preparingDerivedArtifact || pdfExporter != nil || documentPrinter != nil || documentConverter != nil
     }
     private var isLoading = false
     private var autosaveWorkItem: DispatchWorkItem?
@@ -145,7 +149,7 @@ final class DocumentStore: ObservableObject {
     /// every keystroke. Bumped on each schedule so only the latest one fires.
     private var renderGeneration = 0
     private var hasPendingRender = false
-    private let renderDebounce: TimeInterval = 0.12
+    private let renderDebounce: Duration = .milliseconds(120)
 
     var baseURL: URL? {
         fileURL?.deletingLastPathComponent()
@@ -299,22 +303,28 @@ final class DocumentStore: ObservableObject {
     /// Exports the rendered preview to a paginated PDF chosen by the user. This
     /// is a derived artifact, not the document's on-disk form: it does NOT change
     /// `fileURL` or `isDirty`, and Save As… still writes Markdown source. The
-    /// pending render is flushed first so the PDF reflects the latest text, then
+    /// current text is captured and rendered off the main actor, then
     /// an offscreen `PDFExporter` renders and writes the file; failures surface
     /// through the normal `alert` path.
-    func exportPDF() {
+    func exportPDF() async {
         // Ignore a second request while an export or print is still in flight;
         // otherwise the new exporter would replace the retained one and abandon
         // the first. Print and Export are mutually exclusive.
         guard !isProducingDerivedArtifact else { return }
 
-        flushPendingRender()
-
         guard let url = pdfDestinationPicker(pdfFileName) else {
             return
         }
 
-        let exporter = pdfExporterFactory(url, exportProfileProvider())
+        preparingDerivedArtifact = true
+        defer { preparingDerivedArtifact = false }
+        let baseURL = self.baseURL
+        let exportDocumentTitle = self.exportDocumentTitle
+        let profile = exportProfileProvider()
+        let snapshot = makeRenderSnapshot()
+        let rendered = await renderWorker.render(snapshot)
+
+        let exporter = pdfExporterFactory(url, profile)
         pdfExporter = exporter
         exporter.export(
             html: rendered.html,
@@ -334,15 +344,21 @@ final class DocumentStore: ObservableObject {
     }
 
     /// Prints the rendered preview through the system print dialog. Like
-    /// `exportPDF()`, this is a derived artifact: the pending render is flushed
-    /// first so the print reflects the latest text, and it never changes
+    /// `exportPDF()`, this captures and renders the current text asynchronously.
+    /// It never changes
     /// `fileURL`, `isDirty`, or autosave. Print and Export share the
     /// `isProducingDerivedArtifact` guard, so they are mutually exclusive.
     /// Failures surface through the normal `alert` path.
-    func print() {
+    func print() async {
         guard !isProducingDerivedArtifact else { return }
 
-        flushPendingRender()
+        preparingDerivedArtifact = true
+        defer { preparingDerivedArtifact = false }
+        let baseURL = self.baseURL
+        let exportDocumentTitle = self.exportDocumentTitle
+        let profile = exportProfileProvider()
+        let snapshot = makeRenderSnapshot()
+        let rendered = await renderWorker.render(snapshot)
 
         let printer = documentPrinterFactory()
         documentPrinter = printer
@@ -350,7 +366,7 @@ final class DocumentStore: ObservableObject {
             html: rendered.html,
             outline: rendered.outline,
             baseURL: baseURL,
-            profile: exportProfileProvider(),
+            profile: profile,
             documentTitle: exportDocumentTitle
         ) { [weak self] result in
             guard let self else { return }
@@ -367,17 +383,21 @@ final class DocumentStore: ObservableObject {
     /// Exports the rendered preview as a single self-contained HTML file chosen by
     /// the user, with local images inlined so the file is portable and opens
     /// offline. Like PDF export and Print this is a derived artifact: it does NOT
-    /// change `fileURL`, `isDirty`, or autosave, and the pending render is flushed
-    /// first so the export reflects the latest text. Mutually exclusive with the
+    /// change `fileURL`, `isDirty`, or autosave. A snapshot is rendered in the
+    /// background before writing. Mutually exclusive with the
     /// other export/print jobs (it no-ops while one is in flight).
-    func exportHTML() {
+    func exportHTML() async {
         guard !isProducingDerivedArtifact else { return }
-
-        flushPendingRender()
 
         guard let url = htmlDestinationPicker(htmlFileName) else {
             return
         }
+
+        preparingDerivedArtifact = true
+        defer { preparingDerivedArtifact = false }
+        let baseURL = self.baseURL
+        let snapshot = makeRenderSnapshot()
+        let rendered = await renderWorker.render(snapshot)
 
         // Untitled documents have no `baseURL`, so relative image paths cannot be
         // resolved; the builder leaves those references as-is rather than failing.
@@ -542,7 +562,7 @@ final class DocumentStore: ObservableObject {
         text = text.replacingCharacters(in: lineRange, with: updated)
         // A checkbox click is a discrete action, not sustained typing: render
         // immediately so the preview reflects the toggle without debounce lag.
-        flushPendingRender()
+        renderImmediately()
         return true
     }
 
@@ -656,9 +676,7 @@ final class DocumentStore: ObservableObject {
             }
         }
 
-        // Persisting reads `text` directly (always current), but flush so the
-        // rendered state/stats match what was just saved.
-        flushPendingRender()
+        // Saving source does not need to wait for preview rendering.
         do {
             autosaveWorkItem?.cancel()
             autosaveWorkItem = nil
@@ -688,71 +706,64 @@ final class DocumentStore: ObservableObject {
         text = newText
         fileURL = newFileURL
         isDirty = dirty
-        renderNow()
+        renderImmediately()
         documentIdentity = UUID()
         isLoading = false
     }
 
-    /// Schedules a debounced render; only the most recently scheduled one runs.
-    private func scheduleRender() {
+    /// Keep one active parse and one pending revision, without retaining a
+    /// document snapshot for every keystroke while the worker is busy.
+    private func scheduleRender(delay: Duration? = nil) {
         renderGeneration &+= 1
-        hasPendingRender = true
         let generation = renderGeneration
-        let work = DispatchWorkItem { [weak self] in
-            Task { @MainActor in
-                guard let self, generation == self.renderGeneration else { return }
-                self.renderNow()
+        hasPendingRender = true
+        renderDebounceTask?.cancel()
+        let delay = delay ?? renderDebounce
+        isDebouncingRender = delay > .zero
+        renderDebounceTask = Task { [weak self] in
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard !Task.isCancelled, let self, self.renderGeneration == generation else { return }
+            self.isDebouncingRender = false
+            self.startRenderIfNeeded()
+        }
+    }
+
+    private func startRenderIfNeeded() {
+        guard renderTask == nil, hasPendingRender else { return }
+        let generation = renderGeneration
+        let snapshot = makeRenderSnapshot()
+        let worker = renderWorker
+        renderTask = Task { [weak self] in
+            let result = await worker.render(snapshot)
+            guard let self else { return }
+            self.renderTask = nil
+            if self.renderGeneration == generation {
+                self.rendered = result
+                self.hasPendingRender = false
+            } else if !self.isDebouncingRender {
+                self.startRenderIfNeeded()
             }
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + renderDebounce, execute: work)
     }
 
-    /// Renders synchronously now and cancels any pending debounced render.
-    private func renderNow() {
-        renderGeneration &+= 1
-        hasPendingRender = false
-        rendered = renderer.render(text, config: buildRenderConfig())
-    }
+    func renderImmediately() { scheduleRender(delay: .zero) }
 
-    /// Re-renders the current document so a settings change (citation style,
-    /// equation numbering) is reflected in the preview without waiting for the
-    /// next edit. A no-op-friendly entry point the app calls on settings change.
-    func reRenderForSettingsChange() {
-        renderNow()
-    }
+    func reRenderForSettingsChange() { renderImmediately() }
 
-    /// Builds the academic render config: citation/equation preferences from
-    /// settings, plus the document's front matter and associated bibliography.
-    /// File IO (locating and reading the `.bib`) is the app layer's responsibility;
-    /// the renderer stays pure and receives only parsed data.
-    private func buildRenderConfig() -> RenderConfig {
-        let fields = FrontMatterReader.fields(in: text)
+    private func makeRenderSnapshot() -> DocumentRenderSnapshot {
         let preferences = renderConfigProvider()
-        return RenderConfig(
-            bibliography: loadBibliography(fromFrontMatter: fields),
-            citationStyle: preferences.citationStyle,
-            numberAllEquations: preferences.numberAllEquations,
-            mathMacros: FrontMatterReader.parseMathMacros(fields["math-macros"])
-        )
+        return DocumentRenderSnapshot(text: text, baseURL: baseURL,
+            citationStyle: preferences.citationStyle, numberAllEquations: preferences.numberAllEquations)
     }
 
-    /// Resolves the bibliography file — the front-matter `bibliography:` path or an
-    /// auto-detected `references.bib` next to the document — against `baseURL`, and
-    /// parses it. Returns an empty map when there is no document directory or the
-    /// file is missing/unreadable, so citations degrade gracefully to raw keys.
-    private func loadBibliography(fromFrontMatter fields: [String: String]) -> [String: BibEntry] {
-        guard let baseURL else { return [:] }
-        let candidate = baseURL.appendingPathComponent(fields["bibliography"] ?? "references.bib")
-        guard let contents = try? String(contentsOf: candidate, encoding: .utf8) else { return [:] }
-        return BibTeXParser.parse(contents)
-    }
-
-    /// Forces a pending debounced render to complete immediately, so a caller
-    /// that then reads `rendered` (a mode switch, a save, the stats bar) sees
-    /// content matching the current `text`. A no-op when no render is pending.
-    func flushPendingRender() {
-        guard hasPendingRender else { return }
-        renderNow()
+    /// Await the latest generation without blocking the main actor. If an edit
+    /// arrives during the wait, continue until that newer generation is published.
+    func flushPendingRender() async {
+        if isDebouncingRender { renderImmediately() }
+        while hasPendingRender {
+            if let renderTask { await renderTask.value }
+            else { await renderDebounceTask?.value }
+        }
     }
 
     // MARK: External file changes
@@ -864,7 +875,7 @@ final class DocumentStore: ObservableObject {
         isLoading = true
         text = decoded.text
         isDirty = false
-        renderNow()
+        renderImmediately()
         isLoading = false
         lastKnownFingerprint = DocumentFileFingerprint.of(data: data, at: fileURL)
         hasExternalConflict = false

@@ -15,7 +15,7 @@ struct DocumentStoreBibliographyTests {
         return directory
     }
 
-    @Test func loadsAutoDetectedReferencesBibForCitations() throws {
+    @Test func loadsAutoDetectedReferencesBibForCitations() async throws {
         let directory = makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         try "@book{smith, author={Jane Smith}, title={A Title}, year={2020}}"
@@ -25,12 +25,13 @@ struct DocumentStoreBibliographyTests {
 
         let store = DocumentStore()
         store.open(documentURL)
+        await store.flushPendingRender()
 
         #expect(store.rendered.body.contains("(Smith, 2020)"))
         #expect(store.rendered.body.contains(#"<section class="bibliography">"#))
     }
 
-    @Test func resolvesBibliographyFromFrontMatterField() throws {
+    @Test func resolvesBibliographyFromFrontMatterField() async throws {
         let directory = makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         try "@book{jones, author={John Jones}, title={Work}, year={2021}}"
@@ -46,11 +47,12 @@ struct DocumentStoreBibliographyTests {
 
         let store = DocumentStore()
         store.open(documentURL)
+        await store.flushPendingRender()
 
         #expect(store.rendered.body.contains("(Jones, 2021)"))
     }
 
-    @Test func missingBibliographyDegradesToRawKey() throws {
+    @Test func missingBibliographyDegradesToRawKey() async throws {
         let directory = makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let documentURL = directory.appendingPathComponent("doc.md")
@@ -58,6 +60,7 @@ struct DocumentStoreBibliographyTests {
 
         let store = DocumentStore()
         store.open(documentURL)
+        await store.flushPendingRender()
 
         #expect(store.rendered.body.contains("nobody"))
         #expect(!store.rendered.body.contains(#"<section class="bibliography">"#))

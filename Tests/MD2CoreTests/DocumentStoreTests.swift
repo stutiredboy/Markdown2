@@ -44,19 +44,19 @@ struct DocumentStoreTests {
         #expect(first != second)
     }
 
-    @Test func renderedDocumentTracksTextChanges() {
+    @Test func renderedDocumentTracksTextChanges() async {
         let store = DocumentStore()
         store.text = "# Heading One\n\nSome words here."
         // The render that feeds the preview/stats is debounced off the keystroke
         // path; flush it so the synchronous assertions below see current content.
-        store.flushPendingRender()
+        await store.flushPendingRender()
 
         #expect(store.rendered.outline.first?.title == "Heading One")
         #expect(store.rendered.html.contains("Heading One"))
         #expect(store.rendered.stats.words > 0)
     }
 
-    @Test func cancellingPDFExportLeavesDocumentStateUnchanged() throws {
+    @Test func cancellingPDFExportLeavesDocumentStateUnchanged() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("md2-export-cancel-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -82,7 +82,7 @@ struct DocumentStoreTests {
 
         let fileURLBefore = store.fileURL
         let dirtyBefore = store.isDirty
-        store.exportPDF()
+        await store.exportPDF()
 
         #expect(!exporterCreated)
         #expect(!FileManager.default.fileExists(atPath: destinationURL.path))
@@ -90,7 +90,7 @@ struct DocumentStoreTests {
         #expect(store.isDirty == dirtyBefore)
     }
 
-    @Test func successfulPDFExportLeavesDirtyDocumentStateUnchanged() throws {
+    @Test func successfulPDFExportLeavesDirtyDocumentStateUnchanged() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("md2-export-success-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -115,7 +115,7 @@ struct DocumentStoreTests {
         store.text = "# Dirty Export\n\nThis should be flushed into rendered HTML."
 
         let fileURLBefore = store.fileURL
-        store.exportPDF()
+        await store.exportPDF()
 
         #expect(exporter.exportCallCount == 1)
         #expect(exporter.html?.contains("Dirty Export") == true)
@@ -135,6 +135,23 @@ struct DocumentStoreTests {
 
         store.toggleTask(atLine: 4, to: false)
         #expect(store.text == "# Title\n\n- [x] Draft\n- [ ] Review")
+    }
+
+    @Test func exportKeepsItsSnapshotAndExcludesOtherExportsDuringPreparation() async throws {
+        let exporter = FakePDFExporter()
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent("snapshot.pdf")
+        let store = DocumentStore(pdfDestinationPicker: { _ in destination }, pdfExporterFactory: { _, _ in exporter })
+        store.text = "# Export Snapshot\n\n" + String(repeating: "**paragraph** text\n\n", count: 8_000)
+        let job = Task { await store.exportPDF() }
+        try await Task.sleep(for: .milliseconds(10))
+        store.text = "# New Editor Content"
+        await store.exportPDF()
+        await job.value
+        #expect(exporter.exportCallCount == 1)
+        #expect(exporter.outline?.map(\.title) == ["Export Snapshot"])
+        #expect(exporter.html?.contains("New Editor Content") == false)
+        await store.flushPendingRender()
+        #expect(store.rendered.outline.map(\.title) == ["New Editor Content"])
     }
 
     @Test func toggleTaskHandlesUppercaseMarker() {
@@ -183,12 +200,12 @@ struct DocumentStoreTests {
         #expect(store.isDirty == dirtyBefore)
     }
 
-    @Test func toggleTaskMatchesRendererTaskLineMetadata() {
+    @Test func toggleTaskMatchesRendererTaskLineMetadata() async {
         // The line the renderer stamps on the checkbox is the line the toggle
         // edits: round-trip one through the other.
         let store = DocumentStore()
         store.text = "# Title\n\n> note\n> - [ ] quoted\n\n- [ ] plain"
-        store.flushPendingRender()
+        await store.flushPendingRender()
 
         #expect(store.rendered.html.contains(#"data-md2-task-line="4""#))
         #expect(store.rendered.html.contains(#"data-md2-task-line="6""#))

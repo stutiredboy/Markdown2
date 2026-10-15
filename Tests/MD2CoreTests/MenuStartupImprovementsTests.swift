@@ -88,14 +88,14 @@ struct MenuStartupImprovementsTests {
 
     // MARK: - Print (task 6.3)
 
-    @Test func printFlushesRenderAndLeavesDocumentStateUnchanged() {
+    @Test func printFlushesRenderAndLeavesDocumentStateUnchanged() async {
         let printer = FakeDocumentPrinter()
         let store = DocumentStore(documentPrinterFactory: { printer })
         store.text = "# Print Me\n\nBody text."
 
         let fileURLBefore = store.fileURL
         let dirtyBefore = store.isDirty
-        store.print()
+        await store.print()
 
         #expect(printer.printCallCount == 1)
         // The pending debounced render is flushed before printing, so the HTML
@@ -107,7 +107,7 @@ struct MenuStartupImprovementsTests {
         #expect(store.isDirty == dirtyBefore)
     }
 
-    @Test func printIsNoOpWhileExportInFlight() {
+    @Test func printIsNoOpWhileExportInFlight() async {
         let exporter = DeferringFakePDFExporter()
         let printer = FakeDocumentPrinter()
         let store = DocumentStore(
@@ -116,19 +116,19 @@ struct MenuStartupImprovementsTests {
             documentPrinterFactory: { printer }
         )
 
-        store.exportPDF()
+        await store.exportPDF()
         #expect(exporter.exportCallCount == 1)
 
         // Export is in flight (exporter holds its completion), so print no-ops.
-        store.print()
+        await store.print()
         #expect(printer.printCallCount == 0)
 
         exporter.finish()
-        store.print()
+        await store.print()
         #expect(printer.printCallCount == 1)
     }
 
-    @Test func exportIsNoOpWhilePrintInFlight() {
+    @Test func exportIsNoOpWhilePrintInFlight() async {
         let exporter = DeferringFakePDFExporter()
         let printer = FakeDocumentPrinter(completesImmediately: false)
         let store = DocumentStore(
@@ -137,15 +137,15 @@ struct MenuStartupImprovementsTests {
             documentPrinterFactory: { printer }
         )
 
-        store.print()
+        await store.print()
         #expect(printer.printCallCount == 1)
 
         // Print is in flight (printer holds its completion), so export no-ops.
-        store.exportPDF()
+        await store.exportPDF()
         #expect(exporter.exportCallCount == 0)
 
         printer.finish()
-        store.exportPDF()
+        await store.exportPDF()
         #expect(exporter.exportCallCount == 1)
     }
 

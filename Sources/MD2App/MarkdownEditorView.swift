@@ -140,7 +140,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
 
-        MarkdownTextStyler.apply(to: textView)
+        context.coordinator.scheduleStyle(in: textView)
 
         scrollView.documentView = textView
 
@@ -199,7 +199,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         if context.coordinator.shouldApplyBoundText(text, to: textView) {
             let selectedRanges = textView.selectedRanges
             textView.string = text
-            MarkdownTextStyler.apply(to: textView)
+            context.coordinator.scheduleStyle(in: textView)
             // A wholesale replacement shifts every line, but it never reaches
             // `textDidChange` and TextKit's own display invalidation is
             // glyph-scoped — it never covers the gutter strip. Ask for it
@@ -1247,6 +1247,16 @@ struct MarkdownEditorView: NSViewRepresentable {
             }
         }
 
+        private let styling = MarkdownStylingController()
+
+        @MainActor func scheduleStyle(in textView: NSTextView) {
+            styling.schedule(in: textView, willApply: { [weak self] in
+                self?.isApplyingStyle = true
+            }, didApply: { [weak self] in
+                self?.isApplyingStyle = false
+            })
+        }
+
         @MainActor func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             // The gutter's numbers depend on line breaks, and marked text returns
@@ -1278,11 +1288,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             onTextEdit(caretLine)
             text = textView.string
 
-            let selectedRanges = textView.selectedRanges
-            isApplyingStyle = true
-            MarkdownTextStyler.apply(to: textView)
-            isApplyingStyle = false
-            textView.selectedRanges = selectedRanges
+            scheduleStyle(in: textView)
             preserveVisibleOriginAfterEdit(visibleOrigin)
         }
 

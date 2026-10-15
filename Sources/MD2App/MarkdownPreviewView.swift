@@ -114,6 +114,37 @@ struct MarkdownPreviewView: NSViewRepresentable {
     /// session/crash and swept. The age gate keeps a live sibling window's file
     /// (rewritten on every render) safe.
     private static let stalePreviewAge: TimeInterval = 3600
+    /// Page scripts (including diagram engines) cannot see native mutation
+    /// handlers. Only trusted DOM input in the isolated world is forwarded.
+    static func installInteractionBridge(on controller: WKUserContentController, handler: WKScriptMessageHandler) {
+        controller.add(handler, contentWorld: .defaultClient, name: enterEditMessageName)
+        controller.add(handler, contentWorld: .defaultClient, name: toggleTaskMessageName)
+        controller.addUserScript(WKUserScript(source: interactionScript,
+            injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: .defaultClient))
+    }
+
+    static let interactionScript = """
+        document.addEventListener('dblclick', function(event) {
+            if (event.isTrusted && event.metaKey) {
+                window.webkit.messageHandlers.\(Self.enterEditMessageName).postMessage(null);
+            }
+        });
+        // Task checkboxes are the preview's one interactive element: the click
+        // toggles the box optimistically, and native rewrites the source line
+        // (the re-render that follows is the authoritative state).
+        document.addEventListener('click', function (event) {
+            if (!event.isTrusted) { return; }
+            var box = event.target;
+            if (!box || box.tagName !== 'INPUT' || !box.hasAttribute('data-md2-task-line')) { return; }
+            var line = parseInt(box.getAttribute('data-md2-task-line'), 10);
+            if (isNaN(line)) { return; }
+            window.webkit.messageHandlers.\(Self.toggleTaskMessageName).postMessage({
+                line: line,
+                checked: !!box.checked
+            });
+        });
+    """
+
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
@@ -128,11 +159,6 @@ struct MarkdownPreviewView: NSViewRepresentable {
         // and expose reflow-resilient scroll helpers the native side invokes
         // after a mode switch.
         let source = """
-        document.addEventListener('dblclick', function(event) {
-            if (event.metaKey) {
-                window.webkit.messageHandlers.\(Self.enterEditMessageName).postMessage(null);
-            }
-        });
         var lastUserScrollIntentAt = 0;
         function markUserScrollIntent() {
             lastUserScrollIntentAt = Date.now();
@@ -144,19 +170,6 @@ struct MarkdownPreviewView: NSViewRepresentable {
             var keys = ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '];
             if (keys.indexOf(event.key) >= 0) { markUserScrollIntent(); }
         }, true);
-        // Task checkboxes are the preview's one interactive element: the click
-        // toggles the box optimistically, and native rewrites the source line
-        // (the re-render that follows is the authoritative state).
-        document.addEventListener('click', function (event) {
-            var box = event.target;
-            if (!box || box.tagName !== 'INPUT' || !box.hasAttribute('data-md2-task-line')) { return; }
-            var line = parseInt(box.getAttribute('data-md2-task-line'), 10);
-            if (isNaN(line)) { return; }
-            window.webkit.messageHandlers.\(Self.toggleTaskMessageName).postMessage({
-                line: line,
-                checked: !!box.checked
-            });
-        });
         (function () {
             var style = document.createElement('style');
             style.textContent = 'html.md2-hide-front-matter .front-matter{display:none!important;}';
@@ -612,9 +625,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
             forMainFrameOnly: true
         )
         configuration.userContentController.addUserScript(userScript)
-        configuration.userContentController.add(context.coordinator, name: Self.enterEditMessageName)
+        Self.installInteractionBridge(on: configuration.userContentController, handler: context.coordinator)
         configuration.userContentController.add(context.coordinator, name: Self.anchorMessageName)
-        configuration.userContentController.add(context.coordinator, name: Self.toggleTaskMessageName)
 
         let webView = PreviewWebView(frame: .zero, configuration: configuration)
         webView.onFindAction = { action in
@@ -1346,10 +1358,13 @@ struct MarkdownPreviewView: NSViewRepresentable {
             _ userContentController: WKUserContentController,
             didReceive message: WKScriptMessage
         ) {
+            guard message.frameInfo.isMainFrame else { return }
             switch message.name {
             case MarkdownPreviewView.enterEditMessageName:
+                guard message.world == .defaultClient else { return }
                 onEnterEdit()
             case MarkdownPreviewView.toggleTaskMessageName:
+                guard message.world == .defaultClient else { return }
                 guard let body = message.body as? [String: Any],
                       let line = (body["line"] as? NSNumber)?.intValue,
                       let checked = (body["checked"] as? NSNumber)?.boolValue else { return }

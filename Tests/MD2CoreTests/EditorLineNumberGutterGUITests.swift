@@ -113,6 +113,7 @@ final class EditorLineNumberGutterGUITests: XCTestCase {
             return inkBands(inStripOf: bitmap)
         }
 
+        XCTAssertEqual(context.textView?.frame.origin, .zero, "asynchronous font reflow must keep document coordinates top-aligned")
         let atTop = bands()
         XCTAssertFalse(atTop.isEmpty, "no gutter was drawn at rest")
         // The first line's number sits just below the text container's top inset.

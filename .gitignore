@@ -15,3 +15,4 @@ tmp/
 # Generated conformance dashboard (the sibling baseline.json IS tracked)
 Tests/MD2CoreTests/Conformance/dashboard.md
 Tests/MD2CoreTests/Conformance/dashboard.json
+.audit/

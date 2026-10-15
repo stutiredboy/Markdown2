@@ -56,7 +56,7 @@ struct ExportConfigurationTests {
 
     // MARK: - The active profile flows into export and print
 
-    @Test func exportPDFAppliesProfileFromProvider() throws {
+    @Test func exportPDFAppliesProfileFromProvider() async throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("md2-export-config-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -74,11 +74,11 @@ struct ExportConfigurationTests {
             exportProfileProvider: { profile }
         )
 
-        store.exportPDF()
+        await store.exportPDF()
         #expect(capturedProfile == profile)
     }
 
-    @Test func printAppliesProfileFromProvider() {
+    @Test func printAppliesProfileFromProvider() async {
         let profile = ExportProfile(pageSize: .letter, showsPageNumbers: true)
         let printer = CapturingPrinter()
         let store = DocumentStore(
@@ -86,7 +86,7 @@ struct ExportConfigurationTests {
             exportProfileProvider: { profile }
         )
 
-        store.print()
+        await store.print()
         #expect(printer.capturedProfile == profile)
     }
 }

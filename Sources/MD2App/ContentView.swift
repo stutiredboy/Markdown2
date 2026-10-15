@@ -495,8 +495,8 @@ struct ContentView: View {
     private func requestMode(_ newMode: EditorMode) {
         guard newMode != mode else { return }
         // The destination surface reads `rendered` (outline, body) as it mounts;
-        // make sure any debounced edit render has landed so it opens current.
-        document.flushPendingRender()
+        // start the latest render without blocking the mode transition.
+        Task { await document.flushPendingRender() }
 
         switch mode {
         case .write, .split:

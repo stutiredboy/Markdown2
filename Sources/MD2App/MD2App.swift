@@ -96,10 +96,10 @@ struct MD2Application: App {
 
                 Menu(appDelegate.settings.text(.exportTo)) {
                     Button("PDF") {
-                        appDelegate.currentDocumentStore?.exportPDF()
+                        Task { await appDelegate.currentDocumentStore?.exportPDF() }
                     }
                     Button("HTML") {
-                        appDelegate.currentDocumentStore?.exportHTML()
+                        Task { await appDelegate.currentDocumentStore?.exportHTML() }
                     }
                 }
 
@@ -113,7 +113,7 @@ struct MD2Application: App {
 
             CommandGroup(replacing: .printItem) {
                 Button(appDelegate.settings.text(.print)) {
-                    appDelegate.currentDocumentStore?.print()
+                    Task { await appDelegate.currentDocumentStore?.print() }
                 }
                 .keyboardShortcut("p")
             }

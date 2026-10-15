@@ -1450,11 +1450,11 @@ public struct MarkdownRenderer: Sendable {
         }
     }
 
-    /// A small whitelist of raw inline HTML tags, passed through verbatim (and
-    /// protected) so authors can use them while everything else is escaped.
+    /// Formatting HTML is rebuilt with inert attributes before it is protected.
+    /// Everything outside this tag allowlist is escaped as visible source.
     private func protectRawHTML(_ text: String, protector: InlineProtector) -> String {
         replaceMatches(in: text, pattern: #"</?(?:abbr|b|br|cite|code|del|details|div|em|i|img|kbd|mark|small|span|strong|sub|summary|sup|u)(?:\s+[^<>]*)?/?>"#) { match, source in
-            protector.protect(matchText(match, in: source))
+            protector.protect(HTMLSafety.sanitizeTag(protector.restore(in: matchText(match, in: source))))
         }
     }
 
@@ -1706,8 +1706,7 @@ public struct MarkdownRenderer: Sendable {
         guard let regex = try? NSRegularExpression(pattern: #"!\[[^\]]*\]\([^)]*\)\{([^}]*)\}"#) else {
             return []
         }
-        let range = NSRange(line.startIndex..<line.endIndex, in: line)
-        return regex.matches(in: line, range: range).compactMap { match in
+        return MarkdownLinkSyntax.candidateRanges(in: line, includeImageMarker: true).compactMap { regex.firstMatch(in: line, options: .anchored, range: $0) }.compactMap { match in
             guard let attributes = capture(match, 1, in: line) else { return nil }
             return figureLabel(in: attributes)
         }
@@ -1788,7 +1787,7 @@ public struct MarkdownRenderer: Sendable {
     /// sizes reserve layout space through `.image-frame`. An image carrying a
     /// `#fig:label` id becomes a numbered, captioned `<figure>`.
     private func renderImages(_ text: String, context: InlineContext? = nil, protector: InlineProtector) -> String {
-        replaceMatches(in: text, pattern: #"!\[([^\]]*)\]\((\S+?)(?:\s+&quot;(.+?)&quot;)?\)(?:\{([^}]*)\})?"#) { match, source in
+        replaceMatches(in: text, pattern: #"!\[([^\]]*)\]\((\S+?)(?:\s+&quot;(.+?)&quot;)?\)(?:\{([^}]*)\})?"#, linkCandidates: true) { match, source in
             guard let altRange = Range(match.range(at: 1), in: source),
                   let srcRange = Range(match.range(at: 2), in: source) else {
                 return matchText(match, in: source)
@@ -1796,6 +1795,7 @@ public struct MarkdownRenderer: Sendable {
 
             let alt = String(source[altRange])
             let src = String(source[srcRange])
+            guard HTMLSafety.isSafeURL(protector.restore(in: src)) else { return alt }
 
             let title: String
             if match.range(at: 3).location != NSNotFound, let titleRange = Range(match.range(at: 3), in: source) {
@@ -1899,7 +1899,8 @@ public struct MarkdownRenderer: Sendable {
     private func renderLinks(_ text: String, protector: InlineProtector) -> String {
         replaceMatches(
             in: text,
-            pattern: #"\[([^\]]+)\]\((?:&lt;(.+?)&gt;|(\S+?))(?:\s+&quot;(.+?)&quot;)?\)"#
+            pattern: #"\[([^\]]+)\]\((?:&lt;(.+?)&gt;|(\S+?))(?:\s+&quot;(.+?)&quot;)?\)"#,
+            linkCandidates: true
         ) { match, source in
             guard let labelRange = Range(match.range(at: 1), in: source) else {
                 return matchText(match, in: source)
@@ -1914,7 +1915,7 @@ public struct MarkdownRenderer: Sendable {
                 return matchText(match, in: source)
             }
             let href = String(source[hrefRange])
-            guard !isDangerousLinkHref(href) else {
+            guard HTMLSafety.isSafeURL(protector.restore(in: href)) else {
                 return String(source[labelRange])
             }
 
@@ -2608,14 +2609,19 @@ public struct MarkdownRenderer: Sendable {
     private func replaceMatches(
         in source: String,
         pattern: String,
+        linkCandidates: Bool = false,
         transform: (NSTextCheckingResult, String) -> String
     ) -> String {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+        guard let regex = MarkdownRegex.expression(pattern) else {
             return source
         }
 
         let nsRange = NSRange(source.startIndex..<source.endIndex, in: source)
-        let matches = regex.matches(in: source, range: nsRange)
+        let matches = linkCandidates
+            ? MarkdownLinkSyntax.candidateRanges(in: source, includeImageMarker: pattern.hasPrefix("!")).compactMap {
+                regex.firstMatch(in: source, options: .anchored, range: $0)
+            }
+            : regex.matches(in: source, range: nsRange)
         var result = source
 
         for match in matches.reversed() {
@@ -2627,7 +2633,7 @@ public struct MarkdownRenderer: Sendable {
     }
 
     private func firstMatch(in source: String, pattern: String) -> NSTextCheckingResult? {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+        guard let regex = MarkdownRegex.expression(pattern) else {
             return nil
         }
 
@@ -2653,17 +2659,6 @@ public struct MarkdownRenderer: Sendable {
     private func firstCapture(in source: String, pattern: String) -> String? {
         guard let match = firstMatch(in: source, pattern: pattern) else { return nil }
         return capture(match, 1, in: source)
-    }
-
-    /// Lowercased URL scheme prefixes that can execute script or smuggle active
-    /// content; inline links using them are rendered as inert text instead of
-    /// anchors. (Plain-prefix match — entity-obfuscated schemes are not
-    /// normalized here; see review notes for the deeper hardening item.)
-    private static let dangerousLinkSchemes = ["javascript:", "vbscript:", "data:"]
-
-    private func isDangerousLinkHref(_ href: String) -> Bool {
-        let normalized = href.trimmingCharacters(in: .whitespaces).lowercased()
-        return Self.dangerousLinkSchemes.contains { normalized.hasPrefix($0) }
     }
 
     private func escapeHTML(_ source: String) -> String {

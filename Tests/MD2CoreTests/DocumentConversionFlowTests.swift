@@ -114,7 +114,7 @@ struct DocumentConversionFlowTests {
         #expect(store.alert != nil)
     }
 
-    @Test func conversionInFlightBlocksOtherExports() throws {
+    @Test func conversionInFlightBlocksOtherExports() async throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         let sourceURL = dir.appendingPathComponent("notes.md")
@@ -136,8 +136,8 @@ struct DocumentConversionFlowTests {
         #expect(converter.callCount == 1)
 
         // Other export commands are ignored while a conversion is in flight.
-        store.exportPDF()
-        store.exportHTML()
+        await store.exportPDF()
+        await store.exportHTML()
         store.exportDOCX()
         #expect(pdfPicked == false)
         #expect(htmlPicked == false)

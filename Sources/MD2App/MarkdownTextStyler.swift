@@ -1,37 +1,217 @@
 import AppKit
+import MD2Core
+
+/// Parsing runs on a serial background actor. AppKit only receives the changed
+/// attribute range; no full-document regex pass is on the keystroke path.
+struct MarkdownStylePlan: Sendable {
+    enum Kind: Int, Sendable { case code, heading1, heading2, heading3, heading4, heading5, heading6, quote, marker, inlineCode, bold, italic, link, codeText }
+    struct Span: Hashable, Sendable { let range: NSRange; let kind: Kind }
+    let text: String
+    var spans: [Span] = []
+
+    init(_ text: String) {
+        self.text = text
+        var spans: [Span] = []
+        var fenced = false
+        text.enumerateSubstrings(in: text.startIndex..<text.endIndex, options: [.byLines]) { line, content, enclosing, _ in
+            let line = line ?? ""
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let range = NSRange(content, in: text)
+            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+                fenced.toggle()
+                spans.append(Span(range: NSRange(enclosing, in: text), kind: .code))
+                spans.append(Span(range: range, kind: .codeText))
+            } else if fenced {
+                spans.append(Span(range: NSRange(enclosing, in: text), kind: .code))
+                spans.append(Span(range: range, kind: .codeText))
+            } else {
+                let leading = line.drop { $0 == " " || $0 == "\t" }
+                let level = leading.prefix { $0 == "#" }.count
+                if (1...6).contains(level), leading.dropFirst(level).first == " " {
+                    spans.append(Span(range: range, kind: Kind(rawValue: level)!))
+                } else {
+                    if trimmed.hasPrefix(">") { spans.append(Span(range: range, kind: .quote)) }
+                    if let marker = line.range(of: #"^\s*(?:[-*+]|\d+[\.)])\s+"#, options: .regularExpression) {
+                        let local = NSRange(marker, in: line)
+                        let task = trimmed.hasPrefix("- [ ] ") || trimmed.lowercased().hasPrefix("- [x] ")
+                        spans.append(Span(range: NSRange(location: range.location + (task ? 0 : local.location), length: task ? min(6, range.length) : local.length), kind: .marker))
+                    }
+                }
+            }
+        }
+        let codeRanges = spans.filter { $0.kind == .code }.map(\.range)
+        let patterns: [(String, Kind)] = [
+            (#"`[^`\n]+`"#, .inlineCode),
+            (#"\*\*[^*]+\*\*|__[^_]+__"#, .bold),
+            (#"(?<!\*)\*(?!\s)[^*]+(?<!\s)\*(?!\*)"#, .italic),
+            (#"\[[^\]]+\]\([^)]+\)"#, .link)
+        ]
+        for (pattern, kind) in patterns {
+            let regex = try! NSRegularExpression(pattern: pattern)
+            let full = NSRange(location: 0, length: (text as NSString).length)
+            let matches = kind == .link
+                ? MarkdownLinkSyntax.candidateRanges(in: text).compactMap { regex.firstMatch(in: text, options: .anchored, range: $0) }
+                : regex.matches(in: text, range: full)
+            var codeIndex = 0
+            for match in matches {
+                while codeIndex < codeRanges.count, NSMaxRange(codeRanges[codeIndex]) <= match.range.location { codeIndex += 1 }
+                if codeIndex < codeRanges.count, NSIntersectionRange(codeRanges[codeIndex], match.range).length > 0 { continue }
+                spans.append(Span(range: match.range, kind: kind))
+            }
+        }
+        self.spans = spans
+    }
+
+    /// Include text edits and any syntax whose meaning changed beyond the edit
+    /// (e.g. deleting a closing fence or a multi-line emphasis delimiter).
+    func changedRange(from old: MarkdownStylePlan?) -> NSRange {
+        let newUnits = Array(text.utf16)
+        guard let old else { return NSRange(location: 0, length: newUnits.count) }
+        let oldUnits = Array(old.text.utf16)
+        var prefix = 0
+        while prefix < min(oldUnits.count, newUnits.count), oldUnits[prefix] == newUnits[prefix] { prefix += 1 }
+        var suffix = 0
+        while suffix < min(oldUnits.count, newUnits.count) - prefix,
+              oldUnits[oldUnits.count - 1 - suffix] == newUnits[newUnits.count - 1 - suffix] { suffix += 1 }
+        let oldEnd = oldUnits.count - suffix
+        let newEnd = newUnits.count - suffix
+        let delta = newUnits.count - oldUnits.count
+        var lower = prefix
+        var upper = newEnd
+        var unchanged: Set<Span> = []
+        for span in old.spans {
+            if NSMaxRange(span.range) <= prefix {
+                unchanged.insert(span)
+            } else if span.range.location >= oldEnd {
+                unchanged.insert(Span(range: NSRange(location: span.range.location + delta, length: span.range.length), kind: span.kind))
+            } else {
+                lower = min(lower, span.range.location)
+                upper = max(upper, min(newUnits.count, NSMaxRange(span.range) + delta))
+            }
+        }
+        let current = Set(spans)
+        for span in unchanged.symmetricDifference(current) {
+            lower = min(lower, span.range.location)
+            upper = max(upper, NSMaxRange(span.range))
+        }
+        // Include paragraph terminators so deleted heading/code attributes do
+        // not survive in the insertion attributes on an otherwise empty line.
+        let range = NSRange(location: min(lower, newUnits.count), length: max(0, min(upper, newUnits.count) - lower))
+        return (text as NSString).paragraphRange(for: range)
+    }
+}
+
+actor MarkdownStyleWorker {
+    func prepare(_ text: String, previous: MarkdownStylePlan?) -> (MarkdownStylePlan, NSRange)? {
+        guard !Task.isCancelled else { return nil }
+        let plan = MarkdownStylePlan(text)
+        guard !Task.isCancelled else { return nil }
+        return (plan, plan.changedRange(from: previous))
+    }
+}
+
+@MainActor
+final class MarkdownStylingController {
+    private let worker = MarkdownStyleWorker()
+    private var pending: Task<Void, Never>?
+    private var previous: MarkdownStylePlan?
+    private var generation = 0
+
+    func schedule(in textView: NSTextView, willApply: @escaping @MainActor () -> Void = {}, didApply: @escaping @MainActor () -> Void = {}) {
+        generation &+= 1
+        let revision = generation
+        pending?.cancel()
+        let text = textView.string
+        let previous = previous
+        let worker = worker
+        pending = Task { [weak self, weak textView] in
+            // Coalesce rapid input and IME commits before doing syntax work.
+            try? await Task.sleep(for: .milliseconds(25))
+            guard !Task.isCancelled, let (plan, range) = await worker.prepare(text, previous: previous),
+                  !Task.isCancelled, let self, self.generation == revision,
+                  let textView, !textView.hasMarkedText(), textView.string == text else { return }
+            // Loads, large pastes and fence edits can invalidate the entire
+            // document. Apply bounded chunks and yield between them so even
+            // these updates do not monopolize the main actor.
+            self.previous = nil
+            var cursor = range.location
+            let source = text as NSString
+            repeat {
+                guard !Task.isCancelled, self.generation == revision,
+                      !textView.hasMarkedText(), textView.string == text else { return }
+                let chunk = source.rangeOfComposedCharacterSequences(for:
+                    NSRange(location: cursor, length: min(8_192, NSMaxRange(range) - cursor)))
+                willApply()
+                let selection = textView.selectedRanges
+                let clip = textView.enclosingScrollView?.contentView
+                let origin = clip == nil ? nil : textView.visibleRect.origin
+                MarkdownTextStyler.apply(plan, range: chunk, to: textView)
+                textView.selectedRanges = selection
+                if let origin {
+                    // The first asynchronous font reflow can grow a previously
+                    // short text view with a negative frame origin. Keep the
+                    // document top-aligned, preserving document coordinates,
+                    // otherwise the gutter/scroll probes look below the text.
+                    textView.setFrameOrigin(.zero)
+                    clip?.scroll(to: origin)
+                    if let scrollView = textView.enclosingScrollView {
+                        scrollView.reflectScrolledClipView(scrollView.contentView)
+                    }
+                }
+                didApply()
+                cursor = NSMaxRange(chunk)
+                if cursor < NSMaxRange(range) { await Task.yield() }
+            } while cursor < NSMaxRange(range)
+            self.previous = plan
+        }
+    }
+
+    func flush() async {
+        repeat {
+            let revision = generation
+            await pending?.value
+            if revision == generation { return }
+        } while true
+    }
+    deinit { pending?.cancel() }
+}
 
 enum MarkdownTextStyler {
-    @MainActor
-    static func apply(to textView: NSTextView) {
-        guard let storage = textView.textStorage else { return }
+    @MainActor static func apply(to textView: NSTextView) {
+        let plan = MarkdownStylePlan(textView.string)
+        apply(plan, range: NSRange(location: 0, length: (plan.text as NSString).length), to: textView)
+    }
 
-        let fullRange = NSRange(location: 0, length: storage.length)
-        let baseFont = NSFont.systemFont(ofSize: 16)
-        let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.lineSpacing = 4
-        paragraphStyle.paragraphSpacing = 7
-
+    @MainActor static func apply(_ plan: MarkdownStylePlan, range: NSRange, to textView: NSTextView) {
+        guard let storage = textView.textStorage, range.length > 0 else {
+            synchronizeTypingAttributes(in: textView)
+            return
+        }
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 4
+        paragraph.paragraphSpacing = 7
         storage.beginEditing()
-        storage.setAttributes([
-            .font: baseFont,
-            .foregroundColor: NSColor.labelColor,
-            .paragraphStyle: paragraphStyle
-        ], range: fullRange)
-
-        applyBlockStyles(to: storage)
-        applyInlineStyles(to: storage)
+        storage.setAttributes([.font: NSFont.systemFont(ofSize: 16), .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph], range: range)
+        for span in plan.spans {
+            let clipped = NSIntersectionRange(range, span.range)
+            guard clipped.length > 0 else { continue }
+            let attributes: [NSAttributedString.Key: Any]
+            switch span.kind {
+            case .code: attributes = [.markdownCodeBlock: true]
+            case .codeText: attributes = [.font: NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)]
+            case .heading1, .heading2, .heading3, .heading4, .heading5, .heading6:
+                attributes = [.font: NSFont.boldSystemFont(ofSize: max(17, 30 - CGFloat(span.kind.rawValue * 3))), .foregroundColor: NSColor.labelColor]
+            case .quote: attributes = [.foregroundColor: NSColor.secondaryLabelColor]
+            case .marker: attributes = [.foregroundColor: NSColor.secondaryLabelColor, .font: NSFont.monospacedSystemFont(ofSize: 15, weight: .regular)]
+            case .inlineCode: attributes = [.font: NSFont.monospacedSystemFont(ofSize: 15, weight: .regular), .backgroundColor: NSColor.textColor.withAlphaComponent(0.08)]
+            case .bold: attributes = [.font: NSFont.boldSystemFont(ofSize: 16)]
+            case .italic: attributes = [.font: NSFontManager.shared.convert(NSFont.systemFont(ofSize: 16), toHaveTrait: .italicFontMask)]
+            case .link: attributes = [.foregroundColor: NSColor.linkColor]
+            }
+            storage.addAttributes(attributes, range: clipped)
+        }
         storage.endEditing()
-
         synchronizeTypingAttributes(in: textView)
-
-        // Re-styling the whole document shifts line positions (heading fonts are
-        // taller than body text), but lines that merely moved — without their own
-        // attributes changing — are not marked for redisplay. The caret-reveal
-        // scroll that follows a keystroke then blits those stale pixels (NSClipView
-        // always minimizes the invalidated region on macOS 11+, copying the rest),
-        // leaving ghost copies of headings stacked at the viewport edge. Forcing a
-        // full redraw guarantees the blitted pixels are overdrawn before the frame
-        // is shown, so no ghosts survive.
         textView.needsDisplay = true
     }
 
@@ -84,180 +264,4 @@ enum MarkdownTextStyler {
         return min(clamped, string.length - 1)
     }
 
-    private static func applyBlockStyles(to storage: NSTextStorage) {
-        let source = storage.string
-        var activeFence = false
-
-        source.enumerateSubstrings(
-            in: source.startIndex..<source.endIndex,
-            options: [.byLines, .substringNotRequired]
-        ) { _, substringRange, enclosingRange, _ in
-            let lineRange = NSRange(substringRange, in: source)
-            // The enclosing range includes the line terminator, so the marker
-            // covers newlines and empty lines too — the layout manager then fills
-            // those fragments and the inter-line spacing seamlessly.
-            let fullLineRange = NSRange(enclosingRange, in: source)
-            let line = String(source[substringRange])
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            // Preserve trailing whitespace for ATX heading recognition. A line
-            // containing only "## " is already a heading input context; trimming
-            // both ends turned it into "##" until the IME committed a character,
-            // so provisional letters were rendered with the body font.
-            let leadingTrimmed = String(line.drop { $0 == " " || $0 == "\t" })
-
-            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
-                activeFence.toggle()
-                addCodeLineStyle(to: storage, contentRange: lineRange, lineRange: fullLineRange)
-                return
-            }
-
-            if activeFence {
-                addCodeLineStyle(to: storage, contentRange: lineRange, lineRange: fullLineRange)
-                return
-            }
-
-            if let headingLevel = headingLevel(in: leadingTrimmed) {
-                let size = max(17, 30 - CGFloat(headingLevel * 3))
-                storage.addAttributes([
-                    .font: NSFont.boldSystemFont(ofSize: size),
-                    .foregroundColor: NSColor.labelColor
-                ], range: lineRange)
-                return
-            }
-
-            if trimmed.hasPrefix(">") {
-                storage.addAttributes([
-                    .foregroundColor: NSColor.secondaryLabelColor
-                ], range: lineRange)
-            }
-
-            if isListLine(trimmed), let markerRange = markerRange(in: line, lineRange: lineRange) {
-                storage.addAttributes([
-                    .foregroundColor: NSColor.secondaryLabelColor,
-                    .font: NSFont.monospacedSystemFont(ofSize: 15, weight: .regular)
-                ], range: markerRange)
-            }
-        }
-    }
-
-    private static func applyInlineStyles(to storage: NSTextStorage) {
-        let string = storage.string
-        let full = NSRange(string.startIndex..<string.endIndex, in: string)
-
-        // `[^`\n]+` (not `[^`]+`) keeps inline code on a single line; otherwise the
-        // span runs from a fence's backtick across the whole code block to the next
-        // backtick, painting an uneven overlay over the block panel.
-        addRegexAttributes(
-            to: storage,
-            pattern: #"`[^`\n]+`"#,
-            attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 15, weight: .regular),
-                .backgroundColor: NSColor.textColor.withAlphaComponent(0.08)
-            ],
-            range: full
-        )
-
-        addRegexAttributes(
-            to: storage,
-            pattern: #"\*\*[^*]+\*\*|__[^_]+__"#,
-            attributes: [
-                .font: NSFont.boldSystemFont(ofSize: 16)
-            ],
-            range: full
-        )
-
-        addRegexAttributes(
-            to: storage,
-            pattern: #"(?<!\*)\*(?!\s)[^*]+(?<!\s)\*(?!\*)"#,
-            attributes: [
-                .font: NSFontManager.shared.convert(NSFont.systemFont(ofSize: 16), toHaveTrait: .italicFontMask)
-            ],
-            range: full
-        )
-
-        addRegexAttributes(
-            to: storage,
-            pattern: #"\[[^\]]+\]\([^)]+\)"#,
-            attributes: [
-                .foregroundColor: NSColor.linkColor
-            ],
-            range: full
-        )
-    }
-
-    private static func addCodeLineStyle(to storage: NSTextStorage, contentRange: NSRange, lineRange: NSRange) {
-        if contentRange.length > 0 {
-            storage.addAttribute(
-                .font,
-                value: NSFont.monospacedSystemFont(ofSize: 14, weight: .regular),
-                range: contentRange
-            )
-        }
-        // The marker drives the continuous panel drawn by CodeBlockLayoutManager;
-        // applying it over the full line (incl. terminator) keeps the panel gapless.
-        storage.addAttribute(.markdownCodeBlock, value: true, range: lineRange)
-    }
-
-    private static func headingLevel(in trimmedLine: String) -> Int? {
-        let count = trimmedLine.prefix { $0 == "#" }.count
-        guard (1...6).contains(count), trimmedLine.dropFirst(count).first == " " else {
-            return nil
-        }
-        return count
-    }
-
-    private static func isListLine(_ trimmedLine: String) -> Bool {
-        if trimmedLine.hasPrefix("- ") || trimmedLine.hasPrefix("* ") || trimmedLine.hasPrefix("+ ") {
-            return true
-        }
-
-        return trimmedLine.range(of: #"^\d+[\.)]\s+"#, options: .regularExpression) != nil
-    }
-
-    private static func markerRange(in line: String, lineRange: NSRange) -> NSRange? {
-        if line.trimmingCharacters(in: .whitespaces).hasPrefix("- [ ] ") ||
-            line.trimmingCharacters(in: .whitespaces).lowercased().hasPrefix("- [x] ") {
-            return NSRange(location: lineRange.location, length: min(6, lineRange.length))
-        }
-
-        if let range = line.range(of: #"^\s*(?:[-*+]|\d+[\.)])\s+"#, options: .regularExpression) {
-            let nsRange = NSRange(range, in: line)
-            return NSRange(location: lineRange.location + nsRange.location, length: nsRange.length)
-        }
-
-        return nil
-    }
-
-    private static func addRegexAttributes(
-        to storage: NSTextStorage,
-        pattern: String,
-        attributes: [NSAttributedString.Key: Any],
-        range: NSRange
-    ) {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
-            return
-        }
-
-        let string = storage.string
-        regex.enumerateMatches(in: string, range: range) { match, _, _ in
-            guard let match, match.range.location < storage.length else { return }
-            // Inline markdown is not interpreted inside fenced code, and any
-            // overlay there would break the uniform code-block panel.
-            if rangeIntersectsCodeBlock(match.range, in: storage) {
-                return
-            }
-            storage.addAttributes(attributes, range: match.range)
-        }
-    }
-
-    private static func rangeIntersectsCodeBlock(_ range: NSRange, in storage: NSTextStorage) -> Bool {
-        var intersectsCodeBlock = false
-        storage.enumerateAttribute(.markdownCodeBlock, in: range, options: []) { value, _, stop in
-            if value != nil {
-                intersectsCodeBlock = true
-                stop.pointee = true
-            }
-        }
-        return intersectsCodeBlock
-    }
 }
