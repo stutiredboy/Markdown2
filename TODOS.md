@@ -47,16 +47,6 @@ Tracked work considered and explicitly deferred from in-flight changes. Each ite
 
 **Start here:** extend the top-level block emitter to stamp `li` elements (mirroring the footnote `li` path at `:980`), update `MetadataInvariantTests`' exception list, then extend `__md2RenderLineNumbers`' eligibility rules to nested `li` anchors.
 
-## GUI suites crash when run in one combined invocation (window-animation teardown)
-
-**What:** Running `FindFindDeleteGUITests` and the line-number GUI suites (`EditorLineNumberGutterGUITests` / `LineNumberGutterGUITests`) in the SAME `xctest` process segfaults: `objc_release` on a deallocated `_NSWindowTransformAnimation` during a CoreAnimation transaction commit, right when the suite after the find tests creates its own host window.
-
-**Why:** Every documented per-surface command (CLAUDE.md guards, task 5.2) passes, so this hides today — but the headless-GUI CI lane, when built, will be tempted to run one combined `MD2_RUN_GUI_TESTS=1 swift test` invocation and will inherit a deterministic, confusing signal 11. Found by /qa on 2026-09-18 (2/2 deterministic reproductions with the 5-suite filter; each suite green alone; report: `.gstack/qa-reports/qa-report-markdown2-add-line-numbers-2026-09-18.md`).
-
-**Fix shape:** either make each guard suite its own CI invocation step (cheap, matches today's documented convention), or harden the window teardown in the window-hosted tests (close windows without ordering animations, or spin the runloop to let `_NSWindowTransformAnimation` complete before the next suite starts — the same teardown fragility the 2026-08-20 QA documented).
-
-**Depends on:** nothing; must be resolved before (or at the same time as) the headless GUI CI lane.
-
 ## Pre-scan doesn't traverse containers (forward `\ref` into quoted/list equations unresolved)
 
 **What:** Make `collectCrossReferenceLabels` (the whole-document pre-scan that pre-registers equation/figure/table numbers) walk blockquotes and dedented list content exactly as the render walk does, so labels inside containers are registered and forward `\ref{}`s to them resolve.
