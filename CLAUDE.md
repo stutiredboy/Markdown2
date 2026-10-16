@@ -63,6 +63,26 @@ state), and its Settings-command cases need Accessibility trust: without it they
 skip loudly rather than pass one-sided. Grant it to whatever runs `swift test`
 (System Settings ▸ Privacy & Security ▸ Accessibility).
 
+Undo-history guards: each document owns one `UndoManager` (`DocumentStore`) and
+one editor text view (`MarkdownEditorSession`), which every editor re-hosts.
+`NSTextView` registers undo actions whose target is the text view, unretained,
+so a text view rebuilt per mode switch crashes Undo after Write → Read → Write;
+and text that reaches the document outside the editor must go through the
+session (`applyUndoableEdit` for checkbox toggles, `resetText` for opens and
+reloads), or undo replays stale ranges — an exception, or a silent rewrite that
+autosave persists. After changing the editor's view lifecycle (`makeNSView` /
+`dismantleNSView`, the session), the window's undo wiring
+(`MD2AppDelegate.windowWillReturnUndoManager`, `makeDocumentWindow`), or any path
+that changes `DocumentStore.text` programmatically, run
+`MD2_RUN_GUI_TESTS=1 swift test --filter UndoHistoryGUITests` locally before
+landing (the headless `UndoHistoryTests` run in `swift test`). Constraints those
+tests pin down: `NSText.delegate` is `assign`, which is why the session, not a
+coordinator, is the kept text view's delegate; and a window asks its delegate
+for an undo manager once and caches the answer, which is why the document is
+registered before the content view is installed. Under XCTest, SwiftUI keeps a
+dismantled editor's host alive, so the old crash does not reproduce there; the
+guard is the assertion that a mode round trip re-hosts the same text view.
+
 ## Skill routing
 
 When the user's request matches an available skill, invoke it via the Skill tool. When in doubt, invoke the skill.

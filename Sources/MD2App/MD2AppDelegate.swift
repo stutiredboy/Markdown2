@@ -148,8 +148,17 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
     // MARK: - Document actions
 
     /// Opens a fresh, empty document in its own window.
-    func newDocument() {
-        makeDocumentWindow(store: makeDocumentStore()).window.makeKeyAndOrderFront(nil)
+    @discardableResult
+    func newDocument() -> NSWindow {
+        let window = makeDocumentWindow(store: makeDocumentStore()).window
+        window.makeKeyAndOrderFront(nil)
+        return window
+    }
+
+    /// The document presented in `window`, or `nil` for a window that is not a
+    /// document window (e.g. Settings).
+    func documentStore(for window: NSWindow) -> DocumentStore? {
+        documentWindows.first(where: { $0.window == window })?.store
     }
 
     /// Creates a document store wired to read the live export profile and
@@ -280,21 +289,12 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
         }
         window.title = store.displayTitle
         window.isReleasedWhenClosed = false
-        window.delegate = self
-        window.contentView = NSHostingView(rootView: contentView)
-        // Let macOS group document windows into native tabs when the user
-        // prefers tabs; they can always be torn off into separate windows.
-        window.tabbingMode = .automatic
-        window.tabbingIdentifier = "MD2Document"
 
-        if let previous = documentWindows.last?.window {
-            var origin = previous.frame.origin
-            origin = window.cascadeTopLeft(from: NSPoint(x: origin.x, y: origin.y + previous.frame.height))
-            window.setFrameTopLeftPoint(origin)
-        } else {
-            window.center()
-        }
-
+        let previous = documentWindows.last?.window
+        // A window asks its delegate for an undo manager once and keeps the
+        // answer, creating a private one if the delegate has none. Installing
+        // the content view already asks, so register the document first: the
+        // window must keep the document's history, not a private stack.
         let documentWindow = DocumentWindow(
             window: window,
             store: store,
@@ -302,6 +302,20 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
             onFileBacked: { [weak self] url in self?.noteRecentDocument(url) }
         )
         documentWindows.append(documentWindow)
+        window.delegate = self
+        window.contentView = NSHostingView(rootView: contentView)
+        // Let macOS group document windows into native tabs when the user
+        // prefers tabs; they can always be torn off into separate windows.
+        window.tabbingMode = .automatic
+        window.tabbingIdentifier = "MD2Document"
+
+        if let previous {
+            var origin = previous.frame.origin
+            origin = window.cascadeTopLeft(from: NSPoint(x: origin.x, y: origin.y + previous.frame.height))
+            window.setFrameTopLeftPoint(origin)
+        } else {
+            window.center()
+        }
         return documentWindow
     }
 
@@ -320,8 +334,16 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
 
     // MARK: - NSWindowDelegate
 
+    /// Edit ▸ Undo acts on the document's own history — the undo manager the
+    /// editor's text view registers on — not on a window-private one. AppKit
+    /// asks once per window and keeps the answer, which is why
+    /// `makeDocumentWindow` registers the document before installing the view.
+    func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? {
+        documentStore(for: window)?.undoManager
+    }
+
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard let store = documentWindows.first(where: { $0.window == sender })?.store else {
+        guard let store = documentStore(for: sender) else {
             return true
         }
         return confirmDiscardOrSaveIfNeeded(for: store)
@@ -331,7 +353,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
         guard let window = notification.object as? NSWindow else { return }
         // Detach the file watcher deterministically; releasing the store also
         // cancels it, but the hosting view can keep references alive briefly.
-        documentWindows.first(where: { $0.window == window })?.store.stopWatchingFile()
+        documentStore(for: window)?.stopWatchingFile()
         documentWindows.removeAll { $0.window == window }
     }
 

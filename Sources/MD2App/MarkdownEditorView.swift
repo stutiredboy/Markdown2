@@ -88,6 +88,11 @@ struct MarkdownEditorView: NSViewRepresentable {
     /// inset. Display-only: it changes no text, selection, or geometry, so
     /// toggling it cannot re-wrap the document.
     var showsLineNumbers: Bool = false
+    /// The document's editor text system. Every editor the document mounts
+    /// re-hosts its one text view, so the undo history — whose actions target
+    /// that view — survives mode switches. `nil` gives this editor a private
+    /// session, for an editor not backed by a document.
+    var session: MarkdownEditorSession? = nil
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
@@ -96,58 +101,33 @@ struct MarkdownEditorView: NSViewRepresentable {
         scrollView.drawsBackground = false
         scrollView.autohidesScrollers = true
 
-        // Build the TextKit 1 stack manually so the editor uses a custom layout
-        // manager that paints continuous code-block backgrounds.
-        let textStorage = NSTextStorage()
-        let layoutManager = CodeBlockLayoutManager()
-        textStorage.addLayoutManager(layoutManager)
-        let textContainer = NSTextContainer(
-            containerSize: NSSize(width: scrollView.contentSize.width, height: .greatestFiniteMagnitude)
-        )
-        textContainer.widthTracksTextView = true
-        layoutManager.addTextContainer(textContainer)
-
-        let textView = MarkdownSourceTextView(frame: .zero, textContainer: textContainer)
-        textView.onFindAction = { action in
-            context.coordinator.onFindShortcut(action)
+        let coordinator = context.coordinator
+        let session = coordinator.session
+        let textView = session.loadTextView(text: text)
+        session.host(in: scrollView, coordinator: coordinator)
+        if let sourceTextView = textView as? MarkdownSourceTextView {
+            // Weak: the text view outlives this editor and must not keep its
+            // coordinator, or the SwiftUI state the callbacks capture, alive.
+            sourceTextView.onFindAction = { [weak coordinator] action in
+                coordinator?.onFindShortcut(action)
+            }
+            sourceTextView.onInsertImageAttachments = { [weak coordinator] sources in
+                coordinator?.onInsertImageAttachments(sources)
+            }
+            sourceTextView.showsLineNumbers = showsLineNumbers
         }
-        textView.onInsertImageAttachments = onInsertImageAttachments
-        // Accept image file drops on top of whatever the text view already takes
-        // (string drags for in-editor text move), so the drop handler can turn
-        // dropped images into attachments without disabling text drag-and-drop.
-        textView.registerForDraggedTypes(textView.registeredDraggedTypes + [.fileURL])
-        textView.delegate = context.coordinator
-        textView.string = text
-        textView.isRichText = false
-        textView.importsGraphics = false
-        textView.allowsUndo = true
-        textView.isAutomaticQuoteSubstitutionEnabled = false
-        textView.isAutomaticDashSubstitutionEnabled = false
-        textView.isAutomaticTextReplacementEnabled = false
-        textView.isContinuousSpellCheckingEnabled = true
-        textView.textContainerInset = NSSize(width: 58, height: 48)
-        textView.showsLineNumbers = showsLineNumbers
-        textView.backgroundColor = .textBackgroundColor
-        textView.drawsBackground = true
-        textView.textContainer?.widthTracksTextView = true
-        textView.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: .greatestFiniteMagnitude)
-        textView.autoresizingMask = [.width]
-        textView.minSize = NSSize(width: 0, height: scrollView.contentSize.height)
-        textView.maxSize = NSSize(
-            width: CGFloat.greatestFiniteMagnitude,
-            height: CGFloat.greatestFiniteMagnitude
-        )
-        textView.isVerticallyResizable = true
-        textView.isHorizontallyResizable = false
+        // Document-level changes reach the kept text view through the session,
+        // so it lags the binding only when one bypassed it.
+        if coordinator.shouldApplyBoundText(text, to: textView) {
+            session.resetText(to: text)
+        }
 
-        context.coordinator.scheduleStyle(in: textView)
-
-        scrollView.documentView = textView
+        coordinator.scheduleStyle(in: textView)
 
         // Observe scrolling so the top visible line can anchor a mode switch.
         let clipView = scrollView.contentView
         clipView.postsBoundsChangedNotifications = true
-        context.coordinator.observe(scrollView: scrollView)
+        coordinator.observe(scrollView: scrollView)
 
         viewportReader?.capture = { [weak scrollView] in
             guard let scrollView else { return nil }
@@ -175,6 +155,12 @@ struct MarkdownEditorView: NSViewRepresentable {
         context.coordinator.onTextEdit = onTextEdit
         context.coordinator.onFindShortcut = onFindShortcut
         context.coordinator.onFindResult = onFindResult
+        context.coordinator.onInsertImageAttachments = onInsertImageAttachments
+        // SwiftUI can still update an outgoing editor after the incoming one has
+        // re-hosted the session's text view; that scroll view is empty now and
+        // must not claim the viewport reader or touch the text.
+        guard let textView = scrollView.documentView as? NSTextView,
+              textView === context.coordinator.session.textView else { return }
         viewportReader?.capture = { [weak scrollView] in
             guard let scrollView else { return nil }
             return Coordinator.viewportAnchor(in: scrollView)
@@ -187,39 +173,14 @@ struct MarkdownEditorView: NSViewRepresentable {
             guard let scrollView, let coord else { return }
             coord.followScroll(toFractionalLine: line, in: scrollView)
         }
-        guard let textView = scrollView.documentView as? NSTextView else { return }
-        if let sourceTextView = textView as? MarkdownSourceTextView {
-            sourceTextView.onFindAction = { action in
-                context.coordinator.onFindShortcut(action)
-            }
-            sourceTextView.onInsertImageAttachments = onInsertImageAttachments
-            sourceTextView.showsLineNumbers = showsLineNumbers
-        }
+        (textView as? MarkdownSourceTextView)?.showsLineNumbers = showsLineNumbers
 
         if context.coordinator.shouldApplyBoundText(text, to: textView) {
-            let selectedRanges = textView.selectedRanges
-            textView.string = text
-            context.coordinator.scheduleStyle(in: textView)
-            // A wholesale replacement shifts every line, but it never reaches
-            // `textDidChange` and TextKit's own display invalidation is
-            // glyph-scoped — it never covers the gutter strip. Ask for it
-            // explicitly or the numbers stay stale until the next user edit.
-            (textView as? MarkdownSourceTextView)?.invalidateGutter()
-            // Programmatic replacement bypasses `textDidChange`, so tell the find
-            // index it moved; the next update re-indexes without revealing.
-            context.coordinator.noteExternalTextChange()
-            // External content (e.g. a reload after the file changed on disk)
-            // can be shorter than the old selection; restoring an out-of-range
-            // selection raises. Clamp each range to the new length.
-            let length = (text as NSString).length
-            let clamped = selectedRanges.map { value -> NSValue in
-                let range = value.rangeValue
-                let location = min(range.location, length)
-                return NSValue(range: NSRange(location: location, length: min(range.length, length - location)))
-            }
-            textView.selectedRanges = clamped.isEmpty
-                ? [NSValue(range: NSRange(location: length, length: 0))]
-                : clamped
+            // Opens and reloads already arrive through the session; this is text
+            // that reached the document some other way. Mirroring it with
+            // `textView.string =` would leave every undo action pointing at
+            // ranges of the old text, so the session also drops that history.
+            context.coordinator.session.resetText(to: text)
         }
 
         context.coordinator.updateFind(query: findQuery, in: textView)
@@ -319,13 +280,21 @@ struct MarkdownEditorView: NSViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        let coordinator = Coordinator(text: $text)
+        let coordinator = Coordinator(text: $text, session: session ?? MarkdownEditorSession())
         coordinator.onEnterPreview = onEnterPreview
         coordinator.onAnchorLineChange = onAnchorLineChange
         coordinator.onTextEdit = onTextEdit
         coordinator.onFindShortcut = onFindShortcut
         coordinator.onFindResult = onFindResult
+        coordinator.onInsertImageAttachments = onInsertImageAttachments
         return coordinator
+    }
+
+    /// Hands the text view back to the session instead of letting it die with
+    /// this scroll view: the undo actions it registered target it, and the next
+    /// editor re-hosts it.
+    static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
+        coordinator.session.unhost(from: scrollView, coordinator: coordinator)
     }
 
     /// Scrolls the editor to a vertical fraction (0...1) of its content. Used as
@@ -430,12 +399,15 @@ struct MarkdownEditorView: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         @Binding var text: String
+        /// The text system this editor hosts and edits through.
+        let session: MarkdownEditorSession
         var isApplyingStyle = false
         var onEnterPreview: () -> Void = {}
         var onAnchorLineChange: (_ line: Int, _ drivesPreviewSync: Bool) -> Void = { _, _ in }
         var onTextEdit: (_ caretLine: Int) -> Void = { _ in }
         var onFindShortcut: (_ action: FindCommand.Action) -> Void = { _ in }
         var onFindResult: (_ total: Int, _ index: Int) -> Void = { _, _ in }
+        var onInsertImageAttachments: (_ sources: [ImageAttachmentSource]) -> String? = { _ in nil }
         var lastFocusToken: UUID?
         /// Tokens of the most recently consumed find/replace commands, so a command
         /// is acted on exactly once even if `updateNSView` re-runs while the same
@@ -491,8 +463,30 @@ struct MarkdownEditorView: NSViewRepresentable {
         /// can shorten it.
         var findDebounceInterval: TimeInterval = 0.15
 
-        init(text: Binding<String>) {
+        @MainActor init(text: Binding<String>, session: MarkdownEditorSession = MarkdownEditorSession()) {
             _text = text
+            self.session = session
+        }
+
+        /// The document's undo manager, so the text view, the window, and the
+        /// Edit menu share one history.
+        func undoManager(for view: NSTextView) -> UndoManager? {
+            session.undoManager
+        }
+
+        /// The session replaced the text outside the editing path (open, reload,
+        /// or text that bypassed the editor). That posts no `textDidChange`, so do
+        /// what an edit would trigger here.
+        @MainActor func textWasReplaced(in textView: NSTextView) {
+            scheduleStyle(in: textView)
+            // The replacement can shift every line below it, but TextKit's own
+            // display invalidation is glyph-scoped — it never covers the gutter
+            // strip. Ask for it explicitly or the numbers stay stale until the
+            // next user edit.
+            (textView as? MarkdownSourceTextView)?.invalidateGutter()
+            // Tell the find index it moved; the next update re-indexes without
+            // revealing.
+            noteExternalTextChange()
         }
 
         /// SwiftUI may refresh this representable for unrelated state while an
@@ -1277,6 +1271,14 @@ struct MarkdownEditorView: NSViewRepresentable {
             // must never move the caret).
             findGeneration += 1
             lastFindMutationWasQueryChange = false
+            // The document's own edit (a preview checkbox toggle) is not typing:
+            // it must not pull Side by Side's follow to the caret line or re-pin
+            // the editor's viewport.
+            if session.isApplyingDocumentEdit {
+                text = textView.string
+                scheduleStyle(in: textView)
+                return
+            }
             let visibleOrigin = scrollView?.contentView.bounds.origin
             // The caret reflects the post-edit position (textDidChange fires after
             // the change), so its source line is where the user is writing — the
@@ -1338,7 +1340,7 @@ private func scrollableContentHeight(for documentView: NSView) -> CGFloat {
     return measuredHeight
 }
 
-private final class MarkdownSourceTextView: NSTextView {
+final class MarkdownSourceTextView: NSTextView {
     var onFindAction: ((FindCommand.Action) -> Void)?
     /// Turns pasted/dropped image sources into stored attachments and returns the
     /// Markdown to insert, or `nil` to insert nothing. Set by `MarkdownEditorView`.
