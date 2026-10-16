@@ -76,6 +76,23 @@ final class DocumentStore: ObservableObject {
     /// action through the same viewport-preserving transition path as the toolbar.
     @Published var modeCommand: ModeCommand?
 
+    /// The document's undo history. The window hands it to the Edit menu and the
+    /// editor's text view registers its edits on it, so all three share one
+    /// stack that belongs to the document rather than to any one view.
+    let undoManager = UndoManager()
+    /// The editor text system — one text view for the document's lifetime,
+    /// re-hosted by every editor it mounts. Its undo actions target that view,
+    /// so keeping it here is what keeps them valid across mode switches.
+    private(set) lazy var editorSession: MarkdownEditorSession = {
+        let session = MarkdownEditorSession(undoManager: undoManager)
+        // Read mode: undo/redo (and checkbox toggles) still edit the unmounted
+        // text view; its text is the document's.
+        session.onUnmountedTextChange = { [weak self] text in
+            self?.text = text
+        }
+        return session
+    }()
+
     private let renderer = MarkdownRenderer()
     private let renderWorker = DocumentRenderWorker()
     private var renderTask: Task<Void, Never>?
@@ -550,16 +567,23 @@ final class DocumentStore: ObservableObject {
     /// be a task item — so a stale or malformed preview message can never
     /// corrupt unrelated text. Applying an absolute state (instead of
     /// flipping) keeps duplicate messages idempotent; re-render, dirty
-    /// marking, and autosave ride the normal `text` pipeline. Returns
-    /// whether the line was a valid task item (so a caller can skip
-    /// reload-related work for ignored requests).
+    /// marking, and autosave ride the normal `text` pipeline. The change goes
+    /// through the editor's text view, so it is one undoable step ordered with
+    /// the user's typing. Returns whether the line was a valid task item (so a
+    /// caller can skip reload-related work for ignored requests).
     @discardableResult
     func toggleTask(atLine line: Int, to checked: Bool) -> Bool {
         guard let lineRange = Self.rangeOfLine(line, in: text),
               let updated = Self.settingTaskMarker(in: String(text[lineRange]), to: checked) else {
             return false
         }
-        text = text.replacingCharacters(in: lineRange, with: updated)
+        let toggled = text.replacingCharacters(in: lineRange, with: updated)
+        // A repeated request for the state the line already has changes nothing,
+        // and must not leave an empty step on the undo stack.
+        guard toggled != text else { return true }
+        if !editorSession.applyUndoableEdit(changing: text, to: toggled) {
+            text = toggled
+        }
         // A checkbox click is a discrete action, not sustained typing: render
         // immediately so the preview reflects the toggle without debounce lag.
         renderImmediately()
@@ -704,6 +728,8 @@ final class DocumentStore: ObservableObject {
         autosaveWorkItem = nil
         isLoading = true
         text = newText
+        // Another document's history does not apply to this one.
+        editorSession.resetText(to: newText)
         fileURL = newFileURL
         isDirty = dirty
         renderImmediately()
@@ -874,6 +900,11 @@ final class DocumentStore: ObservableObject {
         }
         isLoading = true
         text = decoded.text
+        // Revert semantics: the reload is not an undoable edit, and every action
+        // recorded so far addresses the replaced text, so the history goes too.
+        // Kept, an undo would raise past the end of shorter content or silently
+        // rewrite longer content — and autosave would persist the damage.
+        editorSession.resetText(to: decoded.text)
         isDirty = false
         renderImmediately()
         isLoading = false

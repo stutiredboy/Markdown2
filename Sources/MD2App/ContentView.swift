@@ -204,6 +204,12 @@ struct ContentView: View {
             guard token != nil else { return }
             captureAnchorForExternalReload()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerDidUndoChange, object: document.undoManager)) { _ in
+            keepPreviewPositionAcrossHistoryChange()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerDidRedoChange, object: document.undoManager)) { _ in
+            keepPreviewPositionAcrossHistoryChange()
+        }
         .toolbar {
             ToolbarItemGroup(placement: .navigation) {
                 Button {
@@ -342,6 +348,14 @@ struct ContentView: View {
                 document.completeExternalReload(anchor: previewAnchorForEditor(fresh: fresh))
             }
         }
+    }
+
+    /// Undo and redo work in Read mode too (the history is the document's), but
+    /// there the preview re-renders with a full page load that would land at the
+    /// top. Pin the reload to where the reader was, as a checkbox toggle does.
+    private func keepPreviewPositionAcrossHistoryChange() {
+        guard mode == .read, let previewAnchor else { return }
+        document.previewJumpAnchor = previewAnchor
     }
 
     /// Esc pressed in the editor text: a visible find bar closes (keeping the
@@ -657,7 +671,8 @@ struct ContentView: View {
                 onInsertImageAttachments: { sources in
                     document.insertImageAttachments(sources, folder: settings.attachmentFolder)
                 },
-                showsLineNumbers: settings.showsLineNumbersInEditor
+                showsLineNumbers: settings.showsLineNumbersInEditor,
+                session: document.editorSession
             )
 
             if editorFindVisible {
