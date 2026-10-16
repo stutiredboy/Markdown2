@@ -33,6 +33,8 @@ final class FindFindDeleteGUITests: XCTestCase {
             backing: .buffered,
             defer: false
         )
+        // ARC owns the window; the default `true` makes `close()` release it again.
+        window.isReleasedWhenClosed = false
         let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 380, height: 280))
         textView.isRichText = false
         textView.string = modelText
@@ -126,6 +128,8 @@ final class FindFindDeleteGUITests: XCTestCase {
             backing: .buffered,
             defer: false
         )
+        // ARC owns the window; the default `true` makes `close()` release it again.
+        window.isReleasedWhenClosed = false
         let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 380, height: 280))
         let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 380, height: 4000))
         textView.isRichText = false
@@ -157,8 +161,7 @@ final class FindFindDeleteGUITests: XCTestCase {
 
         // A document-edit rebuild suppresses reveal, so the re-index must not
         // scroll. The suppression is synchronous (revealCurrentMatch is skipped),
-        // so the clip origin is checked right after the rebuild — no runloop spin
-        // (spinning here would race AppKit's window-animation teardown in CI).
+        // so the clip origin is checked right after the rebuild — no runloop spin.
         let settledOrigin = scrollView.contentView.bounds.origin
         XCTAssertLessThan(
             abs(settledOrigin.y - originBeforeEdit.y), 1.0,
@@ -184,6 +187,8 @@ final class FindFindDeleteGUITests: XCTestCase {
             backing: .buffered,
             defer: false
         )
+        // ARC owns the window; the default `true` makes `close()` release it again.
+        window.isReleasedWhenClosed = false
         let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 380, height: 280))
         textView.isRichText = false
         textView.string = modelText
