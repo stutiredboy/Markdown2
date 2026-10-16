@@ -12,12 +12,14 @@ import AppKit
 /// view re-hosts that view, so the undo history and the selection survive the
 /// switch.
 ///
-/// The session is also the text view's permanent delegate. `NSText.delegate` is
-/// `assign`, so pointing a long-lived text view at a coordinator SwiftUI may
-/// release would leave it dangling; the session instead forwards to whichever
-/// coordinator is mounted (held weakly). While none is — Read mode — undo and
-/// redo still change the text view, and the session hands that text straight to
-/// the document, so Edit ▸ Undo keeps working there.
+/// The session is also the text view's permanent delegate, forwarding to
+/// whichever coordinator is mounted (held weakly). The text view outlives every
+/// editor, and without a delegate an unhosted text view has no undo manager at
+/// all (it would fall back to its window's): a checkbox toggle applied through
+/// it would record nothing, and the text that undo and redo change would never
+/// reach the document. So while no editor is mounted — Read mode — the session
+/// supplies the document's undo manager and hands the changed text straight to
+/// the document, and Edit ▸ Undo keeps working there.
 @MainActor
 final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
     /// The document's undo manager: the window returns it to the Edit menu and

@@ -76,12 +76,15 @@ autosave persists. After changing the editor's view lifecycle (`makeNSView` /
 that changes `DocumentStore.text` programmatically, run
 `MD2_RUN_GUI_TESTS=1 swift test --filter UndoHistoryGUITests` locally before
 landing (the headless `UndoHistoryTests` run in `swift test`). Constraints those
-tests pin down: `NSText.delegate` is `assign`, which is why the session, not a
-coordinator, is the kept text view's delegate; and a window asks its delegate
-for an undo manager once and caches the answer, which is why the document is
-registered before the content view is installed. Under XCTest, SwiftUI keeps a
-dismantled editor's host alive, so the old crash does not reproduce there; the
-guard is the assertion that a mode round trip re-hosts the same text view.
+tests pin down: the session, not a coordinator, is the kept text view's
+delegate, because in Read mode no coordinator exists and something must still
+supply the document's undo manager (an unhosted text view has no window to fall
+back to) and pass undo/redo and toggle text to the document; and a window asks
+its delegate for an undo manager once and caches the answer, which is why the
+document is registered before the content view is installed. Under XCTest,
+SwiftUI keeps a dismantled editor's host alive, so the old crash does not
+reproduce there; the guard is the assertion that a mode round trip re-hosts the
+same text view.
 
 ## Skill routing
 
