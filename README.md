@@ -16,6 +16,7 @@
 
 - **Three presentation modes** — `Write`, `Read`, and `Side by Side` (split editor + live preview).
 - **Native AppKit text editing** with lightweight Markdown styling.
+- **Markdown-aware editing** — Return continues lists, tasks, and quotes; Return on an empty item exits it. `Shift+Return` continues at the content column, and `Tab` / `Shift+Tab` adjust list nesting. Brackets, quotes, and backticks pair automatically, with closing-character skip and paired Backspace.
 - **Live-rendered HTML** reading mode.
 - **Outline sidebar** generated from headings.
 - **Standard macOS open/save panels** with debounced autosave for saved documents, plus close/quit confirmation for unsaved changes.
@@ -36,6 +37,8 @@
 - **Markdown file type declaration** for `.md` and `.markdown` files when packaged.
 
 See [Docs/MarkdownSupport.md](Docs/MarkdownSupport.md) for the tested Markdown/Typora support matrix.
+
+The Format and Paragraph menus offer `Cmd+B` for bold, `Cmd+I` for italic, `Cmd+K` for links (using a clipboard URL when available), `Option+Cmd+1–6` for headings, `Cmd+0` for body text, `Option+Cmd+C` for code blocks, and `Option+Cmd+T` for tables. `Cmd+1/2/3` remain mode shortcuts. See [Markdown editing](Docs/MarkdownEditing.md) for behavior and regression tests.
 
 ## Install
 

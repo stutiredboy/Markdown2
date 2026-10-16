@@ -199,7 +199,7 @@ enum ModeShortcutValidator {
             }
         }
 
-        if let commandName = appCommandConflicts[shortcut] {
+        if let commandName = appCommandConflicts[shortcut] ?? MarkdownFormatCommand.items.first(where: { $0.shortcut == shortcut })?.conflictName {
             return .appCommand(commandName: commandName)
         }
 

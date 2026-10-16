@@ -16,6 +16,7 @@
 
 - **三种呈现模式** — 「编写」「阅读」和「双栏」（分栏编辑 + 实时预览）。
 - **原生 AppKit 文本编辑**，附带轻量 Markdown 样式。
+- **Markdown 感知编辑** — 回车续写列表、任务项和引用，空项回车退出；`Shift+Return` 按内容列软换行，`Tab` / `Shift+Tab` 调整列表层级。括号、引号和反引号自动配对，支持跳过闭合符号与成对退格。
 - **实时渲染 HTML** 阅读模式。
 - **大纲侧边栏**，由标题自动生成。
 - **标准 macOS 打开/保存面板**，已保存文档支持防抖自动保存，关闭/退出时对未保存更改进行确认。
@@ -36,6 +37,8 @@
 - 打包时为 `.md` 和 `.markdown` 文件声明 **Markdown 文件类型**。
 
 完整的 Markdown/Typora 支持矩阵见 [Docs/MarkdownSupport.md](Docs/MarkdownSupport.md)。
+
+「格式」「段落」菜单提供 `Cmd+B` 粗体、`Cmd+I` 斜体、`Cmd+K` 链接（可读取剪贴板 URL）、`Option+Cmd+1–6` 标题、`Cmd+0` 正文、`Option+Cmd+C` 代码块和 `Option+Cmd+T` 表格。`Cmd+1/2/3` 保留用于模式切换。行为说明与回归测试见 [Markdown 感知编辑](Docs/MarkdownEditing.md)。
 
 ## 安装
 

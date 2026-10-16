@@ -106,7 +106,8 @@ struct AppSettingsPresentationModeTests {
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         let first = AppSettings(defaults: defaults)
-        let custom = ModeKeyboardShortcut(key: "2", modifiers: [.command, .option])
+        // Option-Command-2 is reserved for Heading 2.
+        let custom = ModeKeyboardShortcut(key: "2", modifiers: [.command, .control])
         #expect(first.updateModeShortcut(custom, for: .read) == nil)
 
         let second = AppSettings(defaults: defaults)

@@ -1188,30 +1188,14 @@ public struct MarkdownRenderer: Sendable {
     /// is clamped to 1…4 — five or more spaces start an indented code block inside
     /// the item rather than widening the content column (CommonMark §5.2).
     private func listContentIndent(after line: String, markerIndent: Int, delimiterWidth: Int) -> Int {
-        var rest = Substring(line.trimmingCharacters(in: .whitespaces)).dropFirst(delimiterWidth)
-        var gap = 0
-        while let first = rest.first, first == " " || first == "\t" {
-            gap += first == "\t" ? 4 : 1
-            rest = rest.dropFirst()
-        }
-        let effectiveGap = gap >= 5 ? 1 : max(gap, 1)
-        return markerIndent + delimiterWidth + effectiveGap
+        let rest = Substring(line.trimmingCharacters(in: .whitespaces)).dropFirst(delimiterWidth)
+        return MarkdownIndentation.contentColumn(markerIndent: markerIndent, delimiterWidth: delimiterWidth, gap: String(rest))
     }
 
     /// Counts the leading whitespace of a line in columns, treating a tab as 4
     /// columns. Used to determine list-item nesting depth.
     private func leadingIndentWidth(_ line: String) -> Int {
-        var width = 0
-        for character in line {
-            if character == " " {
-                width += 1
-            } else if character == "\t" {
-                width += 4
-            } else {
-                break
-            }
-        }
-        return width
+        MarkdownIndentation.width(line)
     }
 
     private func tableAlignments(in line: String) -> [TableAlignment]? {

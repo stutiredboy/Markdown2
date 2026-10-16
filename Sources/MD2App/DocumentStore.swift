@@ -75,6 +75,15 @@ final class DocumentStore: ObservableObject {
     /// Set by Mode menu commands; observed by `ContentView`, which dispatches the
     /// action through the same viewport-preserving transition path as the toolbar.
     @Published var modeCommand: ModeCommand?
+    @Published var formatCommand: MarkdownFormatCommand?
+
+    func requestFormat(_ action: MarkdownEditing.Action) {
+        // Menu commands belong to the source editor, never a find field, a
+        // Settings control, or the retained but unmounted Read-mode text view.
+        guard let editor = editorSession.textView, let window = editor.window,
+              window.firstResponder === editor, !editor.hasMarkedText() else { return }
+        formatCommand = MarkdownFormatCommand(action: action)
+    }
 
     /// The document's undo history. The window hands it to the Edit menu and the
     /// editor's text view registers its edits on it, so all three share one

@@ -93,6 +93,7 @@ struct MarkdownEditorView: NSViewRepresentable {
     /// that view — survives mode switches. `nil` gives this editor a private
     /// session, for an editor not backed by a document.
     var session: MarkdownEditorSession? = nil
+    var formatCommand: MarkdownFormatCommand? = nil
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
@@ -184,6 +185,16 @@ struct MarkdownEditorView: NSViewRepresentable {
         }
 
         context.coordinator.updateFind(query: findQuery, in: textView)
+
+        if let formatCommand, context.coordinator.session.lastFormatToken != formatCommand.token {
+            context.coordinator.session.lastFormatToken = formatCommand.token
+            // insertText publishes through the binding; do it after SwiftUI's
+            // update pass, with the same focus/IME checks as the menu sender.
+            DispatchQueue.main.async { [weak textView] in
+                guard let textView, textView.window?.firstResponder === textView else { return }
+                (textView as? MarkdownSourceTextView)?.performMarkdownAction(formatCommand.action)
+            }
+        }
 
         // Consume navigation/replace commands by their token, not by clearing the
         // binding here. Mutating an observed binding inside `updateNSView` does not
@@ -1216,6 +1227,11 @@ struct MarkdownEditorView: NSViewRepresentable {
         }
 
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            // Input methods use Return to commit Latin letters and Esc/Tab to
+            // control composition. Never consume any command while marked.
+            guard !textView.hasMarkedText() else { return false }
+            if let sourceView = textView as? MarkdownSourceTextView,
+               sourceView.handleMarkdownCommand(commandSelector) { return true }
             // Esc maps to cancelOperation: in the standard key bindings.
             // Intercept it here so the owner can route it (dismiss find /
             // switch to preview) instead of triggering the text view's
@@ -1341,6 +1357,77 @@ private func scrollableContentHeight(for documentView: NSView) -> CGFloat {
 }
 
 final class MarkdownSourceTextView: NSTextView {
+    private var isPasting = false
+    private var isSoftReturnEvent = false
+
+    // AppKit's default key bindings can map both Return and Shift-Return to
+    // insertNewline:. Preserve the originating event while the input context
+    // interprets it; command dispatch still waits for the IME to release it.
+    override func keyDown(with event: NSEvent) {
+        let previous = isSoftReturnEvent
+        isSoftReturnEvent = Self.isSoftReturn(event)
+        defer { isSoftReturnEvent = previous }
+        super.keyDown(with: event)
+    }
+
+    override func interpretKeyEvents(_ eventArray: [NSEvent]) {
+        let previous = isSoftReturnEvent
+        isSoftReturnEvent = previous || eventArray.contains(where: Self.isSoftReturn)
+        defer { isSoftReturnEvent = previous }
+        super.interpretKeyEvents(eventArray)
+    }
+
+    private static func isSoftReturn(_ event: NSEvent) -> Bool {
+        [36, 76].contains(event.keyCode) && event.modifierFlags.contains(.shift)
+            && event.modifierFlags.intersection([.command, .control, .option]).isEmpty
+    }
+
+    @discardableResult
+    func performMarkdownAction(_ action: MarkdownEditing.Action) -> Bool {
+        guard isEditable, !hasMarkedText(), selectedRanges.count == 1,
+              let edit = MarkdownEditing.edit(string, selection: selectedRange(), action: action,
+                  clipboard: action == .link ? NSPasteboard.general.string(forType: .string) : nil) else { return false }
+        applyMarkdownEdit(edit)
+        return true
+    }
+
+    private func applyMarkdownEdit(_ edit: MarkdownEditing.Edit) {
+        if edit.range.length != 0 || !edit.replacement.isEmpty {
+            breakUndoCoalescing()
+            insertText(edit.replacement, replacementRange: edit.range)
+            breakUndoCoalescing()
+        }
+        setSelectedRange(edit.selection)
+        scrollRangeToVisible(edit.selection)
+    }
+
+    func handleMarkdownCommand(_ selector: Selector) -> Bool {
+        let action: MarkdownEditing.Action
+        switch selector {
+        case #selector(NSResponder.insertNewline(_:)): action = isSoftReturnEvent ? .softNewline : .newline
+        case #selector(NSResponder.insertLineBreak(_:)): action = .softNewline
+        case #selector(NSResponder.insertTab(_:)): action = .indent
+        case #selector(NSResponder.insertBacktab(_:)): action = .outdent
+        case #selector(NSResponder.deleteBackward(_:)): action = .deleteBackward
+        default: return false
+        }
+        return performMarkdownAction(action)
+    }
+
+    override func insertText(_ insertString: Any, replacementRange: NSRange) {
+        // Explicit replacements are edits, paste/drop payloads, or input-method
+        // commits. Pair only ordinary single-character typing; never re-enter
+        // this path while applying a MarkdownEditing result.
+        let input = (insertString as? String) ?? (insertString as? NSAttributedString)?.string
+        if replacementRange.location == NSNotFound, !hasMarkedText(), !isPasting,
+           isEditable, selectedRanges.count == 1, let input,
+           let edit = MarkdownEditing.edit(string, selection: selectedRange(), action: .type(input)) {
+            applyMarkdownEdit(edit)
+        } else {
+            super.insertText(insertString, replacementRange: replacementRange)
+        }
+    }
+
     var onFindAction: ((FindCommand.Action) -> Void)?
     /// Turns pasted/dropped image sources into stored attachments and returns the
     /// Markdown to insert, or `nil` to insert nothing. Set by `MarkdownEditorView`.
@@ -1460,6 +1547,11 @@ final class MarkdownSourceTextView: NSTextView {
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard !hasMarkedText() else { return super.performKeyEquivalent(with: event) }
+        if window?.firstResponder === self, let shortcut = ModeKeyboardShortcut(event: event),
+           let item = MarkdownFormatCommand.items.first(where: { $0.shortcut == shortcut }) {
+            return performMarkdownAction(item.action)
+        }
         if let action = findAction(for: event) {
             onFindAction?(action)
             return true
@@ -1475,6 +1567,8 @@ final class MarkdownSourceTextView: NSTextView {
     /// save or write failure inserts nothing instead of dropping a path or raw
     /// bytes into the Markdown source.
     override func paste(_ sender: Any?) {
+        isPasting = true
+        defer { isPasting = false }
         let sources = imageSources(fromPasteboard: NSPasteboard.general)
         guard !sources.isEmpty else {
             super.paste(sender)

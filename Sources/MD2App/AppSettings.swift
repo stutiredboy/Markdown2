@@ -379,6 +379,9 @@ enum L10nKey: String, CaseIterable {
     case alertPandocRequiredDetail
     case alertAttachmentSaveFailed
     case alertExternalReloadFailedDetail
+    case formatMenu, paragraphMenu
+    case formatBold, formatItalic, formatLink, formatCodeBlock, formatTable, formatBody
+    case formatHeading1, formatHeading2, formatHeading3, formatHeading4, formatHeading5, formatHeading6
     case find
     case findNext
     case findPrevious
@@ -527,6 +530,20 @@ enum L10n {
         .alertPandocRequiredDetail: "Install Pandoc to enable DOCX and EPUB export.",
         .alertAttachmentSaveFailed: "Could not save the image attachment.",
         .alertExternalReloadFailedDetail: "The file could not be re-read after it changed on disk.",
+        .formatMenu: "Format",
+        .paragraphMenu: "Paragraph",
+        .formatBold: "Bold",
+        .formatItalic: "Italic",
+        .formatLink: "Link",
+        .formatCodeBlock: "Code Block",
+        .formatTable: "Table",
+        .formatBody: "Body",
+        .formatHeading1: "Heading 1",
+        .formatHeading2: "Heading 2",
+        .formatHeading3: "Heading 3",
+        .formatHeading4: "Heading 4",
+        .formatHeading5: "Heading 5",
+        .formatHeading6: "Heading 6",
         .find: "Find…",
         .findNext: "Find Next",
         .findPrevious: "Find Previous",
@@ -650,6 +667,20 @@ enum L10n {
         .alertPandocRequiredDetail: "安装 Pandoc 后即可启用 DOCX 和 EPUB 导出。",
         .alertAttachmentSaveFailed: "无法保存图片附件。",
         .alertExternalReloadFailedDetail: "文件在磁盘上发生变化后无法重新读取。",
+        .formatMenu: "格式",
+        .paragraphMenu: "段落",
+        .formatBold: "粗体",
+        .formatItalic: "斜体",
+        .formatLink: "链接",
+        .formatCodeBlock: "代码块",
+        .formatTable: "表格",
+        .formatBody: "正文",
+        .formatHeading1: "一级标题",
+        .formatHeading2: "二级标题",
+        .formatHeading3: "三级标题",
+        .formatHeading4: "四级标题",
+        .formatHeading5: "五级标题",
+        .formatHeading6: "六级标题",
         .find: "查找…",
         .findNext: "查找下一个",
         .findPrevious: "查找上一个",

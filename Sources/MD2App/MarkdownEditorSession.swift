@@ -30,6 +30,8 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
     var onUnmountedTextChange: ((String) -> Void)?
 
     private(set) var textView: NSTextView?
+    /// Keep consumption across re-hosting, just like the text and undo history.
+    var lastFormatToken: UUID?
     private weak var coordinator: MarkdownEditorView.Coordinator?
     /// True while `applyUndoableEdit` runs, so the mounted editor can tell the
     /// document's own edit from typing.

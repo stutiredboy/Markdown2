@@ -118,6 +118,24 @@ struct MD2Application: App {
                 .keyboardShortcut("p")
             }
 
+            CommandMenu(appDelegate.settings.text(.formatMenu)) {
+                ForEach(MarkdownFormatCommand.formatItems, id: \.title) { item in
+                    Button(appDelegate.settings.text(item.title)) {
+                        appDelegate.currentDocumentStore?.requestFormat(item.action)
+                    }
+                    .keyboardShortcut(item.shortcut.keyEquivalent, modifiers: item.shortcut.modifiers.eventModifiers)
+                }
+            }
+
+            CommandMenu(appDelegate.settings.text(.paragraphMenu)) {
+                ForEach(MarkdownFormatCommand.paragraphItems, id: \.title) { item in
+                    Button(appDelegate.settings.text(item.title)) {
+                        appDelegate.currentDocumentStore?.requestFormat(item.action)
+                    }
+                    .keyboardShortcut(item.shortcut.keyEquivalent, modifiers: item.shortcut.modifiers.eventModifiers)
+                }
+            }
+
             CommandMenu(appDelegate.settings.text(.mode)) {
                 let editShortcut = appDelegate.settings.modeShortcuts[.write]
                 Button(appDelegate.settings.text(.write)) {

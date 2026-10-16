@@ -672,7 +672,8 @@ struct ContentView: View {
                     document.insertImageAttachments(sources, folder: settings.attachmentFolder)
                 },
                 showsLineNumbers: settings.showsLineNumbersInEditor,
-                session: document.editorSession
+                session: document.editorSession,
+                formatCommand: document.formatCommand
             )
 
             if editorFindVisible {
