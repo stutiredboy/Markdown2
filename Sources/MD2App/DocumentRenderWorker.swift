@@ -6,12 +6,14 @@ struct DocumentRenderSnapshot: Sendable {
     let baseURL: URL?
     let citationStyle: CitationStyle
     let numberAllEquations: Bool
+    var inlineFeatures: InlineFeatures = .init()
+    var alertLanguage: AlertLanguage = .english
 }
 
 /// Serial, non-main-actor rendering keeps CPU work and bibliography IO away
 /// from input handling. DocumentStore coalesces pending preview revisions.
 actor DocumentRenderWorker {
-    func render(_ snapshot: DocumentRenderSnapshot) -> RenderedDocument {
+    func render(_ snapshot: DocumentRenderSnapshot, assetMode: RenderAssetMode = .appScheme) -> RenderedDocument {
         let fields = FrontMatterReader.fields(in: snapshot.text)
         var bibliography: [String: BibEntry] = [:]
         if let baseURL = snapshot.baseURL {
@@ -23,6 +25,8 @@ actor DocumentRenderWorker {
         return MarkdownRenderer().render(snapshot.text, config: RenderConfig(
             bibliography: bibliography, citationStyle: snapshot.citationStyle,
             numberAllEquations: snapshot.numberAllEquations,
-            mathMacros: FrontMatterReader.parseMathMacros(fields["math-macros"])))
+            mathMacros: FrontMatterReader.parseMathMacros(fields["math-macros"]),
+            inlineFeatures: snapshot.inlineFeatures, alertLanguage: snapshot.alertLanguage),
+            assetMode: assetMode)
     }
 }

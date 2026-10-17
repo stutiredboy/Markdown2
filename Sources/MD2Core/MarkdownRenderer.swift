@@ -7,15 +7,21 @@ public struct MarkdownRenderer: Sendable {
 
     /// Renders Markdown to a full preview document. `config` carries the
     /// technical/academic inputs the pure renderer cannot discover on its own
-    /// (the parsed bibliography, citation style, equation-numbering flag, and math
-    /// macros); the default empty config reproduces the configuration-free
+    /// (syntax preferences, alert language, bibliography, citation style,
+    /// equation numbering, and math macros); the default config reproduces the configuration-free
     /// behavior for the many call sites and tests that need none of it.
-    public func render(_ markdown: String, config: RenderConfig = .init()) -> RenderedDocument {
+    public func render(
+        _ markdown: String,
+        config: RenderConfig = .init(),
+        assetMode: RenderAssetMode = .inline
+    ) -> RenderedDocument {
         let lines = markdown.normalizedMarkdownLines
         let outline = outlineBuilder.build(from: markdown)
 
         let footnotes = FootnoteContext()
         collectFootnoteDefinitions(lines, into: footnotes)
+        var references: [String: LinkReference] = [:]
+        collectLinkReferences(lines, into: &references)
 
         let citations = CitationContext(entries: config.bibliography, style: config.citationStyle)
         let crossReferences = CrossReferenceContext(numberAllEquations: config.numberAllEquations)
@@ -28,17 +34,19 @@ public struct MarkdownRenderer: Sendable {
         let context = InlineContext(
             footnotes: footnotes,
             citations: citations,
-            crossReferences: crossReferences
+            crossReferences: crossReferences,
+            references: references,
+            config: config
         )
 
         var body = renderBody(markdown, outline: outline, context: context)
-        if let section = footnoteSectionHTML(footnotes) {
+        if let section = footnoteSectionHTML(footnotes, inlineContext: context) {
             body += "\n" + section
         }
         if let bibliography = bibliographySectionHTML(citations) {
             body += "\n" + bibliography
         }
-        let html = htmlDocument(body: body, config: config)
+        let html = htmlDocument(body: body, config: config, assetMode: assetMode)
 
         return RenderedDocument(
             html: html,
@@ -124,6 +132,11 @@ public struct MarkdownRenderer: Sendable {
                     to: math.nextIndex
                 )
                 index = math.nextIndex
+                continue
+            }
+
+            if let definition = LinkReference.parse(lines, at: index) {
+                index = definition.next
                 continue
             }
 
@@ -634,7 +647,8 @@ public struct MarkdownRenderer: Sendable {
             let trimmed = lines[index].trimmedMarkdownLine
             guard trimmed.hasPrefix(">") else { break }
 
-            let content = trimmed.dropFirst().trimmingCharacters(in: .whitespaces)
+            var content = trimmed.dropFirst()
+            if content.first == " " || content.first == "\t" { content = content.dropFirst() }
             quoteLines.append(String(content))
             index += 1
         }
@@ -642,14 +656,24 @@ public struct MarkdownRenderer: Sendable {
         // Quote content lines map 1:1 to the consumed source lines, so the
         // nested render keeps absolute source-line spans by offsetting to the
         // quote's first line.
+        let alertKind = quoteLines.first.flatMap { line -> String? in
+            let marker = line.trimmingCharacters(in: .whitespaces)
+            return ["NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION"].first { marker == "[!\($0)]" }
+        }
+        if alertKind != nil { quoteLines.removeFirst() }
         let nestedMarkdown = quoteLines.joined(separator: "\n")
         let quote = renderBody(
             nestedMarkdown,
             outline: outlineBuilder.build(from: nestedMarkdown),
             context: context,
-            lineOffset: lineOffset + startIndex
+            lineOffset: lineOffset + startIndex + (alertKind == nil ? 0 : 1)
         )
 
+        if let alertKind {
+            let title = context.config.alertLanguage.title(for: alertKind)
+            return ("<div class=\"markdown-alert markdown-alert-\(alertKind.lowercased())\">\n"
+                + "<p class=\"markdown-alert-title\">\(title)</p>\n\(quote)\n</div>", index)
+        }
         return ("<blockquote>\n\(quote)\n</blockquote>", index)
     }
 
@@ -894,7 +918,8 @@ public struct MarkdownRenderer: Sendable {
                 checkbox = ""
             }
 
-            var content = "\(checkbox)\(inlineHTML(item.text, context: context))"
+            let itemText = LinkReference.parse([item.text], at: 0) == nil ? inlineHTML(item.text, context: context) : ""
+            var content = "\(checkbox)\(itemText)"
             index += 1
 
             // Render any block content captured under the marker (paragraphs,
@@ -935,7 +960,7 @@ public struct MarkdownRenderer: Sendable {
         return ("<\(tag)\(className)>\n\(listItems.joined(separator: "\n"))\n</\(tag)>", index)
     }
 
-    private func paragraphBlock(from lines: [String], startIndex: Int, context: InlineContext) -> (html: String, nextIndex: Int) {
+    private func paragraphBlock(from lines: [String], startIndex: Int, context: InlineContext, renderContent: Bool = true) -> (html: String, nextIndex: Int) {
         var paragraphLines: [String] = []
         var index = startIndex
 
@@ -961,11 +986,11 @@ public struct MarkdownRenderer: Sendable {
             index += 1
         }
 
-        return ("<p>\(paragraphHTML(paragraphLines, context: context))</p>", max(index, startIndex + 1))
+        return (renderContent ? "<p>\(paragraphHTML(paragraphLines, context: context))</p>" : "", max(index, startIndex + 1))
     }
 
     private func paragraphHTML(_ lines: [String], context: InlineContext) -> String {
-        lines.enumerated().map { index, line in
+        let source = lines.enumerated().map { index, line in
             let hasHardBreak = line.hasSuffix("  ") || line.hasSuffix("\\")
             let content: String
 
@@ -975,20 +1000,82 @@ public struct MarkdownRenderer: Sendable {
                 content = line.trimmingCharacters(in: .whitespaces)
             }
 
-            let rendered = inlineHTML(content, context: context)
-
             // A soft line break (a newline mid-paragraph) renders as a visible
             // <br>, matching the editor's WYSIWYG expectation; only the
             // paragraph's final line — when it carries no explicit hard break —
             // omits the trailing break. Soft and hard breaks thus converge here.
             if index == lines.count - 1 && !hasHardBreak {
-                return rendered
+                return content
             }
-            return "\(rendered)<br>"
+            return "\(content)\n"
         }.joined()
+        return inlineHTML(source, context: context)
     }
 
     // MARK: Footnotes
+
+    /// Walk the same containers as the block renderer. Definitions cannot
+    /// interrupt paragraphs, and code/math/front matter never define links.
+    private func collectLinkReferences(_ lines: [String], into definitions: inout [String: LinkReference]) {
+        var index = 0
+        let inertContext = InlineContext(footnotes: FootnoteContext(),
+            citations: CitationContext(entries: [:], style: .authorYear),
+            crossReferences: CrossReferenceContext(numberAllEquations: false))
+        while index < lines.count {
+            let trimmed = lines[index].trimmedMarkdownLine
+            if trimmed.isEmpty { index += 1; continue }
+            if index == 0, let block = frontMatterBlock(from: lines, startIndex: index) {
+                index = block.nextIndex; continue
+            }
+            if let block = fencedCodeBlock(from: lines, startIndex: index) {
+                index = block.nextIndex; continue
+            }
+            if trimmed.hasPrefix(">") {
+                var nested: [String] = []
+                while index < lines.count, lines[index].trimmedMarkdownLine.hasPrefix(">") {
+                    var content = lines[index].trimmedMarkdownLine.dropFirst()
+                    if content.first == " " || content.first == "\t" { content = content.dropFirst() }
+                    nested.append(String(content)); index += 1
+                }
+                // An alert marker is a block header, not the first paragraph.
+                if let first = nested.first, ["NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION"].contains(where: { first == "[!\($0)]" }) {
+                    nested[0] = ""
+                }
+                collectLinkReferences(nested, into: &definitions)
+                continue
+            }
+            if let block = indentedCodeBlock(from: lines, startIndex: index) {
+                index = block.nextIndex; continue
+            }
+            if let block = mathBlock(from: lines, startIndex: index) {
+                index = block.nextIndex; continue
+            }
+            if let definition = LinkReference.parse(lines, at: index) {
+                let key = LinkReference.normalize(escapeHTML(definition.label))
+                if definitions[key] == nil { definitions[key] = definition.reference }
+                index = definition.next; continue
+            }
+            if let note = parseFootnoteDefinition(from: lines, startIndex: index) {
+                index = note.nextIndex; continue
+            }
+            if let item = parseListItem(lines[index]) {
+                collectLinkReferences([item.text], into: &definitions)
+                let continuation = collectListItemContinuation(from: lines, startIndex: index + 1, contentIndent: item.contentIndent)
+                collectLinkReferences(stripCommonIndent(continuation.lines).normalizedMarkdownLines, into: &definitions)
+                index = continuation.nextIndex; continue
+            }
+            if let table = tableBlock(from: lines, startIndex: index) {
+                index = table.nextIndex; continue
+            }
+            if MarkdownLine.heading(in: lines[index]) != nil || MarkdownLine.isHorizontalRule(lines[index]) || trimmed == "[TOC]" {
+                index += 1; continue
+            }
+            if index + 1 < lines.count, MarkdownLine.setextHeadingLevel(in: lines[index + 1]) != nil {
+                index += 2; continue
+            }
+            index = paragraphBlock(from: lines, startIndex: index, context: inertContext, renderContent: false).nextIndex
+        }
+    }
 
     /// Whole-document pre-scan that records footnote definitions (`[^id]: text`)
     /// and their indented continuation lines, while skipping fenced/indented code
@@ -1085,7 +1172,7 @@ public struct MarkdownRenderer: Sendable {
     /// Builds the trailing footnotes section from the referenced definitions, in
     /// first-reference order, each with a back-reference link per reference site.
     /// Returns `nil` when no footnote was referenced.
-    private func footnoteSectionHTML(_ context: FootnoteContext) -> String? {
+    private func footnoteSectionHTML(_ context: FootnoteContext, inlineContext: InlineContext) -> String? {
         guard context.hasReferences else { return nil }
 
         let items = context.referencedLabels.map { label -> String in
@@ -1094,7 +1181,12 @@ public struct MarkdownRenderer: Sendable {
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty }
                 .joined(separator: " ")
-            let rendered = inlineHTML(raw)
+            // Keep syntax settings and link definitions inside footnotes without
+            // registering recursive footnote/citation references during iteration.
+            let rendered = inlineHTML(raw, context: InlineContext(
+                footnotes: FootnoteContext(), citations: CitationContext(entries: [:], style: .authorYear),
+                crossReferences: inlineContext.crossReferences,
+                references: inlineContext.references, config: inlineContext.config))
 
             let count = context.referenceCount(for: label)
             let backrefs = (1...max(count, 1)).map { occurrence -> String in
@@ -1297,8 +1389,12 @@ public struct MarkdownRenderer: Sendable {
             { applyCrossReferences($0, protector: protector, crossReferences: context?.crossReferences) },
             { escapeHTML($0) },
             { renderImages($0, context: context, protector: protector) },
-            { renderLinks($0, protector: protector) },
-            { renderEmphasis($0) }
+            { renderLinks($0, protector: protector, features: context?.config.inlineFeatures ?? .init()) },
+            { renderReferenceLinks($0, context: context, protector: protector) },
+            { protectBareAutolinks($0, protector: protector) },
+            { renderOptionalInline($0, features: context?.config.inlineFeatures ?? .init()) },
+            { renderEmphasis($0) },
+            { $0.replacingOccurrences(of: "\n", with: "<br>") }
         ]
 
         let transformed = pipeline.reduce(markdown) { text, pass in pass(text) }
@@ -1308,12 +1404,15 @@ public struct MarkdownRenderer: Sendable {
     /// Inline code spans `` `...` ``. The inner text is escaped and the whole span
     /// is protected so later passes never reinterpret code content.
     private func protectCodeSpans(_ text: String, protector: InlineProtector) -> String {
-        replaceMatches(in: text, pattern: #"`([^`]+)`"#) { match, source in
-            guard let codeRange = Range(match.range(at: 1), in: source) else {
+        replaceMatches(in: text, pattern: #"(?<!`)(`+)(?!`)([\s\S]*?)(?<!`)\1(?!`)"#) { match, source in
+            guard let codeRange = Range(match.range(at: 2), in: source) else {
                 return matchText(match, in: source)
             }
-
-            return protector.protect("<code>\(escapeHTML(String(source[codeRange])))</code>")
+            var code = String(source[codeRange]).replacingOccurrences(of: "\n", with: " ")
+            if code.hasPrefix(" "), code.hasSuffix(" "), code.contains(where: { $0 != " " }) {
+                code = String(code.dropFirst().dropLast())
+            }
+            return protector.protect("<code>\(escapeHTML(code))</code>", source: escapeHTML(matchText(match, in: source)))
         }
     }
 
@@ -1325,7 +1424,7 @@ public struct MarkdownRenderer: Sendable {
                 return matchText(match, in: source)
             }
 
-            return protector.protect(escapeHTML(String(source[escapedRange])))
+            return protector.protect(escapeHTML(String(source[escapedRange])), source: escapeHTML(matchText(match, in: source)), literal: true)
         }
     }
 
@@ -1417,7 +1516,7 @@ public struct MarkdownRenderer: Sendable {
     /// `escapeHTML` pass does not double-escape the ampersand.
     private func protectHTMLEntities(_ text: String, protector: InlineProtector) -> String {
         replaceMatches(in: text, pattern: #"&(?:#\d+|#x[0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]+);"#) { match, source in
-            protector.protect(matchText(match, in: source))
+            protector.protect(matchText(match, in: source), source: escapeHTML(matchText(match, in: source)), literal: true)
         }
     }
 
@@ -1425,7 +1524,9 @@ public struct MarkdownRenderer: Sendable {
     /// and protected.
     private func protectAutolinks(_ text: String, protector: InlineProtector) -> String {
         replaceMatches(in: text, pattern: #"<((?:https?|mailto):[^>\s]+)>"#) { match, source in
-            guard let urlRange = Range(match.range(at: 1), in: source) else {
+            guard let urlRange = Range(match.range(at: 1), in: source),
+                  let wholeRange = Range(match.range, in: source),
+                  !isInsideLinkDestination(source, at: wholeRange.lowerBound) else {
                 return matchText(match, in: source)
             }
 
@@ -1880,7 +1981,7 @@ public struct MarkdownRenderer: Sendable {
     /// contain spaces (`[label](<local path>)`); the brackets delimit the
     /// destination and are not part of the resulting href. Links whose scheme
     /// could execute script are dropped, keeping the label as inert text.
-    private func renderLinks(_ text: String, protector: InlineProtector) -> String {
+    private func renderLinks(_ text: String, protector: InlineProtector, features: InlineFeatures = .init()) -> String {
         replaceMatches(
             in: text,
             pattern: #"\[([^\]]+)\]\((?:&lt;(.+?)&gt;|(\S+?))(?:\s+&quot;(.+?)&quot;)?\)"#,
@@ -1910,7 +2011,7 @@ public struct MarkdownRenderer: Sendable {
                 title = ""
             }
 
-            let label = self.renderEscapedInlineContent(String(source[labelRange]), protector: protector)
+            let label = self.renderEscapedInlineContent(renderOptionalInline(String(source[labelRange]), features: features), protector: protector)
             return protector.protect("<a href=\"\(href)\"\(title)>\(label)</a>")
         }
     }
@@ -1920,6 +2021,127 @@ public struct MarkdownRenderer: Sendable {
     /// protected before emphasis runs and their `href` attributes stay untouched.
     private func renderEscapedInlineContent(_ text: String, protector: InlineProtector) -> String {
         renderEmphasis(renderLinks(text, protector: protector))
+    }
+
+    private func renderReferenceLinks(_ text: String, context: InlineContext?, protector: InlineProtector) -> String {
+        guard let context, !context.references.isEmpty else { return text }
+        // Pair brackets once, including nested link text, instead of repeatedly
+        // rescanning an unfinished run of opening brackets.
+        var stack: [String.Index] = []
+        var closes: [String.Index: String.Index] = [:]
+        for index in text.indices {
+            if text[index] == "[" { stack.append(index) }
+            if text[index] == "]", let start = stack.popLast() { closes[start] = index }
+        }
+        var result = ""
+        var cursor = text.startIndex
+        while cursor < text.endIndex {
+            let image = text[cursor] == "!" && text.index(after: cursor) < text.endIndex && text[text.index(after: cursor)] == "["
+            let opening = image ? text.index(after: cursor) : cursor
+            guard text[opening] == "[", let close = closes[opening] else {
+                result.append(text[cursor]); cursor = text.index(after: cursor); continue
+            }
+            let label = String(text[text.index(after: opening)..<close])
+            var key = label
+            var end = text.index(after: close)
+            if end < text.endIndex, text[end] == "[", let keyEnd = closes[end] {
+                let explicit = String(text[text.index(after: end)..<keyEnd])
+                key = explicit.isEmpty ? label : explicit
+                end = text.index(after: keyEnd)
+            }
+            let originalKey = protector.source(in: key)
+            let originalLabel = protector.source(in: label)
+            guard !LinkReference.isReserved(originalLabel), !LinkReference.isReserved(originalKey),
+                  HTMLSafety.decodeEntities(originalKey).unicodeScalars.count <= 999,
+                  let reference = context.references[LinkReference.normalize(originalKey)],
+                  !protector.restore(in: label).contains("<a ") else {
+                result.append(text[cursor]); cursor = text.index(after: cursor); continue
+            }
+            let title = reference.title.map { " title=\"\(escapeAttribute($0))\"" } ?? ""
+            let content = renderEmphasis(renderOptionalInline(label, features: context.config.inlineFeatures))
+            if !HTMLSafety.isSafeURL(reference.destination) {
+                result += protector.protect(image ? escapeHTML(HTMLSafety.decodeEntities(originalLabel)) : content)
+            } else if image {
+                let alt = HTMLSafety.decodeEntities(protector.restore(in: label))
+                    .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+                result += protector.protect("<img src=\"\(escapeAttribute(reference.destination))\" alt=\"\(escapeAttribute(alt))\"\(title)>")
+            } else {
+                result += protector.protect("<a href=\"\(escapeAttribute(reference.destination))\"\(title)>\(content)</a>")
+            }
+            cursor = end
+        }
+        return result
+    }
+
+    private func renderOptionalInline(_ source: String, features: InlineFeatures) -> String {
+        var text = source
+        let patterns: [(Bool, String, String)] = [
+            (features.highlight, #"(?<!=)==(?![=\s])(.+?)(?<![=\s])==(?!=)"#, "mark"),
+            (features.superscript, #"(?<!\^)\^(?![\^\s])((?:\\ |[^\s^])+?)\^(?!\^)"#, "sup"),
+            (features.subscriptEnabled, #"(?<!~)~(?![~\s])((?:\\ |[^\s~])+?)~(?!~)"#, "sub")
+        ]
+        for (enabled, pattern, tag) in patterns where enabled {
+            text = replaceMatches(in: text, pattern: pattern) { match, source in
+                guard let range = Range(match.range(at: 1), in: source) else { return matchText(match, in: source) }
+                let content = String(source[range]).replacingOccurrences(of: "\\ ", with: " ")
+                return "<\(tag)>\(content)</\(tag)>"
+            }
+        }
+        return text
+    }
+
+    /// Runs after explicit links/images and protected code/math. Tokens for
+    /// escaped punctuation/entities can be part of a URL; structural tokens
+    /// terminate it so links never consume neighbouring code or another link.
+    private func protectBareAutolinks(_ text: String, protector: InlineProtector) -> String {
+        let pattern = #"(?<![^\s*_~(])(?:https?://|www\.)[^\s<>]+|(?<![\w.+\-])[-A-Za-z0-9_+.]+@[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+"#
+        return replaceMatches(in: text, pattern: pattern) { match, source in
+            let candidate = matchText(match, in: source)
+            var prefix = candidate
+            var suffix = ""
+            let tokenPattern = "\u{E000}MD2-(\\d+)\u{E000}"
+            if let regex = try? NSRegularExpression(pattern: tokenPattern) {
+                for token in regex.matches(in: candidate, range: NSRange(candidate.startIndex..., in: candidate)) {
+                    guard let numberRange = Range(token.range(at: 1), in: candidate),
+                          let number = Int(candidate[numberRange]), !protector.isLiteral(number),
+                          let range = Range(token.range, in: candidate) else { continue }
+                    prefix = String(candidate[..<range.lowerBound])
+                    suffix = String(candidate[range.lowerBound...])
+                    break
+                }
+            }
+            // source() retains authored entity spellings for the trailing-entity
+            // rule; decodeEntities removes the renderer's outer escaping only.
+            var url = HTMLSafety.decodeEntities(protector.source(in: prefix))
+            var trailing = ""
+            let isURL = url.hasPrefix("http://") || url.hasPrefix("https://") || url.hasPrefix("www.")
+            if isURL {
+                if let angle = url.firstIndex(of: "<") {
+                    trailing = String(url[angle...])
+                    url = String(url[..<angle])
+                }
+                var excessClosers = url.filter { $0 == ")" }.count - url.filter { $0 == "(" }.count
+                while let last = url.last {
+                    if "?!.,:*_~".contains(last) || (last == ")" && excessClosers > 0) {
+                        if last == ")" { excessClosers -= 1 }
+                        trailing.insert(url.removeLast(), at: trailing.startIndex)
+                    } else if last == ";", let range = url.range(of: #"&[A-Za-z0-9]+;$"#, options: .regularExpression) {
+                        trailing = String(url[range]) + trailing
+                        url.removeSubrange(range)
+                    } else { break }
+                }
+                let domainStart = url.range(of: "://")?.upperBound ?? url.startIndex
+                let domain = url[domainStart...].prefix { $0 != "/" && $0 != "?" && $0 != "#" && $0 != ":" }
+                let parts = domain.split(separator: ".", omittingEmptySubsequences: false)
+                guard parts.count >= 2, parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" } }),
+                      parts.suffix(2).allSatisfy({ !$0.contains("_") }) else { return candidate }
+            } else {
+                guard let last = url.last, last.isLetter || last.isNumber else { return candidate }
+            }
+            let destination = isURL ? (url.hasPrefix("www.") ? "http://" + url : url) : "mailto:" + url
+            return protector.protect("<a href=\"\(escapeAttribute(HTMLSafety.decodeEntities(destination)))\">\(escapeHTML(HTMLSafety.decodeEntities(url)))</a>")
+                + escapeHTML(trailing) + suffix
+        }
     }
 
     /// Infers image dimensions from common placeholder/CDN URL segments such as
@@ -1957,16 +2179,14 @@ public struct MarkdownRenderer: Sendable {
             .replacingOccurrences(of: ">", with: "\\u003e")
     }
 
-    private func htmlDocument(body: String, config: RenderConfig) -> String {
+    private func htmlDocument(body: String, config: RenderConfig, assetMode: RenderAssetMode) -> String {
         """
         <!doctype html>
         <html>
         <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-        \(MathAssets.css)
-        </style>
+        \(assetMode.mathStylesheet)
         <style>
         :root {
             color-scheme: light dark;
@@ -2082,6 +2302,42 @@ public struct MarkdownRenderer: Sendable {
         blockquote code {
             overflow-wrap: anywhere;
             word-break: break-word;
+        }
+
+        .markdown-alert {
+            margin: 0 0 1em;
+            padding: 0.6em 1em;
+            border-left: 4px solid var(--alert-color);
+            background: var(--quote-bg);
+            color: var(--text);
+            overflow-wrap: anywhere;
+        }
+        .markdown-alert-note { --alert-color: light-dark(#0969da, #58a6ff); }
+        .markdown-alert-tip { --alert-color: light-dark(#1a7f37, #3fb950); }
+        .markdown-alert-important { --alert-color: light-dark(#8250df, #ab7df8); }
+        .markdown-alert-warning { --alert-color: light-dark(#9a6700, #d29922); }
+        .markdown-alert-caution { --alert-color: light-dark(#cf222e, #f85149); }
+        .markdown-alert > .markdown-alert-title {
+            color: var(--alert-color);
+            font-weight: 650;
+            margin: 0 0 0.4em;
+            break-after: avoid;
+        }
+        .markdown-alert > :last-child { margin-bottom: 0; }
+        mark {
+            color: inherit;
+            background: light-dark(#fff1a8, #665215);
+            padding: 0.05em 0.12em;
+            border-radius: 2px;
+        }
+        @media print {
+            .markdown-alert { background: #fff; color: #1f2328; }
+            .markdown-alert-note { --alert-color: #0969da; }
+            .markdown-alert-tip { --alert-color: #1a7f37; }
+            .markdown-alert-important { --alert-color: #8250df; }
+            .markdown-alert-warning { --alert-color: #9a6700; }
+            .markdown-alert-caution { --alert-color: #cf222e; }
+            mark { color: #1f2328; background: #fff1a8; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
         }
 
         table {
@@ -2338,12 +2594,8 @@ public struct MarkdownRenderer: Sendable {
         <main>
         \(body)
         </main>
-        <script>
-        \(MathAssets.javaScript)
-        </script>
-        <script>
-        \(MathAssets.mhchem)
-        </script>
+        \(assetMode.script(.katex))
+        \(assetMode.script(.mhchem))
         <script>
         // Predefined macros from the math-macros front-matter field. The active
         // macro object is shared across render calls so that, with globalGroup
@@ -2381,7 +2633,7 @@ public struct MarkdownRenderer: Sendable {
         };
         window.__md2RenderMath(document);
         </script>
-        \(diagramScripts(for: body))
+        \(diagramScripts(for: body, assetMode: assetMode))
         </body>
         </html>
         """
@@ -2389,10 +2641,10 @@ public struct MarkdownRenderer: Sendable {
 
     /// Builds the diagram engine `<script>` tags and render bootstrap, but only
     /// for the diagram types the document actually uses. Documents without any
-    /// diagrams pay nothing — notably the large Mermaid bundle is never inlined
+    /// diagrams pay nothing — notably the large Mermaid bundle is never loaded
     /// unless a `mermaid` block is present. Shared dependencies are emitted once,
     /// in dependency order, before the engines that consume them.
-    private func diagramScripts(for body: String) -> String {
+    private func diagramScripts(for body: String, assetMode: RenderAssetMode) -> String {
         let hasMermaid = body.contains(PreviewClass.diagramMermaid)
         let hasFlow = body.contains(PreviewClass.diagramFlow)
         let hasSequence = body.contains(PreviewClass.diagramSequence)
@@ -2400,28 +2652,28 @@ public struct MarkdownRenderer: Sendable {
         guard hasMermaid || hasFlow || hasSequence else { return "" }
 
         var scripts: [String] = []
-        func inline(_ js: String) {
-            scripts.append("<script>\n\(js)\n</script>")
+        func include(_ asset: BundledWebAsset) {
+            scripts.append(assetMode.script(asset))
         }
 
         // Underscore + Raphael are shared dependencies; emit each once, first.
         if hasSequence {
-            inline(DiagramAssets.underscore)
+            include(.underscore)
         }
         if hasFlow || hasSequence {
-            inline(DiagramAssets.raphael)
+            include(.raphael)
         }
         if hasFlow {
-            inline(DiagramAssets.flowchart)
+            include(.flowchart)
         }
         if hasSequence {
-            inline(DiagramAssets.sequence)
+            include(.sequence)
         }
         if hasMermaid {
-            inline(DiagramAssets.mermaid)
+            include(.mermaid)
         }
 
-        inline(diagramBootstrap)
+        scripts.append("<script>\n\(diagramBootstrap)\n</script>")
         return scripts.joined(separator: "\n")
     }
 
@@ -2429,13 +2681,13 @@ public struct MarkdownRenderer: Sendable {
     /// engine. Each render is isolated in `try/catch` so one malformed diagram
     /// cannot blank the rest of the document; on failure the raw source is shown.
     /// Kept independent from the math bootstrap. Engine guards (`typeof …`) make
-    /// it safe to run even when an engine script was not inlined.
+    /// it safe to run even when an engine script was not loaded.
     private let diagramBootstrap = """
     // Exposed as a re-runnable function (scoped to a root element) so the
     // live-preview content swap can re-render diagrams over freshly injected
     // content without reloading the page. Called once over the whole document
     // at load. Engine guards (`typeof …`) keep it safe when an engine script
-    // was not inlined (e.g. a diagram type added after the initial load).
+    // was not loaded (e.g. a diagram type added after the initial load).
     // Mermaid sizes each node to its label's full un-wrapped width. Long plain
     // labels — especially CJK, which has no spaces to break on and which
     // Mermaid's `flowchart.wrappingWidth` never wraps — balloon a diagram's
@@ -2661,6 +2913,8 @@ private struct InlineContext {
     let footnotes: FootnoteContext
     let citations: CitationContext
     let crossReferences: CrossReferenceContext
+    var references: [String: LinkReference] = [:]
+    var config: RenderConfig = .init()
 }
 
 /// A fenced code-block info string that should render as a diagram rather than
@@ -2693,13 +2947,27 @@ private enum DiagramKind: String {
 /// every fragment in one final step.
 private final class InlineProtector {
     private var fragments: [String] = []
+    private var sources: [String] = []
+    private var literals: Set<Int> = []
 
     /// Stores `fragment` and returns the private-use-area token standing in for it.
-    func protect(_ fragment: String) -> String {
+    func protect(_ fragment: String, source: String? = nil, literal: Bool = false) -> String {
         let token = "\u{E000}MD2-\(fragments.count)\u{E000}"
+        if literal { literals.insert(fragments.count) }
+        sources.append(source ?? fragment)
         fragments.append(fragment)
         return token
     }
+
+    func source(in text: String) -> String {
+        var result = text
+        for (index, source) in sources.enumerated().reversed() {
+            result = result.replacingOccurrences(of: "\u{E000}MD2-\(index)\u{E000}", with: source)
+        }
+        return result
+    }
+
+    func isLiteral(_ index: Int) -> Bool { literals.contains(index) }
 
     /// Replaces every protection token in `text` with its original fragment.
     /// Restores in descending index order: a fragment can only embed tokens

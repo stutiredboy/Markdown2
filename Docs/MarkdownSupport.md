@@ -16,13 +16,16 @@ Markdown2 aims for a compact Typora-like writing and reading flow. It does not c
 - Paragraphs and horizontal rules.
 - Line breaks: every authored line break is preserved as a visible line break (`<br>`) — soft breaks (a newline between lines) and hard breaks (a line ending with two spaces or a backslash) both render on their own line, in paragraphs and inside blockquotes. A blank line still starts a new paragraph.
 - Blockquotes, including Markdown rendered inside quote blocks.
+- GitHub Alerts: `> [!NOTE]`, `TIP`, `IMPORTANT`, `WARNING`, and `CAUTION` on the first quoted line. Titles follow the app's English/Simplified Chinese language setting; light, dark, HTML, and PDF styles share the same renderer.
 - Lists: ordered, unordered, and GFM task lists.
 - Tables: GFM pipe tables with left, center, and right alignment.
 - Code: fenced code blocks, indented code blocks, and inline code.
 - Syntax highlighting: lightweight keyword/type/string/comment/number/function highlighting for Python, Java, Rust, C++, C, shell, Perl, Go, Swift, JavaScript, and TypeScript code fences.
 - Inline styles: strong, emphasis, strong-emphasis, strikethrough.
+- Optional inline styles: enable **Settings → Markdown Syntax** switches for `==highlight==`, `x^2^`, and `H~2~O`. Each defaults off and is saved independently. Subscript/superscript content may use escaped spaces (`X~long\ text~`); code, math, and link destinations remain protected.
 - Links and images, including optional title text and Pandoc-style image size attributes (`![alt](path){width=480}` or `{width=320 height=180}`); invalid attributes are ignored and the image still renders.
-- Autolinks such as `<https://example.com>`.
+- Reference links/images: `[text][id]`, `[id][]`, `[id]`, and `![alt][id]` resolve `[id]: URL "title"` definitions anywhere in the document, including supported quote/list containers. Labels use Unicode case folding and collapsed whitespace; the first definition wins. Definitions do not interrupt paragraphs and are ignored in code, math, and front matter. `[TOC]`, citations, footnotes, and alert markers retain their own syntax.
+- Autolinks such as `<https://example.com>`, bare `https://example.com`, `www.example.com`, and email addresses. Bare URLs exclude trailing punctuation and unmatched closing parentheses. Code, math, and existing links are skipped.
 - Backslash escapes and HTML entities.
 - Safe inline HTML tags; unsafe tags such as `<script>` are escaped.
 - YAML front matter.
@@ -32,6 +35,8 @@ Markdown2 aims for a compact Typora-like writing and reading flow. It does not c
 - CJK text in headings, paragraphs, tables, and inline styles.
 - Footnotes: `[^id]` references and `[^id]: definition` blocks, with superscript links, numbered in order of first reference, and a trailing footnotes section with back-reference arrows.
 - Image attachments: pasting a screenshot saves it into a configurable, document-relative folder (default `assets/`); dragging or pasting image files links them in place at their existing location. Missing local images show an explicit broken-image placeholder in the preview.
+
+Common syntax smoke test: open [`Examples/CommonSyntax.md`](../Examples/CommonSyntax.md), toggle the three optional styles, switch the app language, and export to PDF. Automated coverage lives in `CommonSyntaxTests`, `CommonSyntaxSettingsTests`, and `CommonSyntaxGUITests` (the last requires `MD2_RUN_GUI_TESTS=1`). Parsing rules are based on [CommonMark reference links](https://spec.commonmark.org/0.31.2/#link-reference-definitions), [GFM extended autolinks](https://github.github.com/gfm/#autolinks-extension-), and [Typora's optional inline syntax](https://support.typora.io/Markdown-Reference/).
 
 ## Not Yet Supported
 

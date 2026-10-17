@@ -180,7 +180,7 @@ struct ContentView: View {
             }
 
             Divider()
-            StatusBar(stats: document.rendered.stats, url: document.fileURL, settings: settings)
+            StatusBar(stats: document.rendered.stats, url: document.fileURL, format: document.fileFormat, settings: settings)
         }
         .frame(minWidth: minimumWindowWidth, minHeight: 540)
         .navigationTitle(document.displayTitle)
@@ -970,6 +970,7 @@ private struct OutlineSidebar: View {
 private struct StatusBar: View {
     let stats: DocumentStats
     let url: URL?
+    let format: MarkdownFileFormat
     let settings: AppSettings
 
     var body: some View {
@@ -978,6 +979,8 @@ private struct StatusBar: View {
             Text("\(stats.characters) \(settings.text(.chars))")
             Text("\(stats.lines) \(settings.text(.lines))")
             Text("\(stats.readingMinutes) \(settings.text(.minRead))")
+            Text(format.encodingLabel)
+            Text(format.lineEnding == .mixed ? settings.text(.mixedLineEndings) : format.lineEnding.rawValue)
 
             Spacer()
 

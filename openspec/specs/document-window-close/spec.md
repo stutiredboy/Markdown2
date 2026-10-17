@@ -1,6 +1,6 @@
 ## Purpose
 
-Define close and quit confirmation for documents with unsaved changes so user content is never silently discarded.
+Define explicit-close confirmation and durable recovery on Quit so user content is never silently discarded.
 
 ## Requirements
 
@@ -45,11 +45,17 @@ When closing a document window that has unsaved changes, the application SHALL p
 - **AND** chooses **Cancel** in the confirmation prompt
 - **THEN** the window stays open and the document is unchanged
 
-### Requirement: ⌘Q quit behavior preserved
-
-Adding the ⌘W close command SHALL NOT change the existing ⌘Q quit behavior, which walks every open document window with unsaved changes and prompts to save or discard before the application terminates.
+### Requirement: Quit preserves the open session
+The application SHALL flush safe edits to named files and atomically persist all open windows and drafts before quitting. It SHALL cancel Quit if a recovery flush fails. Untitled drafts and edits blocked by a conflict or encoding choice SHALL remain recoverable without a save-location prompt. Explicit window close SHALL still ask Save / Cancel / Don't Save when dirty, then delete the recovery record and cancel pending writes only after close is confirmed.
 
 #### Scenario: Quit with multiple dirty documents
+- **WHEN** the user presses ⌘Q with several dirty document windows
+- **THEN** their content and window geometry are persisted, safe named edits are written back, and relaunch restores the windows
 
-- **WHEN** the user presses ⌘Q with more than one document window holding unsaved changes
-- **THEN** the application brings each dirty window to the front and prompts to save or discard, and termination is cancelled if the user cancels any prompt
+#### Scenario: Confirmed close discards its recovery copy
+- **WHEN** the user chooses Don't Save while closing a dirty document
+- **THEN** that window's recovery record is removed and no queued autosave can recreate it
+
+#### Scenario: Quit cannot write recovery data
+- **WHEN** a final recovery snapshot cannot be written
+- **THEN** termination is cancelled and the affected document remains open with an error

@@ -44,7 +44,7 @@ final class PDFExportEndToEndVerification: XCTestCase {
         markdown += "# Heading Last\n\n"
         for i in 100..<140 { markdown += "Paragraph \(i): the quick brown fox jumps over the lazy dog.\n\n" }
 
-        let rendered = MarkdownRenderer().render(markdown)
+        let rendered = MarkdownRenderer().render(markdown, assetMode: .appScheme)
         let destination = dir.appendingPathComponent("out.pdf")
 
         let exporter = PDFExporter(destinationURL: destination)
@@ -102,7 +102,7 @@ final class PDFExportEndToEndVerification: XCTestCase {
         var markdown = "Plain opening paragraph with no Markdown heading.\n\n"
         for i in 0..<20 { markdown += "Body paragraph \(i) stays navigable only by pages.\n\n" }
 
-        let rendered = MarkdownRenderer().render(markdown)
+        let rendered = MarkdownRenderer().render(markdown, assetMode: .appScheme)
         XCTAssertTrue(rendered.outline.isEmpty)
 
         let destination = dir.appendingPathComponent("plain.pdf")
@@ -142,7 +142,7 @@ final class PDFExportEndToEndVerification: XCTestCase {
         )
 
         let markdown = try String(contentsOf: sourceURL, encoding: .utf8)
-        let rendered = MarkdownRenderer().render(markdown)
+        let rendered = MarkdownRenderer().render(markdown, assetMode: .appScheme)
 
         let exporter = PDFExporter(destinationURL: outputURL)
         let done = expectation(description: "export provided markdown")
@@ -179,7 +179,7 @@ final class PDFExportEndToEndVerification: XCTestCase {
 
         var markdown = "# Configured Geometry\n\n"
         for i in 0..<12 { markdown += "Paragraph \(i): the quick brown fox jumps over the lazy dog.\n\n" }
-        let rendered = MarkdownRenderer().render(markdown)
+        let rendered = MarkdownRenderer().render(markdown, assetMode: .appScheme)
 
         let destination = dir.appendingPathComponent("letter-landscape.pdf")
         let profile = ExportProfile(
@@ -226,7 +226,7 @@ final class PDFExportEndToEndVerification: XCTestCase {
         // A small Mermaid doc + body text so the diagram lands on page 1.
         var md = "# Light PDF QA\n\n```mermaid\ngraph TD; A-->B; B-->C;\n```\n\n"
         for i in 0..<40 { md += "Paragraph \(i): the quick brown fox jumps over the lazy dog.\n\n" }
-        let rendered = MarkdownRenderer().render(md)
+        let rendered = MarkdownRenderer().render(md, assetMode: .appScheme)
         let dest = dir.appendingPathComponent("light.pdf")
 
         let exporter = PDFExporter(destinationURL: dest)
@@ -290,7 +290,7 @@ final class PDFExportEndToEndVerification: XCTestCase {
         var md = "# Untitled Image Export\n\n"
         md += "![red](\(imgPath.path))\n\n"
         for i in 0..<20 { md += "Paragraph \(i): filler text so the page has body.\n\n" }
-        let rendered = MarkdownRenderer().render(md)
+        let rendered = MarkdownRenderer().render(md, assetMode: .appScheme)
 
         let dest = dir.appendingPathComponent("untitled-abs.pdf")
         let exporter = PDFExporter(destinationURL: dest)
@@ -342,7 +342,7 @@ final class PDFExportEndToEndVerification: XCTestCase {
         var md = "# Untitled File URL Image\n\n"
         md += "![blue](\(URL(fileURLWithPath: imgPath.path).absoluteString))\n\n"
         for i in 0..<20 { md += "Paragraph \(i): filler text so the page has body.\n\n" }
-        let rendered = MarkdownRenderer().render(md)
+        let rendered = MarkdownRenderer().render(md, assetMode: .appScheme)
 
         let dest = dir.appendingPathComponent("untitled-file.pdf")
         let exporter = PDFExporter(destinationURL: dest)
@@ -372,7 +372,7 @@ final class PDFExportEndToEndVerification: XCTestCase {
 
     /// A file-backed document (with a `baseURL`) must still embed images after
     /// the export load-decision is realigned — guards the temp-file +
-    /// `loadFileRequest` path against regression.
+    /// shared memory-loader path against regression.
     @MainActor
     func testFileBackedExportStillEmbedsImage() throws {
         try XCTSkipUnless(
@@ -393,7 +393,7 @@ final class PDFExportEndToEndVerification: XCTestCase {
         var md = "# File-Backed Image Export\n\n"
         md += "![green](\(imgPath.path))\n\n"
         for i in 0..<20 { md += "Paragraph \(i): filler text so the page has body.\n\n" }
-        let rendered = MarkdownRenderer().render(md)
+        let rendered = MarkdownRenderer().render(md, assetMode: .appScheme)
 
         let dest = dir.appendingPathComponent("filebacked.pdf")
         let exporter = PDFExporter(destinationURL: dest)
@@ -448,7 +448,7 @@ final class PDFExportEndToEndVerification: XCTestCase {
           style AppLayer fill:#1e293b,stroke:#38bdf8,color:#ffffff
         ```
         """
-        let rendered = MarkdownRenderer().render(markdown)
+        let rendered = MarkdownRenderer().render(markdown, assetMode: .appScheme)
         let dest = dir.appendingPathComponent("diagram.pdf")
 
         let exporter = PDFExporter(destinationURL: dest)
@@ -506,7 +506,7 @@ final class PDFExportEndToEndVerification: XCTestCase {
         c &= d
         \end{align}
         """#
-        let rendered = MarkdownRenderer().render(markdown)
+        let rendered = MarkdownRenderer().render(markdown, assetMode: .appScheme)
         let destination = dir.appendingPathComponent("latex.pdf")
 
         let exporter = PDFExporter(destinationURL: destination)
@@ -542,6 +542,49 @@ final class PDFExportEndToEndVerification: XCTestCase {
             text.contains("(1)"),
             "unlabeled align environment was numbered in the export; page text=\(text.prefix(400))"
         )
+    }
+
+    @MainActor
+    func testReadOnlySourceDirectoryExportsRelativeAndParentImagesWithoutWrites() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1", "Requires WebKit GUI session")
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("md2-readonly-\(UUID())")
+        let sourceDirectory = root.appendingPathComponent("source")
+        try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: sourceDirectory.path)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let green = makeSolidColorPNG(width: 200, height: 150, color: NSColor(red: 0, green: 1, blue: 0, alpha: 1))
+        let red = makeSolidColorPNG(width: 200, height: 150, color: NSColor(red: 1, green: 0, blue: 0, alpha: 1))
+        try green.write(to: sourceDirectory.appendingPathComponent("green.png"))
+        try red.write(to: root.appendingPathComponent("red.png"))
+        let markdown = "# Read Only\n\n![green](green.png)\n\n![red](../red.png)\n\n$x^2$"
+        let source = sourceDirectory.appendingPathComponent("notes.md")
+        try markdown.write(to: source, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: source.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: sourceDirectory.path)
+        XCTAssertFalse(FileManager.default.isWritableFile(atPath: sourceDirectory.path))
+        let before = try FileManager.default.contentsOfDirectory(atPath: sourceDirectory.path).sorted()
+        let modified = try sourceDirectory.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        let rendered = MarkdownRenderer().render(try String(contentsOf: source, encoding: .utf8), assetMode: .appScheme)
+        let destination = root.appendingPathComponent("export.pdf")
+        let exporter = PDFExporter(destinationURL: destination)
+        let done = expectation(description: "read-only export")
+        var outcome: Result<Void, Error>?
+        exporter.export(html: rendered.html, outline: rendered.outline, baseURL: sourceDirectory) {
+            outcome = $0
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 35)
+        try XCTUnwrap(outcome).get()
+        let bitmap = try XCTUnwrap(rasterizeFirstPage(of: destination, scale: 1.5))
+        XCTAssertGreaterThan(countColorPixels(in: bitmap, r: 0, g: 1, b: 0), 500)
+        XCTAssertGreaterThan(countColorPixels(in: bitmap, r: 1, g: 0, b: 0), 500)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: sourceDirectory.path).sorted(), before)
+        XCTAssertEqual(try String(contentsOf: source, encoding: .utf8), markdown)
+        XCTAssertEqual(try Data(contentsOf: sourceDirectory.appendingPathComponent("green.png")), green)
+        XCTAssertEqual(try sourceDirectory.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, modified)
     }
 
     /// Rasterize page 1 of the PDF at `url` into a bitmap (createPDF output, not DOM).

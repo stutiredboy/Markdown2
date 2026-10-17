@@ -42,6 +42,8 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
             "Set MD2_RUN_GUI_TESTS=1 to run this launch/Window GUI test."
         )
 
+        Self.removeGuardPreferences()
+
         temporaryRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("SettingsWindowPresentationGUITests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
@@ -203,6 +205,69 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
     }
 
     // MARK: - Launching
+
+    func testQuitAndRelaunchRestoresDocumentWithoutDuplicateArgumentWindow() throws {
+        let app = try launchApp(arguments: [fixtureURL.path])
+        assertDocumentWindowPresent(in: try waitForRecord(stage: "didFinishLaunching"))
+        try terminate(app)
+        try FileManager.default.removeItem(at: healthURL)
+        _ = try launchApp(arguments: [fixtureURL.path])
+        let record = try waitForRecord(stage: "didFinishLaunching")
+        XCTAssertEqual(record.windows.filter { $0.isVisible && $0.title.contains(fixtureURL.lastPathComponent) }.count, 1)
+        try assertNoSettingsWindow(in: record)
+    }
+
+    func testUntitledRecoverySurvivesForcedTerminationAndRelaunch() throws {
+        // Seed the durable record produced by DocumentStore's independently
+        // tested throttled writer; then exercise two real application launches.
+        let snapshot = DocumentRecoverySnapshot(id: UUID(), text: "未命名草稿 🚀", fileURL: nil,
+            identity: nil, format: MarkdownFileFormat(), fingerprint: nil,
+            isDirty: true, windowFrame: "100 100 980 680 0 0 1920 1080 ")
+        try FileManager.default.createDirectory(at: Self.recoveryDirectory, withIntermediateDirectories: true)
+        let recordURL = Self.recoveryDirectory.appendingPathComponent("\(snapshot.id.uuidString).json")
+        try JSONEncoder().encode(snapshot).write(to: recordURL, options: .atomic)
+        let app = try launchApp(arguments: [])
+        let first = try waitForRecord(stage: "didFinishLaunching")
+        XCTAssertEqual(first.windows.filter { $0.isVisible && $0.title == "Untitled.md *" }.count, 1)
+        app.forceTerminate()
+        let deadline = Date().addingTimeInterval(10)
+        while Self.isProcessAlive(app), Date() < deadline { usleep(100_000) }
+        XCTAssertFalse(Self.isProcessAlive(app))
+        try FileManager.default.removeItem(at: healthURL)
+        let relaunched = try launchApp(arguments: [])
+        let second = try waitForRecord(stage: "didFinishLaunching")
+        XCTAssertEqual(second.windows.filter { $0.isVisible && $0.title == "Untitled.md *" }.count, 1)
+        let restored = try JSONDecoder().decode(DocumentRecoverySnapshot.self, from: Data(contentsOf: recordURL))
+        XCTAssertEqual(restored.text, snapshot.text)
+        XCTAssertTrue(restored.isDirty)
+        try assertNoSettingsWindow(in: second)
+        // Normal Quit preserves an untitled draft without requiring a destination.
+        try terminate(relaunched)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recordURL.path))
+    }
+
+    func testTwoRecoveryDraftsForOneFileKeepBothTexts() throws {
+        try FileManager.default.createDirectory(at: Self.recoveryDirectory, withIntermediateDirectories: true)
+        for (index, text) in ["draft A", "draft B"].enumerated() {
+            var snapshot = DocumentRecoverySnapshot(id: UUID(), text: text, fileURL: fixtureURL,
+                identity: DocumentFileIdentity(url: fixtureURL), format: MarkdownFileFormat(),
+                fingerprint: DocumentFileFingerprint.current(at: fixtureURL), isDirty: true, windowFrame: nil)
+            snapshot.updatedAt = Date(timeIntervalSince1970: Double(index))
+            try JSONEncoder().encode(snapshot).write(to: Self.recoveryDirectory
+                .appendingPathComponent("\(snapshot.id.uuidString).json"), options: .atomic)
+        }
+        let app = try launchApp(arguments: [])
+        let record = try waitForRecord(stage: "didFinishLaunching")
+        XCTAssertEqual(record.windows.filter { $0.isVisible && $0.title.contains(fixtureURL.lastPathComponent) }.count, 1)
+        XCTAssertEqual(record.windows.filter { $0.isVisible && $0.title == "Untitled.md *" }.count, 1)
+        try terminate(app)
+        let snapshots = try FileManager.default.contentsOfDirectory(at: Self.recoveryDirectory,
+            includingPropertiesForKeys: nil).filter { $0.pathExtension == "json" }.map {
+                try JSONDecoder().decode(DocumentRecoverySnapshot.self, from: Data(contentsOf: $0))
+            }
+        XCTAssertEqual(Set(snapshots.map(\.text)), ["draft A", "draft B"])
+        XCTAssertEqual(snapshots.filter { $0.fileURL != nil }.count, 1)
+    }
 
     private func launchApp(
         arguments: [String],
@@ -476,17 +541,36 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
         AXUIElementPerformAction(closeButton, kAXPressAction as CFString)
     }
 
-    /// Moves the window and returns the frame it actually took (AppKit may
-    /// constrain it to the screen, so the caller compares against the read-back
-    /// values rather than the requested ones). Waits for the frame autosave to
-    /// settle before the caller closes the window.
+    /// Moves within the visible screen and waits for frame autosave to settle.
+    /// Accessibility permits an off-screen position that AppKit clamps only on
+    /// reopening; that would test screen constraints instead of frame restoration.
     private func moveWindow(titled title: String, pid: pid_t, by delta: CGPoint) throws -> CGRect {
         guard let window = Self.window(titled: title, pid: pid),
               let current = Self.windowFrame(titled: title, pid: pid) else {
             throw GuardFailure("no window titled '\(title)' to move")
         }
 
-        var target = CGPoint(x: current.origin.x + delta.x, y: current.origin.y + delta.y)
+        // Accessibility coordinates start at the primary screen's top-left;
+        // NSScreen uses a bottom-left origin, including for secondary displays.
+        let screens = NSScreen.screens
+        let primaryTop = try XCTUnwrap(screens.first).frame.maxY
+        let visibleFrames = screens.map {
+            CGRect(x: $0.visibleFrame.minX, y: primaryTop - $0.visibleFrame.maxY,
+                   width: $0.visibleFrame.width, height: $0.visibleFrame.height)
+        }
+        let visible = try XCTUnwrap(visibleFrames.max { lhs, rhs in
+            let left = current.intersection(lhs), right = current.intersection(rhs)
+            return left.width * left.height < right.width * right.height
+        })
+        func shifted(_ origin: CGFloat, by delta: CGFloat, lower: CGFloat, upper: CGFloat) -> CGFloat {
+            let proposed = origin + delta
+            let target = proposed >= lower && proposed <= upper ? proposed : origin - delta
+            return min(max(lower, upper), max(lower, target))
+        }
+        var target = CGPoint(
+            x: shifted(current.minX, by: delta.x, lower: visible.minX, upper: visible.maxX - current.width),
+            y: shifted(current.minY, by: delta.y, lower: visible.minY, upper: visible.maxY - current.height)
+        )
         guard let value = AXValueCreate(.cgPoint, &target) else {
             throw GuardFailure("could not build an Accessibility position value")
         }
@@ -591,6 +675,12 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
         let plist = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Preferences/\(guardBundleIdentifier).plist")
         try? FileManager.default.removeItem(at: plist)
+        try? FileManager.default.removeItem(at: recoveryDirectory)
+    }
+
+    private static var recoveryDirectory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(guardBundleIdentifier).appendingPathComponent("Document Recovery")
     }
 }
 

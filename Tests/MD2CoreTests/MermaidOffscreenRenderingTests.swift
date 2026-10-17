@@ -24,7 +24,7 @@ final class MermaidOffscreenRenderingTests: XCTestCase {
         ```mermaid
         graph TD; A-->B; B-->C;
         ```
-        """).html
+        """, assetMode: .appScheme).html
 
         let probe = """
         (function () {
@@ -57,7 +57,7 @@ final class MermaidOffscreenRenderingTests: XCTestCase {
         ```mermaid
         this is not valid %%% mermaid @@@
         ```
-        """).html
+        """, assetMode: .appScheme).html
 
         let probe = """
         (function () {
@@ -87,7 +87,7 @@ final class MermaidOffscreenRenderingTests: XCTestCase {
         ```mermaid
         graph TD; A-->B; B-->C;
         ```
-        """).html
+        """, assetMode: .appScheme).html
 
         let probe = """
         (function () {
@@ -125,7 +125,7 @@ final class MermaidOffscreenRenderingTests: XCTestCase {
         flowchart LR
           A[Alpha One] --> B[Bravo Two] --> C[Charlie Three] --> D[Delta Four] --> E[Echo Five] --> F[Foxtrot Six] --> G[Golf Seven] --> H[Hotel Eight]
         ```
-        """).html
+        """, assetMode: .appScheme).html
 
         let probe = """
         (function () {
@@ -165,7 +165,7 @@ final class MermaidOffscreenRenderingTests: XCTestCase {
         ```mermaid
         graph TD; A-->B;
         ```
-        """).html
+        """, assetMode: .appScheme).html
 
         let probe = """
         (function () {
@@ -238,7 +238,7 @@ final class MermaidOffscreenRenderingTests: XCTestCase {
         e=>end: Finish
         st->op->e
         ```
-        """).html
+        """, assetMode: .appScheme).html
 
         let probe = """
         (function () {
@@ -291,7 +291,7 @@ final class MermaidOffscreenRenderingTests: XCTestCase {
             style AppLayer fill:#1e293b,stroke:#38bdf8,stroke-width:2px,color:#fff
             style InfraLayer fill:#0f172a,stroke:#ef4444,stroke-width:2px,color:#fff
         """
-        let html = MarkdownRenderer().render("```mermaid\n\(src)\n```").html
+        let html = MarkdownRenderer().render("```mermaid\n\(src)\n```", assetMode: .appScheme).html
 
         let probe = """
         (function () {
@@ -323,7 +323,7 @@ final class MermaidOffscreenRenderingTests: XCTestCase {
         flowchart LR
           A[This is an extremely long label that just keeps going and going and would definitely need wrapping to fit on one line]
         """
-        let html = MarkdownRenderer().render("```mermaid\n\(src)\n```").html
+        let html = MarkdownRenderer().render("```mermaid\n\(src)\n```", assetMode: .appScheme).html
 
         let probe = """
         (function () {
@@ -360,7 +360,7 @@ final class MermaidOffscreenRenderingTests: XCTestCase {
             end
             style sg fill:#112233,stroke:#445566,color:#ffffff
         """
-        let html = MarkdownRenderer().render("```mermaid\n\(src)\n```").html
+        let html = MarkdownRenderer().render("```mermaid\n\(src)\n```", assetMode: .appScheme).html
 
         let probe = """
         (function () {
@@ -404,7 +404,9 @@ final class MermaidOffscreenRenderingTests: XCTestCase {
     ) throws -> [String: Any] {
         _ = NSApplication.shared
 
+        let loader = WebDocumentLoader()
         let configuration = WKWebViewConfiguration()
+        loader.install(on: configuration)
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         if printOverride {
             // Inject the exact production print-density overrides so the probe
@@ -439,7 +441,7 @@ final class MermaidOffscreenRenderingTests: XCTestCase {
         webView.navigationDelegate = delegate
         let loaded = expectation(description: "page load finished")
         delegate.onFinish = { loaded.fulfill() }
-        webView.loadHTMLString(html, baseURL: nil)
+        loader.load(html, baseURL: nil, in: webView)
         wait(for: [loaded], timeout: 15)
 
         // Poll the settle signal the same way the exporter does, bounded so a hang

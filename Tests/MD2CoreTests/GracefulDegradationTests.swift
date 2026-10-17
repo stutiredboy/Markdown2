@@ -50,10 +50,9 @@ struct GracefulDegradationTests {
         #expect(body.contains("after"))
     }
 
-    @Test func outOfScopeConstructDegradesToText() {
-        // Reference-style links are out of scope; their text must still appear.
-        let body = renderer.render("See [the link][ref] for details.\n\n[ref]: https://example.com").body
-        #expect(body.contains("the link"))
+    @Test func undefinedReferenceDegradesToText() {
+        let body = renderer.render("See [the link][missing] for details.").body
+        #expect(body.contains("[the link][missing]"))
         #expect(body.contains("details"))
     }
 }

@@ -53,14 +53,24 @@ Every write of the document to its backing file (manual save and autosave) SHALL
 - **THEN** the file is not overwritten
 - **AND** the conflict prompt is presented
 
+### Requirement: Renames and moves preserve file identity
+The app SHALL resolve the document bookmark before evaluating external events and before writing. A Finder rename or move SHALL update the window title, represented URL, relative-resource base directory, and file watcher without resetting the document identity or undo history. Autosave SHALL write to the resolved location even when the watcher has not delivered the rename yet.
+
+#### Scenario: Rename immediately followed by Save
+- **WHEN** the open file is renamed and the user saves before the watcher event arrives
+- **THEN** the renamed file receives the edits and the old path is not recreated
+
+#### Scenario: The old name is reused
+- **WHEN** another file appears at the original path after a rename
+- **THEN** the document follows its bookmark and does not overwrite the unrelated file
+
 ### Requirement: External deletion keeps the user's content safe
-WHEN the backing file is deleted or moved externally, the app SHALL keep the document's content in memory, mark the document as having unsaved changes (so close/quit confirmation protects it), and continue watching the original path. A subsequent save SHALL recreate the file at the original path and resume normal watching.
+WHEN the backing file is deleted or moved to Trash, the app SHALL keep its content in memory and recovery storage, mark it dirty, and suspend autosave to that file. Manual save SHALL ask for a destination, and cancellation SHALL leave the disk unchanged.
 
-#### Scenario: Deleted file marks the document dirty
-- **WHEN** the backing file is deleted in Finder or by `git checkout`
-- **THEN** the window keeps showing the document content and the document is marked dirty
+#### Scenario: Deleted file is not recreated by autosave
+- **WHEN** the backing file is deleted and the user continues typing
+- **THEN** the edits are recoverable and no file is automatically written at the old path
 
-#### Scenario: Save after deletion recreates the file
-- **WHEN** the user saves after an external deletion
-- **THEN** the file is recreated at its original path with the in-memory content
-
+#### Scenario: User chooses a location after deletion
+- **WHEN** the user explicitly chooses a destination for Save
+- **THEN** the document is saved there and normal watching resumes

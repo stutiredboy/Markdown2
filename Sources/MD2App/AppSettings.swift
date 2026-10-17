@@ -102,10 +102,31 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    @Published var enablesHighlight: Bool {
+        didSet { defaults.set(enablesHighlight, forKey: Keys.enablesHighlight) }
+    }
+    @Published var enablesSuperscript: Bool {
+        didSet { defaults.set(enablesSuperscript, forKey: Keys.enablesSuperscript) }
+    }
+    @Published var enablesSubscript: Bool {
+        didSet { defaults.set(enablesSubscript, forKey: Keys.enablesSubscript) }
+    }
+
+    var inlineFeatures: InlineFeatures {
+        InlineFeatures(highlight: enablesHighlight, superscript: enablesSuperscript, subscriptEnabled: enablesSubscript)
+    }
+
+    var alertLanguage: AlertLanguage {
+        effectiveLanguage == .zhHans ? .simplifiedChinese : .english
+    }
+
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        enablesHighlight = defaults.bool(forKey: Keys.enablesHighlight)
+        enablesSuperscript = defaults.bool(forKey: Keys.enablesSuperscript)
+        enablesSubscript = defaults.bool(forKey: Keys.enablesSubscript)
 
         let languageValue = defaults.string(forKey: Keys.language) ?? AppLanguage.system.rawValue
         language = AppLanguage(rawValue: languageValue) ?? .system
@@ -274,6 +295,9 @@ final class AppSettings: ObservableObject {
 }
 
 private enum Keys {
+    static let enablesHighlight = "MD2.EnablesHighlight"
+    static let enablesSuperscript = "MD2.EnablesSuperscript"
+    static let enablesSubscript = "MD2.EnablesSubscript"
     static let language = "MD2.Language"
     static let defaultMode = "MD2.DefaultMode"
     static let newDocumentMode = "MD2.NewDocumentMode"
@@ -373,6 +397,9 @@ enum L10nKey: String, CaseIterable {
     case alertUndecodableFile
     case alertUndecodableFileDetail
     case alertCouldNotSave
+    case alertRecoveryFailed, alertRecoveryUnreadable
+    case encodingConversionTitle, encodingConversionMessage, convertToUTF8
+    case mixedLineEndings
     case alertCouldNotExport
     case alertCouldNotPrint
     case alertPandocRequired
@@ -427,6 +454,10 @@ enum L10nKey: String, CaseIterable {
     case zoneRight
     case runningTextTokensHelp
     case academic
+    case markdownSyntax
+    case enablesHighlight
+    case enablesSuperscript
+    case enablesSubscript
     case citationStyleLabel
     case citationAuthorYear
     case citationNumeric
@@ -524,6 +555,13 @@ enum L10n {
         .alertUndecodableFile: "Could not read %@ as text.",
         .alertUndecodableFileDetail: "The file is not in a supported text encoding (UTF-8, UTF-16/32 with a byte-order mark, or GB18030).",
         .alertCouldNotSave: "Could not save %@.",
+        .alertRecoveryFailed: "Could not write document recovery data. Keep this window open and save your work.",
+        .alertRecoveryUnreadable: "Some recovery records could not be read. They have been kept in %@.",
+        .encodingConversionTitle: "Save as UTF-8?",
+        .encodingConversionMessage: "This document contains characters that %@ cannot represent. Convert to UTF-8 to save them? Cancel keeps the original file unchanged and your edits in the recovery copy.",
+        .convertToUTF8: "Convert to UTF-8",
+        .mixedLineEndings: "Mixed line endings",
+
         .alertCouldNotExport: "Could not export %@.",
         .alertCouldNotPrint: "Could not print the document.",
         .alertPandocRequired: "Pandoc is required to export %@.",
@@ -589,6 +627,10 @@ enum L10n {
         .zoneRight: "Right",
         .runningTextTokensHelp: "Header and footer text can use {title}, {date}, {page}, and {pageCount}.",
         .academic: "Academic",
+        .markdownSyntax: "Markdown Syntax",
+        .enablesHighlight: "Highlight (==text==)",
+        .enablesSuperscript: "Superscript (x^2^)",
+        .enablesSubscript: "Subscript (H~2~O)",
         .citationStyleLabel: "Citation Style",
         .citationAuthorYear: "Author-Year",
         .citationNumeric: "Numeric",
@@ -661,6 +703,13 @@ enum L10n {
         .alertUndecodableFile: "无法将 %@ 作为文本读取。",
         .alertUndecodableFileDetail: "文件不是受支持的文本编码（UTF-8、带字节序标记的 UTF-16/32，或 GB18030）。",
         .alertCouldNotSave: "无法保存 %@。",
+        .alertRecoveryFailed: "无法写入文档恢复数据。请保持窗口打开并保存文稿。",
+        .alertRecoveryUnreadable: "部分恢复记录无法读取，已保留在 %@。",
+        .encodingConversionTitle: "转换为 UTF-8 保存？",
+        .encodingConversionMessage: "当前文档包含 %@ 无法表示的字符。是否转换为 UTF-8 保存？取消会保留原文件，编辑内容留在恢复副本中。",
+        .convertToUTF8: "转换为 UTF-8",
+        .mixedLineEndings: "混合换行符",
+
         .alertCouldNotExport: "无法导出 %@。",
         .alertCouldNotPrint: "无法打印文档。",
         .alertPandocRequired: "导出 %@ 需要 Pandoc。",
@@ -726,6 +775,10 @@ enum L10n {
         .zoneRight: "右",
         .runningTextTokensHelp: "页眉和页脚文本可使用 {title}、{date}、{page} 和 {pageCount}。",
         .academic: "学术",
+        .markdownSyntax: "Markdown 语法",
+        .enablesHighlight: "高亮（==文字==）",
+        .enablesSuperscript: "上标（x^2^）",
+        .enablesSubscript: "下标（H~2~O）",
         .citationStyleLabel: "引用样式",
         .citationAuthorYear: "作者-年份",
         .citationNumeric: "数字编号",

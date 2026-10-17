@@ -77,7 +77,8 @@ struct CompatibilityMatrixTests {
         )
         // The extensions Docs/MarkdownSupport.md advertises beyond CommonMark/GFM.
         let required = ["front-matter", "toc", "tex-math", "diagrams",
-                        "footnotes", "image-size-attributes", "image-attachments"]
+                        "footnotes", "image-size-attributes", "image-attachments",
+                        "github-alerts", "optional-inline-styles"]
         for id in required {
             #expect(extensionIds.contains(id), "missing Markdown2 extension entry: \(id)")
         }

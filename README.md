@@ -19,7 +19,7 @@
 - **Markdown-aware editing** — Return continues lists, tasks, and quotes; Return on an empty item exits it. `Shift+Return` continues at the content column, and `Tab` / `Shift+Tab` adjust list nesting. Brackets, quotes, and backticks pair automatically, with closing-character skip and paired Backspace.
 - **Live-rendered HTML** reading mode.
 - **Outline sidebar** generated from headings.
-- **Standard macOS open/save panels** with debounced autosave for saved documents, plus close/quit confirmation for unsaved changes.
+- **Document recovery and format preservation**: follow Finder renames/moves, preserve encoding/BOM/line endings, autosave after 5 seconds idle or 30 seconds of continuous editing, and restore windows and untitled drafts after relaunch. Explicit close still confirms unsaved changes. See [document lifecycle](Docs/DocumentLifecycle.md).
 - **Multi-window support** — each document opens in its own window; untouched starter windows are reused when opening files from Finder or the open panel.
 - **Word, character, line, and reading-time** status bar.
 - **Rich Markdown rendering** — headings, paragraphs, emphasis, links, images, blockquotes, horizontal rules, ordered/unordered/task lists, tables, fenced code with syntax highlighting, YAML front matter, and `[TOC]`.

@@ -17,12 +17,13 @@ final class PreviewSecurityGUITests: XCTestCase {
         MarkdownPreviewView.installInteractionBridge(on: controller, handler: coordinator)
         let configuration = WKWebViewConfiguration()
         configuration.userContentController = controller
+        coordinator.documentLoader.install(on: configuration)
         let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 600, height: 400), configuration: configuration)
         let loaded = expectation(description: "loaded")
         let delegate = SecurityNavigationDelegate { loaded.fulfill() }
         webView.navigationDelegate = delegate
-        let rendered = MarkdownRenderer().render(#"<img src="missing.png" onerror="window.pwned=1;window.webkit.messageHandlers.toggleTask.postMessage({line:1,checked:true})"><details open ontoggle="window.pwned=2"><summary>Details</summary></details>"# + "\n\n- [ ] task")
-        webView.loadHTMLString(rendered.html, baseURL: nil)
+        let rendered = MarkdownRenderer().render(#"<img src="missing.png" onerror="window.pwned=1;window.webkit.messageHandlers.toggleTask.postMessage({line:1,checked:true})"><details open ontoggle="window.pwned=2"><summary>Details</summary></details>"# + "\n\n- [ ] task", assetMode: .appScheme)
+        coordinator.documentLoader.load(rendered.html, baseURL: nil, in: webView)
         wait(for: [loaded], timeout: 15)
 
         XCTAssertEqual(try evaluate("typeof window.pwned", in: webView) as? String, "undefined")

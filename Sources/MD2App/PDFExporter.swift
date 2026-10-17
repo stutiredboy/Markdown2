@@ -9,8 +9,7 @@ import WebKit
 /// Renders a document's preview HTML into a paginated PDF using a dedicated
 /// offscreen `WKWebView`, independent of whether the live preview is mounted (it
 /// is absent in Edit-only mode) or where it is scrolled. The web view loads the
-/// same HTML the preview uses — written to a temporary file in the document
-/// directory so relative image paths resolve under granted read access — waits
+/// same HTML through the shared in-memory document loader, waits
 /// for asynchronous engines (KaTeX/diagrams) to settle, probes safe page breaks,
 /// captures each page-height band via `createPDF`, then composes the bands into
 /// print-ready pages.
@@ -22,7 +21,6 @@ import WebKit
 final class PDFExporter: NSObject, WKNavigationDelegate {
     enum ExportError: LocalizedError {
         case timedOut
-        case preparationFailed
         case renderFailed
         case writeFailed
 
@@ -30,8 +28,6 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
             switch self {
             case .timedOut:
                 return "The document took too long to render."
-            case .preparationFailed:
-                return "The document could not be prepared for export."
             case .renderFailed:
                 return "The document could not be rendered to PDF."
             case .writeFailed:
@@ -39,12 +35,6 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
             }
         }
     }
-
-    /// Filename pieces for the temporary render file written alongside the
-    /// document. Shares the preview's prefix/suffix so the preview's existing
-    /// stale-file sweep also reclaims any leftover after a crash mid-export.
-    private static let renderFilePrefix = ".md2-preview-"
-    private static let renderFileSuffix = ".html"
 
     /// Maximum time to wait after `didFinish` for asynchronous diagram rendering
     /// (Mermaid) to settle when the page's settle signal never flips (e.g. a hung
@@ -76,7 +66,7 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
     static let boundaryCushion: CGFloat = 22
 
     private let webView: WKWebView
-    private let localImageSchemeHandler = LocalImageSchemeHandler()
+    private let documentLoader = WebDocumentLoader()
     /// Hosts `webView` off-screen. A WKWebView with no window is treated as
     /// non-visible, so WebKit throttles it: the first load can stall and
     /// `createPDF` can capture nothing — which is why the first export of a new
@@ -88,7 +78,6 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
     /// configuration. Geometry is consumed in `init`; running-text settings are
     /// consumed when composing pages.
     private let profile: ExportProfile
-    private var temporaryHTMLURL: URL?
     /// Document headings (whose slug `id`s match the rendered heading elements),
     /// used to build the PDF outline. Empty when the document has no headings, in
     /// which case the PDF is written without an outline.
@@ -152,10 +141,7 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
 
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
-        configuration.setURLSchemeHandler(
-            localImageSchemeHandler,
-            forURLScheme: LocalImageSchemeHandler.scheme
-        )
+        documentLoader.install(on: configuration)
         // The rendered HTML is styled for on-screen reading (wide content
         // padding, a large base font). Override those with print-density styles
         // so each page holds a normal amount of text and the page margins — not
@@ -217,53 +203,7 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
         timeoutWorkItem = timeout
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.overallTimeout, execute: timeout)
 
-        // Always rewrite local image sources and register the whitelist with the
-        // scheme handler (registered once in `init`) before choosing a load path.
-        // `LocalImageHTMLRewriter.rewrite` is nil-safe: with no base it still
-        // tokenizes absolute paths and `file://` URLs and only skips relative
-        // references that have no base to resolve against. This mirrors
-        // `MarkdownPreviewView.load`, which already does the same for the live
-        // preview — keep these two load-decision sites aligned; their drift is
-        // what blanked images in untitled-document exports.
-        let rewritten = LocalImageHTMLRewriter.rewrite(html, baseURL: baseURL)
-        localImageSchemeHandler.setAllowedImages(rewritten.allowedImages)
-
-        if let baseURL, baseURL.isFileURL {
-            // A file-backed document has a base directory: write the rewritten
-            // HTML into it and load it via a file request. The web view gets a
-            // file:// origin and read access to the directory, so relative
-            // *non-image* resources the rewriter leaves untouched (styles,
-            // scripts) still resolve; local images are already tokenized and
-            // served by the scheme handler. Mirrors the preview's file-backed load.
-            let renderURL = baseURL.appendingPathComponent(
-                "\(Self.renderFilePrefix)\(UUID().uuidString)\(Self.renderFileSuffix)"
-            )
-            do {
-                try rewritten.html.write(to: renderURL, atomically: true, encoding: .utf8)
-                temporaryHTMLURL = renderURL
-                webView.loadFileRequest(
-                    URLRequest(url: renderURL),
-                    allowingReadAccessTo: baseURL
-                )
-            } catch {
-                // A file-backed document may reference relative images that only
-                // resolve via the granted read access of `loadFileRequest`. Falling
-                // back to `loadHTMLString` would silently drop those images while
-                // still reporting success, so treat the failure as an export failure.
-                finish(.failure(ExportError.preparationFailed))
-            }
-        } else {
-            // No base directory (an untitled document). Load the rewritten HTML
-            // directly: the rewriter already turned absolute-path and `file://`
-            // image references into `md2-local-image://` tokens, which the scheme
-            // handler (registered in `init`) serves by reading those exact files
-            // from disk — no web-view file access needed. Relative references are
-            // left as-is and stay unresolvable (no base to resolve against),
-            // matching the live preview's untitled-document behavior. (`baseURL`
-            // is nil here; the preview passes `baseURL: baseURL`, identical in
-            // this branch.)
-            webView.loadHTMLString(rewritten.html, baseURL: nil)
-        }
+        documentLoader.load(html, baseURL: baseURL, in: webView)
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -791,7 +731,7 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
           }
         }
 
-        var atomicEls = body.querySelectorAll('pre,img,svg,canvas,figure,hr,.math-display,.diagram');
+        var atomicEls = body.querySelectorAll('pre,img,svg,canvas,figure,hr,.math-display,.diagram,.markdown-alert');
         for (var a = 0; a < atomicEls.length; a++) {
           var ar = rectFor(atomicEls[a]);
           if (!ar) { continue; }
@@ -860,7 +800,7 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
         }
 
         // Paragraph / list / heading boundaries are also safe.
-        var blocks = body.querySelectorAll('p,li,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl,section');
+        var blocks = body.querySelectorAll('p,li,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl,section,.markdown-alert');
         for (var b = 0; b < blocks.length; b++) {
           var br = blocks[b].getBoundingClientRect();
           if (br.height <= 0 && br.width <= 0) { continue; }
@@ -896,7 +836,7 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
     """
     }
 
-    /// Reports the outcome once and cleans up the temporary render file. Repeat
+    /// Reports the outcome once and releases the offscreen render host. Repeat
     /// calls (e.g. a timeout firing after success) are ignored.
     private func finish(_ result: Result<Void, Error>) {
         guard !hasFinished else { return }
@@ -904,11 +844,6 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
 
         timeoutWorkItem?.cancel()
         timeoutWorkItem = nil
-
-        if let temporaryHTMLURL {
-            try? FileManager.default.removeItem(at: temporaryHTMLURL)
-            self.temporaryHTMLURL = nil
-        }
 
         hostWindow.orderOut(nil)
 

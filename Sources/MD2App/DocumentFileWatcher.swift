@@ -5,7 +5,7 @@ import Foundation
 /// its modification date plus a SHA-256 of the bytes. The hash — not the date —
 /// decides whether an event is a real external change, so the app's own atomic
 /// saves and metadata-only touches never masquerade as one.
-struct DocumentFileFingerprint: Equatable, Sendable {
+struct DocumentFileFingerprint: Codable, Equatable, Sendable {
     var modificationDate: Date?
     var contentHash: Data
 

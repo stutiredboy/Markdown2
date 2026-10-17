@@ -208,10 +208,10 @@ struct DocumentExternalChangeTests {
         #expect(try String(contentsOf: url, encoding: .utf8) == "# Doc\n\nExternal edit.\n")
     }
 
-    @Test func externalDeletionMarksDirtyAndSaveRecreates() async throws {
+    @Test func externalDeletionMarksDirtyAndExplicitSaveCanRecreate() async throws {
         let watcher = FakeFileWatcher()
-        let store = makeStore(watcher)
         let url = try makeTempDocument("# Doc\n")
+        let store = DocumentStore(saveLocationPicker: { _ in url }, fileWatcherFactory: { watcher })
         store.open(url)
         #expect(!store.isDirty)
 

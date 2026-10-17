@@ -12,6 +12,10 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
     /// Noted on every successful open and first save.
     private let recentDocuments: RecentDocumentsRecording = SystemRecentDocumentsRecorder()
     private var documentWindows: [DocumentWindow] = []
+    private let recoveryRepository = DocumentRecoveryRepository.applicationRepository()
+    private var isTerminating = false
+    private var pendingRecoverySnapshots: [DocumentRecoverySnapshot] = []
+    private var recoveryReadFailed = false
     private let activationController = LaunchActivationController()
     /// Set when the user asks to restart for a language change. Read in
     /// `applicationWillTerminate` to arm the relaunch only once termination is
@@ -32,6 +36,9 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
 
     override init() {
         super.init()
+        // Read before Finder can deliver openURLs and create this session's records.
+        do { pendingRecoverySnapshots = try recoveryRepository.load() }
+        catch { recoveryReadFailed = true }
         knownModeShortcuts = Set(settings.modeShortcuts.assignments.map(\.shortcut))
         modeShortcutObservation = settings.$modeShortcuts.sink { [weak self] configuration in
             self?.knownModeShortcuts.formUnion(configuration.assignments.map(\.shortcut))
@@ -83,6 +90,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        restoreDocumentWindows()
         if let url = fileURLFromLaunchArguments() {
             openInNewWindow(url)
         } else if documentWindows.isEmpty && settings.opensBlankDocumentOnLaunch {
@@ -169,7 +177,17 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
         DocumentStore(
             exportProfileProvider: { [settings] in settings.exportProfile },
             renderConfigProvider: { [settings] in (settings.citationStyle, settings.numberAllEquations) },
-            alertTextProvider: { [settings] in settings.text($0) }
+            syntaxConfigProvider: { [settings] in (settings.inlineFeatures, settings.alertLanguage) },
+            alertTextProvider: { [settings] in settings.text($0) },
+            recoveryRepository: recoveryRepository,
+            confirmEncodingConversion: { [settings] encoding in
+                let alert = NSAlert()
+                alert.messageText = settings.text(.encodingConversionTitle)
+                alert.informativeText = String(format: settings.text(.encodingConversionMessage), encoding)
+                alert.addButton(withTitle: settings.text(.convertToUTF8))
+                alert.addButton(withTitle: settings.text(.cancel))
+                return alert.runModal() == .alertFirstButtonReturn
+            }
         )
     }
 
@@ -210,7 +228,10 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
     /// one is created. Also the open path for Markdown links clicked in a
     /// preview, so linked documents front/dedupe like any other open.
     func openInNewWindow(_ url: URL) {
-        if let existing = documentWindows.first(where: { $0.store.fileURL == url }) {
+        for document in documentWindows { document.store.refreshFileLocation() }
+        if let existing = documentWindows.first(where: {
+            $0.store.fileURL?.resolvingSymlinksInPath() == url.resolvingSymlinksInPath()
+        }) {
             existing.window.makeKeyAndOrderFront(nil)
             // Re-opening an already-open document still bumps its recency,
             // matching platform behavior. (Fresh opens are noted through the
@@ -228,6 +249,50 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
         let documentWindow = makeDocumentWindow(store: makeDocumentStore())
         documentWindow.store.open(url)
         documentWindow.window.makeKeyAndOrderFront(nil)
+    }
+
+    /// Restored records are retained until explicit window close. Finder may
+    /// already have delivered openURLs during launch: restore the draft into
+    /// that window instead of opening a second writer for the same file.
+    private func restoreDocumentWindows() {
+        do {
+            var restoredURLs = Set<URL>()
+            for var snapshot in pendingRecoverySnapshots {
+                var url = snapshot.fileURL.flatMap { snapshot.identity?.resolve(fallback: $0) } ?? snapshot.fileURL
+                if let candidate = url?.resolvingSymlinksInPath(), !restoredURLs.insert(candidate).inserted {
+                    // Two retained drafts can refer to one file (e.g. an earlier
+                    // second app instance). Preserve both texts, with only one
+                    // writer attached to the original file.
+                    snapshot.fileURL = nil
+                    snapshot.identity = nil
+                    snapshot.fingerprint = nil
+                    snapshot.isDirty = true
+                    url = nil
+                }
+                if let url, let existing = documentWindows.first(where: {
+                    $0.store.fileURL?.resolvingSymlinksInPath() == url.resolvingSymlinksInPath()
+                }) {
+                    let temporaryID = existing.store.recoveryID
+                    existing.store.restore(snapshot)
+                    if temporaryID != snapshot.id { try recoveryRepository.remove(temporaryID) }
+                    if let frame = snapshot.windowFrame { existing.window.setFrame(from: frame) }
+                } else {
+                    let store = makeDocumentStore()
+                    store.restore(snapshot)
+                    let window = makeDocumentWindow(store: store).window
+                    window.makeKeyAndOrderFront(nil)
+                }
+            }
+            pendingRecoverySnapshots = []
+            if recoveryReadFailed || !recoveryRepository.unreadableRecords.isEmpty { showRecoveryReadError() }
+        } catch { showRecoveryReadError() }
+    }
+
+    private func showRecoveryReadError() {
+        let alert = NSAlert()
+        alert.messageText = String(format: settings.text(.alertRecoveryUnreadable), recoveryRepository.directory.path)
+        alert.addButton(withTitle: settings.text(.ok))
+        alert.runModal()
     }
 
     // MARK: - Recent documents
@@ -270,6 +335,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
 
     @discardableResult
     private func makeDocumentWindow(store: DocumentStore) -> DocumentWindow {
+        let restoredFrame = store.windowFrame
         let contentView = ContentView(
             document: store,
             settings: settings,
@@ -316,6 +382,9 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
         } else {
             window.center()
         }
+        if let frame = restoredFrame { window.setFrame(from: frame) }
+        store.windowFrame = window.frameDescriptor
+        store.persistRecoveryNow()
         return documentWindow
     }
 
@@ -346,41 +415,54 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
         guard let store = documentStore(for: sender) else {
             return true
         }
-        return confirmDiscardOrSaveIfNeeded(for: store)
+        return confirmDiscardOrSaveIfNeeded(for: store) && store.closeDocument(discardRecovery: true)
+    }
+
+    func windowDidMove(_ notification: Notification) { recordWindowFrame(notification) }
+    func windowDidResize(_ notification: Notification) { recordWindowFrame(notification) }
+
+    private func recordWindowFrame(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        documentStore(for: window)?.windowFrame = window.frameDescriptor
     }
 
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
         // Detach the file watcher deterministically; releasing the store also
         // cancels it, but the hosting view can keep references alive briefly.
-        documentStore(for: window)?.stopWatchingFile()
+        documentStore(for: window)?.closeDocument(discardRecovery: !isTerminating)
         documentWindows.removeAll { $0.window == window }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        for documentWindow in documentWindows where documentWindow.store.isDirty {
-            documentWindow.window.makeKeyAndOrderFront(nil)
-            if !confirmDiscardOrSaveIfNeeded(for: documentWindow.store) {
-                // User cancelled: abort any pending language relaunch so a later
-                // normal quit does not unexpectedly relaunch the app.
+        // Quit preserves open windows and drafts. Explicit close still asks
+        // Save / Don't Save / Cancel and removes only that window's record.
+        for documentWindow in documentWindows {
+            documentWindow.store.windowFrame = documentWindow.window.frameDescriptor
+            if !documentWindow.store.prepareForTermination() {
                 pendingLanguageRelaunch = false
+                documentWindow.window.makeKeyAndOrderFront(nil)
                 return .terminateCancel
             }
+        }
+        isTerminating = true
+        for documentWindow in documentWindows {
+            documentWindow.store.closeDocument(discardRecovery: false)
         }
         return .terminateNow
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Only reached once termination is committed (a cancelled unsaved-changes
-        // prompt returns `.terminateCancel` and clears the flag), so arming the
+        // Only reached once recovery data is durably written; a failed write
+        // returns `.terminateCancel` and clears the flag, so arming the
         // relaunch here can never strand a second instance.
         guard pendingLanguageRelaunch else { return }
         relaunchAfterTermination()
     }
 
     /// Restarts the app so the standard menu bar rebuilds in the newly chosen
-    /// language. Terminates through `NSApp.terminate(_:)` — not `exit()` — so the
-    /// unsaved-changes prompt runs first; the relaunch itself is armed in
+    /// language. Terminates through `NSApp.terminate(_:)` — not `exit()` — so
+    /// recovery is flushed first; the relaunch itself is armed in
     /// `applicationWillTerminate`.
     func requestLanguageRelaunch() {
         pendingLanguageRelaunch = true
@@ -450,6 +532,8 @@ private final class DocumentWindow {
     private let settings: AppSettings
     private var cancellable: AnyCancellable?
     private var conflictCancellable: AnyCancellable?
+    private var encodingCancellable: AnyCancellable?
+    private var isPresentingEncoding = false
     private var isPresentingConflict = false
     /// The last file URL reported through `onFileBacked`, so a document
     /// becoming file-backed (open into this window, or an untitled document's
@@ -477,11 +561,30 @@ private final class DocumentWindow {
                 }
             }
         }
+        encodingCancellable = store.$encodingConversionRequest.sink { [weak self] request in
+            guard request != nil else { return }
+            DispatchQueue.main.async { self?.presentEncodingPromptIfNeeded() }
+        }
         conflictCancellable = store.$externalConflictRequest.sink { [weak self] request in
             guard request != nil else { return }
             DispatchQueue.main.async {
                 self?.presentConflictPromptIfNeeded()
             }
+        }
+    }
+
+    private func presentEncodingPromptIfNeeded() {
+        guard !isPresentingEncoding, store.encodingConversionRequest != nil else { return }
+        isPresentingEncoding = true
+        let alert = NSAlert()
+        alert.messageText = settings.text(.encodingConversionTitle)
+        alert.informativeText = String(format: settings.text(.encodingConversionMessage), store.fileFormat.encodingLabel)
+        alert.addButton(withTitle: settings.text(.convertToUTF8))
+        alert.addButton(withTitle: settings.text(.cancel))
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            self.isPresentingEncoding = false
+            self.store.resolveEncodingConversion(convertToUTF8: response == .alertFirstButtonReturn)
         }
     }
 

@@ -50,6 +50,12 @@ struct SettingsView: View {
                 }
             }
 
+            Section(settings.text(.markdownSyntax)) {
+                Toggle(settings.text(.enablesHighlight), isOn: $settings.enablesHighlight)
+                Toggle(settings.text(.enablesSuperscript), isOn: $settings.enablesSuperscript)
+                Toggle(settings.text(.enablesSubscript), isOn: $settings.enablesSubscript)
+            }
+
             Section(settings.text(.academic)) {
                 Picker(settings.text(.citationStyleLabel), selection: $settings.citationStyle) {
                     Text(settings.text(.citationAuthorYear)).tag(CitationStyle.authorYear)

@@ -6,37 +6,43 @@ struct MarkdownFileDecoderTests {
     @Test func plainUTF8DecodesWithoutFallback() {
         let data = Data("# 标题\n\nBody text.\n".utf8)
         let decoded = MarkdownFileDecoder.decode(data)
-        #expect(decoded == MarkdownFileDecoder.DecodedFile(text: "# 标题\n\nBody text.\n", usedFallbackEncoding: false))
+        #expect(decoded?.text == "# 标题\n\nBody text.\n")
+        #expect(decoded?.usedFallbackEncoding == false)
     }
 
     @Test func emptyFileDecodesAsEmptyUTF8() {
         let decoded = MarkdownFileDecoder.decode(Data())
-        #expect(decoded == MarkdownFileDecoder.DecodedFile(text: "", usedFallbackEncoding: false))
+        #expect(decoded?.text == "")
+        #expect(decoded?.usedFallbackEncoding == false)
     }
 
     @Test func utf8ByteOrderMarkIsStrippedAndMarkedFallback() {
         let data = Data([0xEF, 0xBB, 0xBF]) + Data("# Doc\n".utf8)
         let decoded = MarkdownFileDecoder.decode(data)
-        #expect(decoded == MarkdownFileDecoder.DecodedFile(text: "# Doc\n", usedFallbackEncoding: true))
+        #expect(decoded?.text == "# Doc\n")
+        #expect(decoded?.usedFallbackEncoding == true)
     }
 
     @Test func utf16LittleEndianWithBOMDecodes() throws {
         let body = try #require("你好 World\n".data(using: .utf16LittleEndian))
         let decoded = MarkdownFileDecoder.decode(Data([0xFF, 0xFE]) + body)
-        #expect(decoded == MarkdownFileDecoder.DecodedFile(text: "你好 World\n", usedFallbackEncoding: true))
+        #expect(decoded?.text == "你好 World\n")
+        #expect(decoded?.usedFallbackEncoding == true)
     }
 
     @Test func utf16BigEndianWithBOMDecodes() throws {
         let body = try #require("# Heading\n".data(using: .utf16BigEndian))
         let decoded = MarkdownFileDecoder.decode(Data([0xFE, 0xFF]) + body)
-        #expect(decoded == MarkdownFileDecoder.DecodedFile(text: "# Heading\n", usedFallbackEncoding: true))
+        #expect(decoded?.text == "# Heading\n")
+        #expect(decoded?.usedFallbackEncoding == true)
     }
 
     @Test func utf32LittleEndianBOMWinsOverUTF16Prefix() throws {
         // The UTF-32LE BOM begins with the UTF-16LE mark; order matters.
         let body = try #require("A\n".data(using: .utf32LittleEndian))
         let decoded = MarkdownFileDecoder.decode(Data([0xFF, 0xFE, 0x00, 0x00]) + body)
-        #expect(decoded == MarkdownFileDecoder.DecodedFile(text: "A\n", usedFallbackEncoding: true))
+        #expect(decoded?.text == "A\n")
+        #expect(decoded?.usedFallbackEncoding == true)
     }
 
     @Test func gb18030ChineseTextDecodes() throws {
@@ -45,7 +51,8 @@ struct MarkdownFileDecoderTests {
         // Sanity: the fixture is not valid UTF-8, so it exercises the fallback.
         #expect(String(data: data, encoding: .utf8) == nil)
         let decoded = MarkdownFileDecoder.decode(data)
-        #expect(decoded == MarkdownFileDecoder.DecodedFile(text: source, usedFallbackEncoding: true))
+        #expect(decoded?.text == source)
+        #expect(decoded?.usedFallbackEncoding == true)
     }
 
     @Test func binaryDataIsRejected() {
@@ -94,7 +101,7 @@ struct DocumentAlertLocalizationTests {
         #expect(store.alert?.detail == "<alertPandocRequiredDetail>")
     }
 
-    @Test func gb18030FileOpensAndSavesAsUTF8() throws {
+    @Test func gb18030FileOpensAndPreservesEncoding() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("md2-gb-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -107,9 +114,9 @@ struct DocumentAlertLocalizationTests {
         #expect(store.alert == nil)
         #expect(store.text == source)
 
-        // The next save normalizes the file to UTF-8 with the same text.
+        // Saving preserves the original legacy bytes.
         #expect(store.save())
         let savedData = try Data(contentsOf: url)
-        #expect(savedData == Data(source.utf8))
+        #expect(savedData == source.data(using: MarkdownFileDecoder.gb18030))
     }
 }

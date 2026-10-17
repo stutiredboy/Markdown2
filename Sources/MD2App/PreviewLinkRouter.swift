@@ -1,4 +1,5 @@
 import Foundation
+import MD2Core
 
 /// Classifies a navigation target inside the rendered preview against the
 /// app-owned document page, deciding whether the web view may navigate or how
@@ -24,19 +25,26 @@ enum PreviewLinkRouter {
     private static let markdownExtensions: Set<String> = ["md", "markdown"]
 
     /// Schemes backing the page shell itself rather than openable content.
-    /// `about:` hosts `loadHTMLString` pages (untitled documents), where a
+    /// Retained for string-loaded test/legacy pages, where a
     /// fragment jump arrives as `about:blank#…`; `applewebdata:` is WebKit's
     /// synthetic base for string-loaded pages on some paths. Relative links on
     /// such pages cannot resolve to a file, so they collapse to these schemes
     /// (or to no navigation at all) and must never leave the page.
     private static let inPageSchemes: Set<String> = ["about", "applewebdata"]
 
-    /// Routes `target` given the app-owned page URL: the preview temp file
-    /// when the document was loaded via `loadFileRequest`, or `nil` for the
-    /// `loadHTMLString` (untitled document) mode.
+    /// Routes `target` against the current memory page. Local hyperlinks have
+    /// already been resolved to file URLs by the shared document loader.
     static func route(for target: URL?, documentPageURL: URL?) -> Route {
         guard let target, let scheme = target.scheme?.lowercased() else {
             return .ignore
+        }
+
+        if scheme == WebDocumentLoader.documentScheme {
+            var page = documentPageURL.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }
+            var destination = URLComponents(url: target, resolvingAgainstBaseURL: false)
+            page?.fragment = nil
+            destination?.fragment = nil
+            return page != nil && page == destination ? .allowInPage : .ignore
         }
 
         if inPageSchemes.contains(scheme) {
@@ -61,7 +69,7 @@ enum PreviewLinkRouter {
             return .openWithSystem(target)
         }
 
-        if scheme == LocalImageSchemeHandler.scheme {
+        if scheme == LocalImageSchemeHandler.scheme || scheme == BundledWebAsset.scheme {
             return .ignore
         }
 

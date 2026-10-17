@@ -39,12 +39,25 @@ final class DocumentStore: ObservableObject {
             isDirty = true
             scheduleRender()
             scheduleAutosaveIfNeeded()
+            scheduleRecovery()
         }
     }
 
     @Published private(set) var rendered: RenderedDocument
     @Published private(set) var fileURL: URL?
     @Published private(set) var isDirty = false
+    @Published private(set) var fileFormat = MarkdownFileFormat()
+    @Published private(set) var backingFileMissing = false
+    @Published var encodingConversionRequest: UUID?
+    private var encodingWarningShown = false
+    private let confirmEncodingConversion: @MainActor (String) -> Bool
+    private var fileIdentity: DocumentFileIdentity?
+    private let recoveryRepository: DocumentRecoveryRepository?
+    private(set) var recoveryID = UUID()
+    var windowFrame: String? { didSet { if windowFrame != oldValue { scheduleRecovery() } } }
+    private var recoveryTask: Task<Void, Never>?
+    private var recoveryErrorReported = false
+    private var isClosed = false
     @Published var alert: DocumentAlert?
     @Published var jumpLine: Int?
     @Published var jumpHeadingID: String?
@@ -124,6 +137,7 @@ final class DocumentStore: ObservableObject {
     /// Supplies the citation/equation-numbering preferences that feed the render
     /// config. Injected so tests can pin them; the app wires it to live settings.
     private let renderConfigProvider: @MainActor () -> (citationStyle: CitationStyle, numberAllEquations: Bool)
+    private let syntaxConfigProvider: @MainActor () -> (InlineFeatures, AlertLanguage)
     /// Resolves user-facing alert copy from the app's localization table, so
     /// document alerts follow the app language. Injected (the app wires it to
     /// `AppSettings.text(_:)`); defaults to the English table for tests.
@@ -154,8 +168,11 @@ final class DocumentStore: ObservableObject {
         preparingDerivedArtifact || pdfExporter != nil || documentPrinter != nil || documentConverter != nil
     }
     private var isLoading = false
-    private var autosaveWorkItem: DispatchWorkItem?
-    private let autosaveDelay: TimeInterval = 5
+    private var autosaveTask: Task<Void, Never>?
+    private var autosaveDeadlineTask: Task<Void, Never>?
+    private let autosaveDelay: TimeInterval
+    private let maximumAutosaveDelay: TimeInterval
+    private let recoveryDelay: TimeInterval
     /// Watches the backing file for external modification/replacement/deletion.
     /// Created lazily on first load/save of a file-backed document; injected so
     /// tests can drive events deterministically.
@@ -207,8 +224,14 @@ final class DocumentStore: ObservableObject {
         saveLocationPicker: @escaping @MainActor (String) -> URL? = DocumentStore.presentSaveLocation,
         exportProfileProvider: @escaping @MainActor () -> ExportProfile = { .default },
         renderConfigProvider: @escaping @MainActor () -> (citationStyle: CitationStyle, numberAllEquations: Bool) = { (.authorYear, false) },
+        syntaxConfigProvider: @escaping @MainActor () -> (InlineFeatures, AlertLanguage) = { (.init(), .english) },
         alertTextProvider: @escaping @MainActor (L10nKey) -> String = { L10n.text($0, language: .english) },
-        fileWatcherFactory: @escaping @MainActor () -> DocumentFileWatching = { DispatchSourceFileWatcher() }
+        fileWatcherFactory: @escaping @MainActor () -> DocumentFileWatching = { DispatchSourceFileWatcher() },
+        recoveryRepository: DocumentRecoveryRepository? = nil,
+        autosaveDelay: TimeInterval = 5,
+        maximumAutosaveDelay: TimeInterval = 30,
+        recoveryDelay: TimeInterval = 1,
+        confirmEncodingConversion: @escaping @MainActor (String) -> Bool = { _ in false }
     ) {
         self.pdfDestinationPicker = pdfDestinationPicker
         self.htmlDestinationPicker = htmlDestinationPicker
@@ -220,12 +243,18 @@ final class DocumentStore: ObservableObject {
         self.saveLocationPicker = saveLocationPicker
         self.exportProfileProvider = exportProfileProvider
         self.renderConfigProvider = renderConfigProvider
+        self.syntaxConfigProvider = syntaxConfigProvider
         self.alertTextProvider = alertTextProvider
         self.fileWatcherFactory = fileWatcherFactory
+        self.recoveryRepository = recoveryRepository
+        self.autosaveDelay = autosaveDelay
+        self.maximumAutosaveDelay = maximumAutosaveDelay
+        self.recoveryDelay = recoveryDelay
+        self.confirmEncodingConversion = confirmEncodingConversion
 
         let starterText = Self.starterMarkdown
         text = starterText
-        rendered = renderer.render(starterText)
+        rendered = renderer.render(starterText, assetMode: .appScheme)
     }
 
     /// True when this store still holds the untouched starter document, i.e. it
@@ -243,6 +272,8 @@ final class DocumentStore: ObservableObject {
             externalConflictRequest = ExternalConflictRequest()
             return false
         }
+        refreshFileLocation()
+        if backingFileMissing { return presentSaveLocationAndWrite() }
         if let fileURL {
             return write(to: fileURL)
         } else {
@@ -423,7 +454,7 @@ final class DocumentStore: ObservableObject {
         defer { preparingDerivedArtifact = false }
         let baseURL = self.baseURL
         let snapshot = makeRenderSnapshot()
-        let rendered = await renderWorker.render(snapshot)
+        let rendered = await renderWorker.render(snapshot, assetMode: .inline)
 
         // Untitled documents have no `baseURL`, so relative image paths cannot be
         // resolved; the builder leaves those references as-is rather than failing.
@@ -663,7 +694,8 @@ final class DocumentStore: ObservableObject {
         load(from: url)
     }
 
-    private func load(from url: URL) {
+    @discardableResult
+    private func load(from url: URL) -> Bool {
         do {
             // Read the raw bytes once: the text decodes from them and the
             // fingerprint hashes them, so the stored hash always matches the
@@ -674,8 +706,13 @@ final class DocumentStore: ObservableObject {
                     message: alertText(.alertUndecodableFile, url.lastPathComponent),
                     detail: alertText(.alertUndecodableFileDetail)
                 )
-                return
+                return false
             }
+            fileFormat = decoded.format
+            fileIdentity = DocumentFileIdentity(url: url)
+            backingFileMissing = false
+            encodingWarningShown = false
+            encodingConversionRequest = nil
             setDocumentText(decoded.text, fileURL: url, dirty: false)
             lastKnownFingerprint = DocumentFileFingerprint.of(data: data, at: url)
             hasExternalConflict = false
@@ -683,58 +720,88 @@ final class DocumentStore: ObservableObject {
             pendingExternalReload = nil
             pendingReloadDiscardsEdits = false
             startWatchingFile()
-        } catch {
-            alert = DocumentAlert(
-                message: alertText(.alertCouldNotOpen, url.lastPathComponent),
-                detail: error.localizedDescription
-            )
-        }
-    }
-
-    @discardableResult
-    private func write(to url: URL) -> Bool {
-        // Never blind-overwrite content this app has not seen: when writing to
-        // the document's own file, a changed on-disk hash means an external
-        // edit landed after our last read/write, so the write is aborted and
-        // the conflict flow runs instead. (A missing file proceeds — that is
-        // the deliberate recreate-after-external-delete path.)
-        if url == fileURL, let lastKnown = lastKnownFingerprint {
-            let comparison = DocumentFileFingerprint.comparison(
-                lastKnown: lastKnown,
-                current: DocumentFileFingerprint.current(at: url)
-            )
-            if comparison == .contentChanged {
-                raiseExternalConflict()
-                return false
-            }
-        }
-
-        // Saving source does not need to wait for preview rendering.
-        do {
-            autosaveWorkItem?.cancel()
-            autosaveWorkItem = nil
-            let writtenData = Data(text.utf8)
-            try text.write(to: url, atomically: true, encoding: .utf8)
-            lastKnownFingerprint = DocumentFileFingerprint.of(data: writtenData, at: url)
-            fileURL = url
-            isDirty = false
-            hasExternalConflict = false
-            // Re-arm on the path: an atomic write replaced the inode, and a
-            // first save has no watcher yet.
-            startWatchingFile()
+            persistRecoveryNow()
             return true
         } catch {
             alert = DocumentAlert(
-                message: alertText(.alertCouldNotSave, url.lastPathComponent),
+                message: alertText(.alertCouldNotOpen, url.lastPathComponent),
                 detail: error.localizedDescription
             )
             return false
         }
     }
 
+    @discardableResult
+    private func write(to requestedURL: URL, automatically: Bool = false) -> Bool {
+        guard !isClosed else { return false }
+        // Resolve again at the write boundary, even before the watcher fires.
+        let writingBackingFile = requestedURL == fileURL
+        if writingBackingFile { refreshFileLocation() }
+        let url = writingBackingFile ? (fileURL ?? requestedURL) : requestedURL
+        if automatically && backingFileMissing { return false }
+        if url == fileURL, let lastKnown = lastKnownFingerprint {
+            let comparison = DocumentFileFingerprint.comparison(
+                lastKnown: lastKnown, current: DocumentFileFingerprint.current(at: url))
+            if comparison == .contentChanged {
+                raiseExternalConflict()
+                return false
+            }
+            // A file can vanish between location resolution and the read.
+            if automatically && comparison == .missing {
+                markBackingFileMissing()
+                return false
+            }
+        }
+
+        var outputFormat = fileFormat
+        var data = outputFormat.encode(text)
+        if data == nil {
+            if automatically {
+                if !encodingWarningShown {
+                    encodingWarningShown = true
+                    encodingConversionRequest = UUID()
+                }
+                return false
+            }
+            guard confirmEncodingConversion(fileFormat.encodingLabel) else { return false }
+            outputFormat.encoding = .utf8
+            data = outputFormat.encode(text)
+        }
+        guard let writtenData = data else { return false }
+        do {
+            cancelAutosave()
+            try writtenData.write(to: url, options: .atomic)
+            lastKnownFingerprint = DocumentFileFingerprint.of(data: writtenData, at: url)
+            fileURL = url
+            fileIdentity = DocumentFileIdentity(url: url)
+            fileFormat = outputFormat
+            isDirty = false
+            backingFileMissing = false
+            encodingWarningShown = false
+            encodingConversionRequest = nil
+            hasExternalConflict = false
+            startWatchingFile()
+            persistRecoveryNow()
+            return true
+        } catch {
+            alert = DocumentAlert(message: alertText(.alertCouldNotSave, url.lastPathComponent),
+                                  detail: error.localizedDescription)
+            persistRecoveryNow()
+            return false
+        }
+    }
+
+    func resolveEncodingConversion(convertToUTF8: Bool) {
+        encodingConversionRequest = nil
+        guard convertToUTF8 else { return }
+        fileFormat.encoding = .utf8
+        encodingWarningShown = false
+        persistRecoveryNow()
+        _ = save()
+    }
+
     private func setDocumentText(_ newText: String, fileURL newFileURL: URL?, dirty: Bool) {
-        autosaveWorkItem?.cancel()
-        autosaveWorkItem = nil
+        cancelAutosave()
         isLoading = true
         text = newText
         // Another document's history does not apply to this one.
@@ -787,8 +854,10 @@ final class DocumentStore: ObservableObject {
 
     private func makeRenderSnapshot() -> DocumentRenderSnapshot {
         let preferences = renderConfigProvider()
+        let syntax = syntaxConfigProvider()
         return DocumentRenderSnapshot(text: text, baseURL: baseURL,
-            citationStyle: preferences.citationStyle, numberAllEquations: preferences.numberAllEquations)
+            citationStyle: preferences.citationStyle, numberAllEquations: preferences.numberAllEquations,
+            inlineFeatures: syntax.0, alertLanguage: syntax.1)
     }
 
     /// Await the latest generation without blocking the main actor. If an edit
@@ -827,7 +896,8 @@ final class DocumentStore: ObservableObject {
     /// arrival so a save or reload that landed meanwhile invalidates the
     /// stale evaluation instead of acting on it.
     private func evaluateExternalChange() {
-        guard let fileURL, let lastKnown = lastKnownFingerprint, !isLoading else { return }
+        refreshFileLocation()
+        guard let fileURL, let lastKnown = lastKnownFingerprint, !isLoading, !isClosed else { return }
         let url = fileURL
         Task.detached(priority: .utility) { [weak self] in
             let current = DocumentFileFingerprint.current(at: url)
@@ -842,23 +912,24 @@ final class DocumentStore: ObservableObject {
         lastKnown: DocumentFileFingerprint,
         url: URL
     ) {
-        guard fileURL == url, lastKnownFingerprint == lastKnown else { return }
+        guard fileURL == url, lastKnownFingerprint == lastKnown, !isClosed else { return }
         switch ExternalChangeDecision.action(
             for: DocumentFileFingerprint.comparison(lastKnown: lastKnown, current: current),
             isDirty: isDirty
         ) {
         case .ignore:
             // Same bytes; refresh the date so a touch is not re-hashed forever.
-            if let current { lastKnownFingerprint = current }
+            if let current {
+                lastKnownFingerprint = current
+                fileIdentity = DocumentFileIdentity(url: url)
+                backingFileMissing = false
+            }
         case .reloadPreservingViewport:
             beginExternalReload()
         case .presentConflict:
             raiseExternalConflict()
         case .markDeletedDirty:
-            // Memory is now the only copy: dirty engages close/quit protection,
-            // and the next save recreates the file at the original path. The
-            // watcher keeps polling the path for an external restore.
-            isDirty = true
+            markBackingFileMissing()
         }
     }
 
@@ -883,6 +954,7 @@ final class DocumentStore: ObservableObject {
         pendingExternalReload = nil
         let discardsEdits = pendingReloadDiscardsEdits
         pendingReloadDiscardsEdits = false
+        refreshFileLocation()
         guard let fileURL else { return }
 
         guard let data = try? Data(contentsOf: fileURL),
@@ -898,8 +970,7 @@ final class DocumentStore: ObservableObject {
             return
         }
 
-        autosaveWorkItem?.cancel()
-        autosaveWorkItem = nil
+        cancelAutosave()
         jumpLine = nil
         jumpHeadingID = nil
         jumpFraction = nil
@@ -907,6 +978,11 @@ final class DocumentStore: ObservableObject {
             editorJumpAnchor = anchor
             previewJumpAnchor = anchor
         }
+        fileFormat = decoded.format
+        fileIdentity = DocumentFileIdentity(url: fileURL)
+        backingFileMissing = false
+        encodingWarningShown = false
+        encodingConversionRequest = nil
         isLoading = true
         text = decoded.text
         // Revert semantics: the reload is not an undoable edit, and every action
@@ -921,6 +997,7 @@ final class DocumentStore: ObservableObject {
         hasExternalConflict = false
         externalConflictRequest = nil
         startWatchingFile()
+        persistRecoveryNow()
     }
 
     /// Enters the conflict state: writes stop, autosave is suspended, and the
@@ -928,8 +1005,8 @@ final class DocumentStore: ObservableObject {
     /// prompt is already pending keeps a single prompt.
     private func raiseExternalConflict() {
         hasExternalConflict = true
-        autosaveWorkItem?.cancel()
-        autosaveWorkItem = nil
+        cancelAutosave()
+        persistRecoveryNow()
         guard externalConflictRequest == nil else { return }
         externalConflictRequest = ExternalConflictRequest()
     }
@@ -945,37 +1022,166 @@ final class DocumentStore: ObservableObject {
         if reloadingFromDisk {
             beginExternalReload(discardingEdits: true)
         } else {
+            refreshFileLocation()
             if let fileURL, let current = DocumentFileFingerprint.current(at: fileURL) {
                 lastKnownFingerprint = current
+                fileIdentity = DocumentFileIdentity(url: fileURL)
             }
             scheduleAutosaveIfNeeded()
+            persistRecoveryNow()
         }
+    }
+
+    private func cancelAutosave() {
+        autosaveTask?.cancel()
+        autosaveTask = nil
+        autosaveDeadlineTask?.cancel()
+        autosaveDeadlineTask = nil
     }
 
     private func scheduleAutosaveIfNeeded() {
-        guard fileURL != nil, !hasExternalConflict else {
-            autosaveWorkItem?.cancel()
-            autosaveWorkItem = nil
+        guard !isClosed, fileURL != nil, !hasExternalConflict, !backingFileMissing else {
+            cancelAutosave()
             return
         }
-
-        autosaveWorkItem?.cancel()
-
-        let workItem = DispatchWorkItem { [weak self] in
-            Task { @MainActor in
-                self?.autosaveNow()
-            }
+        autosaveTask?.cancel()
+        autosaveTask = delayedTask(after: autosaveDelay) { $0.autosaveNow() }
+        // Starts at the first unsaved edit, never postponed by more typing.
+        if autosaveDeadlineTask == nil {
+            autosaveDeadlineTask = delayedTask(after: maximumAutosaveDelay) { $0.autosaveNow() }
         }
-        autosaveWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + autosaveDelay, execute: workItem)
+    }
+
+    private func delayedTask(after seconds: TimeInterval, action: @escaping @MainActor (DocumentStore) -> Void) -> Task<Void, Never> {
+        Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(seconds)) } catch { return }
+            guard !Task.isCancelled, let self, !self.isClosed else { return }
+            action(self)
+        }
     }
 
     private func autosaveNow() {
-        guard let fileURL, isDirty, !hasExternalConflict else {
+        cancelAutosave()
+        guard let fileURL, isDirty, !hasExternalConflict, !backingFileMissing, !isClosed else { return }
+        _ = write(to: fileURL, automatically: true)
+    }
+
+    /// Called before every disk evaluation and write. Changing the URL must
+    /// also rebase relative images/links and the window's represented URL.
+    func refreshFileLocation() {
+        guard let previous = fileURL, !isClosed else { return }
+        guard let resolved = fileIdentity?.resolve(fallback: previous) else {
+            markBackingFileMissing()
             return
         }
+        backingFileMissing = false
+        guard resolved != previous else { return }
+        fileURL = resolved
+        fileIdentity = DocumentFileIdentity(url: resolved)
+        startWatchingFile()
+        renderImmediately()
+        persistRecoveryNow()
+    }
 
-        _ = write(to: fileURL)
+    private func markBackingFileMissing() {
+        backingFileMissing = true
+        isDirty = true
+        cancelAutosave()
+        persistRecoveryNow()
+    }
+
+    // MARK: Recovery and session restoration
+
+    private func scheduleRecovery() {
+        guard recoveryRepository != nil, recoveryTask == nil, !isClosed else { return }
+        // Throttle, not debounce: continuous typing still reaches disk each second.
+        recoveryTask = delayedTask(after: recoveryDelay) { $0.persistRecoveryNow() }
+    }
+
+    @discardableResult
+    func persistRecoveryNow() -> Bool {
+        recoveryTask?.cancel()
+        recoveryTask = nil
+        guard !isClosed, let recoveryRepository else { return true }
+        do {
+            try recoveryRepository.write(DocumentRecoverySnapshot(
+                id: recoveryID, text: text, fileURL: fileURL, identity: fileIdentity,
+                format: fileFormat, fingerprint: lastKnownFingerprint, isDirty: isDirty,
+                windowFrame: windowFrame))
+            recoveryErrorReported = false
+            return true
+        } catch {
+            if !recoveryErrorReported {
+                alert = DocumentAlert(message: alertText(.alertRecoveryFailed), detail: error.localizedDescription)
+                recoveryErrorReported = true
+            }
+            return false
+        }
+    }
+
+    func restore(_ snapshot: DocumentRecoverySnapshot) {
+        recoveryID = snapshot.id
+        windowFrame = snapshot.windowFrame
+        fileFormat = snapshot.format
+        fileIdentity = snapshot.identity
+        lastKnownFingerprint = snapshot.fingerprint
+        let resolved = snapshot.fileURL.flatMap { snapshot.identity?.resolve(fallback: $0) }
+        setDocumentText(snapshot.text, fileURL: resolved ?? snapshot.fileURL, dirty: snapshot.isDirty)
+        if let url = snapshot.fileURL {
+            if let resolved {
+                fileIdentity = DocumentFileIdentity(url: resolved)
+                let current = DocumentFileFingerprint.current(at: resolved)
+                if !snapshot.isDirty, current != nil {
+                    if !load(from: resolved) {
+                        isDirty = true
+                        raiseExternalConflict()
+                    }
+                } else if current == nil {
+                    markBackingFileMissing()
+                } else if snapshot.fingerprint?.contentHash != current?.contentHash {
+                    raiseExternalConflict() // Keep both versions until the user chooses.
+                }
+            } else {
+                fileURL = url
+                markBackingFileMissing()
+            }
+            startWatchingFile()
+        }
+        scheduleAutosaveIfNeeded()
+        persistRecoveryNow()
+    }
+
+    /// Explicit close discards the record only after Save/Don't Save succeeded.
+    /// Quit keeps records so both saved windows and untitled drafts reopen.
+    @discardableResult
+    func closeDocument(discardRecovery: Bool) -> Bool {
+        if discardRecovery, let recoveryRepository {
+            do { try recoveryRepository.remove(recoveryID) }
+            catch {
+                alert = DocumentAlert(message: alertText(.alertRecoveryFailed), detail: error.localizedDescription)
+                return false
+            }
+        }
+        isClosed = true
+        cancelAutosave()
+        recoveryTask?.cancel()
+        recoveryTask = nil
+        stopWatchingFile()
+        fileIdentity = nil
+        return true
+    }
+
+    /// Flush safe in-place edits on Quit. Conflicts, missing files, and edits
+    /// needing an encoding decision remain in recovery without a blocking panel.
+    @discardableResult
+    func prepareForTermination() -> Bool {
+        refreshFileLocation()
+        if let fileURL, isDirty, !hasExternalConflict, !backingFileMissing,
+           fileFormat.encode(text) != nil {
+            _ = write(to: fileURL, automatically: true)
+        }
+        recoveryErrorReported = false
+        return persistRecoveryNow()
     }
 
     static var markdownTypes: [UTType] {

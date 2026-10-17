@@ -100,20 +100,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
     var localImageMissingLabel: String = "Image not found"
     var remoteImageUnavailableLabel: String = "Remote image could not be loaded"
     var genericImageLoadFailedLabel: String = "Image could not be loaded"
-
     private static let enterEditMessageName = "enterEdit"
     private static let anchorMessageName = "anchorChange"
     private static let toggleTaskMessageName = "toggleTask"
 
-    /// Filename pieces for the temporary preview file written alongside the
-    /// document (kept in the document directory so relative image paths resolve
-    /// under the granted read access).
-    private static let previewFilePrefix = ".md2-preview-"
-    private static let previewFileSuffix = ".html"
-    /// Preview files older than this are treated as leftovers from a prior
-    /// session/crash and swept. The age gate keeps a live sibling window's file
-    /// (rewritten on every render) safe.
-    private static let stalePreviewAge: TimeInterval = 3600
     /// Page scripts (including diagram engines) cannot see native mutation
     /// handlers. Only trusted DOM input in the isolated world is forwarded.
     static func installInteractionBridge(on controller: WKUserContentController, handler: WKScriptMessageHandler) {
@@ -148,10 +138,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
-        configuration.setURLSchemeHandler(
-            context.coordinator.localImageSchemeHandler,
-            forURLScheme: LocalImageSchemeHandler.scheme
-        )
+        context.coordinator.documentLoader.install(on: configuration)
 
         // Forward Cmd+double-click in the rendered page back to native so the
         // surrounding view can switch into edit mode. Also report the heading at
@@ -713,7 +700,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             // diagram engine needed) is applied in place so typing does not
             // reload the page or reset the preview's scroll. Everything else —
             // the initial load, a base-URL/document change, or a new diagram
-            // engine that must be inlined into <head> — goes through a full load.
+            // engine that must be loaded — goes through a full load.
             let isLoadedContentUpdate = liveUpdate
                 && context.coordinator.isLoaded
                 && !baseURLChanged
@@ -737,9 +724,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 context.coordinator.beginLoading()
                 // Load with the pending heading as a URL fragment so WebKit scrolls
                 // to it natively during parsing. This is the only thing that can
-                // position the page before the inlined diagram/math engine scripts
-                // finish executing (which blocks all JavaScript, including our own
-                // scroll code, for several seconds on engine-heavy documents). A
+                // position the page before the external diagram/math engine scripts
+                // finish executing. Bundled scripts use stable, cacheable URLs;
+                // their first execution can still block JavaScript. A
                 // viewport anchor's fallback heading gives the same early, coarse
                 // position; the block/source-line target then refines it.
                 load(
@@ -808,10 +795,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
     }
 
     /// Whether `newBody` needs a diagram engine that the currently-loaded page
-    /// (built from `loadedBody`) does not have inlined. Diagram engine scripts
-    /// are only injected into `<head>` for the diagram kinds present at load, so
+    /// (built from `loadedBody`) has not loaded. Diagram engine scripts
+    /// are only included for the diagram kinds present at load, so
     /// a live in-place content swap cannot introduce a new kind; that case must
-    /// fall back to a full reload. KaTeX is always inlined, so math never forces
+    /// fall back to a full reload. KaTeX is always loaded, so math never forces
     /// a reload.
     private static func requiresNewEngine(newBody: String, loadedBody: String) -> Bool {
         let kinds = [
@@ -1005,93 +992,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
         return coordinator
     }
 
-    /// Loads the rendered HTML into the web view.
-    ///
-    /// `loadHTMLString(_:baseURL:)` does not grant the web view file-system access.
-    /// Local images are therefore resolved and whitelisted by the rewriter below;
-    /// for other relative page resources, a file-backed document is loaded from a
-    /// temporary HTML file beside the source document with directory read access.
+    /// Preview and PDF export share the same memory page and resource boundary.
     private func load(_ html: String, baseURL: URL?, fragment: String?, in webView: WKWebView, coordinator: Coordinator) {
-        let rewritten = LocalImageHTMLRewriter.rewrite(html, baseURL: baseURL)
-        coordinator.localImageSchemeHandler.setAllowedImages(rewritten.allowedImages)
-
-        guard let baseURL, baseURL.isFileURL else {
-            webView.loadHTMLString(rewritten.html, baseURL: baseURL)
-            return
-        }
-
-        let previewURL = baseURL.appendingPathComponent(
-            "\(Self.previewFilePrefix)\(coordinator.previewID)\(Self.previewFileSuffix)"
-        )
-        do {
-            if let previous = coordinator.previewFileURL, previous != previewURL {
-                try? FileManager.default.removeItem(at: previous)
-            }
-            sweepStalePreviewFiles(in: baseURL, keeping: previewURL)
-            try rewritten.html.write(to: previewURL, atomically: true, encoding: .utf8)
-            coordinator.previewFileURL = previewURL
-            // Local images, including `../` paths outside the document directory,
-            // are rewritten to a preview-local scheme whose handler serves only
-            // the exact files referenced by this render. The document-directory
-            // grant remains available for other relative page resources.
-            // The request URL carries the anchor fragment so the browser scrolls
-            // to it as the DOM is built. A per-load query token keeps every
-            // request URL distinct: reloading the same preview file with only a
-            // fragment appended would otherwise be a same-document navigation —
-            // WebKit just scrolls, never re-reads the file, and `didFinish`
-            // never fires — leaving the page showing stale content.
-            let request = URLRequest(
-                url: fragmentURL(previewURL, fragment: fragment, loadToken: coordinator.nextLoadToken())
-            )
-            webView.loadFileRequest(request, allowingReadAccessTo: baseURL)
-        } catch {
-            webView.loadHTMLString(rewritten.html, baseURL: baseURL)
-        }
-    }
-
-    /// Removes stale `.md2-preview-*.html` leftovers in `directory` — files this
-    /// app wrote in a prior session that a normal teardown would have cleaned but
-    /// a crash/force-quit left behind. Never removes `keeping` (the file about to
-    /// be loaded) or any file modified within `stalePreviewAge`, so a live sibling
-    /// window's preview file is left intact.
-    private func sweepStalePreviewFiles(in directory: URL, keeping: URL) {
-        let fileManager = FileManager.default
-        guard let entries = try? fileManager.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: []
-        ) else {
-            return
-        }
-
-        let cutoff = Date().addingTimeInterval(-Self.stalePreviewAge)
-        for url in entries {
-            let name = url.lastPathComponent
-            guard name.hasPrefix(Self.previewFilePrefix),
-                  name.hasSuffix(Self.previewFileSuffix),
-                  url != keeping else {
-                continue
-            }
-
-            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
-                .contentModificationDate
-            if let modified, modified > cutoff {
-                continue
-            }
-
-            try? fileManager.removeItem(at: url)
-        }
-    }
-
-    /// Builds the load-request URL: the preview file plus a uniqueness query
-    /// token (see the call site) and, if provided, a percent-encoded fragment.
-    private func fragmentURL(_ url: URL, fragment: String?, loadToken: Int) -> URL {
-        var absolute = url.absoluteString + "?md2r=\(loadToken)"
-        if let fragment,
-           let encoded = fragment.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed) {
-            absolute += "#" + encoded
-        }
-        return URL(string: absolute) ?? url
+        coordinator.documentLoader.load(html, baseURL: baseURL, fragment: fragment, in: webView)
     }
 
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
@@ -1100,15 +1003,13 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// to decide whether an update can be a live in-place swap.
         var lastBody = ""
         var lastBaseURL: URL?
-        let previewID = UUID().uuidString
-        var previewFileURL: URL?
         var onEnterEdit: () -> Void = {}
         var onToggleTask: (_ line: Int, _ checked: Bool) -> Void = { _, _ in }
         var onOpenMarkdownLink: (_ url: URL) -> Void = { _ in }
         var onAnchorChange: (_ anchor: ViewportAnchor, _ isUserInitiated: Bool) -> Void = { _, _ in }
         var onFindShortcut: (_ action: FindCommand.Action) -> Void = { _ in }
         var onFindResult: (_ total: Int, _ index: Int) -> Void = { _, _ in }
-        let localImageSchemeHandler = LocalImageSchemeHandler()
+        let documentLoader = WebDocumentLoader()
         var showsFrontMatter = true
         var showsLineNumbers = false
         var lastFindQuery: String?
@@ -1120,14 +1021,6 @@ struct MarkdownPreviewView: NSViewRepresentable {
         var lastFindNavigationToken: UUID?
 
         private(set) var isLoaded = false
-        /// Monotonic per-load token appended to the request URL so consecutive
-        /// loads of the same preview file are always real navigations.
-        private var loadToken = 0
-
-        func nextLoadToken() -> Int {
-            loadToken += 1
-            return loadToken
-        }
         /// The mode-switch scroll target. Retained across an immediate apply so a
         /// reload that fires right after entering Side by Side (the preview view
         /// is rebuilt, resetting scroll to the top) re-applies it on `didFinish`
@@ -1158,9 +1051,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// preview's current source anchor. Called only when the page is loaded
         /// and no new diagram engine is required (the caller guarantees this).
         func applyLiveContent(_ bodyHTML: String, in webView: WKWebView) {
-            let rewritten = LocalImageHTMLRewriter.rewrite(bodyHTML, baseURL: lastBaseURL)
-            localImageSchemeHandler.setAllowedImages(rewritten.allowedImages)
-            pendingLiveBody = rewritten.html
+            pendingLiveBody = documentLoader.prepareContent(bodyHTML, baseURL: lastBaseURL)
             liveUpdateGeneration += 1
             let generation = liveUpdateGeneration
             liveUpdateWorkItem?.cancel()
@@ -1389,8 +1280,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
 
         /// The preview is a viewport onto the document, never a browser: the
         /// only allowed main-frame navigations are the app's own page (initial
-        /// load, reload-on-edit, and same-page fragment jumps — `about:`/
-        /// `applewebdata:` for string-loaded untitled documents). Every other
+        /// load, reload-on-edit, and same-page fragment jumps). Every other
         /// target is cancelled; a genuine link activation (including
         /// new-window requests, which carry no target frame) is handed off to
         /// the matching external handler, while a script- or meta-driven
@@ -1409,7 +1299,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
 
             let route = PreviewLinkRouter.route(
                 for: navigationAction.request.url,
-                documentPageURL: previewFileURL
+                documentPageURL: documentLoader.documentPageURL
             )
             if route == .allowInPage {
                 decisionHandler(.allow)
@@ -1434,7 +1324,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             if navigationAction.navigationType == .linkActivated {
                 dispatch(PreviewLinkRouter.route(
                     for: navigationAction.request.url,
-                    documentPageURL: previewFileURL
+                    documentPageURL: documentLoader.documentPageURL
                 ))
             }
             return nil
@@ -1531,11 +1421,6 @@ struct MarkdownPreviewView: NSViewRepresentable {
             }
         }
 
-        deinit {
-            if let previewFileURL {
-                try? FileManager.default.removeItem(at: previewFileURL)
-            }
-        }
     }
 }
 

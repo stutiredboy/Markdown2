@@ -117,11 +117,11 @@
       "id": "link-reference-definitions",
       "origin": "CommonMark",
       "sections": ["Link reference definitions"],
-      "tier": "Out-of-scope",
-      "baselineRelationship": "unsupported",
-      "declaredBehavior": "Reference-style link definitions (`[id]: url`) and reference links (`[text][id]`) are not resolved.",
-      "boundary": "Definition lines render as literal paragraph text rather than being consumed; inline links (`[text](url)`) are unaffected.",
-      "docLabel": "Out-of-scope"
+      "tier": "Supported",
+      "baselineRelationship": "known-incomplete",
+      "declaredBehavior": "Full, collapsed, and shortcut reference links and images resolve document-wide definitions; labels use Unicode case folding and collapsed whitespace, with the first definition winning.",
+      "boundary": "Definitions in code, math, front matter, or paragraph continuations do not register. TOC, citation, footnote, and alert labels are reserved. Complex list-container and entity-name edges remain incomplete.",
+      "docLabel": "Supported"
     },
     {
       "id": "paragraphs",
@@ -209,8 +209,8 @@
       "sections": ["Links"],
       "tier": "Supported",
       "baselineRelationship": "known-incomplete",
-      "declaredBehavior": "`[text](url \"title\")` becomes `<a href>` with optional `title`; dangerous schemes are neutralised.",
-      "boundary": "Only inline links are resolved (no reference links); nested-bracket and title-edge cases diverge.",
+      "declaredBehavior": "Inline and reference links become `<a href>` with optional titles; unsafe schemes are neutralised.",
+      "boundary": "Complex nested-bracket and inline destination/title edges remain incomplete.",
       "docLabel": "Supported"
     },
     {
@@ -219,8 +219,8 @@
       "sections": ["Images"],
       "tier": "Supported",
       "baselineRelationship": "known-incomplete",
-      "declaredBehavior": "`![alt](src \"title\")` becomes `<img src alt title>`, with optional Pandoc-style size attributes.",
-      "boundary": "Only inline image syntax is resolved; reference-style images and some alt-text edges diverge.",
+      "declaredBehavior": "Inline and reference images become `<img src alt title>`; inline images additionally support Pandoc size attributes.",
+      "boundary": "Some nested alt-text and inline destination edges remain incomplete; reference images do not consume size attributes.",
       "docLabel": "Supported"
     },
     {
@@ -230,7 +230,7 @@
       "tier": "Supported",
       "baselineRelationship": "known-incomplete",
       "declaredBehavior": "`<scheme:...>` and `<email>` angle-bracket autolinks become `<a href>`.",
-      "boundary": "Some scheme-validation and edge cases diverge; bare-text autolinking is the GFM extension (separate entry).",
+      "boundary": "Some scheme-validation and edge cases diverge. Bare URL/email cases intentionally follow the GFM extension rather than CommonMark (examples 608, 611, 612).",
       "docLabel": "Supported"
     },
     {
@@ -307,11 +307,11 @@
       "id": "gfm-autolinks",
       "origin": "GFM",
       "sections": ["Autolinks (extension)"],
-      "tier": "Out-of-scope",
-      "baselineRelationship": "unsupported",
-      "declaredBehavior": "Bare-text autolinking (`www.`/`http(s)`/email without angle brackets) is not implemented.",
-      "boundary": "Such text renders literally; use angle-bracket autolinks or explicit links instead.",
-      "docLabel": "Out-of-scope"
+      "tier": "Supported",
+      "baselineRelationship": "known-incomplete",
+      "declaredBehavior": "Bare http(s), www. and email addresses become links, with trailing punctuation, excess closing parentheses and trailing entity spellings excluded.",
+      "boundary": "Code, math, images, and existing links are protected. Extended domain validation follows the GFM subset; unusual domain and inline-delimiter combinations may diverge.",
+      "docLabel": "Supported"
     },
     {
       "id": "gfm-disallowed-raw-html",
@@ -399,6 +399,28 @@
       "boundary": "A missing local image shows an explicit broken-image placeholder rather than a blank.",
       "docLabel": "Supported",
       "localTests": ["ImageAttachmentTests", "DocumentStoreImageAttachmentTests"]
+    },
+    {
+      "id": "github-alerts",
+      "origin": "Markdown2 extension",
+      "sections": [],
+      "tier": "Supported",
+      "baselineRelationship": "not-in-corpus",
+      "declaredBehavior": "NOTE, TIP, IMPORTANT, WARNING and CAUTION quote markers become styled alerts with English or Simplified Chinese titles following the app language; preview and export share the markup.",
+      "boundary": "The marker must occupy the first quoted line by itself; unknown markers remain ordinary quotes. Existing blockquote lazy-continuation limitations apply.",
+      "docLabel": "Supported",
+      "localTests": ["CommonSyntaxTests", "CommonSyntaxSettingsTests", "CommonSyntaxGUITests"]
+    },
+    {
+      "id": "optional-inline-styles",
+      "origin": "Markdown2 extension",
+      "sections": [],
+      "tier": "Supported",
+      "baselineRelationship": "not-in-corpus",
+      "declaredBehavior": "Settings independently enable ==highlight==, ^superscript^ and ~subscript~; all default off and apply to preview, standalone HTML and PDF.",
+      "boundary": "Code, math and link destinations remain literal. Subscript/superscript content cannot contain unescaped whitespace; escaped spaces are supported. Double tildes retain strikethrough.",
+      "docLabel": "Supported",
+      "localTests": ["CommonSyntaxTests", "CommonSyntaxSettingsTests", "CommonSyntaxGUITests"]
     }
   ]
 }

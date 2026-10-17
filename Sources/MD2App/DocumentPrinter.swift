@@ -41,9 +41,8 @@ final class DocumentPrinter: DocumentPrinting {
         documentTitle: String,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
-        // Render to a temp PDF in the system temp directory: untitled documents
-        // have no document directory, and the preview's stale-file sweep only
-        // reclaims `.md2-preview-*.html`, so this PDF is cleaned up explicitly.
+        // Render the print artifact in the system temp directory, independent
+        // of the source location. This PDF is cleaned up explicitly after printing.
         let pdfURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("md2-print-\(UUID().uuidString).pdf")
         temporaryPDFURL = pdfURL

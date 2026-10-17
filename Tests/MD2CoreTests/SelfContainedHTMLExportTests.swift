@@ -128,6 +128,8 @@ struct SelfContainedHTMLExportTests {
         // Math and diagram engines are embedded (so it renders offline).
         #expect(exported.contains("__md2RenderMath"))
         #expect(exported.contains("__md2RenderDiagrams"))
+        #expect(!exported.contains("md2-app://"))
+        #expect(!exported.contains("<script src="))
     }
 
     @Test func exportHTMLOnUntitledDocumentSucceedsWithoutInliningImages() async throws {
