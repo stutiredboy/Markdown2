@@ -123,6 +123,52 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
         try assertNoSettingsWindow(in: record)
     }
 
+    func testFinderLaunchKeepsRequestedDocumentInFrontOfRestoredWindow() throws {
+        try requireAccessibilityTrust()
+        let original = try String(contentsOf: fixtureURL, encoding: .utf8)
+        let snapshot = DocumentRecoverySnapshot(id: UUID(), text: original, fileURL: fixtureURL,
+            identity: DocumentFileIdentity(url: fixtureURL), format: MarkdownFileFormat(),
+            fingerprint: DocumentFileFingerprint.current(at: fixtureURL), isDirty: false, windowFrame: nil)
+        try FileManager.default.createDirectory(at: Self.recoveryDirectory, withIntermediateDirectories: true)
+        try JSONEncoder().encode(snapshot).write(to: Self.recoveryDirectory
+            .appendingPathComponent("\(snapshot.id.uuidString).json"), options: .atomic)
+        let requested = temporaryRoot.appendingPathComponent("Requested.md")
+        try "# Requested document\n\nDifferent content.\n".write(to: requested, atomically: true, encoding: .utf8)
+
+        // NSWorkspace delivers an open-document event, just like Finder. It can
+        // arrive before didFinishLaunching restores the previous session.
+        try openIntoRunningInstance(urls: [requested])
+        let app = try XCTUnwrap(launchedApps.last)
+        _ = try waitForRecord(stage: "didFinishLaunching")
+        _ = try waitForRecord(stage: "openURLs")
+        try assertFocusedDocument(requested, pid: app.processIdentifier)
+        XCTAssertTrue(Self.windowTitles(pid: app.processIdentifier).contains { $0.contains(fixtureURL.lastPathComponent) })
+        XCTAssertEqual(try String(contentsOf: fixtureURL, encoding: .utf8), original)
+    }
+
+    func testFinderOpensAndReopensTheRequestedDocumentAmongSeveralWindows() throws {
+        try requireAccessibilityTrust()
+        let app = try launchApp(arguments: [fixtureURL.path])
+        _ = try waitForRecord(stage: "didFinishLaunching")
+        let second = temporaryRoot.appendingPathComponent("Second.md")
+        let third = temporaryRoot.appendingPathComponent("Third.md")
+        try "# Second\n".write(to: second, atomically: true, encoding: .utf8)
+        try "# Third\n".write(to: third, atomically: true, encoding: .utf8)
+
+        for requested in [second, third, fixtureURL!, second] {
+            try FileManager.default.removeItem(at: healthURL)
+            try openIntoRunningInstance(urls: [requested])
+            _ = try waitForRecord(stage: "openURLs")
+            try assertFocusedDocument(requested, pid: app.processIdentifier)
+        }
+        try FileManager.default.removeItem(at: healthURL)
+        try reopenRunningInstance()
+        _ = try waitForRecord(stage: "reopen")
+        try assertFocusedDocument(second, pid: app.processIdentifier)
+        XCTAssertEqual(try String(contentsOf: second, encoding: .utf8), "# Second\n")
+        XCTAssertEqual(try String(contentsOf: third, encoding: .utf8), "# Third\n")
+    }
+
     func testReopeningTheRunningAppPresentsNoSettingsWindow() throws {
         _ = try launchApp(arguments: [])
         _ = try waitForRecord(stage: "didFinishLaunching")
@@ -376,6 +422,19 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
     }
 
     // MARK: - Evidence
+
+    private func assertFocusedDocument(_ url: URL, pid: pid_t, file: StaticString = #filePath, line: UInt = #line) throws {
+        // Include the early activation retries; asserting only that a window
+        // exists misses the old document being brought back in front of it.
+        usleep(1_500_000)
+        let app = AXUIElementCreateApplication(pid)
+        var value: CFTypeRef?
+        XCTAssertEqual(AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &value), .success,
+                       file: file, line: line)
+        let focused = try XCTUnwrap(Self.element(value), file: file, line: line)
+        XCTAssertEqual(Self.title(of: focused), url.lastPathComponent, "the opened document must remain in front",
+                       file: file, line: line)
+    }
 
     private func waitForRecord(
         stage: String,

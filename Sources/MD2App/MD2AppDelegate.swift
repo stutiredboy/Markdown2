@@ -137,7 +137,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
     ) -> Bool {
         if documentWindows.isEmpty {
             newDocument()
-        } else {
+        } else if !flag {
             documentWindows.last?.window.makeKeyAndOrderFront(nil)
         }
         activationController.activateAfterLaunch()
@@ -255,6 +255,11 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
     /// already have delivered openURLs during launch: restore the draft into
     /// that window instead of opening a second writer for the same file.
     private func restoreDocumentWindows() {
+        // Finder can open a requested document before didFinishLaunching.
+        // Restoring the old session must not replace that explicit selection.
+        let requestedWindow = documentWindows.first(where: { $0.window == NSApp.keyWindow })?.window
+            ?? documentWindows.last?.window
+        defer { requestedWindow?.makeKeyAndOrderFront(nil) }
         do {
             var restoredURLs = Set<URL>()
             for var snapshot in pendingRecoverySnapshots {

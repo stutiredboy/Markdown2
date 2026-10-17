@@ -38,9 +38,14 @@ public final class NSApplicationActivationManager: AppActivationManaging {
     }
 
     public func orderVisibleWindowsFront() {
-        for window in application.windows where window.isVisible {
-            window.makeKeyAndOrderFront(nil)
+        // Activating the app must preserve the document the user just opened.
+        // Making every window key leaves an unrelated window selected, and the
+        // application.windows enumeration does not describe front-to-back order.
+        let selected = application.keyWindow ?? application.mainWindow
+        for window in application.orderedWindows.reversed() where window.isVisible {
+            window.orderFront(nil)
         }
+        selected?.makeKeyAndOrderFront(nil)
     }
 
     public func activateIgnoringOtherApps() {
