@@ -95,6 +95,10 @@ struct ContentView: View {
     /// Latest debounced viewport anchor reported by the preview — the cached
     /// fallback when the live capture does not answer in time.
     @State private var previewAnchor: ViewportAnchor?
+    @State private var outlineSourceLine = 1
+    @State private var editorSelection: String?
+    @State private var previewSelection: String?
+    @State private var selectionStats: DocumentStats?
     /// On-demand readers for the *live* outgoing surface, so a switch right
     /// after a scroll uses the current viewport rather than a stale callback.
     @State private var editorViewport = EditorViewportReader()
@@ -168,10 +172,13 @@ struct ContentView: View {
                 if showsOutline {
                     OutlineSidebar(
                         headings: document.rendered.outline,
-                        selectedHeadingID: document.jumpHeadingID,
+                        selectedHeadingID: document.rendered.outline.heading(atOrAbove: outlineSourceLine)?.id,
                         settings: settings,
                         width: DocumentLayoutMetrics.outlineSidebarWidth,
-                        onSelect: document.jump(to:)
+                        onSelect: { heading in
+                            outlineSourceLine = heading.line
+                            document.jump(to: heading)
+                        }
                     )
                     Divider()
                 }
@@ -180,17 +187,40 @@ struct ContentView: View {
             }
 
             Divider()
-            StatusBar(stats: document.rendered.stats, url: document.fileURL, format: document.fileFormat, settings: settings)
+            StatusBar(stats: document.rendered.stats, selectionStats: selectionStats, url: document.fileURL, format: document.fileFormat, settings: settings)
         }
         .frame(minWidth: minimumWindowWidth, minHeight: 540)
         .navigationTitle(document.displayTitle)
+        .task(id: selectedContent) {
+            selectionStats = nil
+            guard let selection = selectedContent else { return }
+            do { try await Task.sleep(for: .milliseconds(80)) } catch { return }
+            let features = settings.inlineFeatures
+            let result = await Task.detached(priority: .utility) {
+                switch selection {
+                case .markdown(let text):
+                    MarkdownRenderer().render(text, config: RenderConfig(inlineFeatures: features), assetMode: .appScheme).stats
+                case .renderedHTML(let html):
+                    DocumentStats(plainText: RenderedPlainText.extract(from: html))
+                }
+            }.value
+            guard !Task.isCancelled else { return }
+            selectionStats = result
+        }
         .onChange(of: document.documentIdentity) { _, _ in
+            outlineSourceLine = 1
+            editorSelection = nil
+            previewSelection = nil
+            selectionStats = nil
             applyDefaultPresentation()
             showsFrontMatterMetadata = false
             dismissEditorFind()
             dismissPreviewFind()
         }
         .onChange(of: mode) { _, _ in
+            editorSelection = nil
+            previewSelection = nil
+            selectionStats = nil
             dismissEditorFind()
             dismissPreviewFind()
         }
@@ -612,6 +642,18 @@ struct ContentView: View {
         }
     }
 
+    private enum SelectedContent: Hashable, Sendable {
+        case markdown(String)
+        case renderedHTML(String)
+    }
+
+    private var selectedContent: SelectedContent? {
+        if mode == .write || (mode == .split && focusedPane == .editor) {
+            return editorSelection.map(SelectedContent.markdown)
+        }
+        return previewSelection.map(SelectedContent.renderedHTML)
+    }
+
     @ViewBuilder
     private var editorSurface: some View {
         switch mode {
@@ -645,6 +687,7 @@ struct ContentView: View {
                 viewportReader: editorViewport,
                 onAnchorLineChange: { line, drivesPreviewSync in
                     editorAnchorLine = line
+                    if !inSplit || splitSyncSource != .preview { outlineSourceLine = line }
                     // A genuine user scroll or the mode-switch settle aligns the
                     // preview; an edit-induced caret-reveal scroll must not (the
                     // edit-follow keeps the caret visible instead).
@@ -673,7 +716,12 @@ struct ContentView: View {
                 },
                 showsLineNumbers: settings.showsLineNumbersInEditor,
                 session: document.editorSession,
-                formatCommand: document.formatCommand
+                formatCommand: document.formatCommand,
+                typography: settings.typography,
+                onSelectionChange: { selection in
+                    editorSelection = selection
+                    if inSplit, selection != nil { focusedPane = .editor }
+                }
             )
 
             if editorFindVisible {
@@ -717,6 +765,10 @@ struct ContentView: View {
                 viewportReader: previewViewport,
                 onAnchorChange: { anchor, isUserInitiated in
                     previewAnchor = anchor
+                    if !inSplit || splitSyncSource != .editor {
+                        outlineSourceLine = anchor.targetSourceLine
+                            ?? document.rendered.outline.heading(forID: anchor.fallbackHeadingID ?? "")?.line ?? 1
+                    }
                     if inSplit, isUserInitiated { syncPreviewToEditor(anchor: anchor) }
                 },
                 onEnterEdit: { if !inSplit { requestMode(.write) } },
@@ -744,7 +796,12 @@ struct ContentView: View {
                 },
                 localImageMissingLabel: settings.text(.imageNotFound),
                 remoteImageUnavailableLabel: settings.text(.remoteImageUnavailable),
-                genericImageLoadFailedLabel: settings.text(.imageLoadFailed)
+                genericImageLoadFailedLabel: settings.text(.imageLoadFailed),
+                typography: settings.typography,
+                onSelectionChange: { selection in
+                    previewSelection = selection
+                    if inSplit, selection != nil { focusedPane = .preview }
+                }
             )
 
             if previewFindVisible {
@@ -969,16 +1026,24 @@ private struct OutlineSidebar: View {
 
 private struct StatusBar: View {
     let stats: DocumentStats
+    var selectionStats: DocumentStats?
     let url: URL?
     let format: MarkdownFileFormat
     let settings: AppSettings
 
     var body: some View {
         HStack(spacing: 14) {
-            Text("\(stats.words) \(settings.text(.words))")
+            if let selectionStats {
+                Text("\(settings.text(.selectionStats)): \(selectionStats.words) / \(stats.words) \(settings.text(.words))")
+                    .accessibilityIdentifier("document-word-count")
+            } else {
+                Text("\(stats.words) \(settings.text(.words))")
+                    .accessibilityIdentifier("document-word-count")
+            }
             Text("\(stats.characters) \(settings.text(.chars))")
             Text("\(stats.lines) \(settings.text(.lines))")
             Text("\(stats.readingMinutes) \(settings.text(.minRead))")
+            Text("\(settings.typography.zoomPercent)%")
             Text(format.encodingLabel)
             Text(format.lineEnding == .mixed ? settings.text(.mixedLineEndings) : format.lineEnding.rawValue)
 

@@ -100,6 +100,42 @@ struct MarkdownPreviewView: NSViewRepresentable {
     var localImageMissingLabel: String = "Image not found"
     var remoteImageUnavailableLabel: String = "Remote image could not be loaded"
     var genericImageLoadFailedLabel: String = "Image could not be loaded"
+    var typography: TypographySettings = .init()
+    /// Selected rendered HTML (nil when collapsed); the owner extracts/counts
+    /// text off the main actor, so Select All cannot stall the WebKit callback.
+    var onSelectionChange: (String?) -> Void = { _ in }
+
+    static let selectionMessageName = "selectionChange"
+    static let selectionScript = """
+    (function () {
+        var pending = false;
+        function report() {
+            pending = false;
+            var selection = window.getSelection();
+            var main = document.querySelector('main');
+            if (!selection || selection.isCollapsed || !main || !main.contains(selection.anchorNode) || !main.contains(selection.focusNode)) {
+                window.webkit.messageHandlers.selectionChange.postMessage(null);
+                return;
+            }
+            var content = document.createElement('div');
+            var excluded = '.front-matter,.footnote-ref,.footnote-backref,.diagram,.math,.toc,.md2-broken-image,.md2-line-gutter';
+            for (var i = 0; i < selection.rangeCount; i++) {
+                var range = selection.getRangeAt(i);
+                var ancestor = range.commonAncestorContainer;
+                if (ancestor.nodeType !== Node.ELEMENT_NODE) { ancestor = ancestor.parentElement; }
+                if (ancestor && ancestor.closest(excluded)) { continue; }
+                content.appendChild(range.cloneContents());
+            }
+            content.querySelectorAll(excluded).forEach(function (element) { element.remove(); });
+            window.webkit.messageHandlers.selectionChange.postMessage(content.innerHTML);
+        }
+        document.addEventListener('selectionchange', function () {
+            if (!pending) { pending = true; setTimeout(report, 60); }
+        });
+        window.addEventListener('load', report);
+    })();
+    """
+
     private static let enterEditMessageName = "enterEdit"
     private static let anchorMessageName = "anchorChange"
     private static let toggleTaskMessageName = "toggleTask"
@@ -614,6 +650,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
         configuration.userContentController.addUserScript(userScript)
         Self.installInteractionBridge(on: configuration.userContentController, handler: context.coordinator)
         configuration.userContentController.add(context.coordinator, name: Self.anchorMessageName)
+        configuration.userContentController.add(context.coordinator, contentWorld: .defaultClient, name: Self.selectionMessageName)
+        configuration.userContentController.addUserScript(WKUserScript(source: Self.selectionScript,
+            injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: .defaultClient))
 
         let webView = PreviewWebView(frame: .zero, configuration: configuration)
         webView.onFindAction = { action in
@@ -653,6 +692,11 @@ struct MarkdownPreviewView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
+        context.coordinator.onSelectionChange = onSelectionChange
+        if context.coordinator.typography != typography {
+            context.coordinator.typography = typography
+            if context.coordinator.isLoaded { context.coordinator.applyTypography(in: webView, preservingAnchor: true) }
+        }
         context.coordinator.onEnterEdit = onEnterEdit
         context.coordinator.onToggleTask = onToggleTask
         context.coordinator.onOpenMarkdownLink = onOpenMarkdownLink
@@ -744,19 +788,22 @@ struct MarkdownPreviewView: NSViewRepresentable {
         // reflows the layout. On a fresh mode switch the web view is still
         // loading when the binding arrives, so the coordinator holds the target
         // and applies it on `didFinish`; if already loaded it applies immediately.
-        if let jumpAnchor {
-            context.coordinator.setPendingScroll(.viewport(jumpAnchor), in: webView)
-            self.jumpAnchor = nil
-            self.jumpHeadingID = nil
-            self.jumpFraction = nil
-        } else if let jumpHeadingID {
-            context.coordinator.setPendingScroll(.heading(id: jumpHeadingID), in: webView)
-            self.jumpHeadingID = nil
-            self.jumpFraction = nil
-        } else if let jumpFraction {
-            context.coordinator.setPendingScroll(.fraction(jumpFraction), in: webView)
-            self.jumpHeadingID = nil
-            self.jumpFraction = nil
+        let scrollRequest = jumpAnchor.map(ModeSwitchAnchor.viewport)
+            ?? jumpHeadingID.map { .heading(id: $0) }
+            ?? jumpFraction.map(ModeSwitchAnchor.fraction)
+        if let scrollRequest, context.coordinator.lastScrollRequest != scrollRequest {
+            context.coordinator.lastScrollRequest = scrollRequest
+            context.coordinator.setPendingScroll(scrollRequest, in: webView)
+            let anchor = jumpAnchor, heading = jumpHeadingID, fraction = jumpFraction
+            DispatchQueue.main.async {
+                // Consume after SwiftUI's update, and never erase a newer jump.
+                guard self.jumpAnchor == anchor, self.jumpHeadingID == heading, self.jumpFraction == fraction else { return }
+                self.jumpAnchor = nil
+                self.jumpHeadingID = nil
+                self.jumpFraction = nil
+            }
+        } else if scrollRequest == nil {
+            context.coordinator.lastScrollRequest = nil
         }
 
         if context.coordinator.lastFindQuery != findQuery {
@@ -986,6 +1033,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator {
         let coordinator = Coordinator()
+        coordinator.typography = typography
+        coordinator.onSelectionChange = onSelectionChange
         coordinator.onEnterEdit = onEnterEdit
         coordinator.onToggleTask = onToggleTask
         coordinator.onOpenMarkdownLink = onOpenMarkdownLink
@@ -998,6 +1047,22 @@ struct MarkdownPreviewView: NSViewRepresentable {
     }
 
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
+        var typography: TypographySettings = .init()
+        var onSelectionChange: (String?) -> Void = { _ in }
+
+        func applyTypography(in webView: WKWebView, preservingAnchor: Bool = false) {
+            let css = String(data: try! JSONEncoder().encode(typography.previewCSS), encoding: .utf8)!
+            webView.evaluateJavaScript("""
+            (function () {
+                var anchor = \(preservingAnchor ? "true" : "false") && window.__md2CaptureAnchor ? window.__md2CaptureAnchor() : null;
+                var style = document.getElementById('md2-typography');
+                if (!style) { style = document.createElement('style'); style.id = 'md2-typography'; document.head.appendChild(style); }
+                style.textContent = \(css);
+                if (anchor && window.__md2ScrollToViewportAnchor) { window.__md2ScrollToViewportAnchor(anchor); }
+                window.dispatchEvent(new Event('resize'));
+            })();
+            """)
+        }
         var lastHTML = ""
         /// The last `<main>` content applied (via full load or live swap), used
         /// to decide whether an update can be a live in-place swap.
@@ -1027,6 +1092,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// instead of leaving the preview stuck at the top. Consumed by the
         /// post-load apply and cleared once the user scrolls.
         private var pendingScroll: ModeSwitchAnchor?
+        var lastScrollRequest: ModeSwitchAnchor?
         private var pendingFindQuery: String?
         private var ignoreNextAnchorMessage = false
 
@@ -1251,6 +1317,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
         ) {
             guard message.frameInfo.isMainFrame else { return }
             switch message.name {
+            case MarkdownPreviewView.selectionMessageName:
+                guard message.world == .defaultClient else { return }
+                onSelectionChange(message.body as? String)
             case MarkdownPreviewView.enterEditMessageName:
                 guard message.world == .defaultClient else { return }
                 onEnterEdit()
@@ -1364,6 +1433,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             isLoaded = true
+            applyTypography(in: webView)
             applyFrontMatterVisibility(in: webView)
             applyLineNumbersVisibility(in: webView)
             applyPendingScroll(in: webView, consume: true)

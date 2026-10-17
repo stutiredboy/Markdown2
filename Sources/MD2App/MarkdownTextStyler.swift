@@ -115,6 +115,7 @@ final class MarkdownStylingController {
     private let worker = MarkdownStyleWorker()
     private var pending: Task<Void, Never>?
     private var previous: MarkdownStylePlan?
+    private var previousTypography: TypographySettings?
     private var generation = 0
 
     func schedule(in textView: NSTextView, willApply: @escaping @MainActor () -> Void = {}, didApply: @escaping @MainActor () -> Void = {}) {
@@ -122,7 +123,8 @@ final class MarkdownStylingController {
         let revision = generation
         pending?.cancel()
         let text = textView.string
-        let previous = previous
+        let typography = (textView as? MarkdownSourceTextView)?.typography ?? TypographySettings()
+        let previous = previousTypography == typography ? previous : nil
         let worker = worker
         pending = Task { [weak self, weak textView] in
             // Coalesce rapid input and IME commits before doing syntax work.
@@ -163,6 +165,7 @@ final class MarkdownStylingController {
                 if cursor < NSMaxRange(range) { await Task.yield() }
             } while cursor < NSMaxRange(range)
             self.previous = plan
+            self.previousTypography = typography
         }
     }
 
@@ -187,25 +190,29 @@ enum MarkdownTextStyler {
             synchronizeTypingAttributes(in: textView)
             return
         }
+        let typography = (textView as? MarkdownSourceTextView)?.typography ?? TypographySettings()
+        let size = typography.effectiveFontSize
+        let scale = size / 16
+        let font = typography.editorFont.font(size: size)
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 4
-        paragraph.paragraphSpacing = 7
+        paragraph.lineSpacing = 4 * scale
+        paragraph.paragraphSpacing = 7 * scale
         storage.beginEditing()
-        storage.setAttributes([.font: NSFont.systemFont(ofSize: 16), .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph], range: range)
+        storage.setAttributes([.font: font, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph], range: range)
         for span in plan.spans {
             let clipped = NSIntersectionRange(range, span.range)
             guard clipped.length > 0 else { continue }
             let attributes: [NSAttributedString.Key: Any]
             switch span.kind {
             case .code: attributes = [.markdownCodeBlock: true]
-            case .codeText: attributes = [.font: NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)]
+            case .codeText: attributes = [.font: NSFont.monospacedSystemFont(ofSize: 14 * scale, weight: .regular)]
             case .heading1, .heading2, .heading3, .heading4, .heading5, .heading6:
-                attributes = [.font: NSFont.boldSystemFont(ofSize: max(17, 30 - CGFloat(span.kind.rawValue * 3))), .foregroundColor: NSColor.labelColor]
+                attributes = [.font: NSFontManager.shared.convert(typography.editorFont.font(size: max(17, 30 - CGFloat(span.kind.rawValue * 3)) * scale), toHaveTrait: .boldFontMask), .foregroundColor: NSColor.labelColor]
             case .quote: attributes = [.foregroundColor: NSColor.secondaryLabelColor]
-            case .marker: attributes = [.foregroundColor: NSColor.secondaryLabelColor, .font: NSFont.monospacedSystemFont(ofSize: 15, weight: .regular)]
-            case .inlineCode: attributes = [.font: NSFont.monospacedSystemFont(ofSize: 15, weight: .regular), .backgroundColor: NSColor.textColor.withAlphaComponent(0.08)]
-            case .bold: attributes = [.font: NSFont.boldSystemFont(ofSize: 16)]
-            case .italic: attributes = [.font: NSFontManager.shared.convert(NSFont.systemFont(ofSize: 16), toHaveTrait: .italicFontMask)]
+            case .marker: attributes = [.foregroundColor: NSColor.secondaryLabelColor, .font: NSFont.monospacedSystemFont(ofSize: 15 * scale, weight: .regular)]
+            case .inlineCode: attributes = [.font: NSFont.monospacedSystemFont(ofSize: 15 * scale, weight: .regular), .backgroundColor: NSColor.textColor.withAlphaComponent(0.08)]
+            case .bold: attributes = [.font: NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)]
+            case .italic: attributes = [.font: NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)]
             case .link: attributes = [.foregroundColor: NSColor.linkColor]
             }
             storage.addAttributes(attributes, range: clipped)
@@ -223,11 +230,13 @@ enum MarkdownTextStyler {
     static func synchronizeTypingAttributes(in textView: NSTextView) {
         guard !textView.hasMarkedText(), let storage = textView.textStorage else { return }
 
+        let typography = (textView as? MarkdownSourceTextView)?.typography ?? TypographySettings()
+        let size = typography.effectiveFontSize
         let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.lineSpacing = 4
-        paragraphStyle.paragraphSpacing = 7
+        paragraphStyle.lineSpacing = 4 * size / 16
+        paragraphStyle.paragraphSpacing = 7 * size / 16
         var typingAttributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 16),
+            .font: typography.editorFont.font(size: size),
             .foregroundColor: NSColor.labelColor,
             .paragraphStyle: paragraphStyle
         ]

@@ -217,6 +217,12 @@ enum ModeShortcutValidator {
     }
 
     private static let appCommandConflicts: [ModeKeyboardShortcut: String] = [
+        ModeKeyboardShortcut(key: "+", modifiers: [.command]): "Zoom In",
+        ModeKeyboardShortcut(key: "=", modifiers: [.command]): "Zoom In",
+        ModeKeyboardShortcut(key: "=", modifiers: [.command, .shift]): "Zoom In",
+        ModeKeyboardShortcut(key: "+", modifiers: [.command, .shift]): "Zoom In",
+        ModeKeyboardShortcut(key: "-", modifiers: [.command]): "Zoom Out",
+        ModeKeyboardShortcut(key: "0", modifiers: [.command, .option]): "Actual Size",
         .command("n"): "New",
         .command("o"): "Open",
         .command("s"): "Save",

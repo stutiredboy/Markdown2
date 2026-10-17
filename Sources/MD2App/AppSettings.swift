@@ -3,6 +3,18 @@ import MD2Core
 
 @MainActor
 final class AppSettings: ObservableObject {
+    @Published var typography: TypographySettings {
+        didSet {
+            if typography != typography.normalized { typography = typography.normalized }
+            guard let data = try? JSONEncoder().encode(typography) else { return }
+            defaults.set(data, forKey: Keys.typography)
+        }
+    }
+
+    func zoomIn() { typography.zoom = min(2, (typography.zoom * 10).rounded() / 10 + 0.1) }
+    func zoomOut() { typography.zoom = max(0.5, (typography.zoom * 10).rounded() / 10 - 0.1) }
+    func resetZoom() { typography.zoom = 1 }
+
     @Published var language: AppLanguage {
         didSet {
             defaults.set(language.rawValue, forKey: Keys.language)
@@ -124,6 +136,8 @@ final class AppSettings: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        typography = defaults.data(forKey: Keys.typography)
+            .flatMap { try? JSONDecoder().decode(TypographySettings.self, from: $0) }?.normalized ?? TypographySettings()
         enablesHighlight = defaults.bool(forKey: Keys.enablesHighlight)
         enablesSuperscript = defaults.bool(forKey: Keys.enablesSuperscript)
         enablesSubscript = defaults.bool(forKey: Keys.enablesSubscript)
@@ -295,6 +309,7 @@ final class AppSettings: ObservableObject {
 }
 
 private enum Keys {
+    static let typography = "MD2.Typography"
     static let enablesHighlight = "MD2.EnablesHighlight"
     static let enablesSuperscript = "MD2.EnablesSuperscript"
     static let enablesSubscript = "MD2.EnablesSubscript"
@@ -337,6 +352,9 @@ enum AppLanguage: String, CaseIterable, Identifiable {
 }
 
 enum L10nKey: String, CaseIterable {
+    case typography, editorFont, readingFont, fontSize, readingWidth, zoomIn, zoomOut, resetZoom, zoom
+    case fontSystem, fontSerif, fontMonospaced, readingNarrow, readingComfortable, readingWide, readingFull
+    case selectionStats
     case new
     case open
     case openRecent
@@ -495,6 +513,12 @@ enum L10n {
     }
 
     private static let english: [L10nKey: String] = [
+        .typography: "Typography", .editorFont: "Editor Font", .readingFont: "Reading Font",
+        .fontSize: "Base Font Size", .readingWidth: "Reading Width", .zoom: "Zoom",
+        .zoomIn: "Zoom In", .zoomOut: "Zoom Out", .resetZoom: "Actual Size",
+        .fontSystem: "System", .fontSerif: "Serif", .fontMonospaced: "Monospaced",
+        .readingNarrow: "Narrow", .readingComfortable: "Comfortable", .readingWide: "Wide", .readingFull: "Full Width",
+        .selectionStats: "Selection",
         .new: "New",
         .open: "Open...",
         .openRecent: "Open Recent",
@@ -643,6 +667,12 @@ enum L10n {
     ]
 
     private static let zhHans: [L10nKey: String] = [
+        .typography: "缩放与排版", .editorFont: "编辑字体", .readingFont: "阅读字体",
+        .fontSize: "基础字号", .readingWidth: "阅读宽度", .zoom: "缩放",
+        .zoomIn: "放大", .zoomOut: "缩小", .resetZoom: "实际大小",
+        .fontSystem: "系统字体", .fontSerif: "衬线字体", .fontMonospaced: "等宽字体",
+        .readingNarrow: "窄", .readingComfortable: "适中", .readingWide: "宽", .readingFull: "全宽",
+        .selectionStats: "选区",
         .new: "新建",
         .open: "打开...",
         .openRecent: "打开最近使用的",
@@ -668,7 +698,7 @@ enum L10n {
         .sideBySide: "双栏",
         .writeOrRead: "编辑或预览",
         .writeReadOrSplit: "编辑、双栏或预览",
-        .words: "词",
+        .words: "字",
         .chars: "字符",
         .lines: "行",
         .minRead: "分钟阅读",

@@ -26,6 +26,7 @@ let package = Package(
             name: "MD2Core",
             resources: [
                 .copy("Resources/katex"),
+                .copy("Resources/html-entities.json"),
                 .copy("Resources/diagrams")
             ]
         ),

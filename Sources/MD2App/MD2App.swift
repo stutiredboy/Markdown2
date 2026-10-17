@@ -136,6 +136,22 @@ struct MD2Application: App {
                 }
             }
 
+            CommandGroup(after: .toolbar) {
+                Button(appDelegate.settings.text(.zoomIn), action: appDelegate.settings.zoomIn)
+                    .keyboardShortcut("+", modifiers: .command)
+                    .disabled(appDelegate.settings.typography.zoom >= 2)
+                // Also accept the unshifted = key on keyboards where + is Shift-=.
+                Button(appDelegate.settings.text(.zoomIn), action: appDelegate.settings.zoomIn)
+                    .keyboardShortcut("=", modifiers: .command)
+                    .hidden()
+                    .disabled(appDelegate.settings.typography.zoom >= 2)
+                Button(appDelegate.settings.text(.zoomOut), action: appDelegate.settings.zoomOut)
+                    .keyboardShortcut("-", modifiers: .command)
+                    .disabled(appDelegate.settings.typography.zoom <= 0.5)
+                Button(appDelegate.settings.text(.resetZoom), action: appDelegate.settings.resetZoom)
+                    .keyboardShortcut("0", modifiers: [.command, .option])
+            }
+
             CommandMenu(appDelegate.settings.text(.mode)) {
                 let editShortcut = appDelegate.settings.modeShortcuts[.write]
                 Button(appDelegate.settings.text(.write)) {

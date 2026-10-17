@@ -52,7 +52,8 @@ public struct MarkdownRenderer: Sendable {
             html: html,
             body: body,
             outline: outline,
-            stats: DocumentStats(markdown: markdown)
+            stats: DocumentStats(plainText: RenderedPlainText.extract(from: body),
+                                 sourceLines: markdown.isEmpty ? 0 : lines.count)
         )
     }
 

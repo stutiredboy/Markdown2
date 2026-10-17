@@ -50,6 +50,30 @@ struct SettingsView: View {
                 }
             }
 
+            Section(settings.text(.typography)) {
+                Picker(settings.text(.editorFont), selection: $settings.typography.editorFont) {
+                    ForEach(DocumentFont.allCases) { font in Text(settings.text(font.label)).tag(font) }
+                }
+                Picker(settings.text(.readingFont), selection: $settings.typography.readingFont) {
+                    ForEach(DocumentFont.allCases) { font in Text(settings.text(font.label)).tag(font) }
+                }
+                Stepper(value: $settings.typography.fontSize, in: 12...32, step: 1) {
+                    Text("\(settings.text(.fontSize)): \(Int(settings.typography.fontSize)) pt")
+                }
+                Picker(settings.text(.readingWidth), selection: $settings.typography.readingWidth) {
+                    ForEach(ReadingWidth.allCases) { width in Text(settings.text(width.label)).tag(width) }
+                }
+                HStack {
+                    Text("\(settings.text(.zoom)): \(settings.typography.zoomPercent)%")
+                    Spacer()
+                    Button(settings.text(.zoomOut), action: settings.zoomOut)
+                        .disabled(settings.typography.zoom <= 0.5)
+                    Button(settings.text(.zoomIn), action: settings.zoomIn)
+                        .disabled(settings.typography.zoom >= 2)
+                    Button(settings.text(.resetZoom), action: settings.resetZoom)
+                }
+            }
+
             Section(settings.text(.markdownSyntax)) {
                 Toggle(settings.text(.enablesHighlight), isOn: $settings.enablesHighlight)
                 Toggle(settings.text(.enablesSuperscript), isOn: $settings.enablesSuperscript)

@@ -94,6 +94,8 @@ struct MarkdownEditorView: NSViewRepresentable {
     /// session, for an editor not backed by a document.
     var session: MarkdownEditorSession? = nil
     var formatCommand: MarkdownFormatCommand? = nil
+    var typography: TypographySettings = .init()
+    var onSelectionChange: (String?) -> Void = { _ in }
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
@@ -105,6 +107,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         let coordinator = context.coordinator
         let session = coordinator.session
         let textView = session.loadTextView(text: text)
+        (textView as? MarkdownSourceTextView)?.typography = typography
         session.host(in: scrollView, coordinator: coordinator)
         if let sourceTextView = textView as? MarkdownSourceTextView {
             // Weak: the text view outlives this editor and must not keep its
@@ -145,12 +148,14 @@ struct MarkdownEditorView: NSViewRepresentable {
 
         DispatchQueue.main.async {
             textView.window?.makeFirstResponder(textView)
+            coordinator.reportSelection(in: textView)
         }
 
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        context.coordinator.onSelectionChange = onSelectionChange
         context.coordinator.onEnterPreview = onEnterPreview
         context.coordinator.onAnchorLineChange = onAnchorLineChange
         context.coordinator.onTextEdit = onTextEdit
@@ -175,6 +180,10 @@ struct MarkdownEditorView: NSViewRepresentable {
             coord.followScroll(toFractionalLine: line, in: scrollView)
         }
         (textView as? MarkdownSourceTextView)?.showsLineNumbers = showsLineNumbers
+        if let sourceView = textView as? MarkdownSourceTextView, sourceView.typography != typography {
+            sourceView.typography = typography
+            context.coordinator.scheduleStyle(in: textView)
+        }
 
         if context.coordinator.shouldApplyBoundText(text, to: textView) {
             // Opens and reloads already arrive through the session; this is text
@@ -292,6 +301,7 @@ struct MarkdownEditorView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator {
         let coordinator = Coordinator(text: $text, session: session ?? MarkdownEditorSession())
+        coordinator.onSelectionChange = onSelectionChange
         coordinator.onEnterPreview = onEnterPreview
         coordinator.onAnchorLineChange = onAnchorLineChange
         coordinator.onTextEdit = onTextEdit
@@ -416,6 +426,26 @@ struct MarkdownEditorView: NSViewRepresentable {
         var onEnterPreview: () -> Void = {}
         var onAnchorLineChange: (_ line: Int, _ drivesPreviewSync: Bool) -> Void = { _, _ in }
         var onTextEdit: (_ caretLine: Int) -> Void = { _ in }
+        var onSelectionChange: (String?) -> Void = { _ in }
+        private var selectionReportRevision = 0
+
+        @MainActor func reportSelection(in textView: NSTextView) {
+            guard !textView.hasMarkedText(), !isApplyingStyle else { return }
+            let source = textView.string as NSString
+            let fragments = textView.selectedRanges.compactMap { value -> String? in
+                let range = value.rangeValue
+                guard range.location != NSNotFound, range.length > 0, NSMaxRange(range) <= source.length else { return nil }
+                return source.substring(with: range)
+            }
+            let selection = fragments.isEmpty ? nil : fragments.joined(separator: "\n")
+            selectionReportRevision &+= 1
+            let revision = selectionReportRevision
+            DispatchQueue.main.async { [weak self, weak textView] in
+                guard let self, self.selectionReportRevision == revision,
+                      let textView, !textView.hasMarkedText() else { return }
+                self.onSelectionChange(selection)
+            }
+        }
         var onFindShortcut: (_ action: FindCommand.Action) -> Void = { _ in }
         var onFindResult: (_ total: Int, _ index: Int) -> Void = { _, _ in }
         var onInsertImageAttachments: (_ sources: [ImageAttachmentSource]) -> String? = { _ in nil }
@@ -1248,6 +1278,7 @@ struct MarkdownEditorView: NSViewRepresentable {
                   !textView.hasMarkedText() else { return }
 
             MarkdownTextStyler.synchronizeTypingAttributes(in: textView)
+            reportSelection(in: textView)
 
             // A click or keyboard selection move after an edit supersedes the
             // old viewport. Otherwise a delayed restore from that edit can yank
@@ -1306,6 +1337,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             onTextEdit(caretLine)
             text = textView.string
 
+            reportSelection(in: textView)
             scheduleStyle(in: textView)
             preserveVisibleOriginAfterEdit(visibleOrigin)
         }
@@ -1357,6 +1389,7 @@ private func scrollableContentHeight(for documentView: NSView) -> CGFloat {
 }
 
 final class MarkdownSourceTextView: NSTextView {
+    var typography: TypographySettings = .init()
     private var isPasting = false
     private var isSoftReturnEvent = false
 
