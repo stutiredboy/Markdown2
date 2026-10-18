@@ -18,7 +18,7 @@ The app SHALL write atomic, per-document snapshots in its Application Support di
 
 #### Scenario: Untitled draft survives a crash
 - **WHEN** an untitled document has a successfully written snapshot and the app is forcibly terminated
-- **THEN** relaunching restores the draft and its dirty state without asking for a filename
+- **THEN** launching the app without an explicit file request restores the draft and its dirty state without asking for a filename
 
 #### Scenario: Recovery storage is unavailable
 - **WHEN** writing a snapshot fails
@@ -32,6 +32,22 @@ Clean file-backed documents SHALL reopen current disk contents. Dirty snapshots 
 - **WHEN** a dirty snapshot is restored and its recorded fingerprint differs from the disk
 - **THEN** the draft remains intact and automatic overwriting is suspended
 
-#### Scenario: Finder also opens a restored document
-- **WHEN** a startup URL or argument names an already restored document
-- **THEN** its existing window is shown without creating a duplicate
+### Requirement: Explicit file opens do not restore unrelated windows
+Launching with Finder URLs or a file argument SHALL open only the requested documents. The newest matching recovery record SHALL supply unsaved edits for each requested file. Other records, including untitled drafts and additional versions of the requested file, SHALL remain on disk for an ordinary app launch without an explicit file request. Opening a deferred file later in the same process SHALL restore its record, resolving file identity before matching the path. Opening an already open document SHALL select its existing window.
+
+#### Scenario: Finder opens a new file after a multi-window session
+- **GIVEN** recovery records for an untitled draft and two other files
+- **WHEN** Finder launches the app to open a fourth file
+- **THEN** only the fourth file is presented
+- **AND** the three unrelated recovery records remain unchanged after Quit
+- **AND** a later ordinary app launch restores the retained drafts and windows
+
+#### Scenario: Requested file has unsaved edits
+- **WHEN** a startup URL or argument names a file with a dirty recovery record
+- **THEN** one window presents its recovered text and dirty state
+- **AND** unrelated records are not opened
+
+#### Scenario: Deferred file is renamed before opening
+- **WHEN** a file whose recovery was deferred is renamed and explicitly opened later in the same process
+- **THEN** its recovered edits follow the new path
+- **AND** repeated opens select the same window without creating another writer

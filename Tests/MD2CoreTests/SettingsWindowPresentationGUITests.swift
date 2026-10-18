@@ -123,27 +123,102 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
         try assertNoSettingsWindow(in: record)
     }
 
-    func testFinderLaunchKeepsRequestedDocumentInFrontOfRestoredWindow() throws {
-        try requireAccessibilityTrust()
-        let original = try String(contentsOf: fixtureURL, encoding: .utf8)
-        let snapshot = DocumentRecoverySnapshot(id: UUID(), text: original, fileURL: fixtureURL,
-            identity: DocumentFileIdentity(url: fixtureURL), format: MarkdownFileFormat(),
-            fingerprint: DocumentFileFingerprint.current(at: fixtureURL), isDirty: false, windowFrame: nil)
-        try FileManager.default.createDirectory(at: Self.recoveryDirectory, withIntermediateDirectories: true)
-        try JSONEncoder().encode(snapshot).write(to: Self.recoveryDirectory
-            .appendingPathComponent("\(snapshot.id.uuidString).json"), options: .atomic)
+    func testFinderLaunchOpensOnlyRequestedDocumentAndRetainsOtherDrafts() throws {
+        let records = try seedPreviousSession()
         let requested = temporaryRoot.appendingPathComponent("Requested.md")
         try "# Requested document\n\nDifferent content.\n".write(to: requested, atomically: true, encoding: .utf8)
 
         // NSWorkspace delivers an open-document event, just like Finder. It can
-        // arrive before didFinishLaunching restores the previous session.
+        // arrive before didFinishLaunching. Assert both stages: checking only
+        // openURLs misses unrelated windows restored later during launch.
         try openIntoRunningInstance(urls: [requested])
         let app = try XCTUnwrap(launchedApps.last)
-        _ = try waitForRecord(stage: "didFinishLaunching")
-        _ = try waitForRecord(stage: "openURLs")
-        try assertFocusedDocument(requested, pid: app.processIdentifier)
-        XCTAssertTrue(Self.windowTitles(pid: app.processIdentifier).contains { $0.contains(fixtureURL.lastPathComponent) })
-        XCTAssertEqual(try String(contentsOf: fixtureURL, encoding: .utf8), original)
+        assertOnlyDocuments([requested.lastPathComponent], in: try waitForRecord(stage: "didFinishLaunching"))
+        assertOnlyDocuments([requested.lastPathComponent], in: try waitForRecord(stage: "openURLs"))
+        if AXIsProcessTrusted() { try assertFocusedDocument(requested, pid: app.processIdentifier) }
+        try terminate(app)
+        for (url, original) in records { XCTAssertEqual(try Data(contentsOf: url), original) }
+
+        // Deferring unrelated recovery must not discard drafts. An ordinary
+        // app launch still restores the previous session, including Untitled.
+        try FileManager.default.removeItem(at: healthURL)
+        _ = try launchApp(arguments: [])
+        assertOnlyDocuments(["Untitled.md *", fixtureURL.lastPathComponent, "Other.md", requested.lastPathComponent],
+                            in: try waitForRecord(stage: "didFinishLaunching"))
+    }
+
+    func testArgumentLaunchOpensOnlyRequestedDocumentAndRetainsOtherDrafts() throws {
+        let records = try seedPreviousSession()
+        let requested = temporaryRoot.appendingPathComponent("Requested.md")
+        try "# Requested\n".write(to: requested, atomically: true, encoding: .utf8)
+        let app = try launchApp(arguments: [requested.path])
+        assertOnlyDocuments([requested.lastPathComponent], in: try waitForRecord(stage: "didFinishLaunching"))
+        try terminate(app)
+        for (url, original) in records { XCTAssertEqual(try Data(contentsOf: url), original) }
+    }
+
+    func testFinderLaunchRestoresOnlyNewestDraftOfRequestedFile() throws {
+        let previousRecords = try seedPreviousSession()
+        let original = try Data(contentsOf: fixtureURL)
+        let snapshot = DocumentRecoverySnapshot(id: UUID(), text: "# Unsaved requested edits\n", fileURL: fixtureURL,
+            identity: DocumentFileIdentity(url: fixtureURL), format: MarkdownFileFormat(),
+            fingerprint: DocumentFileFingerprint.current(at: fixtureURL), isDirty: true, windowFrame: nil)
+        let recordURL = try seedSnapshot(snapshot)
+
+        try openIntoRunningInstance(urls: [fixtureURL])
+        assertOnlyDocuments([fixtureURL.lastPathComponent + " *"], in: try waitForRecord(stage: "didFinishLaunching"))
+        assertOnlyDocuments([fixtureURL.lastPathComponent + " *"], in: try waitForRecord(stage: "openURLs"))
+        let restored = try JSONDecoder().decode(DocumentRecoverySnapshot.self, from: Data(contentsOf: recordURL))
+        XCTAssertEqual(restored.text, snapshot.text, "explicit open must restore unsaved content, not just read the file")
+        XCTAssertTrue(restored.isDirty)
+        XCTAssertEqual(try Data(contentsOf: fixtureURL), original)
+        for (url, data) in previousRecords { XCTAssertEqual(try Data(contentsOf: url), data) }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: Self.recoveryDirectory.path).count, 4,
+                       "restoring a record must not leave a temporary empty-window record behind")
+    }
+
+    func testOpeningDeferredDraftLaterFollowsRenameAndDoesNotDuplicateWindow() throws {
+        let original = try Data(contentsOf: fixtureURL)
+        let snapshot = DocumentRecoverySnapshot(id: UUID(), text: "# Deferred unsaved edits\n", fileURL: fixtureURL,
+            identity: DocumentFileIdentity(url: fixtureURL), format: MarkdownFileFormat(),
+            fingerprint: DocumentFileFingerprint.current(at: fixtureURL), isDirty: true, windowFrame: nil)
+        let recordURL = try seedSnapshot(snapshot)
+        let originalRecord = try Data(contentsOf: recordURL)
+        let requested = temporaryRoot.appendingPathComponent("Requested.md")
+        try "# Requested\n".write(to: requested, atomically: true, encoding: .utf8)
+        let app = try launchApp(arguments: [requested.path])
+        assertOnlyDocuments([requested.lastPathComponent], in: try waitForRecord(stage: "didFinishLaunching"))
+        XCTAssertEqual(try Data(contentsOf: recordURL), originalRecord)
+
+        let moved = temporaryRoot.appendingPathComponent("Moved.md")
+        try FileManager.default.moveItem(at: fixtureURL, to: moved)
+        for _ in 0..<2 {
+            try FileManager.default.removeItem(at: healthURL)
+            try openIntoRunningInstance(urls: [moved])
+            assertOnlyDocuments([requested.lastPathComponent, moved.lastPathComponent + " *"],
+                                in: try waitForRecord(stage: "openURLs"))
+        }
+        let restored = try JSONDecoder().decode(DocumentRecoverySnapshot.self, from: Data(contentsOf: recordURL))
+        XCTAssertEqual(restored.text, snapshot.text)
+        XCTAssertEqual(restored.fileURL?.resolvingSymlinksInPath(), moved.resolvingSymlinksInPath())
+        XCTAssertEqual(try Data(contentsOf: moved), original)
+        try terminate(app)
+        XCTAssertEqual(try String(contentsOf: moved, encoding: .utf8), snapshot.text)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixtureURL.path))
+    }
+
+    func testFinderLaunchOpensAllSelectedFilesWithoutRestoringOtherWindows() throws {
+        let previousRecords = try seedPreviousSession()
+        let requested = temporaryRoot.appendingPathComponent("Requested.md")
+        try "# Requested\n".write(to: requested, atomically: true, encoding: .utf8)
+        try openIntoRunningInstance(urls: [fixtureURL, requested])
+        let expected = [fixtureURL.lastPathComponent, requested.lastPathComponent]
+        assertOnlyDocuments(expected, in: try waitForRecord(stage: "didFinishLaunching"))
+        assertOnlyDocuments(expected, in: try waitForRecord(stage: "openURLs"))
+        for (url, data) in previousRecords {
+            let snapshot = try JSONDecoder().decode(DocumentRecoverySnapshot.self, from: data)
+            if snapshot.fileURL != fixtureURL { XCTAssertEqual(try Data(contentsOf: url), data) }
+        }
     }
 
     func testFinderOpensAndReopensTheRequestedDocumentAmongSeveralWindows() throws {
@@ -251,6 +326,39 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
     }
 
     // MARK: - Launching
+
+    /// The reported four-window reproduction: one untitled draft and two
+    /// previous files, followed by a cold launch for an unrelated fourth file.
+    private func seedPreviousSession() throws -> [URL: Data] {
+        let other = temporaryRoot.appendingPathComponent("Other.md")
+        try "# Other\n".write(to: other, atomically: true, encoding: .utf8)
+        var records: [URL: Data] = [:]
+        for url in [nil, fixtureURL, other] as [URL?] {
+            let snapshot = DocumentRecoverySnapshot(id: UUID(),
+                text: try url.map { try String(contentsOf: $0, encoding: .utf8) } ?? "未命名草稿 🚀",
+                fileURL: url, identity: url.map { DocumentFileIdentity(url: $0) }, format: MarkdownFileFormat(),
+                fingerprint: url.flatMap { DocumentFileFingerprint.current(at: $0) }, isDirty: url == nil, windowFrame: nil)
+            let recordURL = try seedSnapshot(snapshot)
+            records[recordURL] = try Data(contentsOf: recordURL)
+        }
+        return records
+    }
+
+    @discardableResult
+    private func seedSnapshot(_ snapshot: DocumentRecoverySnapshot) throws -> URL {
+        try FileManager.default.createDirectory(at: Self.recoveryDirectory, withIntermediateDirectories: true)
+        let url = Self.recoveryDirectory.appendingPathComponent("\(snapshot.id.uuidString).json")
+        try JSONEncoder().encode(snapshot).write(to: url, options: .atomic)
+        return url
+    }
+
+    private func assertOnlyDocuments(_ titles: [String], in record: LaunchHealthReporter.Record,
+                                     file: StaticString = #filePath, line: UInt = #line) {
+        let documents = record.windows.filter { $0.className == "ModeShortcutWindow" }
+        XCTAssertEqual(documents.map(\.title).sorted(), titles.sorted(),
+                       "unexpected document windows at \(record.stage): \(documents)", file: file, line: line)
+        XCTAssertTrue(documents.contains(where: \.isVisible), "the requested document must be visible", file: file, line: line)
+    }
 
     func testQuitAndRelaunchRestoresDocumentWithoutDuplicateArgumentWindow() throws {
         let app = try launchApp(arguments: [fixtureURL.path])
