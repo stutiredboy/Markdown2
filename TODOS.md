@@ -76,3 +76,93 @@ Tracked work considered and explicitly deferred from in-flight changes. Each ite
 **Depends on:** `add-latex-math-compat` landing (its boundary test is the before-state proof).
 
 **Start here:** scan once for code spans and both math delimiter pairs in reading order; the earliest opener owns the span; apply the matched delimiter's guards (currency/`$$`/whitespace rules for `$`, none for `\(`).
+
+## Restored fragments in link/image `alt` and `title` attributes (pre-existing)
+
+**What:** Stop protected constructs (code, math, raw HTML) from splicing renderer markup into `alt` and `title` attribute values. `renderImages` and `renderLinks` insert the still-tokenized source into those attributes, and the final restore expands it; `HTMLSafety.isSafeURL` guards only `href`/`src`.
+
+**Why:** `![a $x$ b](img.png)` renders `<img ... alt="a <span class="math math-inline">x</span> b">`, breaking the attribute. No script-execution path was found (the injected markup is sanitized), but the escaping boundary leaks. Found by the pre-landing review (2026-10-19).
+
+**Current state:** `href`/`src` are restored-then-checked with the raw-character guard; `alt`/`title` are out of its declared scope and pinned only by existing output tests.
+
+**Pros:** Closes the attribute-injection class; makes the guard comment true.
+**Cons / cost:** `protect` currently defaults `source:` to rendered HTML for code/math, so attribute contexts need a plain-text source per construct (or a refusal rule); touches every protect call site. (human: ~1 day / CC: ~2-3h)
+
+**Depends on:** nothing; the D4 token-boundary tests are the before-state proof.
+
+**Start here:** give every protect call an authored plain-text `source`, build `alt`/`title` from `source(in:)` + `escapeAttribute`, and add alt/title assertions.
+
+## Authored placeholder-token output amplification (pre-existing)
+
+**What:** Bound the output growth from well-formed authored `\u{E000}MD2-<n>\u{E000}` tokens that reference real fragments. Each occurrence re-inserts the whole fragment, so output = occurrences × fragment size; a 7.5 KB input can produce about 1 MB of output.
+
+**Why:** The D4 boundary intentionally resolves authored tokens; the lazy resolver now avoids materializing discarded entries, but reachable authored tokens still amplify without a cap. Found by the adversarial review (2026-10-19).
+
+**Current state:** Pinned by the D4 constructed-token/shared-sentinel tests; no document-size or expansion cap in the preview/export paths.
+
+**Pros:** Removes a memory-amplification DoS on crafted documents.
+**Cons / cost:** Capping output or making in-range PUA sequences literal changes declared behavior; needs a product decision and spec/test updates. (human: ~0.5 day / CC: ~1-2h)
+
+**Depends on:** D4 sign-off.
+
+**Start here:** measure the output/input ratio in `DocumentRenderWorker`, choose a cap or literal policy, and add a repo-size regression.
+
+## Cross-container figure numbering and the forward `\ref` map
+
+**What:** Reconcile the figure pre-scan with the render walk for figures in footnotes and table captions, so a forward `\ref` and the caption agree across containers.
+
+**Why:** The pre-scan walks source lines and table blocks but does not register `#fig:` labels in footnotes or table captions; a footnote figure placed before a body figure makes a forward `\ref{fig:body}` render 2 while the body caption is Figure 1. Found by the adversarial review (2026-10-19); the same traversal gap is the existing "Pre-scan doesn't traverse containers" item for equations.
+
+**Current state:** Same-inline-pass figures are numbered in document order and tested; cross-container numbering is a declared boundary.
+
+**Pros:** One numbering story for every container; the `\ref` map becomes trustworthy.
+**Cons / cost:** Traversal rework in the pre-scan plus nested-numbering tests; must keep `resetCounters()` rewind semantics. (human: ~1 day / CC: ~1-2h)
+
+**Depends on:** nothing; independent of the latex-math TODO (which covers equations).
+
+**Start here:** share the render walk's container traversal with `collectCrossReferenceLabels`, then assert pre-scan/render figure parity for footnotes and table captions.
+
+## Adopt `.gstack/pregate.json` on the base branch
+
+**What:** Add `!.gstack/pregate.json` to `.gitignore` and commit a Swift lane config to `main` (runner `swift test`, `Sources/MD2Core/**` → the test suite, `openspec/**` as an empty lane).
+
+**Why:** `gstack-pregate` reads the base branch's config; this repo ignores all of `.gstack/`, so every `/ship` pre-gate fails `PREGATE_NO_LANE` on a Swift source change and the Swift test lane cannot be inferred. The 2026-10-19 ship ran the pre-gate with `--policy-from head` as a local workaround.
+
+**Current state:** No config on `main`; the local `/ship` run has a working-tree config with `sh -c 'swift test' pregate {files}`.
+
+**Pros:** The ship pre-gate works for every future branch; the test lane is explicit.
+**Cons / cost:** A tiny repo config commit plus a `.gitignore` exception; review the lane mapping when test targets change. (human: ~15min / CC: ~5min)
+
+**Depends on:** nothing.
+
+**Start here:** copy the local config, add the `!.gstack/pregate.json` exception, and run `gstack-pregate validate` before committing.
+
+## Deferred inline review refactors (token grammar and close bookkeeping)
+
+**What:** Expose one token-scanning API on `InlineProtector` for `protectBareAutolinks` (removing the independent `MD2-(\d+)` regex and `Int()` conversion) and replace the global-balance close bookkeeping in `LinkDestinationIndex` with a stack (about -28 lines; fuzz-verified equivalent).
+
+**Why:** The token grammar lives in three places with different leading-zero/Unicode behavior, and the balance bookkeeping re-derives what a stack records directly. Both were found by the pre-landing review (2026-10-19); the user deferred them from this change.
+
+**Current state:** Existing tests pin the current behavior; the deferred refactors have no behavior change.
+
+**Pros:** One token grammar; simpler close bookkeeping; fewer drift surfaces.
+**Cons / cost:** Touches the bare-URL and destination hot paths; needs the full suite and a re-fuzz. (human: ~0.5 day / CC: ~1-2h)
+
+**Depends on:** nothing.
+
+**Start here:** add `InlineProtector.firstToken(in:)` using the scalar parser, then switch `protectBareAutolinks`; do the stack refactor separately with the fuzz harness.
+
+## Reproducible release probe for the inline workloads
+
+**What:** Add the fragment/autolink/paren-math workloads to `Scripts/benchmark_p1.swift` (or a sibling probe) so the before/after numbers in `measurements.md` can be reproduced from the checked-in script.
+
+**Why:** The 2026-10-18 measurements came from an ad-hoc release probe; the checked-in benchmark has no fragment scenario, so reviewers cannot re-derive the speedups. The design makes committed benchmark documentation optional, so this is not a blocker.
+
+**Current state:** Timing evidence is the regression suite's ratios plus `measurements.md`.
+
+**Pros:** Reproducible performance evidence for future changes.
+**Cons / cost:** A small script addition plus a documented command. (human: ~2h / CC: ~15min)
+
+**Depends on:** nothing.
+
+**Start here:** reuse the `swiftc -O` probe layout from `measurements.md`, add the eight single-line workloads and the one-per-line cases, and record the command in the README or the change notes.
