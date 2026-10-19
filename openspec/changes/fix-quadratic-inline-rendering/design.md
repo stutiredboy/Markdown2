@@ -78,10 +78,10 @@ Constraints:
 Keep the append-only bookkeeping in `protect(_:source:literal:)` exactly as it is: append to `fragments` and `sources`, record `literals`, and return `\u{E000}MD2-<fragments.count>\u{E000}`. Replace `restore(in:)` and `source(in:)` with one shared resolver parameterized by the array to emit (`fragments` or `sources`):
 
 1. **Fast path** — if the input contains no `\u{E000}` sentinel, return it unchanged (no allocation).
-2. **Expand pending entries once** — maintain one `expandedCount` watermark. The two arrays are appended in lockstep, so one watermark covers both. While `expandedCount < fragments.count`, expand both `fragments[expandedCount]` and `sources[expandedCount]` in place by scanning each once and replacing only tokens whose index is `< expandedCount`; then advance the watermark. By induction every expanded entry is token-free, so an entry can be expanded against the already-expanded lower indices.
-3. **One scan of the input** — walk forward to each sentinel, append the literal run before it, parse `MD2-<canonical decimal>` followed by a closing sentinel, append the selected array's entry when the index is already expanded, and continue after the closing sentinel. Any malformed or out-of-range token is emitted literally, one character at a time, so author text containing private-use characters is preserved exactly.
+2. **Expand reachable entries lazily** — when the scan meets a token, expand its entry (and every lower entry it reaches) at most once, iteratively, against already-expanded lower indices. Entries that no resolved text references stay unexpanded: a crafted token DAG hidden in a discarded attribute is never materialized. The two arrays are appended in lockstep; one expansion flag covers both.
+3. **One scan of the input** — walk forward to each sentinel over Unicode scalars (not grapheme clusters), append the literal run before it, parse `MD2-<canonical decimal>` followed by a closing sentinel, append the selected array's expanded entry, and continue after the closing sentinel. Any malformed or out-of-range token is emitted literally, one character at a time, so author text containing private-use characters is preserved exactly.
 
-Complexity: each entry is expanded at most once (total O(fragment text + source text)); each call scans only its own input (O(input length)). The final restore over a paragraph is linear, and the per-link, per-image, per-reference, and per-bare-URL lookups scan only the small span instead of all fragments.
+Complexity: each reachable entry is expanded at most once; the cost is linear in the resolved output plus the reachable entry text, never in the total fragment count. Entries the resolved text never references cost nothing. Each call scans only its own input.
 
 One resolver, not two, because the grammar, the nesting induction, and the literal fallback are identical for `fragments` and `sources`; a second scanner would duplicate roughly 40-60 lines and create a second correctness surface.
 
@@ -95,13 +95,11 @@ protect(fragment, source, literal)
 
 restore(text) / source(text)
   if text has no "\u{E000}": return text
-  while expandedCount < fragments.count:
-      expand fragments[expandedCount] and sources[expandedCount]
-          (replace only tokens with index < expandedCount)
-      expandedCount += 1
-  scan text left to right:
+  scan text left to right over Unicode scalars:
       literal run                      -> append
-      "\u{E000}MD2-" <digits> "\u{E000}" -> append array[index] when index < expandedCount
+      "\u{E000}MD2-" <digits> "\u{E000}" -> ensure entry[index] expanded
+                                           (recursively expand lower indices)
+                                           append the expanded array[index]
       malformed / out of range         -> append literally, continue one scalar
   return output
 ```
@@ -111,6 +109,7 @@ restore(text) / source(text)
 - **Keep `replacingOccurrences` but sort fragments and break early** — still one whole-text pass per fragment; the defect remains.
 - **One regex pass over the text with a replacement closure** — `NSRegularExpression` can scan linearly, but nested fragments still need recursive resolution, a closure runs per token, and every mid-pipeline restore would re-do the work unless cached. The manual scanner gives exact control over malformed-token semantics.
 - **Eager expansion inside `protect`** — pays for fragments that later passes drop (for example a link fragment replaced by its label) and adds cost to the hottest path even when no restore follows.
+- **Eager expansion of every entry in restore** — materializes entries no resolved text references; a discarded attribute can hide an exponential token DAG in the fragment graph.
 - **A separate expanded-fragments array** — equivalent asymptotically, but duplicates every fragment string. In-place expansion keeps one array; the append-only invariant makes it safe.
 - **Two scanners, one for `restore` and one for `source`** — same grammar and same induction; duplication buys nothing and doubles the edge-case surface.
 
@@ -119,6 +118,7 @@ Parsing must preserve current behavior exactly:
 - `\u{E000}MD2-00\u{E000}` is **not** fragment 0 (the current code matches the exact canonical spelling); reject leading zeros.
 - A token whose index is `≥ expandedCount` stays literal. This also covers forward references, which the old descending loop left literal for the same reason.
 - A lone `\u{E000}` or `\u{E000}MD2-x\u{E000}` stays literal.
+- The grammar is scanned as Unicode scalars, so a combining mark after a closing sentinel cannot hide a valid token.
 - An entry (fragment or source) that contains a sentinel as ordinary text expands literally; it is not re-scanned as a new token unless it matches the full grammar.
 - A token formed only after a restored escape is emitted literally. The old descending replacement expanded it; the one-pass scanner does not re-read its own output. D4 accepts this as a declared boundary, pinned by a characterization test.
 - When two token spellings share a sentinel, the leftmost well-formed token wins. The old per-index replacement gave the higher index priority; D4 accepts the difference, pinned by a characterization test.
@@ -233,7 +233,7 @@ Complexity: O(text + N log M), or O(text + N) with a two-pointer scan when the m
 - **Destination character guard** → Angle-bracket destinations may still contain spaces; raw `<`, `>`, and `"` are rejected. The P1 tests and the authored-token regression cover it.
 - **Timing tests flake on loaded CI** → `@Suite(.serialized)`, min-of-3, a 3× ratio threshold plus at most 2 ms of timer resolution that separates 2× from 4× with margin, and generous absolute ceilings. If a slower runner still flakes, raise the ceiling — not the ratio and not the resolution allowance — so the quadratic guard stays meaningful.
 - **Scanner edge cases** (leading zeros, lone sentinel, out-of-range index, forward reference, `isLiteral`, constructed token, shared sentinel) → Dedicated unit-style tests alongside the scaling tests; the scanner is also exercised by every existing entity/link/math test.
-- **In-place expansion mutating an entry later referenced** → Both arrays are append-only and expansion only replaces tokens with already-expanded lower indices; an expanded entry is token-free, so re-use is idempotent. `expandedCount` never moves backward.
+- **In-place lazy expansion** → Both arrays are append-only and expansion only replaces tokens with already-expanded lower indices; an expanded entry is token-free, so re-use is idempotent. Only entries reachable from the resolved text are expanded, so a discarded attribute cannot materialize a crafted token DAG.
 - **Memory / constant factors** → The scanner allocates one output string per call (reserved to the input size). Mid-pipeline restores and source lookups operate on small spans. In-place expansion avoids a second array copy. This is strictly less work than the removed repeated scans.
 - **Security regression** → `HTMLSafety.isSafeURL` still receives fully restored text and now rejects raw `<`, `>`, or `"`, so an authored token cannot splice markup into an href/src attribute; the P1 entity-obfuscation tests plus the nested-fragment, reference-key, bare-URL, and authored-token cases guard it.
 - **Re-baselined base** → D1 moved the checkout to `origin/main` `0a75468` and re-baselined the line numbers; D2 added `source(in:)`, the reference-link path, and bare-URL tests; D3 added the link-destination pre-scan; D4 set the private-use-token boundary. The one-per-line case is expected red before the fix, matching the report.

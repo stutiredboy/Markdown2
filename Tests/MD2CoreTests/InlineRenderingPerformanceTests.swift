@@ -64,6 +64,22 @@ struct InlineRenderingPerformanceTests {
         #expect(body.contains(#"<figcaption class="fig-caption">Figure 2: two</figcaption>"#))
     }
 
+    /// Duplicate `#fig:` labels are an author error, but each image must still
+    /// get its own document-order number; reading the label-keyed map after the
+    /// prepare pass collapsed them to one number.
+    @Test func duplicateFigureLabelsUseDistinctDocumentOrderNumbers() {
+        let body = renderer.render("![one](a.png){#fig:x} ![two](b.png){#fig:x}").body
+        #expect(body.contains("Figure 1: one"))
+        #expect(body.contains("Figure 2: two"))
+    }
+
+    /// A labeled image dropped for an unsafe URL keeps its number so the
+    /// pre-scan-derived `\ref` map and the visible captions stay aligned.
+    @Test func droppedLabeledImageConsumesItsNumber() {
+        let body = renderer.render("![bad](javascript:x){#fig:bad} ![good](g.png){#fig:good}").body
+        #expect(body.contains("Figure 2: good"))
+    }
+
     // MARK: - D4 token-compatibility boundary
 
     /// Approved D4 behavior: a token formed only *after* an escaped hyphen is
@@ -231,6 +247,31 @@ struct InlineRenderingPerformanceTests {
         #expect(body.contains("l"))
     }
 
+    /// An authored token in a reference definition's destination must be
+    /// restored before the safety check; both link and image references reject
+    /// the unsafe destination.
+    @Test func authoredTokenInReferenceDestinationIsRejected() {
+        let link = renderer.render("`x` [label][r]\n\n[r]: \u{E000}MD2-0\u{E000}").body
+        #expect(!link.contains(#"href="<"#))
+        #expect(link.contains("label"))
+        let image = renderer.render("`x` ![label][r]\n\n[r]: \u{E000}MD2-0\u{E000}").body
+        #expect(!image.contains(#"src="<"#))
+    }
+
+    /// Entity-encoded quotes and angle brackets are safe inside a quoted
+    /// attribute; the guard rejects only literal markup characters.
+    @Test func encodedQuoteDestinationStaysLinked() {
+        let body = renderer.render("[x](https://example.com/?q=&quot;hi&quot;)").body
+        #expect(body.contains(#"href="https://example.com/?q=&quot;hi&quot;""#))
+    }
+
+    /// A combining mark after the closing sentinel must not hide the token.
+    @Test func combiningMarkAfterSentinelDoesNotHideToken() {
+        let body = renderer.render("`x`\u{0301}").body
+        #expect(body.contains("<code>x</code>\u{0301}"))
+        #expect(!body.contains("MD2-"))
+    }
+
     /// The paren-math pass shares the destination index; a raw `](` still opens
     /// a pseudo-destination when its `]` is escaped, so `\(x\)` after it stays
     /// literal rather than becoming a math span.
@@ -242,6 +283,22 @@ struct InlineRenderingPerformanceTests {
         let body = renderer.render(#"\](url \(x\)"#).body
         #expect(!body.contains("math-inline"))
         #expect(body.contains("](url (x)"))
+    }
+
+    /// A crafted token DAG in a discarded attribute must not be materialized.
+    /// The eager watermark expanded every fragment; the lazy resolver expands
+    /// only what the final text references.
+    @Test func discardedAttributeFragmentsStayUnexpanded() {
+        let sentinel = "\u{E000}"
+        func token(_ index: Int) -> String { "\(sentinel)MD2-\(index)\(sentinel)" }
+        let spans = (0..<24).reversed().map { index in
+            index == 0 ? "`x`" : "`" + String(repeating: token(index), count: 2) + "`"
+        }.joined(separator: " ")
+        let start = ContinuousClock.now
+        let body = renderer.render("![a](p.png){width=1 junk=\(spans)} `y`").body
+        #expect(start.duration(to: .now) < .seconds(1))
+        #expect(body.contains(#"<img src="p.png" alt="a" width="1">"#))
+        #expect(body.contains("<code>y</code>"))
     }
 
     // MARK: - Scaling

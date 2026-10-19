@@ -1840,7 +1840,8 @@ public struct MarkdownRenderer: Sendable {
     /// sizes reserve layout space through `.image-frame`. An image carrying a
     /// `#fig:label` id becomes a numbered, captioned `<figure>`.
     private func renderImages(_ text: String, context: InlineContext? = nil, protector: InlineProtector) -> String {
-        replaceMatches(
+        var figureNumbers: [Int: String] = [:]
+        return replaceMatches(
             in: text,
             pattern: #"!\[([^\]]*)\]\((\S+?)(?:\s+&quot;(.+?)&quot;)?\)(?:\{([^}]*)\})?"#,
             linkCandidates: true,
@@ -1849,7 +1850,7 @@ public struct MarkdownRenderer: Sendable {
                       match.range(at: 4).location != NSNotFound,
                       let attrRange = Range(match.range(at: 4), in: source),
                       let label = self.figureLabel(in: String(source[attrRange])) else { return }
-                _ = context.crossReferences.assignFigure(label: label)
+                figureNumbers[match.range.location] = context.crossReferences.assignFigure(label: label)
             }
         ) { match, source in
             guard let altRange = Range(match.range(at: 1), in: source),
@@ -1915,7 +1916,7 @@ public struct MarkdownRenderer: Sendable {
             // captioned, numbered figure; the caption renders simple inline markup
             // while the image attributes stay inert plain text.
             if let figLabel, let context {
-                let number = context.crossReferences.number(for: figLabel)
+                let number = figureNumbers[match.range.location]
                     ?? context.crossReferences.assignFigure(label: figLabel)
                 let caption = self.renderEscapedInlineContent(alt, protector: protector)
                 return protector.protect("<figure class=\"figure\" id=\"\(self.escapeAttribute(figLabel))\">"
@@ -2043,14 +2044,18 @@ public struct MarkdownRenderer: Sendable {
             }
             let title = reference.title.map { " title=\"\(escapeAttribute($0))\"" } ?? ""
             let content = renderEmphasis(renderOptionalInline(label, features: context.config.inlineFeatures))
-            if !HTMLSafety.isSafeURL(reference.destination) {
+            // Restore the definition destination before the safety check: an
+            // authored token in the definition must not reach href/src as
+            // renderer markup.
+            let destination = protector.restore(in: reference.destination)
+            if !HTMLSafety.isSafeURL(destination) {
                 result += protector.protect(image ? escapeHTML(HTMLSafety.decodeEntities(originalLabel)) : content)
             } else if image {
                 let alt = HTMLSafety.decodeEntities(protector.restore(in: label))
                     .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-                result += protector.protect("<img src=\"\(escapeAttribute(reference.destination))\" alt=\"\(escapeAttribute(alt))\"\(title)>")
+                result += protector.protect("<img src=\"\(escapeAttribute(destination))\" alt=\"\(escapeAttribute(alt))\"\(title)>")
             } else {
-                result += protector.protect("<a href=\"\(escapeAttribute(reference.destination))\"\(title)>\(content)</a>")
+                result += protector.protect("<a href=\"\(escapeAttribute(destination))\"\(title)>\(content)</a>")
             }
             cursor = end
         }
@@ -3098,9 +3103,9 @@ private final class InlineProtector {
     private var fragments: [String] = []
     private var sources: [String] = []
     private var literals: Set<Int> = []
-    private var expandedCount = 0
+    private var expanded: [Bool] = []
 
-    private static let sentinel: Character = "\u{E000}"
+    private static let sentinelScalar: Unicode.Scalar = "\u{E000}"
 
     /// Stores `fragment` and returns the private-use-area token standing in for it.
     func protect(_ fragment: String, source: String? = nil, literal: Bool = false) -> String {
@@ -3108,6 +3113,7 @@ private final class InlineProtector {
         if literal { literals.insert(fragments.count) }
         sources.append(source ?? fragment)
         fragments.append(fragment)
+        expanded.append(false)
         return token
     }
 
@@ -3129,48 +3135,82 @@ private final class InlineProtector {
     }
 
     private func resolve(_ text: String, emitting: Emission) -> String {
-        guard text.contains(Self.sentinel) else { return text }
-        expandPendingEntries()
-        return resolveTokens(in: text, limit: expandedCount, emitting: emitting)
+        guard text.unicodeScalars.contains(Self.sentinelScalar) else { return text }
+        return resolveTokens(in: text, limit: fragments.count, emitting: emitting)
     }
 
-    /// Expands each unexpanded entry once, in ascending index order. `fragments`
-    /// and `sources` are appended in lockstep, so one watermark covers both.
-    private func expandPendingEntries() {
-        while expandedCount < fragments.count {
-            let index = expandedCount
-            fragments[index] = resolveTokens(in: fragments[index], limit: index, emitting: .fragment)
-            sources[index] = resolveTokens(in: sources[index], limit: index, emitting: .source)
-            expandedCount += 1
+    /// Expands `target` and every lower entry it reaches, iteratively. Entries
+    /// that no reachable text references stay unexpanded, so a discarded
+    /// fragment cannot amplify memory: a crafted token DAG hidden in a
+    /// discarded attribute is never materialized.
+    private func ensureExpanded(_ target: Int) {
+        if expanded[target] { return }
+        var stack: [Int] = [target]
+        while let index = stack.last {
+            if expanded[index] {
+                stack.removeLast()
+                continue
+            }
+            let pending = tokenIndices(in: fragments[index], limit: index)
+                + tokenIndices(in: sources[index], limit: index)
+            let unexpanded = pending.filter { !expanded[$0] }
+            if unexpanded.isEmpty {
+                fragments[index] = resolveTokens(in: fragments[index], limit: index, emitting: .fragment)
+                sources[index] = resolveTokens(in: sources[index], limit: index, emitting: .source)
+                expanded[index] = true
+                stack.removeLast()
+            } else {
+                stack.append(contentsOf: unexpanded)
+            }
         }
     }
 
-    /// One forward scan. Tokens with an index below `limit` are replaced from the
-    /// selected array; everything else is copied literally, including malformed
-    /// tokens and indexes at or above the watermark.
+    /// One forward scan. Tokens with an index below `limit` are expanded on
+    /// demand; everything else is copied literally, including malformed tokens
+    /// and indexes at or above the limit. The scan uses Unicode scalars so a
+    /// combining mark after the sentinel cannot hide a well-formed token.
     private func resolveTokens(in text: String, limit: Int, emitting: Emission) -> String {
-        guard text.contains(Self.sentinel) else { return text }
+        guard text.unicodeScalars.contains(Self.sentinelScalar) else { return text }
 
+        let scalars = text.unicodeScalars
         var result = ""
         result.reserveCapacity(text.utf8.count)
-        var cursor = text.startIndex
+        var cursor = scalars.startIndex
 
-        while cursor < text.endIndex {
-            guard let start = text[cursor...].firstIndex(of: Self.sentinel) else {
-                result.append(contentsOf: text[cursor...])
+        while cursor < scalars.endIndex {
+            guard let start = scalars[cursor...].firstIndex(of: Self.sentinelScalar) else {
+                result.unicodeScalars.append(contentsOf: scalars[cursor...])
                 break
             }
-            result.append(contentsOf: text[cursor..<start])
+            result.unicodeScalars.append(contentsOf: scalars[cursor..<start])
 
             if let token = token(in: text, from: start), token.index < limit {
+                ensureExpanded(token.index)
                 result.append(entry(token.index, emitting: emitting))
                 cursor = token.end
             } else {
-                result.append(Self.sentinel)
-                cursor = text.index(after: start)
+                result.unicodeScalars.append(Self.sentinelScalar)
+                cursor = scalars.index(after: start)
             }
         }
         return result
+    }
+
+    private func tokenIndices(in text: String, limit: Int) -> [Int] {
+        guard text.unicodeScalars.contains(Self.sentinelScalar) else { return [] }
+        let scalars = text.unicodeScalars
+        var indices: [Int] = []
+        var cursor = scalars.startIndex
+        while cursor < scalars.endIndex {
+            guard let start = scalars[cursor...].firstIndex(of: Self.sentinelScalar) else { break }
+            if let token = token(in: text, from: start), token.index < limit {
+                indices.append(token.index)
+                cursor = token.end
+            } else {
+                cursor = scalars.index(after: start)
+            }
+        }
+        return indices
     }
 
     private func entry(_ index: Int, emitting: Emission) -> String {
@@ -3183,29 +3223,32 @@ private final class InlineProtector {
     /// Parses `\u{E000}MD2-<canonical decimal>\u{E000}` starting at `start`.
     /// Leading zeros, overflow, and a missing closing sentinel are malformed and
     /// leave the text literal, matching the old exact-spelling replacements.
+    /// Scalar-based so a following combining mark does not change the token.
     private func token(in text: String, from start: String.Index) -> (index: Int, end: String.Index)? {
-        var cursor = text.index(after: start)
-        for expected in "MD2-" {
-            guard cursor < text.endIndex, text[cursor] == expected else { return nil }
-            cursor = text.index(after: cursor)
+        let scalars = text.unicodeScalars
+        var cursor = scalars.index(after: start)
+        for expected in "MD2-".unicodeScalars {
+            guard cursor < scalars.endIndex, scalars[cursor] == expected else { return nil }
+            cursor = scalars.index(after: cursor)
         }
 
         var value = 0
         var digits = 0
         var leadingZero = false
-        while cursor < text.endIndex {
-            let character = text[cursor]
-            guard character.isASCII, let digit = character.wholeNumberValue, (0...9).contains(digit) else { break }
+        while cursor < scalars.endIndex {
+            let scalar = scalars[cursor]
+            guard scalar.value >= 0x30, scalar.value <= 0x39 else { break }
+            let digit = Int(scalar.value - 0x30)
             if digits == 0 { leadingZero = digit == 0 }
             if value > (Int.max - digit) / 10 { return nil }
             value = value * 10 + digit
             digits += 1
-            cursor = text.index(after: cursor)
+            cursor = scalars.index(after: cursor)
         }
 
         guard digits > 0, !(leadingZero && digits > 1),
-              cursor < text.endIndex, text[cursor] == Self.sentinel else { return nil }
-        return (value, text.index(after: cursor))
+              cursor < scalars.endIndex, scalars[cursor] == Self.sentinelScalar else { return nil }
+        return (value, scalars.index(after: cursor))
     }
 }
 
