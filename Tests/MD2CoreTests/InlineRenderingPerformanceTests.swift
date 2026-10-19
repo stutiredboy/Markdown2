@@ -156,6 +156,16 @@ struct InlineRenderingPerformanceTests {
         #expect(body.contains(#"href="https://example.com""#))
     }
 
+    /// Regression: ISSUE-001 — an empty destination `]()` closes before the
+    /// autolink, so the autolink must still be linked. The destination index
+    /// skipped a close at the first position after `(`.
+    /// Found by /qa on 2026-10-19
+    /// Report: .gstack/qa-reports/run-20261019T011541Z/qa-report-fix-quadratic-inline-rendering-2026-10-19.md
+    @Test func autolinkAfterEmptyDestinationIsLinked() {
+        let body = renderer.render("[label]() <https://example.com>").body
+        #expect(body.contains(#"href="https://example.com""#))
+    }
+
     // MARK: - Scaling
 
     @Test(arguments: Workload.allCases)

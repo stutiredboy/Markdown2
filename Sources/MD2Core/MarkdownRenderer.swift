@@ -3067,7 +3067,9 @@ private struct LinkDestinationIndex {
         var high = positions.count
         while low < high {
             let middle = (low + high) / 2
-            if positions[middle] <= start {
+            // The old forward scan starts at `start` and checks that character,
+            // so a close exactly at `start` is the matching close.
+            if positions[middle] < start {
                 low = middle + 1
             } else {
                 high = middle
