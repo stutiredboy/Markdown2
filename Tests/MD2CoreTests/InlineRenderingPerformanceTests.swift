@@ -1,0 +1,307 @@
+import Foundation
+import Testing
+@testable import MD2Core
+
+/// Guards the inline renderer's protection/restore/substitution paths against
+/// super-linear growth, and pins the output of the paths the optimization touches.
+///
+/// Timing policy: warm up once, take the **minimum** of three runs (least
+/// contaminated by scheduler noise), fail fast on the small size with an
+/// absolute ceiling, then assert the doubled size is under 3x the small size.
+/// Linear growth is ~2x; the pre-fix implementation is ~4x. The absolute
+/// ceilings only bound CI time when a regression is present; the ratio is the
+/// real quadratic guard.
+@Suite(.serialized)
+struct InlineRenderingPerformanceTests {
+    private let renderer = MarkdownRenderer()
+    private let sentinel = "\u{E000}"
+
+    // MARK: - Output characterization
+
+    @Test func linkHrefEntityAndFormattedLabel() {
+        let body = renderer.render("[**bold** and `code` &amp;](https://example.com/?a=1&amp;b=2)").body
+        #expect(body.contains(#"<a href="https://example.com/?a=1&amp;b=2"><strong>bold</strong> and <code>code</code> &amp;</a>"#))
+    }
+
+    @Test func imageSourceEntity() {
+        let body = renderer.render("![A&amp;B](a&amp;b.png)").body
+        #expect(body.contains(#"<img src="a&amp;b.png" alt="A&amp;B">"#))
+    }
+
+    @Test func rawHTMLAttributeEntity() {
+        let body = renderer.render(#"<span title="A &amp; B">x</span>"#).body
+        #expect(body.contains(#"<span title="A &amp; B">x</span>"#))
+    }
+
+    @Test func mathAndCodeEntitiesKeepTheirCurrentEscaping() {
+        let body = renderer.render("`x &amp; y` $a &amp; b$ &amp;").body
+        #expect(body.contains(#"<code>x &amp;amp; y</code>"#))
+        #expect(body.contains(#"<span class="math math-inline">a &amp;amp; b</span>"#))
+        #expect(body.hasSuffix(" &amp;</p>"))
+    }
+
+    @Test func bareURLAdjacentToProtectedContent() {
+        let body = renderer.render("https://example.com`code` https://example.com<em>end</em>").body
+        #expect(body.contains(#"<a href="https://example.com">https://example.com</a><code>code</code>"#))
+        #expect(body.contains(#"<a href="https://example.com">https://example.com</a><em>end</em>"#))
+    }
+
+    @Test func referenceKeyWithEntityResolves() {
+        let body = renderer.render("[label][ref&amp;0]\n\n[ref&amp;0]: https://example.com/path/0").body
+        #expect(body.contains(#"<a href="https://example.com/path/0">label</a>"#))
+    }
+
+    /// The current `renderMatches` evaluates transforms right-to-left, so the
+    /// second image is assigned Figure 1 and the first Figure 2. The buffered
+    /// rewrite must preserve that order/state interaction exactly.
+    @Test func twoLabeledImagesKeepReversedFigureNumbering() {
+        let body = renderer.render("![one](a.png){#fig:one} ![two](b.png){#fig:two}").body
+        #expect(body.contains(#"<figcaption class="fig-caption">Figure 2: one</figcaption>"#))
+        #expect(body.contains(#"<figcaption class="fig-caption">Figure 1: two</figcaption>"#))
+    }
+
+    // MARK: - D4 token-compatibility boundary
+
+    /// Approved D4 behavior: a token formed only *after* an escaped hyphen is
+    /// restored stays literal; the one-pass resolver does not re-read its output.
+    /// The pre-fix descending replacement expands it into a second `<code>x</code>`.
+    @Test func tokenConstructedAfterEscapedHyphenStaysLiteral() {
+        let body = renderer.render("`x` \(sentinel)MD2\\-0\(sentinel)").body
+        #expect(body.contains("<code>x</code> \(sentinel)MD2-0\(sentinel)"))
+    }
+
+    /// Approved D4 behavior: when two token spellings share a sentinel, the
+    /// leftmost well-formed token wins. The pre-fix highest-index replacement
+    /// consumes the shared sentinel from the right instead.
+    @Test func sharedSentinelResolvesLeftmostToken() {
+        let input = String(repeating: "&nbsp; ", count: 10)
+            + "`x` \(sentinel)MD2-1\(sentinel)MD2-10\(sentinel)"
+        let body = renderer.render(input).body
+        #expect(body.contains("&nbsp;MD2-10\(sentinel)"))
+        #expect(!body.contains("\(sentinel)MD2-1&nbsp;"))
+    }
+
+    @Test func malformedAndOutOfRangeTokensStayLiteral() {
+        let body = renderer.render(
+            "`x` \(sentinel)MD2-00\(sentinel) \(sentinel)MD2-x\(sentinel) \(sentinel)MD2-99\(sentinel) \(sentinel)"
+        ).body
+        #expect(body.contains("<code>x</code>"))
+        #expect(body.contains("\(sentinel)MD2-00\(sentinel)"))
+        #expect(body.contains("\(sentinel)MD2-x\(sentinel)"))
+        #expect(body.contains("\(sentinel)MD2-99\(sentinel)"))
+        #expect(body.hasSuffix(" \(sentinel)</p>"))
+    }
+
+    /// The label is inside a protected link fragment; expanding that fragment
+    /// only resolves indexes below its own, so the authored forward reference
+    /// stays literal.
+    @Test func forwardReferenceInsideProtectedFragmentStaysLiteral() {
+        let body = renderer.render("[label \(sentinel)MD2-99\(sentinel)](https://example.com)").body
+        #expect(body.contains("<a href=\"https://example.com\">label \(sentinel)MD2-99\(sentinel)</a>"))
+    }
+
+    /// `protectBareAutolinks` reads the authored spelling through `source(in:)`
+    /// and treats the entity token as literal (it does not terminate the URL).
+    @Test func bareURLWithEntityRecoversAuthoredSpelling() {
+        let body = renderer.render("https://example.com/?a=1&amp;b=2").body
+        #expect(body.contains(#"href="https://example.com/?a=1&amp;b=2""#))
+        #expect(body.contains(#">https://example.com/?a=1&amp;b=2</a>"#))
+        #expect(!body.contains("&amp;amp;"))
+    }
+
+    // MARK: - Autolink destination classification
+
+    @Test func autolinkWithoutDestinationIsLinked() {
+        let body = renderer.render("<https://example.com>").body
+        #expect(body.contains(#"<a href="https://example.com">https://example.com</a>"#))
+    }
+
+    @Test func autolinkInsideAngleDestinationIsLeftForTheLinkParser() {
+        let body = renderer.render("[label](<https://example.com>)").body
+        #expect(body.contains(#"<a href="https://example.com">label</a>"#))
+        #expect(body.components(separatedBy: #"href="https://example.com""#).count - 1 == 1)
+    }
+
+    @Test func autolinkAfterClosedDestinationIsLinked() {
+        let body = renderer.render("[label](/url) <https://example.com>").body
+        #expect(body.contains(#"href="/url""#))
+        #expect(body.contains(#"href="https://example.com""#))
+    }
+
+    @Test func autolinkAfterNestedParenDestinationIsLinked() {
+        let body = renderer.render("[label](a(b)c) <https://example.com>").body
+        #expect(body.contains(#"href="https://example.com""#))
+    }
+
+    @Test func autolinkInsideNestedParenDestinationIsNotLinkedSeparately() {
+        let body = renderer.render("[label](a(b) <https://example.com>)").body
+        #expect(!body.contains(#"href="https://example.com""#))
+    }
+
+    @Test func autolinkAfterEscapedParenDestinationIsLinked() {
+        let body = renderer.render("[label](a\\)b) <https://example.com>").body
+        #expect(body.contains(#"href="https://example.com""#))
+    }
+
+    @Test func autolinkInsideUnterminatedDestinationIsNotLinked() {
+        let body = renderer.render("[label](url <https://example.com>").body
+        #expect(!body.contains(#"href="https://example.com""#))
+        #expect(body.contains("&lt;https://example.com&gt;"))
+    }
+
+    @Test func autolinkAfterMultipleDestinationsIsLinked() {
+        let body = renderer.render("[a](/one) [b](/two) <https://example.com>").body
+        #expect(body.contains(#"href="/one""#))
+        #expect(body.contains(#"href="/two""#))
+        #expect(body.contains(#"href="https://example.com""#))
+    }
+
+    // MARK: - Scaling
+
+    @Test(arguments: Workload.allCases)
+    func doublingInlineFragmentsDoesNotQuadruple(_ workload: Workload) throws {
+        _ = renderer.render(workload.document(count: 32))
+
+        let smallMS = bestOf(3) { _ = renderer.render(workload.document(count: 500)) }
+        try #require(
+            smallMS < 1_000,
+            "\(workload.testDescription): 500 fragments took \(format(smallMS)) ms; refusing to run the doubled case"
+        )
+
+        let largeMS = bestOf(3) { _ = renderer.render(workload.document(count: 1_000)) }
+        #expect(
+            largeMS < smallMS * 3.0 + 25.0,
+            "\(workload.testDescription): 500=\(format(smallMS)) ms, 1,000=\(format(largeMS)) ms"
+        )
+        #expect(
+            largeMS < 2_000,
+            "\(workload.testDescription): 1,000 fragments took \(format(largeMS)) ms"
+        )
+
+        let body = renderer.render(workload.document(count: 1_000)).body
+        #expect(workload.matches(body, count: 1_000), "\(workload.testDescription): rendered output is incomplete")
+        #expect(!body.contains(sentinel), "\(workload.testDescription): a placeholder token leaked into the body")
+        #expect(!body.contains("MD2-"), "\(workload.testDescription): an MD2- marker leaked into the body")
+    }
+
+    @Test func oneURLPerLineParagraphScalesLinearly() throws {
+        try assertOnePerLineScales(.urlAutolinks)
+    }
+
+    @Test func oneBareURLPerLineParagraphScalesLinearly() throws {
+        try assertOnePerLineScales(.bareURLs)
+    }
+
+    private func assertOnePerLineScales(_ workload: Workload) throws {
+        _ = renderer.render(workload.onePerLine(count: 32))
+
+        let smallMS = bestOf(3) { _ = renderer.render(workload.onePerLine(count: 1_000)) }
+        try #require(
+            smallMS < 1_000,
+            "\(workload.testDescription) one-per-line: 1,000 fragments took \(format(smallMS)) ms"
+        )
+
+        let largeMS = bestOf(3) { _ = renderer.render(workload.onePerLine(count: 2_000)) }
+        #expect(
+            largeMS < smallMS * 3.0 + 25.0,
+            "\(workload.testDescription) one-per-line: 1,000=\(format(smallMS)) ms, 2,000=\(format(largeMS)) ms"
+        )
+        #expect(
+            largeMS < 2_000,
+            "\(workload.testDescription) one-per-line: 2,000 fragments took \(format(largeMS)) ms"
+        )
+
+        let body = renderer.render(workload.onePerLine(count: 2_000)).body
+        #expect(workload.matches(body, count: 2_000), "\(workload.testDescription) one-per-line: rendered output is incomplete")
+        #expect(!body.contains(sentinel))
+        #expect(!body.contains("MD2-"))
+    }
+
+    // MARK: - Helpers
+
+    private func bestOf(_ runs: Int, _ body: () -> Void) -> Double {
+        var best = Double.infinity
+        for _ in 0..<runs {
+            let start = ContinuousClock.now
+            body()
+            best = min(best, milliseconds(start.duration(to: .now)))
+        }
+        return best
+    }
+
+    private func milliseconds(_ duration: Duration) -> Double {
+        Double(duration.components.seconds) * 1_000 + Double(duration.components.attoseconds) / 1e15
+    }
+
+    private func format(_ value: Double) -> String {
+        String(format: "%.1f", value)
+    }
+
+    enum Workload: String, CaseIterable, Sendable, CustomTestStringConvertible {
+        case urlAutolinks
+        case markdownLinks
+        case mailtoAutolinks
+        case entities
+        case bareURLs
+        case bareURLsWithEntities
+        case referenceLinks
+        case referenceLinksWithProtectedKeys
+
+        var testDescription: String { rawValue }
+
+        func document(count: Int) -> String {
+            switch self {
+            case .urlAutolinks:
+                return (0..<count).map { "<https://example.com/path/\($0)>" }.joined(separator: " ")
+            case .markdownLinks:
+                return (0..<count).map { "[link \($0)](https://example.com/path/\($0))" }.joined(separator: " ")
+            case .mailtoAutolinks:
+                return (0..<count).map { "<mailto:user\($0)@example.com>" }.joined(separator: " ")
+            case .entities:
+                return (0..<count).map { _ in "&nbsp;" }.joined(separator: " ")
+            case .bareURLs:
+                return (0..<count).map { "https://example.com/path/\($0)" }.joined(separator: " ")
+            case .bareURLsWithEntities:
+                return (0..<count).map { "https://example.com/?a=\($0)&amp;b=2" }.joined(separator: " ")
+            case .referenceLinks, .referenceLinksWithProtectedKeys:
+                let protected = self == .referenceLinksWithProtectedKeys
+                let body = (0..<count).map { index -> String in
+                    let key = protected ? "ref&amp;\(index)" : "ref\(index)"
+                    return "[label \(index)][\(key)]"
+                }.joined(separator: " ")
+                let definitions = (0..<count).map { index -> String in
+                    let key = protected ? "ref&amp;\(index)" : "ref\(index)"
+                    return "[\(key)]: https://example.com/path/\(index)"
+                }.joined(separator: "\n")
+                return body + "\n\n" + definitions
+            }
+        }
+
+        func onePerLine(count: Int) -> String {
+            switch self {
+            case .urlAutolinks:
+                return (0..<count).map { "<https://example.com/path/\($0)>" }.joined(separator: "\n")
+            case .bareURLs:
+                return (0..<count).map { "https://example.com/path/\($0)" }.joined(separator: "\n")
+            default:
+                return document(count: count)
+            }
+        }
+
+        func matches(_ body: String, count: Int) -> Bool {
+            switch self {
+            case .urlAutolinks, .markdownLinks, .bareURLs, .referenceLinks, .referenceLinksWithProtectedKeys:
+                return body.components(separatedBy: #"href="https://example.com/path/"#).count - 1 == count
+            case .mailtoAutolinks:
+                return body.components(separatedBy: #"href="mailto:user"#).count - 1 == count
+            case .entities:
+                return body.components(separatedBy: "&nbsp;").count - 1 == count
+                    && !body.contains("&amp;nbsp;")
+            case .bareURLsWithEntities:
+                return body.components(separatedBy: #"href="https://example.com/?a="#).count - 1 == count
+                    && body.contains(#"href="https://example.com/?a=\#(count - 1)&amp;b=2""#)
+                    && !body.contains("&amp;amp;")
+            }
+        }
+    }
+}

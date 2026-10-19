@@ -1522,12 +1522,15 @@ public struct MarkdownRenderer: Sendable {
     }
 
     /// Angle-bracket autolinks `<https://…>` / `<mailto:…>`, rendered to an anchor
-    /// and protected.
+    /// and protected. The destination index is built once per pass, so each
+    /// autolink's "inside a link destination" check is a lookup instead of a
+    /// backward scan over the preceding prefix.
     private func protectAutolinks(_ text: String, protector: InlineProtector) -> String {
-        replaceMatches(in: text, pattern: #"<((?:https?|mailto):[^>\s]+)>"#) { match, source in
+        let destinations = LinkDestinationIndex(scanning: text)
+        return replaceMatches(in: text, pattern: #"<((?:https?|mailto):[^>\s]+)>"#) { match, source in
             guard let urlRange = Range(match.range(at: 1), in: source),
                   let wholeRange = Range(match.range, in: source),
-                  !isInsideLinkDestination(source, at: wholeRange.lowerBound) else {
+                  !destinations.contains(wholeRange.lowerBound) else {
                 return matchText(match, in: source)
             }
 
@@ -2024,6 +2027,10 @@ public struct MarkdownRenderer: Sendable {
         renderEmphasis(renderLinks(text, protector: protector))
     }
 
+    /// Reference links `[label][key]` / `[label][]` / `[label]`. This pass rebuilds
+    /// manually rather than through ``replaceMatches``: it pairs brackets once and
+    /// walks left-to-right so definition lookup, image handling, and the
+    /// not-a-link fallback can share one cursor.
     private func renderReferenceLinks(_ text: String, context: InlineContext?, protector: InlineProtector) -> String {
         guard let context, !context.references.isEmpty else { return text }
         // Pair brackets once, including nested link text, instead of repeatedly
@@ -2843,6 +2850,15 @@ public struct MarkdownRenderer: Sendable {
     window.__md2RenderDiagrams(document);
     """
 
+    /// Applies `transform` to every match and returns the rebuilt string.
+    ///
+    /// Transforms are evaluated in descending match order, preserving the call
+    /// order of stateful transforms (notably `renderImages`' figure numbering),
+    /// and the transformed strings are then assembled forward in one pass.
+    /// Transforms MUST read only their own match and capture groups; they must
+    /// not depend on replacements produced for other matches. `protectAutolinks`
+    /// consults the preceding text only through the destination index built from
+    /// this original source, and `renderImages` keeps its call order.
     private func replaceMatches(
         in source: String,
         pattern: String,
@@ -2859,12 +2875,25 @@ public struct MarkdownRenderer: Sendable {
                 regex.firstMatch(in: source, options: .anchored, range: $0)
             }
             : regex.matches(in: source, range: nsRange)
-        var result = source
+        guard !matches.isEmpty else { return source }
 
-        for match in matches.reversed() {
-            guard let range = Range(match.range, in: result) else { continue }
-            result.replaceSubrange(range, with: transform(match, result))
+        var replacements = [String](repeating: "", count: matches.count)
+        for (offset, match) in matches.enumerated().reversed() {
+            replacements[offset] = transform(match, source)
         }
+
+        var result = ""
+        result.reserveCapacity(source.utf8.count)
+        var cursor = source.startIndex
+
+        for (offset, match) in matches.enumerated() {
+            guard let range = Range(match.range, in: source),
+                  range.lowerBound >= cursor else { continue }
+            result.append(contentsOf: source[cursor..<range.lowerBound])
+            result.append(replacements[offset])
+            cursor = range.upperBound
+        }
+        result.append(contentsOf: source[cursor...])
 
         return result
     }
@@ -2942,14 +2971,140 @@ private enum DiagramKind: String {
     }
 }
 
-/// Holds the fragments that inline rendering swaps out for placeholder tokens so
-/// they survive HTML-escaping and the later regex passes untouched. A reference
-/// type so the ordered pipeline passes can share one accumulator, then restore
-/// every fragment in one final step.
+/// A precomputed view of inline link and image destinations (`](…`) for one
+/// autolink pass. Each opener records the position just after its `(` and the
+/// first unescaped, depth-zero `)` after it (or `nil` when unterminated). A
+/// lookup binary-searches the opener at or before a position and reports
+/// whether that position lies before the matching close, which is exactly the
+/// old nearest-opener, forward-depth scan without its per-autolink prefix walk.
+///
+/// The index is built in one left-to-right pass: paren balance is tracked
+/// globally (escaped characters skipped), and every unescaped `)` is recorded
+/// under the balance level it leaves behind. An opener whose balance just after
+/// its `(` is `B` closes at the first later `)` recorded at level `B - 1`.
+private struct LinkDestinationIndex {
+    private struct Span {
+        let start: String.Index
+        let close: String.Index?
+    }
+
+    private let spans: [Span]
+
+    init(scanning text: String) {
+        // Most inline passes contain no link syntax at all; skip the character
+        // walk (and its allocations) in that common case.
+        guard text.contains("](") else {
+            spans = []
+            return
+        }
+
+        var openers: [(start: String.Index, base: Int)] = []
+        var closesByBalance: [Int: [String.Index]] = [:]
+        var balance = 0
+        var previous: Character?
+        var cursor = text.startIndex
+
+        while cursor < text.endIndex {
+            let character = text[cursor]
+
+            if character == "\\" {
+                guard let next = text.index(cursor, offsetBy: 2, limitedBy: text.endIndex) else { break }
+                cursor = next
+                previous = nil
+                continue
+            }
+
+            if character == "(" {
+                balance += 1
+                if previous == "]" {
+                    openers.append((text.index(after: cursor), balance))
+                }
+            } else if character == ")" {
+                balance -= 1
+                closesByBalance[balance, default: []].append(cursor)
+            }
+
+            previous = character
+            cursor = text.index(after: cursor)
+        }
+
+        spans = openers.map { opener in
+            Span(
+                start: opener.start,
+                close: Self.firstClose(after: opener.start, at: opener.base - 1, in: closesByBalance)
+            )
+        }
+    }
+
+    func contains(_ index: String.Index) -> Bool {
+        guard !spans.isEmpty else { return false }
+
+        var low = 0
+        var high = spans.count
+        while low < high {
+            let middle = (low + high) / 2
+            if spans[middle].start <= index {
+                low = middle + 1
+            } else {
+                high = middle
+            }
+        }
+        guard low > 0 else { return false }
+
+        let span = spans[low - 1]
+        guard let close = span.close else { return true }
+        return index < close
+    }
+
+    private static func firstClose(
+        after start: String.Index,
+        at level: Int,
+        in closesByBalance: [Int: [String.Index]]
+    ) -> String.Index? {
+        guard let positions = closesByBalance[level] else { return nil }
+
+        var low = 0
+        var high = positions.count
+        while low < high {
+            let middle = (low + high) / 2
+            if positions[middle] <= start {
+                low = middle + 1
+            } else {
+                high = middle
+            }
+        }
+        return low < positions.count ? positions[low] : nil
+    }
+}
+
+/// Holds the three parallel facts inline rendering swaps out for placeholder
+/// tokens so they survive HTML-escaping and the later regex passes untouched:
+/// the rendered `fragments`, the authored `sources` (recovered by bare-URL and
+/// reference-link matching), and the indexes marked `literals` (which only
+/// terminate bare-URL matching). A reference type so the ordered pipeline
+/// passes share one accumulator.
+///
+/// `restore(in:)` and `source(in:)` share one linear resolver. Tokens have the
+/// form `\u{E000}MD2-<n>\u{E000}`, and `protect` is append-only: an entry at
+/// index N can only contain tokens with index < N. The resolver expands each
+/// entry once against already-expanded lower indexes (the `expandedCount`
+/// watermark), then scans the requested text once and replaces each token by
+/// direct index lookup. Author text that merely resembles a token, malformed
+/// tokens, leading-zero indexes, and out-of-range or forward references stay
+/// literal.
+///
+/// D4 boundary: a token formed only after an escaped character is restored is
+/// not re-read, and when two spellings share a sentinel the leftmost
+/// well-formed token wins. The old descending per-index replacements expanded
+/// the former and gave the higher index priority; the one-pass resolver keeps
+/// the narrower behavior pinned by `InlineRenderingPerformanceTests`.
 private final class InlineProtector {
     private var fragments: [String] = []
     private var sources: [String] = []
     private var literals: Set<Int> = []
+    private var expandedCount = 0
+
+    private static let sentinel: Character = "\u{E000}"
 
     /// Stores `fragment` and returns the private-use-area token standing in for it.
     func protect(_ fragment: String, source: String? = nil, literal: Bool = false) -> String {
@@ -2960,26 +3115,101 @@ private final class InlineProtector {
         return token
     }
 
+    /// Returns `text` with every source token replaced by the authored spelling.
     func source(in text: String) -> String {
-        var result = text
-        for (index, source) in sources.enumerated().reversed() {
-            result = result.replacingOccurrences(of: "\u{E000}MD2-\(index)\u{E000}", with: source)
-        }
-        return result
+        resolve(text, emitting: .source)
     }
 
     func isLiteral(_ index: Int) -> Bool { literals.contains(index) }
 
-    /// Replaces every protection token in `text` with its original fragment.
-    /// Restores in descending index order: a fragment can only embed tokens
-    /// created before it (lower index), so inserting outer fragments first lets
-    /// later iterations resolve the tokens nested inside them.
+    /// Returns `text` with every fragment token replaced by its rendered HTML.
     func restore(in text: String) -> String {
-        var result = text
-        for (index, fragment) in fragments.enumerated().reversed() {
-            result = result.replacingOccurrences(of: "\u{E000}MD2-\(index)\u{E000}", with: fragment)
+        resolve(text, emitting: .fragment)
+    }
+
+    private enum Emission {
+        case fragment
+        case source
+    }
+
+    private func resolve(_ text: String, emitting: Emission) -> String {
+        guard text.contains(Self.sentinel) else { return text }
+        expandPendingEntries()
+        return resolveTokens(in: text, limit: expandedCount, emitting: emitting)
+    }
+
+    /// Expands each unexpanded entry once, in ascending index order. `fragments`
+    /// and `sources` are appended in lockstep, so one watermark covers both.
+    private func expandPendingEntries() {
+        while expandedCount < fragments.count {
+            let index = expandedCount
+            fragments[index] = resolveTokens(in: fragments[index], limit: index, emitting: .fragment)
+            sources[index] = resolveTokens(in: sources[index], limit: index, emitting: .source)
+            expandedCount += 1
+        }
+    }
+
+    /// One forward scan. Tokens with an index below `limit` are replaced from the
+    /// selected array; everything else is copied literally, including malformed
+    /// tokens and indexes at or above the watermark.
+    private func resolveTokens(in text: String, limit: Int, emitting: Emission) -> String {
+        guard text.contains(Self.sentinel) else { return text }
+
+        var result = ""
+        result.reserveCapacity(text.utf8.count)
+        var cursor = text.startIndex
+
+        while cursor < text.endIndex {
+            guard let start = text[cursor...].firstIndex(of: Self.sentinel) else {
+                result.append(contentsOf: text[cursor...])
+                break
+            }
+            result.append(contentsOf: text[cursor..<start])
+
+            if let token = token(in: text, from: start), token.index < limit {
+                result.append(entry(token.index, emitting: emitting))
+                cursor = token.end
+            } else {
+                result.append(Self.sentinel)
+                cursor = text.index(after: start)
+            }
         }
         return result
+    }
+
+    private func entry(_ index: Int, emitting: Emission) -> String {
+        switch emitting {
+        case .fragment: return fragments[index]
+        case .source: return sources[index]
+        }
+    }
+
+    /// Parses `\u{E000}MD2-<canonical decimal>\u{E000}` starting at `start`.
+    /// Leading zeros, overflow, and a missing closing sentinel are malformed and
+    /// leave the text literal, matching the old exact-spelling replacements.
+    private func token(in text: String, from start: String.Index) -> (index: Int, end: String.Index)? {
+        var cursor = text.index(after: start)
+        for expected in "MD2-" {
+            guard cursor < text.endIndex, text[cursor] == expected else { return nil }
+            cursor = text.index(after: cursor)
+        }
+
+        var value = 0
+        var digits = 0
+        var leadingZero = false
+        while cursor < text.endIndex {
+            let character = text[cursor]
+            guard character.isASCII, let digit = character.wholeNumberValue, (0...9).contains(digit) else { break }
+            if digits == 0 { leadingZero = digit == 0 }
+            if value > (Int.max - digit) / 10 { return nil }
+            value = value * 10 + digit
+            digits += 1
+            cursor = text.index(after: cursor)
+        }
+
+        guard digits > 0, !(leadingZero && digits > 1),
+              cursor < text.endIndex, text[cursor] == Self.sentinel else { return nil }
+        return (value, text.index(after: cursor))
     }
 }
 
