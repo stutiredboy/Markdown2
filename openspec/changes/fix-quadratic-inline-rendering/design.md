@@ -46,7 +46,7 @@ Re-baselined pre-fix and post-fix numbers for every workload are recorded in
 
 Constraints:
 
-- Output must be byte-identical for existing documents; the conformance corpus and the 614-test suite are the guard.
+- Output must be byte-identical for existing documents; the conformance corpus and the full non-GUI suite are the guard.
 - The security contract must survive: `HTMLSafety.isSafeURL` must still see fully restored text, including entity-obfuscated schemes (`javascript&#58;…`).
 - `source(in:)` must still return the authored spelling (entity spellings included), and `isLiteral` must still terminate bare-URL matching.
 - No new dependencies, no public API change, no HTML/CSS/export changes.
@@ -57,11 +57,11 @@ Constraints:
 **Goals:**
 
 - Make placeholder restoration, both `restore(in:)` and `source(in:)`, **O(text + fragment text)** and independent of the fragment count.
-- Make `replaceMatches` **O(text + total replacement size)** while evaluating transforms in the same descending order as today, so `assignFigure` numbering does not change.
-- Make `isInsideLinkDestination` **O(1) per autolink** via one forward pre-scan of `](` destinations, so angle autolinks scale linearly.
+- Make `replaceMatches` **O(text + total replacement size)** while pre-assigning figures in document order, so a forward `\ref` and the captions agree.
+- Make inline destination classification **O(1) per match** via one forward pre-scan of `](` destinations, so angle autolinks and paren-math spans scale linearly.
 - Keep mid-pipeline `restore` and `source` calls cheap, so a paragraph with thousands of links, images, bare URLs, or reference links does not pay a per-match fragment scan.
-- Preserve rendered HTML byte-for-byte for documents without private-use sentinel characters, preserve figure numbering, and preserve all URL-safety and `isLiteral` behavior. Adversarial tokens formed only after restoration are a declared boundary (D4).
-- Add non-GUI scaling regression tests for URL autolinks, Markdown links, mailto autolinks, entities, bare URLs (single-line and one-per-line), and reference links. Each test must fail on the current implementation and pass after the fix.
+- Preserve rendered HTML byte-for-byte for documents without private-use sentinel characters and without multiple labeled figures in one paragraph; figure numbering is corrected to document order (a declared behavior change). Preserve URL safety and `isLiteral` behavior. Adversarial tokens formed only after restoration are a declared boundary (D4).
+- Add non-GUI scaling regression tests for URL autolinks, Markdown links, mailto autolinks, entities, bare URLs (single-line and one-per-line), reference links, and paren-math spans. Each test must fail on the current implementation and pass after the fix.
 
 **Non-Goals:**
 
@@ -126,7 +126,7 @@ Parsing must preserve current behavior exactly:
 
 ### 2. Evaluate transforms in the current order, assemble output in source order
 
-The current loop iterates `matches.reversed()` and passes the progressively mutated result to each transform. Some transforms are stateful: `renderImages` calls `assignFigure` (`:1940`), so a forward evaluation order would renumber figures left-to-right instead of the current right-to-left order. Preserve the observable order by buffering the transformed strings in the same descending order, then assembling forward:
+The current loop iterates `matches.reversed()` and passes the progressively mutated result to each transform. Some transforms are stateful. `renderImages` used to call `assignFigure` from the descending transform loop, which renumbered figures right-to-left and overwrote the pre-scan map. The rewrite adds a `prepare` pass over all matches in ascending document order before the transforms: it assigns each labeled figure once, and the transform reads the number by label, so a forward `\ref` and the captions agree. The transforms themselves are buffered in the same descending order (preserving any other stateful call order), then assembled forward:
 
 ```swift
 var replacements = [String](repeating: "", count: matches.count)
@@ -150,7 +150,7 @@ result.append(contentsOf: source[cursor...])
 
 Match ordering is guaranteed by the producers: `NSRegularExpression.matches` returns ascending, non-overlapping matches, and `MarkdownLinkSyntax.candidateRanges` returns ascending, disjoint candidates (one anchored match each, order preserved by `compactMap`). The `range.lowerBound >= cursor` guard makes overlapping or stale ranges harmless: the skipped match's text is still copied as part of the next literal run. A zero-match input returns `source` unchanged.
 
-**Contract change (internal):** the transform now receives the original `source`, not the progressively mutated result. Most transforms read only their own match and capture groups (audited on the re-baselined base: label stripping `:554`, code spans `:1408`, escapes `:1423`, math `:1441`/`:1468`, entities `:1519`, autolinks `:1527`, raw HTML `:1542`, cross-references `:1722`, emphasis `:1832-1862`, images `:1876`, optional inline `:2085`, bare autolinks `:2099`). Two are not purely local and are called out explicitly: `renderImages` mutates `assignFigure` state (`:1940`), which is why the buffered evaluation keeps descending order; `protectAutolinks` reads the preceding prefix through `isInsideLinkDestination` (`:1530`, `:1487`), which Decision 6 makes linear. `renderReferenceLinks` (`:2027`) rebuilds manually and does not use `replaceMatches`. Add a comment to `replaceMatches` stating that transforms MUST NOT depend on other matches' replacements and that stateful transforms keep their call order. This also removes the need to reason about UTF-16 ranges surviving earlier replacements.
+**Contract change (internal):** the transform now receives the original `source`, not the progressively mutated result. Most transforms read only their own match and capture groups (audited on the re-baselined base: label stripping `:554`, code spans `:1408`, escapes `:1423`, math `:1441`/`:1468`, entities `:1519`, autolinks `:1527`, raw HTML `:1542`, cross-references `:1722`, emphasis `:1832-1862`, images `:1876`, optional inline `:2085`, bare autolinks `:2099`). Two are not purely local and are called out explicitly: `renderImages` assigns figures in the `prepare` pass and reads them by label (`:1940`); `protectAutolinks` reads the preceding text through the precomputed destination index (Decision 6), and `protectInlineParenMath` uses the same index. `renderReferenceLinks` (`:2027`) rebuilds manually and does not use `replaceMatches`. Add a comment to `replaceMatches` stating that transforms MUST NOT depend on other matches' replacements and that stateful transforms keep their call order. This also removes the need to reason about UTF-16 ranges surviving earlier replacements.
 
 Complexity: O(source length + sum of replacement lengths), versus O(match count × source length) from repeated tail shifting.
 
@@ -179,7 +179,7 @@ Add `Tests/MD2CoreTests/InlineRenderingPerformanceTests.swift` (Swift Testing, `
 
 The plain bare-URL and reference-link cases take the sentinel-free fast path in `source(in:)`; keep them for match-path coverage, but the entity-bearing variants are the cases that exercise source expansion under scaling, so their recovered output is asserted exactly.
 
-Add a correctness test with two labeled images in one paragraph (`![one](a.png){#fig:one}` and `![two](b.png){#fig:two}`). The current reversed evaluation assigns the second image Figure 1 and the first Figure 2; the buffered builder must preserve that numbering exactly. This test pins the stateful-transform order.
+Add a correctness test with two labeled images in one paragraph (`![one](a.png){#fig:one}` and `![two](b.png){#fig:two}`). The prepare pass numbers them in document order (Figure 1 then Figure 2) and a forward `\ref{fig:one}` agrees with the caption; this pins the corrected behavior and the forward-reference map.
 
 Add characterization tests for the D4 boundary: a token formed only after an escaped hyphen is restored stays literal, and a shared-sentinel overlap resolves by the leftmost well-formed token. These pin the accepted behavior change.
 
@@ -188,7 +188,7 @@ Each case:
 1. Warms up with a small render.
 2. Builds all fragments **on one line** (one `inlineHTML` pass, one protector, many fragments).
 3. Measures N=500 with min-of-3. Asserts an absolute ceiling (tentatively 1 s in the debug `swift test` build). This fails fast on the old implementation instead of running the 2N case for seconds.
-4. Measures 2N=1,000 with min-of-3. Asserts `large < small × 3.0` (linear ≈ 2×; quadratic ≈ 4×) and an absolute ceiling (tentatively 2 s).
+4. Measures 2N=1,000 with min-of-3. Asserts `large < small × 3.0` plus at most 2 ms of timer resolution (linear ≈ 2×; quadratic ≈ 4×) and an absolute ceiling (tentatively 2 s).
 5. Asserts the rendered output contains all N constructs and no `MD2-`/private-use sentinel.
 
 Add the **one-fragment-per-line paragraph** case (the report's input shape) at 1,000/2,000 for URL autolinks and bare URLs, with the same ratio assertion. On the re-baselined base, `paragraphHTML` renders the whole paragraph in one inline pass, so this case is quadratic before the fix and linear after it; it must be red in task 2.4, not green.
@@ -204,35 +204,38 @@ Measurement notes:
 ### 5. Preserve output and security semantics
 
 - Token grammar and the `protect(_:source:literal:)` bookkeeping are unchanged, so author text, nesting, and existing tests see the same output from both resolvers. The byte-identical guarantee covers documents that do not contain private-use sentinel characters; the D4 constructed-token cases are declared and pinned by tests.
+- A restored destination that contains raw `<`, `>`, or `"` is rejected by `HTMLSafety.isSafeURL`, so an authored well-formed token cannot splice a renderer fragment into an href/src attribute. Angle-bracket destinations may still contain spaces.
 - Nested restoration is covered by the existing `P1RegressionTests.encodedActiveURLsAreInert` (`javascript&#58;`, `java&#x73;cript:`, `java&Tab;script:`) and by new mixed cases: a link whose href contains an entity and whose label contains code/emphasis, raw HTML with an entity in an attribute, a bare URL adjacent to code/math tokens, and a reference key containing an entity. `isLiteral` must still terminate bare-URL matching.
 - Run the full `swift test` suite (including the conformance corpus) as the broad equivalence guard. No GUI suite is involved.
 - Optionally record release before/after numbers from the existing probe layout in the change notes; no committed benchmark documentation is required for acceptance.
 
-### 6. Precompute link-destination ranges for autolink classification
+### 6. Precompute link-destination ranges for inline destination classification
 
-`protectAutolinks` calls `isInsideLinkDestination(source, at:)` (`:1486`) for every angle autolink; the function scans backward to the nearest `](` and then forward with paren depth and escape skipping. With no `](`, the backward search costs O(prefix), so N autolinks are O(N²).
+`protectAutolinks` and `protectInlineParenMath` both classify whether a match sits inside a link or image destination. The old `isInsideLinkDestination` (`:1486`) scans backward to the nearest `](` and then forward with paren depth and escape skipping. With no `](`, the backward search costs O(prefix), so N autolinks or N `\(...\)` math spans are O(N²).
 
-Precompute once per `protectAutolinks` pass:
+Precompute once per inline pass (`LinkDestinationIndex`):
 
-1. Scan the text left to right for `](` openers.
+1. Scan the text left to right for `](` openers. A raw `](` opens a destination even when its `]` is escaped, matching the old backward search; the escaped character is still skipped for close bookkeeping.
 2. For each opener, scan forward to its matching `)` with the same escape and depth rules; store the destination interval `(opener.upperBound, close)` or an unterminated interval to the end.
-3. Keep the openers in ascending order. For an autolink at index, binary-search the nearest opener at or before it, then return true when the index is inside that opener's destination and false when its `)` closed earlier. This keeps the current nearest-opener semantics: an outer destination does not rescue a position after the nearest opener's destination closed.
+3. Keep the openers in ascending order. For a match at index, binary-search the nearest opener at or before it, then return true when the index is inside that opener's destination and false when its `)` closed earlier. This keeps the current nearest-opener semantics: an outer destination does not rescue a position after the nearest opener's destination closed.
 
-Complexity: O(text + N log M), or O(text + N) with a two-pointer scan when the autolink positions are processed in ascending order. The buffered transform order in Decision 2 is descending; binary search keeps the lookup independent of order. Tests: no destination, one destination, nested parens, escaped parens, unterminated destination, multiple destinations, and the N=500/1,000 scaling case.
+Complexity: O(text + N log M), or O(text + N) with a two-pointer scan when the match positions are processed in ascending order. The buffered transform order in Decision 2 is descending; binary search keeps the lookup independent of order. The old `isInsideLinkDestination` is deleted. Tests: no destination, one destination, nested parens, escaped parens, an escaped `](` opener, unterminated destination, multiple destinations, and the N=500/1,000 autolink and paren-math scaling cases.
 
-*Alternative rejected:* memoizing `isInsideLinkDestination` per autolink. The first call at each distinct position is still O(prefix), and a position-keyed cache adds state without bounding the first-call cost; the interval pre-scan is simpler and exact.
+*Alternative rejected:* memoizing the old classifier per match. The first call at each distinct position is still O(prefix), and a position-keyed cache adds state without bounding the first-call cost; the interval pre-scan is simpler and exact.
 
 ## Risks / Trade-offs
 
 - **Two arrays, one resolver** → `fragments` and `sources` are appended in lockstep by `protect`, so one `expandedCount` watermark covers both; `isLiteral` only affects bare-URL matching, not restoration. Dedicated tests exercise `restore` and `source` separately and together.
-- **Transform contract change** (original source vs mutated result) → Audit every call site. Most transforms read only their own match; `renderImages` mutates `assignFigure` state, so transforms are buffered in the current descending order, and `protectAutolinks` reads the preceding prefix, which Decision 6 makes linear. The conformance suite and a two-figure numbering test pin the output.
-- **Link-destination pre-scan semantics** → The pre-scan must match the current nearest-opener rule, escape skipping, nested parens, and unterminated destinations. Dedicated tests cover each case, plus the N=500/1,000 scaling case.
+- **Transform contract change** (original source vs mutated result) → Audit every call site. Most transforms read only their own match; `renderImages` assigns figures in the `prepare` pass, and the transforms stay buffered in descending order. `protectAutolinks` and `protectInlineParenMath` read through the destination index. The conformance suite and the document-order figure/forward-`\ref` test pin the output.
+- **Link-destination pre-scan semantics** → The pre-scan must match the current nearest-opener rule, escape skipping (including a raw `](` with an escaped `]`), nested parens, and unterminated destinations, in both autolink and paren-math passes. Dedicated tests cover each case, plus the N=500/1,000 scaling cases.
 - **D4 compatibility boundary** → Tokens formed only after a restored escape stay literal, and shared sentinels resolve leftmost. This is a deliberate, tested change for adversarial private-use input; the byte-identical claim excludes documents containing private-use sentinel characters.
-- **Timing tests flake on loaded CI** → `@Suite(.serialized)`, min-of-3, a 3× ratio threshold that separates 2× from 4× with margin, and generous absolute ceilings. If a slower runner still flakes, raise the ceiling — not the ratio — so the quadratic guard stays meaningful.
+- **Figure numbering correction** → Multi-figure paragraphs now number in document order and a forward `\ref` agrees with the caption; the previous descending render walk reversed the numbers and overwrote the pre-scan map. This is an intentional behavior change; the byte-identical claim excludes multi-figure paragraphs.
+- **Destination character guard** → Angle-bracket destinations may still contain spaces; raw `<`, `>`, and `"` are rejected. The P1 tests and the authored-token regression cover it.
+- **Timing tests flake on loaded CI** → `@Suite(.serialized)`, min-of-3, a 3× ratio threshold plus at most 2 ms of timer resolution that separates 2× from 4× with margin, and generous absolute ceilings. If a slower runner still flakes, raise the ceiling — not the ratio and not the resolution allowance — so the quadratic guard stays meaningful.
 - **Scanner edge cases** (leading zeros, lone sentinel, out-of-range index, forward reference, `isLiteral`, constructed token, shared sentinel) → Dedicated unit-style tests alongside the scaling tests; the scanner is also exercised by every existing entity/link/math test.
 - **In-place expansion mutating an entry later referenced** → Both arrays are append-only and expansion only replaces tokens with already-expanded lower indices; an expanded entry is token-free, so re-use is idempotent. `expandedCount` never moves backward.
 - **Memory / constant factors** → The scanner allocates one output string per call (reserved to the input size). Mid-pipeline restores and source lookups operate on small spans. In-place expansion avoids a second array copy. This is strictly less work than the removed repeated scans.
-- **Security regression** → `HTMLSafety.isSafeURL` still receives fully restored text; the P1 entity-obfuscation tests plus the new nested-fragment, reference-key, and bare-URL cases guard it.
+- **Security regression** → `HTMLSafety.isSafeURL` still receives fully restored text and now rejects raw `<`, `>`, or `"`, so an authored token cannot splice markup into an href/src attribute; the P1 entity-obfuscation tests plus the nested-fragment, reference-key, bare-URL, and authored-token cases guard it.
 - **Re-baselined base** → D1 moved the checkout to `origin/main` `0a75468` and re-baselined the line numbers; D2 added `source(in:)`, the reference-link path, and bare-URL tests; D3 added the link-destination pre-scan; D4 set the private-use-token boundary. The one-per-line case is expected red before the fix, matching the report.
 
 ## Migration Plan
@@ -249,7 +252,7 @@ No data, schema, or API migration. The change is internal to `MD2Core`, lands as
 
 Target: `openspec/changes/fix-quadratic-inline-rendering` (proposal, design, tasks, spec)
 Branch: `main` at local HEAD `93bde83`; `origin/main` at `0a75468` (local is 9 commits behind)
-Reviewer: plan-eng-review (Claude, session 40160-1792321451-83636c52)
+Reviewer: plan-eng-review (Claude)
 
 ### Scope Challenge findings
 
@@ -284,7 +287,7 @@ Reviewer: plan-eng-review (Claude, session 40160-1792321451-83636c52)
 | P4 | `paragraphHTML` calls `inlineHTML` once per source line | local `:967-989` | VERIFIED on local HEAD; FALSE on `origin/main:993-1012` (one call per paragraph) |
 | P5 | Token grammar is `\u{E000}MD2-<n>\u{E000}` and `protect` is append-only | local `:2714-2717` | VERIFIED |
 | P6 | The report's newer revision has `source`/`restore`/`replaceMatches` at `:2963`/`:2977`/`:2846` and a bare-URL pass | `origin/main:2963`, `:2977`, `:2846`, `:2097` | VERIFIED: that revision is `origin/main`, 9 commits ahead |
-| P7 | The suite has 614 tests | `grep -rho "@Test" Tests | wc -l` = 614, re-measured at `62ae388` | VERIFIED as an attribute count, not executed |
+| P7 | The suite is the full non-GUI suite | `swift test`; 647 tests in 78 suites at the ship tree | VERIFIED as a run count |
 | P8 | 336 ms / 1.30 s / 5.31 s and 3.9x-4.1x ratios; report 1.55 s / 6.2 s | `design.md:27-36` only | UNVERIFIED, `[measured: design.md, re-measure before gate]` |
 | P9 | `openspec validate --strict` is a valid command | `openspec validate --help`; change validates clean | VERIFIED |
 | P10 | Plain `swift test` is the non-GUI entry; no GUI path involved | `CLAUDE.md` Testing section | VERIFIED |
@@ -533,7 +536,7 @@ Scope Challenge result: **scope accepted as-is** with approved additions D2 (sou
 
 ### Architecture Review
 
-- **[A1] [P2] (confidence: 9/10)** `Sources/MD2Core/MarkdownRenderer.swift:1940` - `renderImages` calls `assignFigure`, so the current reversed match order is observable in figure numbering. A forward builder would renumber figures. Disposition: accepted; Decision 2 buffers transforms in the current descending order and assembles forward.
+- **[A1] [P2] (confidence: 9/10)** `Sources/MD2Core/MarkdownRenderer.swift:1940` - `renderImages` calls `assignFigure`, so the current reversed match order is observable in figure numbering. A forward builder would renumber figures. Disposition: accepted; Decision 2 adds a prepare pass that assigns figures in document order and the transform reads them by label; the pre-landing review then corrected the reversed numbering and the forward-`\ref` map.
 - **[A2] [P3] (confidence: 8/10)** `Sources/MD2Core/MarkdownRenderer.swift:1486` - `isInsideLinkDestination` reads the preceding prefix, so the plan's "transforms read only their own match" claim was false. Disposition: accepted; Decision 6 adds the pre-scan and the audit names the prefix reader.
 
 No other architecture issues after the D3/D4 folds.
@@ -607,7 +610,7 @@ Cross-model tension: none unresolved. The native review and Codex agreed on the 
 ### NOT in scope
 
 - Changing any inline syntax, matching rule, or rendered output for documents without private-use sentinel characters.
-- Fixing the pre-existing right-to-left figure numbering; it is pinned, not changed.
+- Fixing cross-reference behavior beyond the corrected figure numbering and forward-`\ref` map; the other container pre-scan limitation remains in `TODOS.md`.
 - Optimizing `HTMLSafety.decodeEntities` or other linear-scan helpers.
 - Preview JavaScript/CSS, PDF/Print/HTML export, GUI-only paths, or committed benchmark documentation.
 
@@ -615,7 +618,7 @@ Cross-model tension: none unresolved. The native review and Codex agreed on the 
 
 - `P1RegressionTests.encodedActiveURLsAreInert` covers entity-obfuscated unsafe URLs; `unclosedBracketsHaveBoundedCost` is the timing-test precedent.
 - `CommonSyntaxTests.bareLinks`, `autolinksRespectBoundariesAndProtectedContent`, `referenceFormsNormalizationAndFirstDefinition`, and `referencesCannotNestOrActivateUnsafeURLs` cover bare-URL and reference-link correctness.
-- The conformance corpus and the 614-test suite are the broad output-equivalence guard.
+- The conformance corpus and the full non-GUI suite are the broad output-equivalence guard.
 - `Scripts/benchmark_p1.swift` is the release-probe layout; it needs the fragment workloads added for task 1.1/5.2.
 
 ### Failure modes

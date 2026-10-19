@@ -7,10 +7,10 @@ import Testing
 ///
 /// Timing policy: warm up once, take the **minimum** of three runs (least
 /// contaminated by scheduler noise), fail fast on the small size with an
-/// absolute ceiling, then assert the doubled size is under 3x the small size.
-/// Linear growth is ~2x; the pre-fix implementation is ~4x. The absolute
-/// ceilings only bound CI time when a regression is present; the ratio is the
-/// real quadratic guard.
+/// absolute ceiling, then assert the doubled size is under 3x the small size
+/// plus at most 2 ms of timer resolution. Linear growth is ~2x; the pre-fix
+/// implementation is ~4x. The absolute ceilings only bound CI time when a
+/// regression is present; the ratio is the real quadratic guard.
 @Suite(.serialized)
 struct InlineRenderingPerformanceTests {
     private let renderer = MarkdownRenderer()
@@ -44,6 +44,9 @@ struct InlineRenderingPerformanceTests {
         let body = renderer.render("https://example.com`code` https://example.com<em>end</em>").body
         #expect(body.contains(#"<a href="https://example.com">https://example.com</a><code>code</code>"#))
         #expect(body.contains(#"<a href="https://example.com">https://example.com</a><em>end</em>"#))
+
+        let mathBody = renderer.render("https://example.com$x$").body
+        #expect(mathBody.contains(#"<a href="https://example.com">https://example.com</a><span class="math math-inline">x</span>"#))
     }
 
     @Test func referenceKeyWithEntityResolves() {
@@ -51,13 +54,14 @@ struct InlineRenderingPerformanceTests {
         #expect(body.contains(#"<a href="https://example.com/path/0">label</a>"#))
     }
 
-    /// The current `renderMatches` evaluates transforms right-to-left, so the
-    /// second image is assigned Figure 1 and the first Figure 2. The buffered
-    /// rewrite must preserve that order/state interaction exactly.
-    @Test func twoLabeledImagesKeepReversedFigureNumbering() {
-        let body = renderer.render("![one](a.png){#fig:one} ![two](b.png){#fig:two}").body
-        #expect(body.contains(#"<figcaption class="fig-caption">Figure 2: one</figcaption>"#))
-        #expect(body.contains(#"<figcaption class="fig-caption">Figure 1: two</figcaption>"#))
+    /// Figures are numbered in document order; a forward `\ref` and the
+    /// captions agree even though replaceMatches evaluates image transforms in
+    /// descending order. The prepare pass assigns labels ascending first.
+    @Test func twoLabeledImagesUseDocumentOrderNumbering() {
+        let body = renderer.render("\\ref{fig:one}\n\n![one](a.png){#fig:one} ![two](b.png){#fig:two}").body
+        #expect(body.contains(##"href="#fig:one">1</a>"##))
+        #expect(body.contains(#"<figcaption class="fig-caption">Figure 1: one</figcaption>"#))
+        #expect(body.contains(#"<figcaption class="fig-caption">Figure 2: two</figcaption>"#))
     }
 
     // MARK: - D4 token-compatibility boundary
@@ -90,6 +94,17 @@ struct InlineRenderingPerformanceTests {
         #expect(body.contains("\(sentinel)MD2-x\(sentinel)"))
         #expect(body.contains("\(sentinel)MD2-99\(sentinel)"))
         #expect(body.hasSuffix(" \(sentinel)</p>"))
+    }
+
+    /// Value: protects=overflowing and unterminated token indexes stay literal; fails_when=token() accepts an Int-overflowing decimal or consumes a token without its closing sentinel; why_new=no prior test covered the overflow guard or a missing closing sentinel; seam=none; no_claim=green proves only these two malformed spellings stay literal, not that all adversarial private-use sequences are preserved.
+    @Test func overflowingAndUnterminatedTokensStayLiteral() {
+        let overflowing = String(repeating: "9", count: 40)
+        let body = renderer.render(
+            "`x` \(sentinel)MD2-\(overflowing)\(sentinel) \(sentinel)MD2-0"
+        ).body
+        #expect(body.contains("<code>x</code>"))
+        #expect(body.contains("\(sentinel)MD2-\(overflowing)\(sentinel)"))
+        #expect(body.contains("\(sentinel)MD2-0"))
     }
 
     /// The label is inside a protected link fragment; expanding that fragment
@@ -156,6 +171,41 @@ struct InlineRenderingPerformanceTests {
         #expect(body.contains(#"href="https://example.com""#))
     }
 
+    /// Value: protects=an autolink before every `](` opener is classified outside a destination; fails_when=the nearest-opener lookup returns a span whose start is after the autolink; why_new=existing destination tests always place the autolink after at least one opener; seam=none; no_claim=green proves only the no-earlier-opener boundary, not openers elsewhere on the line.
+    @Test func autolinkBeforeAnyDestinationIsLinked() {
+        let body = renderer.render("<https://example.com> [label](/url)").body
+        #expect(body.contains(#"href="https://example.com""#))
+        #expect(body.contains(#"href="/url""#))
+    }
+
+    /// Value: protects=an autolink between two closed destinations stays linked with both links intact; fails_when=the lookup skips the nearest earlier opener or the forward builder drops inter-match text; why_new=no existing case places an autolink between two destinations; seam=none; no_claim=green proves only this between-destinations arrangement, not nearest-opener selection when an earlier span is unterminated.
+    @Test func autolinkBetweenDestinationsIsLinked() {
+        let body = renderer.render("[a](/one) <https://example.com> [b](/two)").body
+        #expect(body.contains(#"href="/one""#))
+        #expect(body.contains(#"href="https://example.com""#))
+        #expect(body.contains(#"href="/two""#))
+    }
+
+    /// Value: protects=an autolink after an image `](…)` destination is linked and the image still renders; fails_when=opener detection only recognizes links or the close lookup mis-handles an image destination; why_new=existing destination tests use link syntax only; seam=none; no_claim=green proves only the image-destination-after case, not autolinks inside image destinations.
+    @Test func autolinkAfterImageDestinationIsLinked() {
+        let body = renderer.render("![alt](img.png) <https://example.com>").body
+        #expect(body.contains(#"<img src="img.png" alt="alt">"#))
+        #expect(body.contains(#"href="https://example.com""#))
+    }
+
+    /// Value: protects=an unrelated `(` does not change an autolink's classification after a real destination closes; fails_when=the index treats any `(` as an opener or computes the close level without the global balance offset; why_new=no existing test combines a non-opener paren with a real destination and autolink; seam=none; no_claim=green proves only a balanced unrelated paren before the destination, not arbitrary unbalanced-paren prefixes.
+    @Test func unrelatedOpenParenBeforeDestinationKeepsClassification() {
+        let body = renderer.render("(note) [label](/url) <https://example.com>").body
+        #expect(body.contains(#"href="/url""#))
+        #expect(body.contains(#"href="https://example.com""#))
+    }
+
+    /// Value: protects=an autolink uses the nearest opener, so a closed nearer destination wins over an earlier unterminated one; fails_when=the lookup falls back to the first opener or treats any open span as containing the autolink; why_new=existing multiple-destination tests close every earlier span; seam=none; no_claim=green proves only this nearest-closed/earlier-unterminated arrangement, not general nested-destination validity.
+    @Test func nearestDestinationDeterminesContainment() {
+        let body = renderer.render("[a](x (nested [b](/two) <https://example.com>").body
+        #expect(body.contains(#"href="https://example.com""#))
+    }
+
     /// Regression: ISSUE-001 — an empty destination `]()` closes before the
     /// autolink, so the autolink must still be linked. The destination index
     /// skipped a close at the first position after `(`.
@@ -166,6 +216,34 @@ struct InlineRenderingPerformanceTests {
         #expect(body.contains(#"href="https://example.com""#))
     }
 
+    /// Regression: ISSUE-003 — an authored well-formed token in a link
+    /// destination must not splice a renderer fragment into the href attribute.
+    /// The destination guard rejects raw markup characters before the anchor is
+    /// emitted.
+    /// Value: protects=link destinations reject restored markup; fails_when=isSafeURL
+    /// drops the raw-character guard; why_new=no existing test places an authored
+    /// token in a destination; seam=none; no_claim=only this attribute-boundary
+    /// arrangement, not every author-token placement.
+    @Test func authoredTokenInDestinationCannotEscapeAttribute() {
+        let body = renderer.render("![i](p.png) [l](\u{E000}MD2-0\u{E000})").body
+        #expect(body.contains(#"<img src="p.png" alt="i">"#))
+        #expect(!body.contains(#"href="<"#))
+        #expect(body.contains("l"))
+    }
+
+    /// The paren-math pass shares the destination index; a raw `](` still opens
+    /// a pseudo-destination when its `]` is escaped, so `\(x\)` after it stays
+    /// literal rather than becoming a math span.
+    /// Value: protects=paren-math destination classification after an escaped `](`;
+    /// fails_when=the index drops the escaped opener or the math pass uses another
+    /// classifier; why_new=the math pass had no escaped-bracket test; seam=none;
+    /// no_claim=only this escaped-bracket arrangement.
+    @Test func parenMathAfterEscapedBracketDestinationStaysLiteral() {
+        let body = renderer.render(#"\](url \(x\)"#).body
+        #expect(!body.contains("math-inline"))
+        #expect(body.contains("](url (x)"))
+    }
+
     // MARK: - Scaling
 
     @Test(arguments: Workload.allCases)
@@ -173,16 +251,19 @@ struct InlineRenderingPerformanceTests {
         _ = renderer.render(workload.document(count: 32))
 
         let smallMS = bestOf(3) { _ = renderer.render(workload.document(count: 500)) }
+        // gstack-timing-ok: quadratic scaling guard; min-of-3 and the absolute ceiling bound timer noise
         try #require(
             smallMS < 1_000,
             "\(workload.testDescription): 500 fragments took \(format(smallMS)) ms; refusing to run the doubled case"
         )
 
         let largeMS = bestOf(3) { _ = renderer.render(workload.document(count: 1_000)) }
+        // gstack-timing-ok: quadratic scaling guard; the ratio is the primary assertion
         #expect(
-            largeMS < smallMS * 3.0 + 25.0,
+            largeMS < smallMS * 3.0 + 2.0,
             "\(workload.testDescription): 500=\(format(smallMS)) ms, 1,000=\(format(largeMS)) ms"
         )
+        // gstack-timing-ok: absolute ceiling that bounds CI time on a regression
         #expect(
             largeMS < 2_000,
             "\(workload.testDescription): 1,000 fragments took \(format(largeMS)) ms"
@@ -206,16 +287,19 @@ struct InlineRenderingPerformanceTests {
         _ = renderer.render(workload.onePerLine(count: 32))
 
         let smallMS = bestOf(3) { _ = renderer.render(workload.onePerLine(count: 1_000)) }
+        // gstack-timing-ok: quadratic scaling guard; min-of-3 and the absolute ceiling bound timer noise
         try #require(
             smallMS < 1_000,
             "\(workload.testDescription) one-per-line: 1,000 fragments took \(format(smallMS)) ms"
         )
 
         let largeMS = bestOf(3) { _ = renderer.render(workload.onePerLine(count: 2_000)) }
+        // gstack-timing-ok: quadratic scaling guard; the ratio is the primary assertion
         #expect(
-            largeMS < smallMS * 3.0 + 25.0,
+            largeMS < smallMS * 3.0 + 2.0,
             "\(workload.testDescription) one-per-line: 1,000=\(format(smallMS)) ms, 2,000=\(format(largeMS)) ms"
         )
+        // gstack-timing-ok: absolute ceiling that bounds CI time on a regression
         #expect(
             largeMS < 2_000,
             "\(workload.testDescription) one-per-line: 2,000 fragments took \(format(largeMS)) ms"
@@ -225,6 +309,29 @@ struct InlineRenderingPerformanceTests {
         #expect(workload.matches(body, count: 2_000), "\(workload.testDescription) one-per-line: rendered output is incomplete")
         #expect(!body.contains(sentinel))
         #expect(!body.contains("MD2-"))
+    }
+
+    /// Regression: the paren-math pass previously used the backward
+    /// isInsideLinkDestination scan, so N `\(\)` spans on one line were O(N²).
+    /// The shared destination index makes the pass linear.
+    /// Value: protects=paren-math destination classification scales linearly;
+    /// fails_when=the math pass returns to a per-match backward scan or the
+    /// destination index regresses; why_new=no scaling test covered the math
+    /// pass; seam=none; no_claim=only the no-opener workload, not math inside
+    /// real destinations.
+    @Test func manyParenMathSpansScaleLinearly() throws {
+        let make = { (count: Int) in
+            (0..<count).map { _ in "\\(x\\)" }.joined(separator: " ")
+        }
+        _ = renderer.render(make(32))
+        let smallMS = bestOf(3) { _ = renderer.render(make(500)) }
+        // gstack-timing-ok: quadratic scaling guard; min-of-3 and the absolute ceiling bound timer noise
+        try #require(smallMS < 1_000, "500 paren-math spans took \(format(smallMS)) ms")
+        let largeMS = bestOf(3) { _ = renderer.render(make(1_000)) }
+        // gstack-timing-ok: quadratic scaling guard; the ratio is the primary assertion
+        #expect(largeMS < smallMS * 3.0 + 2.0, "500=\(format(smallMS)) ms, 1,000=\(format(largeMS)) ms")
+        let body = renderer.render(make(1_000)).body
+        #expect(body.components(separatedBy: "math-inline").count - 1 == 1_000)
     }
 
     // MARK: - Helpers

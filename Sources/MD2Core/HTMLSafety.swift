@@ -5,6 +5,12 @@ import Foundation
 enum HTMLSafety {
     static func isSafeURL(_ value: String) -> Bool {
         let decoded = decodeEntities(value)
+        // A restored fragment can splice markup into an attribute; a URL never
+        // contains raw angle brackets (U+003C/U+003E) or a double quote (U+0022).
+        // Spaces stay allowed: angle-bracket destinations may contain them.
+        guard !decoded.unicodeScalars.contains(where: {
+            $0.value == 0x3C || $0.value == 0x3E || $0.value == 0x22
+        }) else { return false }
         let normalized = String(decoded.unicodeScalars.filter { $0.value > 32 && $0.value != 127 }).lowercased()
         guard let colon = normalized.firstIndex(of: ":") else { return true }
         let prefix = normalized[..<colon]

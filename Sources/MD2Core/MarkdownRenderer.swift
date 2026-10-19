@@ -1465,52 +1465,16 @@ public struct MarkdownRenderer: Sendable {
     /// here would break `[link](\(foo\))`, whose destination must stay `(foo)` —
     /// the escape pass is what feeds those parens through to the `href`.
     private func protectInlineParenMath(_ text: String, protector: InlineProtector) -> String {
-        replaceMatches(in: text, pattern: #"(?<!\\)\\\(((?:\\.|[^\\])+?)\\\)"#) { match, source in
+        let destinations = LinkDestinationIndex(scanning: text)
+        return replaceMatches(in: text, pattern: #"(?<!\\)\\\(((?:\\.|[^\\])+?)\\\)"#) { match, source in
             guard let range = Range(match.range(at: 1), in: source),
                   let matchRange = Range(match.range, in: source),
-                  !isInsideLinkDestination(source, at: matchRange.lowerBound) else {
+                  !destinations.contains(matchRange.lowerBound) else {
                 return matchText(match, in: source)
             }
 
             return protector.protect("<span class=\"\(PreviewClass.math) \(PreviewClass.mathInline)\">\(escapeHTML(String(source[range])))</span>")
         }
-    }
-
-    /// Whether `index` falls inside an inline link or image destination — the
-    /// `(…)` that follows a `](`.
-    ///
-    /// Scans back to the nearest `](`, then forward from it tracking paren depth
-    /// (skipping escaped characters, so the `\(` / `\)` under test never move the
-    /// depth) until the match. A `)` that closes the destination before the match
-    /// means the position is outside it.
-    private func isInsideLinkDestination(_ text: String, at index: String.Index) -> Bool {
-        guard let opener = text.range(of: "](", options: .backwards, range: text.startIndex..<index) else {
-            return false
-        }
-
-        var depth = 0
-        var cursor = opener.upperBound
-
-        while cursor < index {
-            let character = text[cursor]
-
-            if character == "\\" {
-                guard let next = text.index(cursor, offsetBy: 2, limitedBy: index) else { return true }
-                cursor = next
-                continue
-            }
-            if character == "(" {
-                depth += 1
-            }
-            if character == ")" {
-                guard depth > 0 else { return false }
-                depth -= 1
-            }
-
-            cursor = text.index(after: cursor)
-        }
-
-        return true
     }
 
     /// Pre-existing HTML entities (`&amp;`, `&#960;`, …), protected so the later
@@ -1876,7 +1840,18 @@ public struct MarkdownRenderer: Sendable {
     /// sizes reserve layout space through `.image-frame`. An image carrying a
     /// `#fig:label` id becomes a numbered, captioned `<figure>`.
     private func renderImages(_ text: String, context: InlineContext? = nil, protector: InlineProtector) -> String {
-        replaceMatches(in: text, pattern: #"!\[([^\]]*)\]\((\S+?)(?:\s+&quot;(.+?)&quot;)?\)(?:\{([^}]*)\})?"#, linkCandidates: true) { match, source in
+        replaceMatches(
+            in: text,
+            pattern: #"!\[([^\]]*)\]\((\S+?)(?:\s+&quot;(.+?)&quot;)?\)(?:\{([^}]*)\})?"#,
+            linkCandidates: true,
+            prepare: { match, source in
+                guard let context,
+                      match.range(at: 4).location != NSNotFound,
+                      let attrRange = Range(match.range(at: 4), in: source),
+                      let label = self.figureLabel(in: String(source[attrRange])) else { return }
+                _ = context.crossReferences.assignFigure(label: label)
+            }
+        ) { match, source in
             guard let altRange = Range(match.range(at: 1), in: source),
                   let srcRange = Range(match.range(at: 2), in: source) else {
                 return matchText(match, in: source)
@@ -1940,7 +1915,8 @@ public struct MarkdownRenderer: Sendable {
             // captioned, numbered figure; the caption renders simple inline markup
             // while the image attributes stay inert plain text.
             if let figLabel, let context {
-                let number = context.crossReferences.assignFigure(label: figLabel)
+                let number = context.crossReferences.number(for: figLabel)
+                    ?? context.crossReferences.assignFigure(label: figLabel)
                 let caption = self.renderEscapedInlineContent(alt, protector: protector)
                 return protector.protect("<figure class=\"figure\" id=\"\(self.escapeAttribute(figLabel))\">"
                     + imageHTML
@@ -2853,16 +2829,20 @@ public struct MarkdownRenderer: Sendable {
     /// Applies `transform` to every match and returns the rebuilt string.
     ///
     /// Transforms are evaluated in descending match order, preserving the call
-    /// order of stateful transforms (notably `renderImages`' figure numbering),
-    /// and the transformed strings are then assembled forward in one pass.
+    /// order of stateful transforms, and the transformed strings are then
+    /// assembled forward in one pass. A `prepare` closure runs once over all
+    /// matches in ascending document order before the transforms; use it for
+    /// state that must follow source order (figure numbering).
     /// Transforms MUST read only their own match and capture groups; they must
     /// not depend on replacements produced for other matches. `protectAutolinks`
     /// consults the preceding text only through the destination index built from
-    /// this original source, and `renderImages` keeps its call order.
+    /// this original source, and `renderImages` pre-assigns figures in
+    /// `prepare` and reads them by label.
     private func replaceMatches(
         in source: String,
         pattern: String,
         linkCandidates: Bool = false,
+        prepare: ((NSTextCheckingResult, String) -> Void)? = nil,
         transform: (NSTextCheckingResult, String) -> String
     ) -> String {
         guard let regex = MarkdownRegex.expression(pattern) else {
@@ -2876,6 +2856,12 @@ public struct MarkdownRenderer: Sendable {
             }
             : regex.matches(in: source, range: nsRange)
         guard !matches.isEmpty else { return source }
+
+        if let prepare {
+            for match in matches {
+                prepare(match, source)
+            }
+        }
 
         var replacements = [String](repeating: "", count: matches.count)
         for (offset, match) in matches.enumerated().reversed() {
@@ -2972,16 +2958,20 @@ private enum DiagramKind: String {
 }
 
 /// A precomputed view of inline link and image destinations (`](…`) for one
-/// autolink pass. Each opener records the position just after its `(` and the
-/// first unescaped, depth-zero `)` after it (or `nil` when unterminated). A
-/// lookup binary-searches the opener at or before a position and reports
-/// whether that position lies before the matching close, which is exactly the
-/// old nearest-opener, forward-depth scan without its per-autolink prefix walk.
+/// inline pass (autolinks or paren math). Each opener records the position just
+/// after its `(` and the first unescaped, depth-zero `)` after it (or `nil`
+/// when unterminated). A lookup binary-searches the opener at or before a
+/// position and reports whether that position lies before the matching close,
+/// which is exactly the old nearest-opener, forward-depth scan without its
+/// per-match prefix walk.
 ///
 /// The index is built in one left-to-right pass: paren balance is tracked
 /// globally (escaped characters skipped), and every unescaped `)` is recorded
 /// under the balance level it leaves behind. An opener whose balance just after
 /// its `(` is `B` closes at the first later `)` recorded at level `B - 1`.
+/// An opener is recorded for a raw `](` even when the `]` is backslash-escaped,
+/// matching the previous backward search; the escaped character is still
+/// skipped for close bookkeeping.
 private struct LinkDestinationIndex {
     private struct Span {
         let start: String.Index
@@ -3009,8 +2999,12 @@ private struct LinkDestinationIndex {
 
             if character == "\\" {
                 guard let next = text.index(cursor, offsetBy: 2, limitedBy: text.endIndex) else { break }
+                let escaped = text[text.index(after: cursor)]
                 cursor = next
-                previous = nil
+                // A raw `](` opens a destination even when its `]` is escaped;
+                // the old backward search matched that spelling. Close
+                // bookkeeping still skips the escaped character.
+                previous = escaped == "]" ? "]" : nil
                 continue
             }
 

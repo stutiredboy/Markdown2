@@ -36,9 +36,9 @@ The inline renderer SHALL resolve protected fragments by scanning the text once,
 - **THEN** the constructed token is emitted literally, and the shared-sentinel overlap resolves by the leftmost well-formed token
 - **AND** the previous expansion/highest-index behavior is not silently reintroduced
 
-### Requirement: Autolink destination classification is linear in text size
+### Requirement: Inline destination classification is linear in text size
 
-`protectAutolinks` SHALL determine whether an angle autolink sits inside a link destination from a precomputed destination index, not by scanning backward from every autolink. The precomputation SHALL run in O(text) and SHALL preserve the current nearest-opener rule: no opener means outside; a destination that closes before the autolink means outside; escaped characters, nested parentheses, and unterminated destinations follow the existing rules. Each lookup SHALL be O(1) or O(log M) for M openers.
+`protectAutolinks` and `protectInlineParenMath` SHALL determine whether a match sits inside a link or image destination from a precomputed destination index, not by scanning backward from every match. The precomputation SHALL run in O(text) and SHALL preserve the current nearest-opener rule: no opener means outside; a destination that closes before the match means outside; a raw `](` opens a destination even when its `]` is escaped; escaped characters, nested parentheses, and unterminated destinations follow the existing rules. Each lookup SHALL be O(1) or O(log M) for M openers.
 
 #### Scenario: Many angle autolinks on one line scale linearly
 
@@ -53,9 +53,16 @@ The inline renderer SHALL resolve protected fragments by scanning the text once,
 - **THEN** it is classified exactly as before the optimization
 - **AND** the no-opener, unterminated-destination, and multiple-destination cases are covered by tests
 
+#### Scenario: Many paren-math spans on one line scale linearly
+
+- **WHEN** a single line contains 1,000 `\(…\)` math spans and no `](` opener
+- **AND** the same line contains 2,000
+- **THEN** the 2,000 case takes less than 3× the 1,000 case
+- **AND** every span is rendered as inline math
+
 ### Requirement: Inline match substitution is linear in text size
 
-The inline renderer's match-substitution routine SHALL build its result by appending unchanged source slices and transformed matches in source order, without repeatedly replacing a growing result string. Substitution time SHALL be linear in the source length plus the total size of the replacements. Match order and non-overlap semantics SHALL be preserved, and a transform SHALL receive the original source and SHALL NOT depend on replacements produced for other matches. Stateful transforms, such as figure numbering, SHALL be evaluated in the same order as the previous implementation; the output SHALL be assembled forward.
+The inline renderer's match-substitution routine SHALL build its result by appending unchanged source slices and transformed matches in source order, without repeatedly replacing a growing result string. Substitution time SHALL be linear in the source length plus the total size of the replacements. Match order and non-overlap semantics SHALL be preserved, and a transform SHALL receive the original source and SHALL NOT depend on replacements produced for other matches. Stateful transforms SHALL keep a deterministic call order; figure numbering SHALL be pre-assigned in document order before the transforms, and the output SHALL be assembled forward.
 
 #### Scenario: Many matches on one line scale linearly
 
@@ -69,15 +76,15 @@ The inline renderer's match-substitution routine SHALL build its result by appen
 - **WHEN** an inline pass runs over text that contains no match
 - **THEN** the pass returns the original text without altering it
 
-#### Scenario: Figure numbering is unchanged
+#### Scenario: Figure numbering follows document order
 
-- **WHEN** a paragraph contains two labeled images
-- **THEN** the figures receive the same numbers as before the substitution rewrite
-- **AND** the numbering is derived from the same transform evaluation order
+- **WHEN** a paragraph contains two labeled images and a forward `\ref` to the first
+- **THEN** the first image renders as Figure 1 and the second as Figure 2
+- **AND** the forward `\ref` resolves to 1, matching the caption
 
 ### Requirement: The optimized paths preserve rendered output and safety
 
-The linear restoration, source lookup, autolink classification, and substitution paths SHALL produce HTML byte-identical to the previous implementation for documents that do not contain private-use sentinel characters. The placeholder token grammar, fragment nesting order, literal private-use text handling, `isLiteral` behavior, authored-spelling recovery, figure numbering, and URL-safety behavior SHALL NOT change. The D4 boundary for tokens constructed after restoration and for shared sentinels is declared and tested.
+The linear restoration, source lookup, inline destination classification, and substitution paths SHALL produce HTML byte-identical to the previous implementation for documents that do not contain private-use sentinel characters and do not contain multiple labeled figures in one paragraph. The placeholder token grammar, fragment nesting order, literal private-use text handling, `isLiteral` behavior, authored-spelling recovery, and URL-safety behavior SHALL NOT change. The D4 boundary for tokens constructed after restoration and for shared sentinels, and the corrected document-order figure numbering, are declared and tested.
 
 #### Scenario: Mixed inline content renders identically
 
@@ -90,9 +97,16 @@ The linear restoration, source lookup, autolink classification, and substitution
 - **WHEN** a document contains `javascript:`, `vbscript:`, `data:`, or entity-obfuscated variants in a link, reference link, or image destination
 - **THEN** the destination is rendered inert exactly as before the optimization
 
+#### Scenario: Authored tokens cannot splice markup into a destination
+
+- **WHEN** a link or image destination contains a well-formed authored placeholder token
+- **THEN** the restored destination is rejected if it contains raw `<`, `>`, or `"`
+- **AND** no renderer fragment is emitted inside the href/src attribute
+- **AND** angle-bracket destinations may still contain spaces
+
 ### Requirement: Scaling regressions are covered by default tests
 
-The non-GUI test suite SHALL include automated scaling tests for URL autolinks, Markdown links, `mailto:` email autolinks, HTML entities, bare URLs, bare URLs with entities, reference links, and reference links with protected keys. Each test SHALL render N and 2N fragments in one inline pass, assert that the 2N elapsed time is less than 3× the N elapsed time, and assert that all N constructs appear correctly in the rendered output. The entity-bearing bare-URL and reference-key cases SHALL exercise `source(in:)` expansion. A one-fragment-per-line paragraph case SHALL cover the reported reference-list input shape for URL autolinks and bare URLs; on the current whole-paragraph inline pass this case is quadratic before the fix. These tests SHALL run under plain `swift test` without GUI opt-in.
+The non-GUI test suite SHALL include automated scaling tests for URL autolinks, Markdown links, `mailto:` email autolinks, HTML entities, bare URLs, bare URLs with entities, reference links, reference links with protected keys, and paren-math spans. Each test SHALL render N and 2N fragments in one inline pass, assert that the 2N elapsed time is less than 3× the N elapsed time plus at most 2 ms of timer resolution, and assert that all N constructs appear correctly in the rendered output. The entity-bearing bare-URL and reference-key cases SHALL exercise `source(in:)` expansion. A one-fragment-per-line paragraph case SHALL cover the reported reference-list input shape for URL autolinks and bare URLs; on the current whole-paragraph inline pass this case is quadratic before the fix. These tests SHALL run under plain `swift test` without GUI opt-in.
 
 #### Scenario: URL autolinks are covered
 
@@ -151,6 +165,13 @@ The non-GUI test suite SHALL include automated scaling tests for URL autolinks, 
 - **WHEN** the scaling suite renders 1,000 and 2,000 URLs written one per line in a single paragraph
 - **THEN** the 2,000 case completes in less than 3× the 1,000 case
 - **AND** the body contains the expected number of rendered links
+
+#### Scenario: Paren-math spans are covered
+
+- **WHEN** the scaling suite renders 500 and 1,000 `\(…\)` math spans on one line
+- **THEN** the 1,000 case completes in less than 3× the 500 case
+- **AND** the body contains 1,000 inline math spans
+- **AND** the paren-math destination classifier is exercised
 
 #### Scenario: The guards run in the default suite
 
