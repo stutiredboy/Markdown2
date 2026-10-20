@@ -344,18 +344,28 @@ struct InlineRenderingPerformanceTests {
     /// from every candidate made a single long line quadratic (16 KB ≈ 6 s on
     /// the measured machine); the bound keeps it linear.
     @Test func repeatedTerminatedBareURLsRenderInBoundedTime() throws {
-        let source = String(repeating: "www.a。", count: 2_000)
-        _ = renderer.render(source)
+        let small = String(repeating: "www.a。", count: 1_000)
+        let large = String(repeating: "www.a。", count: 2_000)
+        _ = renderer.render(large)
 
-        // gstack-timing-ok: DoS regression guard for the continuation scan; min-of-3 bounds timer noise
-        let elapsedMS = bestOf(3) { _ = renderer.render(source) }
-        // gstack-timing-ok: absolute ceiling; the unbounded scan took seconds on this input
+        // gstack-timing-ok: quadratic scaling guard for the continuation scan; min-of-3 bounds timer noise
+        let smallMS = bestOf(3) { _ = renderer.render(small) }
+        // gstack-timing-ok: fail-fast ceiling; the unbounded scan took seconds on this input
         try #require(
-            elapsedMS < 1_000,
-            "2,000 terminated bare-URL candidates took \(format(elapsedMS)) ms"
+            smallMS < 1_000,
+            "1,000 terminated bare-URL candidates took \(format(smallMS)) ms"
         )
 
-        let body = renderer.render(source).body
+        // gstack-timing-ok: the ratio is the quadratic guard; unbounded is ~4x per doubling
+        let largeMS = bestOf(3) { _ = renderer.render(large) }
+        #expect(
+            largeMS < smallMS * 3.0 + 2.0,
+            "terminated bare-URL candidates: 1,000=\(format(smallMS)) ms, 2,000=\(format(largeMS)) ms"
+        )
+        // gstack-timing-ok: absolute ceiling that bounds CI time on a regression
+        #expect(largeMS < 2_000, "2,000 terminated bare-URL candidates took \(format(largeMS)) ms")
+
+        let body = renderer.render(large).body
         #expect(body.components(separatedBy: "。").count - 1 == 2_000, "rendered output is incomplete")
     }
 

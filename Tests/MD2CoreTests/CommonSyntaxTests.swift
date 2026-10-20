@@ -243,6 +243,7 @@ struct CommonSyntaxTests {
 
         let blocked = renderer.render("éhttps://example.com").body
         #expect(!blocked.contains("href=\"https://example.com\""), "\(blocked)")
+        #expect(blocked.contains("éhttps://example.com"), "\(blocked)")
     }
 
     /// Value: protects=code points adjacent to every normative range stay URL content and are not left boundaries; fails_when=an off-by-one range widening includes a neighbouring code point; why_new=the é probe is not adjacent to any range, and the constant/table sync test cannot catch a consistent widening; seam=none; no_claim=green proves these edge neighbours, not every non-normative code point.
@@ -253,6 +254,7 @@ struct CommonSyntaxTests {
 
         let blocked = renderer.render("x\(character)https://example.com").body
         #expect(!blocked.contains("href=\"https://example.com\""), "\(blocked)")
+        #expect(blocked.contains("x\(character)https://example.com"), "\(blocked)")
     }
 
     /// Value: protects=supplementary-plane Han is a valid left boundary, not only the BMP block; fails_when=the lookbehind is narrowed to a BMP-only Han range; why_new=all existing Han probes are BMP; seam=none; no_claim=green proves this one supplementary ideograph, not the whole Han script.
@@ -261,17 +263,23 @@ struct CommonSyntaxTests {
         #expect(body.contains("\u{20000}<a href=\"https://example.com\">https://example.com</a>"), "\(body)")
     }
 
-    /// Value: protects=full-width structural lookalikes are valid left boundaries but stay URL content, so a lookalike cannot retarget a link to a shorter host; fails_when=the URL body terminates at one of them again; why_new=the terminator table covers prose punctuation, not the host-deception case; seam=none; no_claim=green proves these five lookalikes, not every full-width code point.
+    /// Value: protects=full-width structural lookalikes are valid left boundaries but stay URL content, so a lookalike cannot retarget a link to a shorter host; fails_when=the URL body terminates at one of them again; why_new=the terminator table covers prose punctuation, not the host-deception case; seam=none; no_claim=green proves these seven lookalikes, not every full-width code point.
     @Test(arguments: ["．", "／", "＃", "＠", "？", "－", "＿"] as [Character])
     func structuralLookalikesStayURLContent(character: Character) {
         let deception = renderer.render("https://evil.com\(character)trusted.com").body
         #expect(!deception.contains("<a href=\"https://evil.com\">"), "\(deception)")
+        #expect(deception.contains("evil.com"), "\(deception)")
 
         let path = renderer.render("https://example.com/a\(character)tail").body
         #expect(path.contains("<a href=\"https://example.com/a\(character)tail\">"), "\(path)")
 
         let leading = renderer.render("\(character)https://example.com").body
         #expect(leading.contains("<a href=\"https://example.com\">https://example.com</a>"), "\(leading)")
+    }
+
+    /// Value: protects=the structural lookalike set stays exactly the seven declared characters; fails_when=a character is added to the production set without a matching test argument; why_new=the terminator table derives its exclusions from the production constant, so a silent addition would not fail the terminator test; seam=none; no_claim=green proves set equality, not that every lookalike is handled in every position.
+    @Test func structuralLookalikesStayInSync() {
+        #expect(Set(MarkdownRenderer.bareURLStructuralLookalikes) == Set("．／＃＠？－＿"))
     }
 
     /// Value: protects=an invisible/IDNA/userinfo continuation cannot retarget a bare link to a shorter host; fails_when=the guard is removed and the prefix links again; why_new=the visible lookalike test covers `．／＃＠？－＿` but not the masked/IDNA/userinfo/port/token continuations; seam=none; no_claim=green proves these continuations, not every Unicode lookalike combination.
@@ -345,6 +353,8 @@ struct CommonSyntaxTests {
         "https://evil.com。\u{3164}trusted.com",
         "https://evil.com。\u{2800}trusted.com",
         "https://evil.com。\u{115F}trusted.com",
+        "https://evil.com。\u{1160}trusted.com",
+        "https://evil.com。\u{FFA0}trusted.com",
         // Emphasis/strikethrough/highlight/sup/sub delimiters are markup; the
         // rendered text is the same fused authority.
         "https://evil.com。*trusted.com*",
@@ -354,6 +364,16 @@ struct CommonSyntaxTests {
         "https://evil.com。==trusted.com==",
         "https://evil.com。^trusted.com^",
         "https://evil.com。~trusted.com~",
+        // Fullwidth delimiters fold to the same markup characters.
+        "https://evil.com。＿trusted.com",
+        "https://evil.com。＿x＿.trusted.com",
+        "https://evil.com。＊x＊.trusted.com",
+        "https://evil.com。～x～.trusted.com",
+        "https://evil.com。＝x＝.trusted.com",
+        "https://evil.com。＾x＾.trusted.com",
+        // Entity-encoded `>` in an attribute must not become a tag boundary.
+        "https://evil.com<span title=\"&gt;\">.trusted.com</span>",
+        "https://evil.com[.trusted.com](https://x \"t&gt;\")",
         // IDNA-mappable non-ASCII labels after a dot still extend the authority.
         "https://evil.com。é.trusted.com",
         "https://evil.com。ä.trusted.com",
@@ -367,6 +387,25 @@ struct CommonSyntaxTests {
         #expect(!body.contains("href=\"http://www.evil.com\""), "\(body)")
         // The candidate must stay visible as literal text, not be dropped.
         #expect(body.contains("evil.com"), "\(body)")
+    }
+
+    /// Value: protects=invisible padding cannot exhaust the scan budget and fail open; fails_when=the budget counts source scalars and returns without a delimiter; why_new=the visible budget and source cap are separate; seam=none; no_claim=green proves these two padding forms only.
+    @Test func invisiblePaddingDoesNotExhaustTheGuardBudget() {
+        let zwsp = renderer.render("https://evil.com" + String(repeating: "\u{200B}", count: 600) + ".trusted.com").body
+        #expect(!zwsp.contains("href=\"https://evil.com\""), "\(zwsp)")
+        #expect(zwsp.contains("evil.com"), "\(zwsp)")
+
+        let marks = renderer.render("https://evil.com。" + String(repeating: "\u{0301}", count: 600) + ".trusted.com").body
+        #expect(!marks.contains("href=\"https://evil.com\""), "\(marks)")
+        #expect(marks.contains("evil.com"), "\(marks)")
+    }
+
+    /// Value: protects=an unpaired delimiter after a dot keeps the conservative literal result; fails_when=the delimiter handling starts linking prose that renders next to the authority; why_new=the delimiter rows are all paired markup; seam=none; no_claim=green pins the current conservative behavior, not a claim that prose should stay literal.
+    @Test(arguments: ["https://example.com。*note", "https://example.com。_note"])
+    func unpairedDelimiterAfterDotStaysLiteral(source: String) {
+        let body = renderer.render(source).body
+        #expect(!body.contains("<a href=\"https://example.com\">"), "\(body)")
+        #expect(body.contains("example.com"), "\(body)")
     }
 
     /// Value: protects=a protected code/link token between the host and a lookalike cannot hide a fused authority, including punctuation stripped from the URL tail; fails_when=the guard starts after the token or ignores the stripped trailing punctuation; why_new=the token rows only cover literal source continuations; seam=none; no_claim=green proves these token kinds only, not every protected inline construct.
@@ -397,7 +436,9 @@ struct CommonSyntaxTests {
         "https://example.com：然后",
         "https://example.com％然后",
         "https://example.com<em>end</em>",
-        "https://example.com。然后 foo\(atSign)bar.com"
+        "https://example.com。然后 foo\(atSign)bar.com",
+        "见 https://example.com。然后继续。",
+        "详见https://example.com。谢谢。"
     ])
     func ordinaryContinuationsStillLink(source: String) {
         let body = renderer.render(source).body
