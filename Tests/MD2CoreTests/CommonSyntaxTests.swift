@@ -380,6 +380,22 @@ struct CommonSyntaxTests {
         "https://evil.com。然后.trusted.com",
         "https://evil.com。рф。",
         "https://evil.com。中国。",
+        "https://evil.com。-x.trusted.com",
+        "https://evil.com。-.trusted.com",
+        "https://evil.com。!.trusted.com",
+        "https://evil.com。;.trusted.com",
+        "https://evil.com。&.trusted.com",
+        "https://evil.com。+.trusted.com",
+        // Fullwidth delimiters do not end the authority in a browser.
+        "https://evil.com。？@trusted.com",
+        "https://evil.com。／@trusted.com",
+        "https://evil.com。＃@trusted.com",
+        // Punctuation stripped from the URL tail is still visible.
+        "https://evil.com)。trusted.com",
+        "https://evil.com!。trusted.com",
+        "https://evil.com,。trusted.com",
+        // Percent-encoded host dots fold before the label checks.
+        "https://evil.com。例%2etrusted%2ecom",
         // A broken image renders its alt text in exported HTML/PDF.
         "https://evil.com。![trusted.com](https://invalid.invalid/x.png)"
     ])
@@ -404,11 +420,11 @@ struct CommonSyntaxTests {
 
     /// Value: protects=the scan's fail-closed caps: a URL followed by more source padding or more visible continuation than the budgets stays literal; fails_when=a cap returns without exhausted and the short host links; why_new=the padding test stays under both caps; seam=none; no_claim=green proves the two cap boundaries, not every long continuation.
     @Test func scanBudgetFailsClosed() {
-        let sourceCap = renderer.render("https://evil.com" + String(repeating: "\u{200B}", count: 1_100) + ".trusted.com").body
+        let sourceCap = renderer.render("https://evil.com" + String(repeating: "\u{200B}", count: 5_000) + ".trusted.com").body
         #expect(!sourceCap.contains("href=\"https://evil.com\""), "\(sourceCap)")
         #expect(sourceCap.contains("evil.com"), "\(sourceCap)")
 
-        let visibleCap = renderer.render("https://example.com。" + String(repeating: "然", count: 600) + ".trusted.com").body
+        let visibleCap = renderer.render("https://example.com。" + String(repeating: "然", count: 3_000) + ".trusted.com").body
         #expect(!visibleCap.contains("href=\"https://example.com\""), "\(visibleCap)")
         #expect(visibleCap.contains("example.com"), "\(visibleCap)")
 

@@ -2146,6 +2146,18 @@ public struct MarkdownRenderer: Sendable {
         return scalar
     }
 
+    /// True when `text` contains a dot followed by a host-label character.
+    private static func hasDotBeforeHostLabel(_ text: Substring) -> Bool {
+        var previous: Character?
+        for character in text {
+            if previous == ".", character.isLetter || character.isNumber || character == "-" || character == "_" {
+                return true
+            }
+            previous = character
+        }
+        return false
+    }
+
     /// Appends the browser-visible form of `text` to `result`; returns false
     /// when a delimiter ends the authority. Markdown emphasis/strikethrough/
     /// highlight/sup/sub delimiters are markup, not visible authority text;
@@ -2162,10 +2174,11 @@ public struct MarkdownRenderer: Sendable {
     }
 
     /// The visible continuation text a single authority check needs (a host is
-    /// at most 253 characters) and a hard source-iteration cap for hostile
-    /// padding. Reaching either cap before a delimiter fails closed.
-    private static let continuationVisibleBudget = 512
-    private static let continuationSourceBudget = 1_024
+    /// at most 253 characters; the window covers a few sentences of prose) and
+    /// a hard source-iteration cap for hostile padding. Reaching either cap
+    /// before a delimiter fails closed.
+    private static let continuationVisibleBudget = 1_024
+    private static let continuationSourceBudget = 2_048
 
     private struct VisibleContinuation {
         var scalars: [Unicode.Scalar]
@@ -2306,33 +2319,48 @@ public struct MarkdownRenderer: Sendable {
                         visible.append(contentsOf: tail.scalars)
                     }
                     let visibleText = String(String.UnicodeScalarView(visible))
-                    let authorityVisible = visibleText.prefix { $0 != "/" && $0 != "?" && $0 != "#" && !$0.isWhitespace }
-                    // Any userinfo '@' before the next delimiter or whitespace
-                    // resolves the full visible line to the host after it.
-                    if authorityVisible.contains("@") { return candidate }
-                    if authorityVisible.first == "%",
-                       authorityVisible.dropFirst().prefix(2).lowercased() == Self.percentEncodedDot {
+                    // The walk already stops at ASCII `/`, `?`, `#` and
+                    // whitespace, so the whole visible string is the authority
+                    // continuation. Fullwidth delimiters stay in it: a browser
+                    // does not end the authority at them.
+                    if visibleText.contains("@") { return candidate }
+                    let folded = visibleText.replacingOccurrences(
+                        of: "%2e",
+                        with: ".",
+                        options: .caseInsensitive
+                    )
+                    if folded.first == "%",
+                       folded.dropFirst().prefix(2).lowercased() == Self.percentEncodedDot {
                         return candidate
+                    }
+                    // Punctuation the guard stripped from the URL tail is still
+                    // visible before the token; skip it so the dot/label rules
+                    // see the host-shaped part.
+                    let hostVisible = folded.drop {
+                        !($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == ".")
                     }
                     // One or more IDNA dots followed by a host label fuses
                     // the visible continuation into a different authority.
-                    let afterDots = authorityVisible.drop { $0 == "." }
-                    if afterDots.count < authorityVisible.count,
-                       let next = afterDots.first,
-                       next.isLetter || next.isNumber {
+                    let afterDots = hostVisible.drop { $0 == "." }
+                    if afterDots.count < hostVisible.count {
                         // A further dot after the label is a longer authority
                         // even when the label is non-ASCII (IDNA folds it).
                         let label = afterDots.prefix { $0 != "." }
                         if label.count < afterDots.count { return candidate }
-                        if next.isASCII { return candidate }
+                        if let next = afterDots.first,
+                           next.isASCII,
+                           next.isLetter || next.isNumber || next == "-" || next == "_" {
+                            return candidate
+                        }
                     }
                     // Text that starts like a host label and contains a dot
-                    // also extends the authority past the anchor (`x。trusted.com`
-                    // reads as `evil.comx.trusted.com`). A bare word with no
-                    // dot (`<em>end</em>`) stays ordinary prose.
-                    if let next = authorityVisible.first,
+                    // followed by a label also extends the authority past the
+                    // anchor (`x。trusted.com` reads as `evil.comx.trusted.com`).
+                    // A bare word with no such dot (`<em>end</em>`, or prose
+                    // ending in a sentence-final dot) stays ordinary.
+                    if let next = hostVisible.first,
                        next.isLetter || next.isNumber,
-                       authorityVisible.contains(".") {
+                       Self.hasDotBeforeHostLabel(hostVisible) {
                         return candidate
                     }
                 }

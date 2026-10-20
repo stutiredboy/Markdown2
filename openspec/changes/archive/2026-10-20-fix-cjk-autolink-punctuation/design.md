@@ -127,7 +127,7 @@ Do not duplicate assertions already covered by `autolinksRespectBoundariesAndPro
 
 ### D11: Performance wording is an estimate, not a measurement
 
-The pass remains one cached regex plus the same post-processing; the character class grows by ~75 code points and U+200B. D12 adds a bounded continuation scan (at most 512 scalars per authority check, and the token regex runs only at a sentinel), so the asymptotic cost stays linear in the input. The regex and the pass are not benchmarked beyond the timing regression test for a long line of repeated candidates. The design and matrix text must not claim a measured "no performance impact."
+The pass remains one cached regex plus the same post-processing; the character class grows by ~75 code points and U+200B. D12 adds a bounded continuation scan (at most 1,024 visible scalars and 2,048 source scalars per authority check, and the token regex runs only at a sentinel), so the asymptotic cost stays linear in the input. The regex and the pass are not benchmarked beyond the timing regression test for a long line of repeated candidates. The design and matrix text must not claim a measured "no performance impact."
 
 ### D12: Lookalike continuations stay literal
 
