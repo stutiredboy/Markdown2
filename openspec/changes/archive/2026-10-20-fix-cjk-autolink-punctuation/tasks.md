@@ -7,7 +7,7 @@
 ## 2. Renderer
 
 - [x] 2.1 Add a module-internal `bareURLBoundaryCharacters` constant (not public API; the sync test reads it through `@testable import`) to `Sources/MD2Core/MarkdownRenderer.swift` containing the normative set from design D2 (CJK/typographic punctuation ranges plus U+200B; no ASCII characters, so it is regex-class safe).
-- [x] 2.2 Extend the bare-URL alternative in `protectBareAutolinks` (`:2086`): add `\p{sc=Han}` and the boundary constant to the left-boundary lookbehind, and add the boundary constant to the URL-body negated class, interpolating the one shared constant into both.
+- [x] 2.2 Extend the bare-URL alternative in `protectBareAutolinks` (`:2086`, pre-change): add `\p{sc=Han}` and the boundary constant to the left-boundary lookbehind, and add the boundary constant to the URL-body negated class, interpolating the one shared constant into both.
 - [x] 2.3 Confirm the rest of `protectBareAutolinks` is untouched: token cut at the first non-literal placeholder, ASCII trailing cleanup, excess-closing-parenthesis handling, entity recovery, domain validation, and the `www.`/`mailto:` destination assembly.
 
 ## 3. Renderer tests
@@ -18,7 +18,7 @@
 - [x] 3.4 Add assertions distinguishing `https://example.com/wiki/北京` (path under `example.com`) from `https://example.com然后继续` and `访问https://example.com然后继续` (absorbed hostname).
 - [x] 3.5 Add assertions for the entity exceptions: `https://example.com/a&#xff0c;然后` keeps the decoded `，` in the destination, and `&#xff1a;https://example.com` stays literal.
 - [x] 3.6 Add U+200B assertions: `https://example.com\u{200B}tail` ends before the character, and `\u{200B}https://example.com` links.
-- [x] 3.7 Add the negative ASCII-boundary assertion for `abchttps://example.com` (and confirm `abcwww.example.com` remains covered by the existing test).
+- [x] 3.7 Add the negative ASCII-boundary assertion for `abchttps://example.com` (and assert `abcwww.example.com` stays literal in `asciiIdentifierBoundariesStillBlock`).
 - [x] 3.8 Run `swift test --filter CommonSyntaxTests` and confirm the new cases pass and no existing autolink case regresses.
 
 ## 4. Compatibility artifacts

@@ -1,8 +1,8 @@
 ## Context
 
-Bare-URL autolinking is implemented in `MarkdownRenderer.protectBareAutolinks` (`Sources/MD2Core/MarkdownRenderer.swift:2085-2134`). It runs late in the inline pipeline (stage 15 of 18), after code/math/entity/angle-autolink protection and after explicit links/images/reference links, matches candidates with one cached `NSRegularExpression` (`MarkdownRegex.expression`), then post-processes each match:
+Bare-URL autolinking is implemented in `MarkdownRenderer.protectBareAutolinks` (`Sources/MD2Core/MarkdownRenderer.swift:2085-2134`; line numbers below are pre-change). It runs late in the inline pipeline (stage 15 of 18), after code/math/entity/angle-autolink protection and after explicit links/images/reference links, matches candidates with one cached `NSRegularExpression` (`MarkdownRegex.expression`), then post-processes each match:
 
-- **Match pattern** (`:2086`): `(?<![^\s*_~(])(?:https?://|www\.)[^\s<>]+|...email...`. The URL alternative is (a) a left-boundary lookbehind that permits only start-of-text, whitespace, `*`, `_`, `~`, `(` and (b) a body that consumes everything up to whitespace or `<`/`>`.
+- **Match pattern** (`:2086`, pre-change): `(?<![^\s*_~(])(?:https?://|www\.)[^\s<>]+|...email...`. The URL alternative is (a) a left-boundary lookbehind that permits only start-of-text, whitespace, `*`, `_`, `~`, `(` and (b) a body that consumes everything up to whitespace or `<`/`>`.
 - **Token cut** (`:2088-2101`): the candidate is truncated at the first non-literal placeholder token; literal tokens (entities) are skipped.
 - **Trailing cleanup** (`:2105-2121`): strips ASCII `?!.,:*_~`, unmatched `)` (via an excess-closer count), and trailing entity spellings.
 - **Domain validation** (`:2122-2128`): the host must be dot-separated letters/digits/`-`/`_`; failure returns the candidate unchanged (literal text).
@@ -121,7 +121,7 @@ Extend the parameterized `bareLinks` table in `Tests/MD2CoreTests/CommonSyntaxTe
 - `www.` variants;
 - hostname vs path absorption;
 - entity exceptions;
-- negative ASCII boundaries (`abchttps`, `abcwww` is already covered by `autolinksRespectBoundariesAndProtectedContent`).
+- negative ASCII boundaries (`abchttps`, `abcwww` is asserted in `asciiIdentifierBoundariesStillBlock`).
 
 Do not duplicate assertions already covered by `autolinksRespectBoundariesAndProtectedContent` (`:110-129`) or `multilineLabelsCodeRunsAndStyledAutolinks` (`:172-184`). Keep the suite in the default `swift test` path; this is shared `MD2Core` code with no GUI flag.
 

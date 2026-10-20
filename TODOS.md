@@ -166,3 +166,20 @@ Tracked work considered and explicitly deferred from in-flight changes. Each ite
 **Depends on:** nothing.
 
 **Start here:** reuse the `swiftc -O` probe layout from `measurements.md`, add the eight single-line workloads and the one-per-line cases, and record the command in the README or the change notes.
+
+## CJK compatibility punctuation and invisible format characters in bare-URL boundaries
+
+**What:** Extend `bareURLBoundaryCharacters` to the CJK compatibility punctuation blocks U+FE10–U+FE19, U+FE30–U+FE4F and U+FE50–U+FE6B, and decide on the invisible format characters U+FEFF, U+00AD, U+2060 and bidi marks.
+
+**Why:** `https://example.com﹐tail` (U+FE50 SMALL COMMA) and `https://example.com<U+FEFF>tail` render literally because the character is absorbed into the authority and domain validation rejects the candidate. This is the same silent-loss class the 2026-10-20 change fixes for U+FF0C. Vertical/small-form CJK text and pasted Word/web text can trigger it. Found by the Red Team review on 2026-10-20.
+
+**Current state:** The change declares the enumerated set; other Unicode punctuation and format characters are outside it and documented as such in the matrix and support doc.
+
+**Priority:** P3
+
+**Pros:** Closes the remaining silent-loss cases for CJK compatibility forms and pasted text.
+**Cons / cost:** Adds two punctuation blocks and at least three format characters to the boundary contract; needs spec/design/matrix/docs/sample-table/test updates and a decision on bidi marks. (human: ~3-4h / CC: ~30min)
+
+**Depends on:** nothing; extends the `cjk-autolink-boundaries` contract.
+
+**Start here:** add the ranges to `bareURLBoundaryCharacters`, extend `bareURLBoundarySamples`, and pin `https://example.com﹐tail` and `https://example.com\u{FEFF}tail`; run `swift test --filter CommonSyntaxTests --filter CrossArtifactConsistencyTests`.
