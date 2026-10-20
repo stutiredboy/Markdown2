@@ -410,6 +410,9 @@ struct CommonSyntaxTests {
         "https://evil.com。例%2etrusted%2ecom",
         // A broken image renders its alt text in exported HTML/PDF.
         "https://evil.com。![trusted.com](https://invalid.invalid/x.png)",
+        "https://evil.com[.trusted.com](/x \"<br>\")",
+        // A prepend character joining the sentinel cannot hide the label.
+        "https://evil.com\u{200B}\u{0600}[\(atSign)trusted.com](/x)",
         // Alt text participates in document order, not appended after the token.
         "https://evil.com\u{200B}[![.](https://invalid.invalid/x.png)trusted](https://target.example/x)",
         "https://evil.com\u{200B}<img alt=\".\">trusted",
@@ -522,6 +525,9 @@ struct CommonSyntaxTests {
         "https://evil.co\u{200B}\u{2065}m",
         "https://evil.co<span></span>\u{2065}m",
         "https://evil.co\u{200B}${}m$",
+        "https://evil.co[m<br>](https://x)",
+        "https://evil.co[.trusted<br>](https://x)",
+        "https://evil.co[m<div>](https://x)",
         "https://example.com\u{200B}tail",
         "https://example.com<em>end</em>",
         "https://example.com$x$"

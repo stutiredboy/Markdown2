@@ -2189,15 +2189,18 @@ public struct MarkdownRenderer: Sendable {
     }
 
     private static let imageAltRegex = try! NSRegularExpression(pattern: #"<img\b[^>]*\balt="([^"]*)"[^>]*>"#)
-    private static let htmlTagRegex = try! NSRegularExpression(pattern: #"<[^>]*>"#)
+    /// Quote-aware tag tokenizer: a tag with quoted attributes is one token.
+    private static let tagRegex = try! NSRegularExpression(
+        pattern: #"<!--[\s\S]*?-->|<[^>"']*(?:"[^"]*"[^>"']*|'[^']*'[^>"']*)*>"#
+    )
+    private static let tagNameRegex = try! NSRegularExpression(pattern: #"^</?([A-Za-z][A-Za-z0-9]*)"#)
+    private static let blockTagNames: Set<String> = [
+        "br", "hr", "p", "div", "li", "ul", "ol", "blockquote", "pre", "table", "tr",
+        "section", "figure", "figcaption", "h1", "h2", "h3", "h4", "h5", "h6"
+    ]
     private static let namedEntitySpelling = try! NSRegularExpression(pattern: #"&[A-Za-z][A-Za-z0-9]+;"#)
     private static let mathSpanRegex = try! NSRegularExpression(
         pattern: #"<span class="math math-(?:inline|display)">([\s\S]*?)</span>"#
-    )
-    /// Block-level and void HTML boundaries end the visible authority line.
-    private static let blockBoundaryRegex = try! NSRegularExpression(
-        pattern: #"<(?:br|hr|p|div|li|ul|ol|blockquote|pre|table|tr|section|figure|figcaption|h[1-6])\b"#,
-        options: [.caseInsensitive]
     )
 
     /// Walks the text after the URL, restoring protected tokens, stripping
@@ -2216,6 +2219,13 @@ public struct MarkdownRenderer: Sendable {
                 return VisibleContinuation(scalars: result, exhausted: true)
             }
             sourceBudget -= scalarCount
+            // A sentinel joined into a larger grapheme (a prepend character
+            // before the opening sentinel) cannot be scanned as a token; fail
+            // closed rather than read the placeholder as visible text.
+            if character != InlineProtector.sentinelCharacter,
+               character.unicodeScalars.contains(InlineProtector.sentinelScalar) {
+                return VisibleContinuation(scalars: result, exhausted: true)
+            }
             if character == InlineProtector.sentinelCharacter,
                let token = InlineProtector.tokenRegex.firstMatch(in: text, options: .anchored, range: NSRange(index..<text.endIndex, in: text)) {
                 // A token range that is not Character-aligned cannot be
@@ -2245,18 +2255,32 @@ public struct MarkdownRenderer: Sendable {
                     return VisibleContinuation(scalars: result, exhausted: true)
                 }
                 // A block-level or void HTML boundary starts a new visible
-                // line; text after it is not part of the authority.
-                if Self.blockBoundaryRegex.firstMatch(in: raw, range: NSRange(raw.startIndex..., in: raw)) != nil {
-                    return VisibleContinuation(scalars: result, exhausted: false)
-                }
-                let withAlt = Self.imageAltRegex.stringByReplacingMatches(
+                // line. Process the visible prefix before it; text after it
+                // is not part of the authority.
+                var fragment = Self.imageAltRegex.stringByReplacingMatches(
                     in: raw,
                     range: NSRange(raw.startIndex..., in: raw),
                     withTemplate: "$1"
                 )
-                let stripped = Self.htmlTagRegex.stringByReplacingMatches(
-                    in: withAlt,
-                    range: NSRange(withAlt.startIndex..., in: withAlt),
+                var hitBlockBoundary = false
+                for tag in Self.tagRegex.matches(in: fragment, range: NSRange(fragment.startIndex..., in: fragment)) {
+                    guard let tagRange = Range(tag.range, in: fragment) else {
+                        return VisibleContinuation(scalars: result, exhausted: true)
+                    }
+                    let tagText = String(fragment[tagRange])
+                    guard let nameMatch = Self.tagNameRegex.firstMatch(
+                        in: tagText,
+                        range: NSRange(tagText.startIndex..., in: tagText)
+                    ), let nameRange = Range(nameMatch.range(at: 1), in: tagText) else { continue }
+                    if Self.blockTagNames.contains(tagText[nameRange].lowercased()) {
+                        fragment = String(fragment[..<tagRange.lowerBound])
+                        hitBlockBoundary = true
+                        break
+                    }
+                }
+                let stripped = Self.tagRegex.stringByReplacingMatches(
+                    in: fragment,
+                    range: NSRange(fragment.startIndex..., in: fragment),
                     withTemplate: ""
                 )
                 // A missing entity table would silently leave named spellings
@@ -2271,6 +2295,9 @@ public struct MarkdownRenderer: Sendable {
                 }
                 if result.count > Self.continuationVisibleBudget {
                     return VisibleContinuation(scalars: result, exhausted: true)
+                }
+                if hitBlockBoundary {
+                    return VisibleContinuation(scalars: result, exhausted: false)
                 }
                 index = tokenRange.upperBound
                 continue
@@ -3392,7 +3419,7 @@ private final class InlineProtector {
     private var literals: Set<Int> = []
     private var expanded: [Bool] = []
 
-    private static let sentinelScalar: Unicode.Scalar = "\u{E000}"
+    static let sentinelScalar: Unicode.Scalar = "\u{E000}"
     /// The sentinel as a Character, for the guard's fast-path check.
     static let sentinelCharacter = Character(String(sentinelScalar))
 
