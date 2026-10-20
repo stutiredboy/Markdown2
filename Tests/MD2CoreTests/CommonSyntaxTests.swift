@@ -413,6 +413,11 @@ struct CommonSyntaxTests {
         "https://evil.com[.trusted.com](/x \"<br>\")",
         // A prepend character joining the sentinel cannot hide the label.
         "https://evil.com\u{200B}\u{0600}[\(atSign)trusted.com](/x)",
+        // HTML maps C1 numeric references to printable characters, not spaces.
+        "https://evil.com。&#133;\(atSign)trusted.com",
+        "https://evil.com。&#x85;\(atSign)trusted.com",
+        // A quoted `>` inside an image title must not end the tag early.
+        "https://evil.com![.](missing.png \"<br> \")trusted.com",
         // Alt text participates in document order, not appended after the token.
         "https://evil.com\u{200B}[![.](https://invalid.invalid/x.png)trusted](https://target.example/x)",
         "https://evil.com\u{200B}<img alt=\".\">trusted",

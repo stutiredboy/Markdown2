@@ -2188,7 +2188,12 @@ public struct MarkdownRenderer: Sendable {
         var text: String { String(String.UnicodeScalarView(scalars)) }
     }
 
-    private static let imageAltRegex = try! NSRegularExpression(pattern: #"<img\b[^>]*\balt="([^"]*)"[^>]*>"#)
+    /// Quote-aware image tag and alt extraction: a `>` inside a quoted title
+    /// must not end the tag early.
+    private static let imgTagRegex = try! NSRegularExpression(
+        pattern: #"<img\b[^>"']*(?:"[^"]*"[^>"']*|'[^']*'[^>"']*)*>"#
+    )
+    private static let altAttributeRegex = try! NSRegularExpression(pattern: #"\balt="([^"]*)""#)
     /// Quote-aware tag tokenizer: a tag with quoted attributes is one token.
     private static let tagRegex = try! NSRegularExpression(
         pattern: #"<!--[\s\S]*?-->|<[^>"']*(?:"[^"]*"[^>"']*|'[^']*'[^>"']*)*>"#
@@ -2256,12 +2261,25 @@ public struct MarkdownRenderer: Sendable {
                 }
                 // A block-level or void HTML boundary starts a new visible
                 // line. Process the visible prefix before it; text after it
-                // is not part of the authority.
-                var fragment = Self.imageAltRegex.stringByReplacingMatches(
-                    in: raw,
-                    range: NSRange(raw.startIndex..., in: raw),
-                    withTemplate: "$1"
-                )
+                // is not part of the authority. Image alt text is substituted
+                // from complete quote-aware tags.
+                var fragment = ""
+                var cursor = raw.startIndex
+                for tag in Self.imgTagRegex.matches(in: raw, range: NSRange(raw.startIndex..., in: raw)) {
+                    guard let tagRange = Range(tag.range, in: raw) else {
+                        return VisibleContinuation(scalars: result, exhausted: true)
+                    }
+                    fragment += raw[cursor..<tagRange.lowerBound]
+                    let tagText = String(raw[tagRange])
+                    if let alt = Self.altAttributeRegex.firstMatch(
+                        in: tagText,
+                        range: NSRange(tagText.startIndex..., in: tagText)
+                    ), let altRange = Range(alt.range(at: 1), in: tagText) {
+                        fragment += tagText[altRange]
+                    }
+                    cursor = tagRange.upperBound
+                }
+                fragment += raw[cursor...]
                 var hitBlockBoundary = false
                 for tag in Self.tagRegex.matches(in: fragment, range: NSRange(fragment.startIndex..., in: fragment)) {
                     guard let tagRange = Range(tag.range, in: fragment) else {

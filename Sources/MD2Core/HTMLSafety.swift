@@ -48,6 +48,18 @@ enum HTMLSafety {
         return "<\(name)\(attributes)>"
     }
 
+    /// HTML5 numeric-reference replacements for the C1 controls (U+0080–U+009F);
+    /// unlisted C1 controls parse as U+FFFD. A browser applies these before it
+    /// renders the text, so the continuation guard must too.
+    private static let c1Replacements: [UInt32: UInt32] = [
+        0x80: 0x20AC, 0x82: 0x201A, 0x83: 0x0192, 0x84: 0x201E, 0x85: 0x2026,
+        0x86: 0x2020, 0x87: 0x2021, 0x88: 0x02C6, 0x89: 0x2030, 0x8A: 0x0160,
+        0x8B: 0x2039, 0x8C: 0x0152, 0x8E: 0x017D, 0x91: 0x2018, 0x92: 0x2019,
+        0x93: 0x201C, 0x94: 0x201D, 0x95: 0x2022, 0x96: 0x2013, 0x97: 0x2014,
+        0x98: 0x02DC, 0x99: 0x2122, 0x9A: 0x0161, 0x9B: 0x203A, 0x9C: 0x0153,
+        0x9E: 0x017E, 0x9F: 0x0178
+    ]
+
     static func decodeEntities(_ source: String) -> String {
         let regex = try! NSRegularExpression(pattern: #"&#(?:[xX]([0-9a-fA-F]+)|([0-9]+));?|&(colon|Tab|NewLine|amp|quot|apos|lt|gt);"#)
         let names = ["colon": ":", "Tab": "\t", "NewLine": "\n", "amp": "&", "quot": "\"", "apos": "'", "lt": "<", "gt": ">"]
@@ -61,8 +73,21 @@ enum HTMLSafety {
             } else {
                 let hex = match.range(at: 1).location != NSNotFound
                 let digits = ns.substring(with: match.range(at: hex ? 1 : 2))
-                if let value = UInt32(digits, radix: hex ? 16 : 10), let scalar = UnicodeScalar(value) { result += String(scalar) }
-                else { result += "\u{FFFD}" }
+                if let value = UInt32(digits, radix: hex ? 16 : 10) {
+                    if (0x80...0x9F).contains(value) {
+                        if let mapped = c1Replacements[value].flatMap(Unicode.Scalar.init) {
+                            result += String(mapped)
+                        } else {
+                            result += "\u{FFFD}"
+                        }
+                    } else if let scalar = Unicode.Scalar(value) {
+                        result += String(scalar)
+                    } else {
+                        result += "\u{FFFD}"
+                    }
+                } else {
+                    result += "\u{FFFD}"
+                }
             }
             cursor = NSMaxRange(match.range)
         }
