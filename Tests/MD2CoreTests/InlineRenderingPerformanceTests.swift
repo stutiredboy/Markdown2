@@ -340,6 +340,25 @@ struct InlineRenderingPerformanceTests {
         try assertOnePerLineScales(.bareURLs)
     }
 
+    /// The authority guard's continuation walk is bounded. An unbounded walk
+    /// from every candidate made a single long line quadratic (16 KB ≈ 6 s on
+    /// the measured machine); the bound keeps it linear.
+    @Test func repeatedTerminatedBareURLsRenderInBoundedTime() throws {
+        let source = String(repeating: "www.a。", count: 2_000)
+        _ = renderer.render(source)
+
+        // gstack-timing-ok: DoS regression guard for the continuation scan; min-of-3 bounds timer noise
+        let elapsedMS = bestOf(3) { _ = renderer.render(source) }
+        // gstack-timing-ok: absolute ceiling; the unbounded scan took seconds on this input
+        try #require(
+            elapsedMS < 1_000,
+            "2,000 terminated bare-URL candidates took \(format(elapsedMS)) ms"
+        )
+
+        let body = renderer.render(source).body
+        #expect(body.components(separatedBy: "。").count - 1 == 2_000, "rendered output is incomplete")
+    }
+
     private func assertOnePerLineScales(_ workload: Workload) throws {
         _ = renderer.render(workload.onePerLine(count: 32))
 

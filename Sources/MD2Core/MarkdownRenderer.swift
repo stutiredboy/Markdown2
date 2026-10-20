@@ -2099,8 +2099,9 @@ public struct MarkdownRenderer: Sendable {
 
     /// Full-width structural lookalikes are valid left boundaries but must not
     /// terminate the URL body: ending `https://evil.com．trusted.com` at `．`
-    /// would link `evil.com` while the text reads like a longer host.
-    static let bareURLStructuralLookalikes = "．／＃＠？"
+    /// would link `evil.com` while the text reads like a longer host. `－` and
+    /// `＿` fold to host-valid `-`/`_`, so they stay body content too.
+    static let bareURLStructuralLookalikes = "．／＃＠？－＿"
 
     /// The URL-body terminators: the full boundary set minus the structural
     /// lookalikes above. The left-boundary lookbehind still uses the full set.
@@ -2112,54 +2113,82 @@ public struct MarkdownRenderer: Sendable {
     /// IDNA dot equivalents browsers fold into `.` when resolving a host.
     static let idnaDots: Set<Character> = ["。", "．", "｡"]
 
-    private static let invisibleContinuationScalars: Set<UInt32> = [
-        0x200B, 0xFEFF, 0x00AD, 0x2060, 0x200E, 0x200F,
-        0x202A, 0x202B, 0x202C, 0x202D, 0x202E,
-        0x2066, 0x2067, 0x2068, 0x2069
-    ]
+    /// Full-width ASCII folds to its ASCII counterpart by this offset.
+    private static let fullwidthASCIIDelta: UInt32 = 0xFEE0
+    private static let fullwidthASCIIRange: ClosedRange<UInt32> = 0xFF01...0xFF5E
+    private static let percentEncodedDot = "2e"
 
-    private static func normalizeContinuation(_ character: Character) -> Character {
-        if idnaDots.contains(character) { return "." }
-        switch character {
-        case "％": return "%"
-        case "：": return ":"
-        case "＠": return "@"
-        default:
-            guard character.unicodeScalars.count == 1,
-                  let scalar = character.unicodeScalars.first else { return character }
-            let value = scalar.value
-            if (0xFF01...0xFF5E).contains(value), let normalized = Unicode.Scalar(value - 0xFEE0) {
-                return Character(normalized)
-            }
-            return character
+    /// Invisible in the rendered text: Unicode format/control (and stray
+    /// combining) scalars, plus blank-rendering fillers that are not marks.
+    private static func isInvisibleContinuationScalar(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.properties.generalCategory {
+        case .format, .control, .nonspacingMark, .enclosingMark: return true
+        default: break
+        }
+        switch scalar.value {
+        case 0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800: return true
+        default: return false
         }
     }
 
+    private static func normalizeContinuation(_ scalar: Unicode.Scalar) -> Unicode.Scalar {
+        if idnaDots.contains(Character(scalar)) { return "." }
+        if fullwidthASCIIRange.contains(scalar.value),
+           let normalized = Unicode.Scalar(scalar.value - fullwidthASCIIDelta) {
+            return normalized
+        }
+        return scalar
+    }
+
+    /// Appends the browser-visible form of `text` to `result`; returns false
+    /// when a delimiter ends the authority. Markdown emphasis/strikethrough/
+    /// highlight/sup/sub delimiters are markup, not visible authority text.
+    private static func appendVisibleContinuation(_ text: String, to result: inout String) -> Bool {
+        for scalar in text.unicodeScalars {
+            if scalar.properties.isWhitespace || scalar == "/" || scalar == "?" || scalar == "#" { return false }
+            if isInvisibleContinuationScalar(scalar) { continue }
+            if "*_~=^".unicodeScalars.contains(scalar) { continue }
+            result.unicodeScalars.append(normalizeContinuation(scalar))
+        }
+        return true
+    }
+
+    /// The most visible continuation text a single authority check needs. A
+    /// hostname is at most 253 characters; the margin covers markup and dots.
+    private static let continuationScanBudget = 512
+
     /// Walks the text after the URL, restoring protected tokens, decoding
-    /// entities/escapes, stripping inline HTML, and skipping invisible format
-    /// characters, so the guard sees what a browser sees.
+    /// entities/escapes, stripping inline HTML, and skipping invisible
+    /// characters, so the guard sees what a browser sees. The scan is bounded:
+    /// an unbounded walk from every candidate is quadratic on a long line.
     private func visibleContinuation(after start: String.Index, in text: String, protector: InlineProtector) -> String {
         var result = ""
         var index = start
-        let regex = MarkdownRegex.expression("\u{E000}MD2-(\\d+)\u{E000}")
-        while index < text.endIndex {
-            if let regex,
+        var budget = Self.continuationScanBudget
+        while index < text.endIndex, budget > 0 {
+            if text[index] == "\u{E000}",
+               let regex = InlineProtector.tokenRegex,
                let token = regex.firstMatch(in: text, options: .anchored, range: NSRange(index..<text.endIndex, in: text)),
                let tokenRange = Range(token.range, in: text) {
-                let restored = HTMLSafety.decodeEntities(protector.restore(in: String(text[tokenRange])))
-                result += restored.replacingOccurrences(of: #"<[^>]*>"#, with: "", options: .regularExpression)
+                // Restored fragments are HTML (code spans, links, entity
+                // spellings). Decode every named entity, keep image alt text
+                // (a broken image shows it), and run the visible pipeline.
+                let restored = HTMLSafety.decodeAllEntities(protector.restore(in: String(text[tokenRange])))
+                let withAlt = restored.replacingOccurrences(
+                    of: #"<img\b[^>]*\balt=\"([^\"]*)\"[^>]*>"#,
+                    with: "$1",
+                    options: [.regularExpression, .caseInsensitive]
+                )
+                let stripped = withAlt.replacingOccurrences(of: #"<[^>]*>"#, with: "", options: .regularExpression)
+                guard Self.appendVisibleContinuation(stripped, to: &result) else { return result }
+                budget -= text[tokenRange].unicodeScalars.count
                 index = tokenRange.upperBound
                 continue
             }
             let character = text[index]
             index = text.index(after: index)
-            if character.unicodeScalars.count == 1,
-               let scalar = character.unicodeScalars.first,
-               Self.invisibleContinuationScalars.contains(scalar.value) {
-                continue
-            }
-            if character.isWhitespace || character == "/" || character == "?" || character == "#" { break }
-            result.append(Self.normalizeContinuation(character))
+            budget -= character.unicodeScalars.count
+            guard Self.appendVisibleContinuation(String(character), to: &result) else { break }
         }
         return result
     }
@@ -2174,8 +2203,7 @@ public struct MarkdownRenderer: Sendable {
             var prefix = candidate
             var suffix = ""
             var firstNonLiteralToken: Range<String.Index>?
-            let tokenPattern = "\u{E000}MD2-(\\d+)\u{E000}"
-            if let regex = try? NSRegularExpression(pattern: tokenPattern) {
+            if let regex = InlineProtector.tokenRegex {
                 for token in regex.matches(in: candidate, range: NSRange(candidate.startIndex..., in: candidate)) {
                     guard let numberRange = Range(token.range(at: 1), in: candidate),
                           let number = Int(candidate[numberRange]), !protector.isLiteral(number),
@@ -2214,38 +2242,51 @@ public struct MarkdownRenderer: Sendable {
                 // Only guard when the authority ends the URL. A path, query or
                 // fragment keeps the host fixed; a port is part of the authority.
                 let authorityAtEnd = !url[domainStart...].contains { $0 == "/" || $0 == "?" || $0 == "#" }
-                if authorityAtEnd {
-                    let start: String.Index?
-                    let continuationText: String
-                    if let tokenRange = firstNonLiteralToken {
-                        start = tokenRange.upperBound
-                        continuationText = candidate
-                    } else if let matchRange = Range(match.range, in: source) {
-                        start = matchRange.upperBound
-                        continuationText = source
-                    } else {
-                        start = nil
-                        continuationText = source
+                if authorityAtEnd, let matchRange = Range(match.range, in: source) {
+                    // A non-literal token (code span, math, link/image) was cut
+                    // from the URL. Its rendered text is visible, so read the
+                    // continuation from the token's source start; starting
+                    // after it hides a fused authority.
+                    let start = firstNonLiteralToken.map { tokenRange in
+                        source.index(
+                            matchRange.lowerBound,
+                            offsetBy: candidate.distance(from: candidate.startIndex, to: tokenRange.lowerBound)
+                        )
+                    } ?? matchRange.upperBound
+                    var visible = ""
+                    // Punctuation stripped from the URL tail is still visible
+                    // before the token (`https://evil.com.`x``).
+                    if Self.appendVisibleContinuation(trailing, to: &visible) {
+                        visible += visibleContinuation(after: start, in: source, protector: protector)
                     }
-                    if let start {
-                        let visible = visibleContinuation(after: start, in: continuationText, protector: protector)
-                        let authorityVisible = visible.prefix { $0 != "/" && $0 != "?" && $0 != "#" && !$0.isWhitespace }
-                        // Any userinfo '@' before the next delimiter or whitespace
-                        // resolves the full visible line to the host after it.
-                        if authorityVisible.contains("@") { return candidate }
-                        if authorityVisible.first == "%",
-                           authorityVisible.dropFirst().prefix(2).lowercased() == "2e" {
-                            return candidate
-                        }
-                        // One or more IDNA dots followed by a host label fuses
-                        // the visible continuation into a different authority.
-                        let afterDots = authorityVisible.drop { $0 == "." }
-                        if afterDots.count < authorityVisible.count,
-                           let next = afterDots.first,
-                           next.unicodeScalars.allSatisfy({ $0.isASCII }),
-                           next.isLetter || next.isNumber {
-                            return candidate
-                        }
+                    let authorityVisible = visible.prefix { $0 != "/" && $0 != "?" && $0 != "#" && !$0.isWhitespace }
+                    // Any userinfo '@' before the next delimiter or whitespace
+                    // resolves the full visible line to the host after it.
+                    if authorityVisible.contains("@") { return candidate }
+                    if authorityVisible.first == "%",
+                       authorityVisible.dropFirst().prefix(2).lowercased() == Self.percentEncodedDot {
+                        return candidate
+                    }
+                    // One or more IDNA dots followed by a host label fuses
+                    // the visible continuation into a different authority.
+                    let afterDots = authorityVisible.drop { $0 == "." }
+                    if afterDots.count < authorityVisible.count,
+                       let next = afterDots.first,
+                       next.isLetter || next.isNumber {
+                        // A further dot extends the authority even for a
+                        // non-ASCII (IDNA) label; a lone CJK word is prose.
+                        let label = afterDots.prefix { $0 != "." }
+                        if label.count < afterDots.count { return candidate }
+                        if next.isASCII { return candidate }
+                    }
+                    // Text that starts like a host label and contains a dot
+                    // also extends the authority past the anchor (`x。trusted.com`
+                    // reads as `evil.comx.trusted.com`). A bare word with no
+                    // dot (`<em>end</em>`) stays ordinary prose.
+                    if let next = authorityVisible.first,
+                       next.isLetter || next.isNumber,
+                       authorityVisible.contains(".") {
+                        return candidate
                     }
                 }
             } else {
@@ -3230,6 +3271,11 @@ private final class InlineProtector {
     private var expanded: [Bool] = []
 
     private static let sentinelScalar: Unicode.Scalar = "\u{E000}"
+
+    /// The placeholder token grammar, shared by the pass that cuts non-literal
+    /// tokens and the guard that restores them.
+    static let tokenPattern = "\u{E000}MD2-(\\d+)\u{E000}"
+    static let tokenRegex = MarkdownRegex.expression(tokenPattern)
 
     /// Stores `fragment` and returns the private-use-area token standing in for it.
     func protect(_ fragment: String, source: String? = nil, literal: Bool = false) -> String {

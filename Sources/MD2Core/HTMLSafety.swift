@@ -69,4 +69,34 @@ enum HTMLSafety {
         result += ns.substring(from: cursor)
         return result
     }
+
+    // Full HTML5 named references, generated from Python's standard
+    // html.entities. `decodeEntities` stays narrow because renderer output
+    // preserves authored entity spellings; text that a browser renders (the
+    // bare-URL continuation guard) must see every named form.
+    private static let namedEntities: [String: String] = {
+        guard let url = MD2CoreResources.bundle.url(forResource: "html-entities", withExtension: "json"),
+              let data = try? Data(contentsOf: url),
+              let values = try? JSONDecoder().decode([String: String].self, from: data) else { return [:] }
+        return values
+    }()
+
+    private static let allEntityPattern = try! NSRegularExpression(
+        pattern: #"&(#(?:[xX][0-9a-fA-F]+|[0-9]+)|[A-Za-z][A-Za-z0-9]+);"#)
+
+    /// Decodes numeric and full HTML5 named references in one pass:
+    /// `&amp;lt;` is visible as `&lt;`, not as `<`.
+    static func decodeAllEntities(_ source: String) -> String {
+        let ns = source as NSString
+        var result = ""
+        var cursor = 0
+        for match in allEntityPattern.matches(in: source, range: NSRange(location: 0, length: ns.length)) {
+            result += ns.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
+            let key = ns.substring(with: match.range(at: 1))
+            let literal = ns.substring(with: match.range)
+            result += key.hasPrefix("#") ? decodeEntities(literal) : (namedEntities[key] ?? literal)
+            cursor = NSMaxRange(match.range)
+        }
+        return result + ns.substring(from: cursor)
+    }
 }

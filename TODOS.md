@@ -183,3 +183,20 @@ Tracked work considered and explicitly deferred from in-flight changes. Each ite
 **Depends on:** nothing; extends the `cjk-autolink-boundaries` contract.
 
 **Start here:** add the ranges to `bareURLBoundaryCharacters`, extend `bareURLBoundarySamples`, and pin `https://example.com﹐tail` and `https://example.com\u{FEFF}tail`; run `swift test --filter CommonSyntaxTests --filter CrossArtifactConsistencyTests`.
+
+## Mailto autolinks do not use the visible-continuation guard
+
+**What:** Apply the same lookalike-continuation checks to the email alternative in `protectBareAutolinks`, so `foo@evil.com。trusted.com` cannot render a longer apparent address than the `mailto:` destination.
+
+**Why:** The http/www guard landed on 2026-10-20; the email alternative still links `foo@evil.com` when followed by a fused IDNA dot or invisible-character continuation. The matrix declares email boundaries unchanged, so this was recorded as residual risk rather than expanded in that change. Found by the Red Team review on 2026-10-20.
+
+**Current state:** Email boundaries are unchanged by design; the deception is reproducible.
+
+**Priority:** P3
+
+**Pros:** Closes the same retarget class on the mailto surface.
+**Cons / cost:** Changes the declared email contract and needs its own matrix/docs/tests. (human: ~2h / CC: ~20min)
+
+**Depends on:** the `cjk-autolink-boundaries` continuation guard.
+
+**Start here:** reuse `visibleContinuation` and the block rules for the email branch; pin `foo@evil.com。trusted.com` and the invisible-scalar variants.

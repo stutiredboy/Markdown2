@@ -52,7 +52,7 @@ Add the boundary set to the body's negated character class and the Han/punctuati
 
 ### D2: One canonical boundary-character definition used by both rules
 
-Define a single module-internal constant, `bareURLBoundaryCharacters` (renamed from the earlier `cjkURLPunctuation` because it now includes U+200B; module-internal rather than file-private so `boundaryConstantMatchesSampleTable` can compare it through `@testable import`, not public API). The left-boundary lookbehind uses the full constant; the URL body uses `bareURLBodyTerminators`, the constant minus the structural lookalikes `．／＃＠？`, which remain valid left boundaries so a lookalike cannot retarget a shorter host. Interpolate both into the raw-string pattern with `\#(...)`. The normative content:
+Define a single module-internal constant, `bareURLBoundaryCharacters` (renamed from the earlier `cjkURLPunctuation` because it now includes U+200B; module-internal rather than file-private so `boundaryConstantMatchesSampleTable` can compare it through `@testable import`, not public API). The left-boundary lookbehind uses the full constant; the URL body uses `bareURLBodyTerminators`, the constant minus the structural lookalikes `．／＃＠？－＿`, which remain valid left boundaries so a lookalike cannot retarget a shorter host. Interpolate both into the raw-string pattern with `\#(...)`. The normative content:
 
 - U+00B7 `·`
 - U+2013–U+2014 `–—`
@@ -127,11 +127,11 @@ Do not duplicate assertions already covered by `autolinksRespectBoundariesAndPro
 
 ### D11: Performance wording is an estimate, not a measurement
 
-The pass remains one cached regex plus the same post-processing; the character class grows by ~75 code points and U+200B. No new scan, allocation loop, or unbounded structure is added, so the asymptotic cost is unchanged. This is an estimate; no benchmark is added. The design and matrix text must not claim a measured "no performance impact."
+The pass remains one cached regex plus the same post-processing; the character class grows by ~75 code points and U+200B. D12 adds a bounded continuation scan (at most 512 scalars per authority check, and the token regex runs only at a sentinel), so the asymptotic cost stays linear in the input. The regex and the pass are not benchmarked beyond the timing regression test for a long line of repeated candidates. The design and matrix text must not claim a measured "no performance impact."
 
 ### D12: Lookalike continuations stay literal
 
-A candidate whose visible continuation would change the apparent authority is left literal. The guard applies when the authority (host with optional port) ends the URL (no path, query, or fragment). It normalizes the visible continuation first: protected tokens/entities/escapes are restored, inline HTML is stripped, invisible format characters are skipped, and IDNA/fullwidth forms are folded. It then blocks any ASCII `@` before the next delimiter/whitespace, an IDNA dot before an ASCII or fullwidth host label, or a fullwidth percent before `2e`. Ordinary prose continuations (`https://example.com。然后`, `https://example.com：然后`, `https://example.com％然后`, `https://example.com\u{200B}tail`, `https://example.com<em>end</em>`) stay linked. Chosen over normalizing the whole URL: the guard is local, keeps the reported prose cases, and blocks the retargeting class.
+A candidate whose visible continuation would change the apparent authority is left literal. The guard applies when the authority (host with optional port) ends the URL (no path, query, or fragment). It normalizes the visible continuation first: protected tokens/entities/escapes are restored with their visible text read from the token's own source position (a non-literal token cut must not hide what follows it), image alt text is kept, inline HTML is stripped, every HTML5 named and numeric entity is decoded, Markdown emphasis/strikethrough/highlight/sup/sub delimiters are treated as markup, invisible characters (Unicode format/control/combining scalars, including ZWSP/ZWNJ/ZWJ, bidi marks, tag characters and blank-rendering fillers) are skipped, and IDNA/fullwidth forms are folded. The walk is bounded so a long hostile line cannot make it quadratic. It then blocks any ASCII `@` before the next delimiter/whitespace, an IDNA dot before an ASCII or fullwidth host label (or a further-dot non-ASCII label), a fullwidth percent before `2e`, or a letter/digit-led continuation that contains a dot. Ordinary prose continuations (`https://example.com。然后`, `https://example.com：然后`, `https://example.com％然后`, `https://example.com\u{200B}tail`, `https://example.com<em>end</em>`) stay linked. Chosen over normalizing the whole URL: the guard is local, keeps the reported prose cases, and blocks the retargeting class.
 
 ## Boundary / body asymmetry
 
@@ -165,7 +165,7 @@ B = U+00B7, U+2013–U+2014, U+2018–U+201D, U+2026,
 - **Script coverage is narrower than "CJK".** Han is covered; kana/Hangul before a scheme still block the link. Recorded as a non-goal.
 - **Regex character-class construction.** The constant is embedded in a class; an ASCII metacharacter would change it. The set is entirely full-width/non-ASCII plus U+200B, and tests exercise every range endpoint.
 - **Matrix/support text can drift from code.** Mitigation: stable-token matrix test, support-doc phrase guard, and the generated-doc consistency test.
-- **Performance is an estimate.** The regex is cached and the pass stays linear; no benchmark is added.
+- **Performance is bounded, not measured.** The regex is cached and the continuation scan is capped; a timing regression test covers a long line of repeated terminated candidates.
 
 ## Migration Plan
 

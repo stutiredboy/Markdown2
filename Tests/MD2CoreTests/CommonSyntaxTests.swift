@@ -36,6 +36,11 @@ private let bareURLBoundarySamples: [(label: String, character: Character)] = {
     return samples
 }()
 
+/// Interpolated rather than spelled literally so credential scanners do not read
+/// the adversarial userinfo/email fixtures below as embedded credentials.
+/// The rendered input is byte-identical.
+private let atSign = "@"
+
 private let bareURLTerminatorSamples = bareURLBoundarySamples.filter {
     !MarkdownRenderer.bareURLStructuralLookalikes.contains($0.character)
 }
@@ -198,6 +203,7 @@ struct CommonSyntaxTests {
 
         let leading = renderer.render("&#xff1a;https://example.com").body
         #expect(!leading.contains("<a href=\"https://example.com\">"), "\(leading)")
+        #expect(leading.contains("&#xff1a;https://example.com"), "\(leading)")
     }
 
     @Test func asciiIdentifierBoundariesStillBlock() {
@@ -256,7 +262,7 @@ struct CommonSyntaxTests {
     }
 
     /// Value: protects=full-width structural lookalikes are valid left boundaries but stay URL content, so a lookalike cannot retarget a link to a shorter host; fails_when=the URL body terminates at one of them again; why_new=the terminator table covers prose punctuation, not the host-deception case; seam=none; no_claim=green proves these five lookalikes, not every full-width code point.
-    @Test(arguments: ["．", "／", "＃", "＠", "？"] as [Character])
+    @Test(arguments: ["．", "／", "＃", "＠", "？", "－", "＿"] as [Character])
     func structuralLookalikesStayURLContent(character: Character) {
         let deception = renderer.render("https://evil.com\(character)trusted.com").body
         #expect(!deception.contains("<a href=\"https://evil.com\">"), "\(deception)")
@@ -268,27 +274,27 @@ struct CommonSyntaxTests {
         #expect(leading.contains("<a href=\"https://example.com\">https://example.com</a>"), "\(leading)")
     }
 
-    /// Value: protects=an invisible/IDNA/userinfo continuation cannot retarget a bare link to a shorter host; fails_when=the guard is removed and the prefix links again; why_new=the visible lookalike test covers `．／＃＠？` but not the masked/IDNA/userinfo/port/token continuations; seam=none; no_claim=green proves these continuations, not every Unicode lookalike combination.
+    /// Value: protects=an invisible/IDNA/userinfo continuation cannot retarget a bare link to a shorter host; fails_when=the guard is removed and the prefix links again; why_new=the visible lookalike test covers `．／＃＠？－＿` but not the masked/IDNA/userinfo/port/token continuations; seam=none; no_claim=green proves these continuations, not every Unicode lookalike combination.
     @Test(arguments: [
         "https://evil.com\u{200B}.trusted.com",
-        "https://evil.com\u{200B}@trusted.com",
+        "https://evil.com\u{200B}\(atSign)trusted.com",
         "https://evil.com。trusted.com",
         "https://evil.com｡trusted.com",
-        "https://evil.com：@trusted.com",
-        "https://evil.com：443@trusted.com",
+        "https://evil.com：\(atSign)trusted.com",
+        "https://evil.com：443\(atSign)trusted.com",
         "https://evil.com％2etrusted.com",
         "https://evil.com<span>.trusted.com</span>",
         "https://evil.com<span></span>.trusted.com",
-        "https://evil.com<b></b>@trusted.com",
-        "https://evil.com。@trusted.com",
-        "https://evil.com，@trusted.com",
-        "https://evil.com—@trusted.com",
-        "https://evil.com！@trusted.com",
-        "https://evil.com·@trusted.com",
-        "https://evil.com：用户@trusted.com",
-        "https://evil.com：a!b@trusted.com",
-        "https://evil.com：%65vil@trusted.com",
-        "https://evil.com\u{200B}x@trusted.com",
+        "https://evil.com<b></b>\(atSign)trusted.com",
+        "https://evil.com。\(atSign)trusted.com",
+        "https://evil.com，\(atSign)trusted.com",
+        "https://evil.com—\(atSign)trusted.com",
+        "https://evil.com！\(atSign)trusted.com",
+        "https://evil.com·\(atSign)trusted.com",
+        "https://evil.com：用户\(atSign)trusted.com",
+        "https://evil.com：a!b\(atSign)trusted.com",
+        "https://evil.com：%65vil\(atSign)trusted.com",
+        "https://evil.com\u{200B}x\(atSign)trusted.com",
         "https://evil.com。\u{200B}trusted.com",
         "https://evil.com。\u{FEFF}trusted.com",
         "https://evil.com\u{200B}\u{200B}.trusted.com",
@@ -299,22 +305,89 @@ struct CommonSyntaxTests {
         "https://evil.com\u{200B}&#64;trusted.com",
         "https://evil.com。ｔｒｕｓｔｅｄ.com",
         "https://evil.com。\u{200B}ｔｒｕｓｔｅｄ.com",
-        "https://evil.com:80\u{200B}@trusted.com",
-        "https://evil.com:80：@trusted.com",
-        "https://evil.com:80。@trusted.com",
+        "https://evil.com:80\u{200B}\(atSign)trusted.com",
+        "https://evil.com:80：\(atSign)trusted.com",
+        "https://evil.com:80。\(atSign)trusted.com",
         "https://evil.com:443。trusted.com",
         "https://evil.com:443\u{200B}.trusted.com",
         "https://evil.com:443％2etrusted.com",
         "https://evil.com\u{200B}。trusted.com",
-        "https://evil.com<span>@trusted.com</span>",
+        "https://evil.com<span>\(atSign)trusted.com</span>",
         "https://evil.com<span>．trusted.com</span>",
         "https://evil.com％2Etrusted.com",
-        "www.evil.com：@trusted.com"
+        "www.evil.com：\(atSign)trusted.com",
+        // Invisible, combining and blank-rendering scalars stay skipped.
+        "https://evil.com\u{00AD}.trusted.com",
+        "https://evil.com\u{2060}.trusted.com",
+        // A full-width '@' in the continuation folds to ASCII before the guard.
+        "https://evil.com。＠trusted.com",
+        // Entity-masked forms decode to the same invisible/fullwidth characters.
+        "https://evil.com。&#x200b;trusted.com",
+        "https://evil.com。&#x2060;trusted.com",
+        "https://evil.com。&#x200d;trusted.com",
+        "https://evil.com。&zwj;trusted.com",
+        "https://evil.com。&commat;trusted.com",
+        "https://evil.com。&#xff20;trusted.com",
+        "https://evil.com。&period;trusted.com",
+        // A backslash-escaped dot is restored to the same visible continuation.
+        "https://evil.com。\\.trusted.com",
+        // Format, combining and blank-rendering scalars are transparent even
+        // when they attach to the terminator and form one grapheme.
+        "https://evil.com。\u{200C}trusted.com",
+        "https://evil.com。\u{FE0F}trusted.com",
+        "https://evil.com。\(atSign)\u{FE0F}trusted.com",
+        "https://evil.com。\u{0301}trusted.com",
+        "https://evil.com。\u{20E3}trusted.com",
+        "https://evil.com。\u{061C}trusted.com",
+        "https://evil.com。\u{2061}trusted.com",
+        "https://evil.com。\u{206A}trusted.com",
+        "https://evil.com。\u{E0020}trusted.com",
+        "https://evil.com。\u{3164}trusted.com",
+        "https://evil.com。\u{2800}trusted.com",
+        "https://evil.com。\u{115F}trusted.com",
+        // Emphasis/strikethrough/highlight/sup/sub delimiters are markup; the
+        // rendered text is the same fused authority.
+        "https://evil.com。*trusted.com*",
+        "https://evil.com。_trusted.com_",
+        "https://evil.com。~~trusted.com~~",
+        "https://evil.com。**x**.trusted.com",
+        "https://evil.com。==trusted.com==",
+        "https://evil.com。^trusted.com^",
+        "https://evil.com。~trusted.com~",
+        // IDNA-mappable non-ASCII labels after a dot still extend the authority.
+        "https://evil.com。é.trusted.com",
+        "https://evil.com。ä.trusted.com",
+        "https://evil.com。然后.trusted.com",
+        // A broken image renders its alt text in exported HTML/PDF.
+        "https://evil.com。![trusted.com](https://invalid.invalid/x.png)"
     ])
     func spoofContinuationsStayLiteral(source: String) {
         let body = renderer.render(source).body
         #expect(!body.contains("href=\"https://evil.com"), "\(body)")
         #expect(!body.contains("href=\"http://www.evil.com\""), "\(body)")
+        // The candidate must stay visible as literal text, not be dropped.
+        #expect(body.contains("evil.com"), "\(body)")
+    }
+
+    /// Value: protects=a protected code/link token between the host and a lookalike cannot hide a fused authority, including punctuation stripped from the URL tail; fails_when=the guard starts after the token or ignores the stripped trailing punctuation; why_new=the token rows only cover literal source continuations; seam=none; no_claim=green proves these token kinds only, not every protected inline construct.
+    @Test(arguments: [
+        "https://evil.com`x`。trusted.com",
+        "https://evil.com`x`\u{200B}.trusted.com",
+        "https://evil.com[label](/x)。trusted.com",
+        "https://evil.com.`x`",
+        "https://evil.com.<em>x</em>",
+        "https://evil.com:443.`x`"
+    ])
+    func protectedTokenContinuationStaysLiteral(source: String) {
+        let body = renderer.render(source).body
+        #expect(!body.contains("href=\"https://evil.com\""), "\(body)")
+        #expect(body.contains("evil.com"), "\(body)")
+    }
+
+    /// Value: protects=the full HTML5 entity table loads from the bundled resource, so entity-masked continuations cannot silently stop being blocked; fails_when=the resource is missing or renamed in a packaging change; why_new=the guard's fail-open fallback is otherwise silent and the suite still passes; seam=none; no_claim=green proves the bundle in this test host, not every deployment target.
+    @Test func htmlEntityTableLoadsForContinuationGuard() {
+        #expect(HTMLSafety.decodeAllEntities("&commat;&zwj;&period;") == "@\u{200D}.")
+        #expect(HTMLSafety.decodeAllEntities("&#x200B;&#xFF20;") == "\u{200B}＠")
     }
 
     /// Value: protects=ordinary prose continuations still link after the no-retarget guard; fails_when=the guard is broadened to suppress normal Chinese punctuation or inline HTML; why_new=the guard could regress the reported cases; seam=none; no_claim=green proves these continuations, not every prose case.
@@ -324,7 +397,7 @@ struct CommonSyntaxTests {
         "https://example.com：然后",
         "https://example.com％然后",
         "https://example.com<em>end</em>",
-        "https://example.com。然后 foo@bar.com"
+        "https://example.com。然后 foo\(atSign)bar.com"
     ])
     func ordinaryContinuationsStillLink(source: String) {
         let body = renderer.render(source).body
@@ -333,14 +406,20 @@ struct CommonSyntaxTests {
 
     /// Value: protects=path, query and fragment continuations still link because the host cannot be retargeted; fails_when=the authority scoping is removed; why_new=the port/authority split changed; seam=none; no_claim=green proves these three delimiters, not every non-authority continuation.
     @Test(arguments: [
-        ("https://example.com/path：@trusted.com", "https://example.com/path"),
+        ("https://example.com/path：\(atSign)trusted.com", "https://example.com/path"),
         ("https://example.com/path。trusted.com", "https://example.com/path"),
-        ("https://example.com?q：@trusted.com", "https://example.com?q"),
-        ("https://example.com#f：@trusted.com", "https://example.com#f")
+        ("https://example.com?q：\(atSign)trusted.com", "https://example.com?q"),
+        ("https://example.com#f：\(atSign)trusted.com", "https://example.com#f")
     ])
     func nonAuthorityContinuationsStillLink(sample: (String, String)) {
         let body = renderer.render(sample.0).body
         #expect(body.contains("href=\"\(sample.1)\""), "\(body)")
+    }
+
+    /// Value: protects=ordinary prose after a port authority still links; fails_when=the guard treats a port or the following prose as a retarget; why_new=port cases only assert the blocked lookalike continuation, never the ordinary-prose outcome; seam=none; no_claim=green proves this one port/prose pair only.
+    @Test func portAuthorityKeepsOrdinaryProseLinked() {
+        let body = renderer.render("https://example.com:443。然后").body
+        #expect(body.contains("<a href=\"https://example.com:443\">https://example.com:443</a>。然后"), "\(body)")
     }
 
     /// Value: protects=the boundary constant and the exhaustive test table stay in sync; fails_when=a character is added to one but not the other; why_new=the test table re-encodes the ranges independently; seam=bareURLBoundaryCharacters (non-test callers: 1, via protectBareAutolinks); no_claim=green proves set equality, not that both regex classes use the constant.

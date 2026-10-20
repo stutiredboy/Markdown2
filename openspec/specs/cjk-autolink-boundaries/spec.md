@@ -206,7 +206,7 @@ The `gfm-autolinks` entry in the machine-checked compatibility matrix SHALL reco
 
 ### Requirement: Lookalike continuations do not retarget a bare URL
 
-A bare-URL candidate SHALL NOT be anchored when the visible continuation, after restoring protected tokens/entities/escapes, stripping inline HTML, skipping invisible format characters (U+200B, U+FEFF, U+00AD, U+2060, and bidi marks), and folding IDNA/fullwidth forms, would change the apparent authority. The guard SHALL apply when the authority (host with optional port) ends the URL (no path, query, or fragment). A candidate SHALL stay literal when the continuation contains an ASCII `@` before the next `/`, `?`, `#`, or whitespace; when it begins with one or more IDNA dots followed by a host label (ASCII or fullwidth letter/digit); or when it begins with a fullwidth percent followed by `2e`/`2E`. Ordinary prose continuations (`https://example.com。然后`, `https://example.com：然后`, `https://example.com％然后`, `https://example.com\u{200B}tail`, `https://example.com<em>end</em>`) SHALL remain linked.
+A bare-URL candidate SHALL NOT be anchored when the visible continuation, after restoring protected tokens/entities/escapes (including image alt text), stripping inline HTML, treating emphasis/strikethrough/highlight/sup/sub delimiters as markup, skipping invisible characters (Unicode format/control/combining scalars, including ZWSP/ZWNJ/ZWJ, bidi marks and tag characters, plus blank-rendering fillers), and folding IDNA/fullwidth forms, would change the apparent authority. The guard SHALL apply when the authority (host with optional port) ends the URL (no path, query, or fragment), SHALL read the continuation from the visible text of any protected token rather than after it, and SHALL bound the continuation scan. A candidate SHALL stay literal when the continuation contains an ASCII `@` before the next `/`, `?`, `#`, or whitespace; when it begins with one or more IDNA dots followed by a host label that is ASCII or is followed by another dot; when it begins with a fullwidth percent followed by `2e`/`2E`; or when it begins with a letter or digit and contains a dot. Ordinary prose continuations (`https://example.com。然后`, `https://example.com：然后`, `https://example.com％然后`, `https://example.com\u{200B}tail`, `https://example.com<em>end</em>`) SHALL remain linked.
 
 #### Scenario: Invisible terminator before a dot stays literal
 
@@ -220,7 +220,7 @@ A bare-URL candidate SHALL NOT be anchored when the visible continuation, after 
 
 #### Scenario: Userinfo lookalike stays literal
 
-- **WHEN** the source contains `https://evil.com：@trusted.com` or `https://evil.com：443@trusted.com`
+- **WHEN** the source contains `https://evil.com` followed by a full-width colon (or a port `:443`) and then an `@` sign and `trusted.com`
 - **THEN** no anchor is produced for `https://evil.com`
 
 #### Scenario: Encoded dot stays literal
@@ -232,6 +232,31 @@ A bare-URL candidate SHALL NOT be anchored when the visible continuation, after 
 
 - **WHEN** the source contains `https://evil.com<span>.trusted.com</span>`
 - **THEN** no anchor is produced for `https://evil.com`
+
+#### Scenario: Entity-masked invisible continuation stays literal
+
+- **WHEN** the source contains `https://evil.com。&#x200b;trusted.com`, `&#x2060;`, `&#x200d;`, `&zwj;`, `&commat;`, or `&#xff20;` between the terminator and `trusted.com`
+- **THEN** no anchor is produced for `https://evil.com`
+
+#### Scenario: Protected token does not hide the continuation
+
+- **WHEN** the source contains `https://evil.com`x`。trusted.com` or `https://evil.com[label](/x)。trusted.com`
+- **THEN** no anchor is produced for `https://evil.com`
+
+#### Scenario: Emphasis and image markup do not hide the continuation
+
+- **WHEN** the source contains `https://evil.com。*trusted.com*`, `https://evil.com。~~trusted.com~~`, or `https://evil.com。![trusted.com](x.png)`
+- **THEN** no anchor is produced for `https://evil.com`
+
+#### Scenario: Scalar-attached invisible continuation stays literal
+
+- **WHEN** the source contains `https://evil.com。\u{200C}trusted.com`, `https://evil.com。\u{FE0F}trusted.com`, or `https://evil.com。\u{061C}trusted.com`
+- **THEN** no anchor is produced for `https://evil.com`
+
+#### Scenario: Long hostile line stays bounded
+
+- **WHEN** a line repeats `www.a。` thousands of times
+- **THEN** rendering completes in linear time (pinned by a timing regression test)
 
 #### Scenario: Ordinary prose continuation still links
 
