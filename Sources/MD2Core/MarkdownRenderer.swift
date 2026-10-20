@@ -2214,6 +2214,13 @@ public struct MarkdownRenderer: Sendable {
                 // image shows it), strip remaining tags, then decode entities
                 // once in document order.
                 let raw = protector.restore(in: String(text[tokenRange]))
+                // Inline math may render a dot from a TeX control word
+                // (`\ldotp`); its source text is not a faithful visible model.
+                // Fail closed for any TeX control sequence in a math span.
+                if (raw.contains(PreviewClass.mathInline) || raw.contains(PreviewClass.mathDisplay)),
+                   raw.contains("\\") {
+                    return VisibleContinuation(scalars: result, exhausted: true)
+                }
                 let withAlt = Self.imageAltRegex.stringByReplacingMatches(
                     in: raw,
                     range: NSRange(raw.startIndex..., in: raw),

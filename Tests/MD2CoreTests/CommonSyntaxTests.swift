@@ -412,7 +412,11 @@ struct CommonSyntaxTests {
         "https://evil.com。![trusted.com](https://invalid.invalid/x.png)",
         // Alt text participates in document order, not appended after the token.
         "https://evil.com\u{200B}[![.](https://invalid.invalid/x.png)trusted](https://target.example/x)",
-        "https://evil.com\u{200B}<img alt=\".\">trusted"
+        "https://evil.com\u{200B}<img alt=\".\">trusted",
+        // KaTeX can render a dot from a TeX control word (`\ldotp`).
+        "https://evil.com$\\ldotp$trusted",
+        "https://evil.com$\\ldotp$trusted$\\ldotp$com",
+        "https://evil.com\\(\\ldotp\\)trusted",
     ])
     func spoofContinuationsStayLiteral(source: String) {
         let body = renderer.render(source).body
