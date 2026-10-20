@@ -1389,7 +1389,13 @@ private func scrollableContentHeight(for documentView: NSView) -> CGFloat {
 }
 
 final class MarkdownSourceTextView: NSTextView {
-    var typography: TypographySettings = .init()
+    var typography: TypographySettings = .init() {
+        didSet {
+            let width = max(58, ceil(gutterFontSize * 3.2 + Self.gutterTrailingInset))
+            textContainerInset.width = width
+            invalidateGutter()
+        }
+    }
     private var isPasting = false
     private var isSoftReturnEvent = false
 
@@ -1417,18 +1423,28 @@ final class MarkdownSourceTextView: NSTextView {
 
     @discardableResult
     func performMarkdownAction(_ action: MarkdownEditing.Action) -> Bool {
+        let selection = selectedRange()
         guard isEditable, !hasMarkedText(), selectedRanges.count == 1,
-              let edit = MarkdownEditing.edit(string, selection: selectedRange(), action: action,
-                  clipboard: action == .link ? NSPasteboard.general.string(forType: .string) : nil) else { return false }
+              let edit = MarkdownEditing.edit(string, selection: selection, action: action,
+                  autoClosingPositions: trackedCloser(at: selection.location)) else { return false }
         applyMarkdownEdit(edit)
         return true
     }
 
     private func applyMarkdownEdit(_ edit: MarkdownEditing.Edit) {
+        if edit.range.length == 0, edit.replacement.isEmpty,
+           edit.selection.location == edit.range.location + 1 {
+            textStorage?.removeAttribute(.markdownAutoClosing,
+                                         range: NSRange(location: edit.range.location, length: 1))
+        }
         if edit.range.length != 0 || !edit.replacement.isEmpty {
             breakUndoCoalescing()
             insertText(edit.replacement, replacementRange: edit.range)
             breakUndoCoalescing()
+        }
+        if let position = edit.autoClosingPosition {
+            textStorage?.addAttribute(.markdownAutoClosing, value: true,
+                                      range: NSRange(location: position, length: 1))
         }
         setSelectedRange(edit.selection)
         scrollRangeToVisible(edit.selection)
@@ -1454,11 +1470,18 @@ final class MarkdownSourceTextView: NSTextView {
         let input = (insertString as? String) ?? (insertString as? NSAttributedString)?.string
         if replacementRange.location == NSNotFound, !hasMarkedText(), !isPasting,
            isEditable, selectedRanges.count == 1, let input,
-           let edit = MarkdownEditing.edit(string, selection: selectedRange(), action: .type(input)) {
+           let edit = MarkdownEditing.edit(string, selection: selectedRange(), action: .type(input),
+                                           autoClosingPositions: trackedCloser(at: selectedRange().location)) {
             applyMarkdownEdit(edit)
         } else {
             super.insertText(insertString, replacementRange: replacementRange)
         }
+    }
+
+    private func trackedCloser(at position: Int) -> Set<Int> {
+        guard let textStorage, position >= 0, position < textStorage.length,
+              textStorage.attribute(.markdownAutoClosing, at: position, effectiveRange: nil) != nil else { return [] }
+        return [position]
     }
 
     var onFindAction: ((FindCommand.Action) -> Void)?
@@ -1478,9 +1501,9 @@ final class MarkdownSourceTextView: NSTextView {
 
     /// Right margin between a gutter number and the text container's left edge.
     private static let gutterTrailingInset: CGFloat = 8
-    /// Gutter numbers use the body size with monospaced digits, so they line up
-    /// on their last digit and stay inside the 58pt inset for five-digit lines.
-    private static let gutterFontSize: CGFloat = 16
+    /// Match the editor zoom; the inset grows above its 58pt minimum when
+    /// five-digit numbers need more room at large sizes.
+    private var gutterFontSize: CGFloat { typography.effectiveFontSize * 0.875 }
 
     /// Invalidates just the gutter strip. Text redraws are glyph-scoped and start
     /// at the container origin, so they never cover the strip; anything that
@@ -1560,7 +1583,7 @@ final class MarkdownSourceTextView: NSTextView {
             in: string as NSString
         )
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: Self.gutterFontSize, weight: .regular),
+            .font: NSFont.monospacedDigitSystemFont(ofSize: gutterFontSize, weight: .regular),
             .foregroundColor: NSColor.secondaryLabelColor
         ]
 
@@ -1604,6 +1627,15 @@ final class MarkdownSourceTextView: NSTextView {
         defer { isPasting = false }
         let sources = imageSources(fromPasteboard: NSPasteboard.general)
         guard !sources.isEmpty else {
+            let selection = selectedRange()
+            if selection.length > 0,
+               let pasted = NSPasteboard.general.string(forType: .string),
+               MarkdownEditing.clipboardURL(pasted) != nil,
+               let edit = MarkdownEditing.edit(string, selection: selection, action: .link,
+                                               clipboard: pasted) {
+                applyMarkdownEdit(edit)
+                return
+            }
             super.paste(sender)
             return
         }
@@ -1617,9 +1649,16 @@ final class MarkdownSourceTextView: NSTextView {
     /// paste as invalid for an image-only clipboard — there is no string type — so
     /// `Cmd+V` would be a no-op and `paste(_:)` above would never run.
     override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        if menuItem.action == #selector(NSText.paste(_:)),
-           !imageSources(fromPasteboard: .general).isEmpty {
-            return true
+        if menuItem.action == #selector(NSText.paste(_:)) {
+            let pasteboard = NSPasteboard.general
+            let options: [NSPasteboard.ReadingOptionKey: Any] = [
+                .urlReadingFileURLsOnly: true,
+                .urlReadingContentsConformToTypes: [UTType.image.identifier]
+            ]
+            if pasteboard.canReadObject(forClasses: [NSURL.self], options: options) ||
+               pasteboard.canReadObject(forClasses: [NSImage.self], options: nil) {
+                return true
+            }
         }
         return super.validateMenuItem(menuItem)
     }

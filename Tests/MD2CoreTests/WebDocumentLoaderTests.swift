@@ -49,6 +49,39 @@ struct WebDocumentLoaderTests {
         #expect(LocalLinkHTMLRewriter.rewrite(#"<a href="other.md">doc</a>"#, baseURL: nil) == #"<a href="other.md">doc</a>"#)
     }
 
+    @Test func thousandsOfRelativeLinksRewriteWithoutQuadraticGrowth() {
+        let directory = URL(fileURLWithPath: "/tmp/md2-links")
+        func elapsed(_ count: Int) -> Duration {
+            let html = String(repeating: #"<p><a href="chapter.md">chapter</a></p>"#, count: count)
+            let start = ContinuousClock.now
+            let result = LocalLinkHTMLRewriter.rewrite(html, baseURL: directory)
+            #expect(result.components(separatedBy: "file:///tmp/md2-links/chapter.md").count == count + 1)
+            return start.duration(to: .now)
+        }
+        _ = elapsed(20)
+        let small = elapsed(1_000)
+        let large = elapsed(4_000)
+        print("Relative links: 1000=\(small), 4000=\(large)")
+        #expect(large < .seconds(1))
+        #expect(large < small * 10)
+    }
+
+    @Test func legacyPreviewCleanupOnlyRemovesOldGeneratedNames() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("md2-preview-clean-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let old = directory.appendingPathComponent(".md2-preview-\(UUID().uuidString).html")
+        let recent = directory.appendingPathComponent(".md2-preview-\(UUID().uuidString).html")
+        let unrelated = directory.appendingPathComponent(".md2-preview-not-generated.html")
+        for url in [old, recent, unrelated] { try "content".write(to: url, atomically: true, encoding: .utf8) }
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -7200)], ofItemAtPath: old.path)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -7200)], ofItemAtPath: unrelated.path)
+        LegacyPreviewCleaner.clean(in: directory)
+        #expect(!FileManager.default.fileExists(atPath: old.path))
+        #expect(FileManager.default.fileExists(atPath: recent.path))
+        #expect(FileManager.default.fileExists(atPath: unrelated.path))
+    }
+
     @Test func memoryPageRoutingAllowsOnlyCurrentPageAndFragments() {
         let page = URL(string: "md2-doc://document/id/index.html")!
         #expect(PreviewLinkRouter.route(for: page, documentPageURL: page) == .allowInPage)

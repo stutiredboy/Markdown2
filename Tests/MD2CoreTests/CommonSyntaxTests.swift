@@ -621,6 +621,20 @@ struct CommonSyntaxTests {
         #expect(en.html.contains("@media print"))
     }
 
+    @Test func alertMarkerIsCaseInsensitiveAndFrontMatterLanguageWins() {
+        let markdown = "---\nlang: en-US\n---\n\n> [!note]\n> body"
+        let body = renderer.render(markdown, config: .init(alertLanguage: .simplifiedChinese)).body
+        #expect(body.contains("markdown-alert-note"))
+        #expect(body.contains(">Note</p>"))
+        #expect(!body.contains(">注意</p>"))
+    }
+
+    @Test func subscriptDoesNotConsumeChineseRangePunctuation() {
+        let body = renderer.render("需要3~5天，预算10~20万；H~2~O", config: enabled).body
+        #expect(body.contains("3~5天，预算10~20万"))
+        #expect(body.contains("H<sub>2</sub>O"))
+    }
+
     @Test func ordinaryQuotesAndCodeRemainLiteral() {
         let body = renderer.render("> [!UNKNOWN]\n> body\n\n> [!NOTE] inline\n\n```\n> [!NOTE]\n```").body
         #expect(!body.contains("class=\"markdown-alert"))

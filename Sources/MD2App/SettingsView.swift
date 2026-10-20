@@ -38,6 +38,7 @@ struct SettingsView: View {
                 Toggle(settings.text(.showOutlineByDefault), isOn: $settings.showsOutlineByDefault)
 
                 Toggle(settings.text(.openBlankOnLaunch), isOn: $settings.opensBlankDocumentOnLaunch)
+                Toggle(settings.text(.restoreWindowsOnLaunch), isOn: $settings.restoresWindowsOnLaunch)
 
                 lineNumberSettings
 
@@ -78,6 +79,9 @@ struct SettingsView: View {
                 Toggle(settings.text(.enablesHighlight), isOn: $settings.enablesHighlight)
                 Toggle(settings.text(.enablesSuperscript), isOn: $settings.enablesSuperscript)
                 Toggle(settings.text(.enablesSubscript), isOn: $settings.enablesSubscript)
+                Text(settings.text(.subscriptHelp))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section(settings.text(.academic)) {

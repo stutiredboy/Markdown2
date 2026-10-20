@@ -43,6 +43,7 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
         )
 
         Self.removeGuardPreferences()
+        Self.writeGuardPreferences(["MD2.RestoresWindowsOnLaunch": true])
 
         temporaryRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("SettingsWindowPresentationGUITests-\(UUID().uuidString)", isDirectory: true)
@@ -102,6 +103,18 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
             FileManager.default.fileExists(atPath: healthURL.path),
             "the probe must have reported; otherwise the assertions above are vacuous"
         )
+    }
+
+    func testSystemCloseWindowsSettingSuppressesCleanSessionRestoration() throws {
+        Self.writeGuardPreferences(["NSQuitAlwaysKeepsWindows": false])
+        let snapshot = DocumentRecoverySnapshot(id: UUID(), text: "# saved copy", fileURL: fixtureURL,
+            identity: DocumentFileIdentity(url: fixtureURL), format: MarkdownFileFormat(),
+            fingerprint: DocumentFileFingerprint.current(at: fixtureURL), isDirty: false, windowFrame: nil)
+        let recordURL = try seedSnapshot(snapshot)
+        _ = try launchApp(arguments: [])
+        let record = try waitForRecord(stage: "didFinishLaunching")
+        XCTAssertTrue(record.windows.filter { $0.className == "ModeShortcutWindow" }.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: recordURL.path))
     }
 
     func testLaunchWithDocumentArgumentPresentsOnlyTheDocument() throws {
@@ -419,8 +432,10 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
             includingPropertiesForKeys: nil).filter { $0.pathExtension == "json" }.map {
                 try JSONDecoder().decode(DocumentRecoverySnapshot.self, from: Data(contentsOf: $0))
             }
-        XCTAssertEqual(Set(snapshots.map(\.text)), ["draft A", "draft B"])
-        XCTAssertEqual(snapshots.filter { $0.fileURL != nil }.count, 1)
+        XCTAssertEqual(try String(contentsOf: fixtureURL, encoding: .utf8), "draft A")
+        XCTAssertEqual(snapshots.filter { $0.fileURL != nil && !$0.isDirty && $0.text.isEmpty }.count, 1,
+                       "the saved copy stays in its file, without a second plaintext recovery copy")
+        XCTAssertEqual(snapshots.filter { $0.fileURL == nil && $0.isDirty }.map(\.text), ["draft B"])
     }
 
     private func launchApp(
@@ -518,8 +533,13 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
+        #if DEBUG
+        let configuration = "debug"
+        #else
+        let configuration = "release"
+        #endif
         let executable = repositoryRoot
-            .appendingPathComponent(".build/debug/Markdown2")
+            .appendingPathComponent(".build/\(configuration)/Markdown2")
             .resolvingSymlinksInPath()
         guard FileManager.default.isExecutableFile(atPath: executable.path) else {
             throw GuardFailure(
@@ -843,6 +863,12 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
             .appendingPathComponent("Library/Preferences/\(guardBundleIdentifier).plist")
         try? FileManager.default.removeItem(at: plist)
         try? FileManager.default.removeItem(at: recoveryDirectory)
+    }
+
+    private static func writeGuardPreferences(_ values: [String: Any]) {
+        let defaults = UserDefaults(suiteName: guardBundleIdentifier)!
+        defaults.setPersistentDomain(values, forName: guardBundleIdentifier)
+        defaults.synchronize()
     }
 
     private static var recoveryDirectory: URL {

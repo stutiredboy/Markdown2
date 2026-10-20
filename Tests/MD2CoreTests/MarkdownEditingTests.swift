@@ -8,8 +8,11 @@ struct MarkdownEditingTests {
         let action: MarkdownEditing.Action
         let after: String
         var clipboard: String? = nil
-        init(_ before: String, _ action: MarkdownEditing.Action, _ after: String, clipboard: String? = nil) {
-            self.before = before; self.action = action; self.after = after; self.clipboard = clipboard
+        var trackedCloser = false
+        init(_ before: String, _ action: MarkdownEditing.Action, _ after: String,
+             clipboard: String? = nil, trackedCloser: Bool = false) {
+            self.before = before; self.action = action; self.after = after
+            self.clipboard = clipboard; self.trackedCloser = trackedCloser
         }
     }
 
@@ -19,6 +22,8 @@ struct MarkdownEditingTests {
         Example("+ a¦", .newline, "+ a\n+ ¦"),
         Example("9. a¦", .newline, "9. a\n10. ¦"),
         Example("99) a¦", .newline, "99) a\n100) ¦"),
+        Example("1. one¦\n2. two\n3. three", .newline, "1. one\n2. ¦\n3. two\n4. three"),
+        Example("1. one¦\n  - nested\n2. two", .newline, "1. one\n2. ¦\n  - nested\n3. two"),
         Example("- [x] done¦", .newline, "- [x] done\n- [ ] ¦"),
         Example("+ [X] done¦", .newline, "+ [X] done\n+ [ ] ¦"),
         Example("1. [ ] task¦", .newline, "1. [ ] task\n2. [ ] ¦"),
@@ -109,22 +114,23 @@ struct MarkdownEditingTests {
         Example("¦", .type("("), "(¦)"),
         Example("¦", .type("{"), "{¦}"),
         Example("¦", .type("'"), "'¦'"),
-        Example("\"¦\"", .type("\""), "\"\"¦"),
-        Example("`¦`", .deleteBackward, "¦"),
+        Example("\"¦\"", .type("\""), "\"\"¦", trackedCloser: true),
+        Example("`¦`", .deleteBackward, "¦", trackedCloser: true),
         Example("«中🙂»", .type("["), "[«中🙂»]"),
-        Example("(¦)", .type(")"), "()¦"),
-        Example("(¦)", .deleteBackward, "¦"),
+        Example("(¦)", .type(")"), "()¦", trackedCloser: true),
+        Example("(¦)", .deleteBackward, "¦", trackedCloser: true),
         Example("¦", .type("\""), "\"¦\""),
         Example("¦", .type("`"), "`¦`"),
-        Example("`¦`", .type("`"), "``¦"),
+        Example("`¦`", .type("`"), "``¦", trackedCloser: true),
         Example("¦", .type("（"), "（¦）"),
-        Example("「¦」", .deleteBackward, "¦"),
-        Example("《¦》", .type("》"), "《》¦")
+        Example("「¦」", .deleteBackward, "¦", trackedCloser: true),
+        Example("《¦》", .type("》"), "《》¦", trackedCloser: true)
     ])
     func editing(_ example: Example) throws {
         let before = fixture(example.before), after = fixture(example.after)
+        let tracked = example.trackedCloser ? Set([before.selection.location]) : []
         let edit = try #require(MarkdownEditing.edit(before.text, selection: before.selection,
-            action: example.action, clipboard: example.clipboard))
+            action: example.action, clipboard: example.clipboard, autoClosingPositions: tracked))
         let result = (before.text as NSString).replacingCharacters(in: edit.range, with: edit.replacement)
         #expect(result == after.text)
         #expect(edit.selection == after.selection)
@@ -137,6 +143,8 @@ struct MarkdownEditingTests {
         ("\\¦", .type("[")),
         ("``¦", .type("`")),
         ("a¦", .deleteBackward),
+        ("foo(¦)", .deleteBackward),
+        ("foo(¦)", .type(")")),
         ("word¦", .indent),
         ("```\n- code¦", .indent),
         ("¦", .type("pasted text"))
@@ -165,11 +173,33 @@ struct MarkdownEditingTests {
     }
 
     @Test func returnOnALargeDocumentHasBoundedCost() throws {
-        let text = String(repeating: "A paragraph with 中文 and **emphasis**.\n", count: 10_000) + "- item"
+        let text = String(repeating: "A paragraph with 中文 and **emphasis**.\n", count: 28_000) + "- item"
         let start = ContinuousClock.now
         let edit = try #require(MarkdownEditing.edit(text, selection: NSRange(location: text.utf16.count, length: 0), action: .newline))
         #expect(edit.replacement == "\n- ")
-        #expect(start.duration(to: .now) < .seconds(1))
+        let elapsed = start.duration(to: .now)
+        print("Return at EOF, \(text.utf8.count) bytes: \(elapsed)")
+        #expect(elapsed < .milliseconds(100))
+
+        let tabStart = ContinuousClock.now
+        let tab = try #require(MarkdownEditing.edit(text,
+            selection: NSRange(location: text.utf16.count, length: 0), action: .indent))
+        let tabElapsed = tabStart.duration(to: .now)
+        #expect(!tab.replacement.isEmpty)
+        print("Tab at EOF, \(text.utf8.count) bytes: \(tabElapsed)")
+        #expect(tabElapsed < .milliseconds(100))
+    }
+
+    @Test func anEarlierFenceDoesNotSlowReturnAtDocumentEnd() throws {
+        let text = "```swift\nlet x = 1\n```\n" +
+            String(repeating: "An ordinary paragraph.\n", count: 40_000) + "- item"
+        let start = ContinuousClock.now
+        let edit = try #require(MarkdownEditing.edit(text,
+            selection: NSRange(location: text.utf16.count, length: 0), action: .newline))
+        let elapsed = start.duration(to: .now)
+        print("Return after earlier fence, \(text.utf8.count) bytes: \(elapsed)")
+        #expect(edit.replacement == "\n- ")
+        #expect(elapsed < .milliseconds(100))
     }
 
     private func fixture(_ marked: String) -> (text: String, selection: NSRange) {

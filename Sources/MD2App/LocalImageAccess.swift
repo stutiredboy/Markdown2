@@ -78,25 +78,30 @@ struct LocalImageHTMLRewriter {
         let matches = regex.matches(in: html, range: nsRange)
         guard !matches.isEmpty else { return (html, [:]) }
 
-        var rewritten = html
+        let sourceHTML = html as NSString
+        var rewritten = String()
+        rewritten.reserveCapacity(html.utf8.count)
         var allowedImages: [String: URL] = [:]
+        var cursor = 0
 
-        for match in matches.reversed() {
-            guard let sourceRange = Range(match.range(at: 1), in: rewritten),
+        for match in matches {
+            let sourceRange = match.range(at: 1)
+            guard sourceRange.location != NSNotFound else { continue }
+            rewritten.append(sourceHTML.substring(with: NSRange(location: cursor, length: sourceRange.location - cursor)))
+            if
                   let imageURL = localImageURL(
-                    fromHTMLSource: String(rewritten[sourceRange]),
+                    fromHTMLSource: sourceHTML.substring(with: sourceRange),
                     baseURL: baseURL
-                  ) else {
-                continue
+                  ) {
+                let token = UUID().uuidString
+                allowedImages[token] = imageURL
+                rewritten.append("\(LocalImageSchemeHandler.scheme)://image/\(token)")
+            } else {
+                rewritten.append(sourceHTML.substring(with: sourceRange))
             }
-
-            let token = UUID().uuidString
-            allowedImages[token] = imageURL
-            rewritten.replaceSubrange(
-                sourceRange,
-                with: "\(LocalImageSchemeHandler.scheme)://image/\(token)"
-            )
+            cursor = NSMaxRange(sourceRange)
         }
+        rewritten.append(sourceHTML.substring(from: cursor))
 
         return (rewritten, allowedImages)
     }

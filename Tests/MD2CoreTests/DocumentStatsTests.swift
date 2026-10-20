@@ -2,6 +2,11 @@ import Testing
 @testable import MD2Core
 
 struct DocumentStatsTests {
+    @Test func readingTimeUsesChineseCharactersAtFourHundredPerMinute() {
+        #expect(DocumentStats(plainText: String(repeating: "中", count: 400)).readingMinutes == 1)
+        #expect(DocumentStats(plainText: String(repeating: "中", count: 401)).readingMinutes == 2)
+    }
+
     @Test func countsEachHanCharacterIncludingMixedAndSupplementaryText() {
         #expect(DocumentStats(markdown: String(repeating: "中文正文统计", count: 11) + "六十九").words == 69)
         #expect(DocumentStats(plainText: "中文English测试 world 123，𠀀。👩‍💻").words == 8)

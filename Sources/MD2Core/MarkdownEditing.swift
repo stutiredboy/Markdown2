@@ -13,10 +13,12 @@ public enum MarkdownEditing {
         public let range: NSRange
         public let replacement: String
         public let selection: NSRange
+        public let autoClosingPosition: Int?
     }
 
     public static func edit(
-        _ text: String, selection: NSRange, action: Action, clipboard: String? = nil
+        _ text: String, selection: NSRange, action: Action, clipboard: String? = nil,
+        autoClosingPositions: Set<Int> = []
     ) -> Edit? {
         // Ordinary letters take the native path without walking a large source
         // string to translate its selection into Swift indices.
@@ -24,8 +26,7 @@ public enum MarkdownEditing {
            input.utf16.count != 1 || (pairs[input] == nil && !pairs.values.contains(input)) { return nil }
         let source = text as NSString
         guard selection.location != NSNotFound, selection.location >= 0, selection.length >= 0,
-              selection.location <= source.length, selection.length <= source.length - selection.location,
-              Range(selection, in: text) != nil else { return nil }
+              selection.location <= source.length, selection.length <= source.length - selection.location else { return nil }
         for boundary in [selection.location, NSMaxRange(selection)] where boundary > 0 && boundary < source.length {
             guard !UTF16.isLeadSurrogate(source.character(at: boundary - 1)) ||
                     !UTF16.isTrailSurrogate(source.character(at: boundary)) else { return nil }
@@ -41,19 +42,23 @@ public enum MarkdownEditing {
         case .heading(let level): return heading(source, selection, level: level)
         case .codeBlock: return block(source, selection, table: false)
         case .table: return block(source, selection, table: true)
-        case .type(let input): return pair(source, selection, input: input)
+        case .type(let input): return pair(source, selection, input: input,
+                                           autoClosingPositions: autoClosingPositions)
         case .deleteBackward:
             guard selection.length == 0, selection.location > 0, selection.location < source.length else { return nil }
             let left = source.substring(with: NSRange(location: selection.location - 1, length: 1))
             let right = source.substring(with: NSRange(location: selection.location, length: 1))
-            guard pairs[left] == right, !isEscaped(source, at: selection.location - 1) else { return nil }
+            guard pairs[left] == right, autoClosingPositions.contains(selection.location),
+                  !isEscaped(source, at: selection.location - 1) else { return nil }
             return replacing(NSRange(location: selection.location - 1, length: 2), with: "")
         }
     }
 
-    private static func replacing(_ range: NSRange, with replacement: String, selection: NSRange? = nil) -> Edit {
+    private static func replacing(_ range: NSRange, with replacement: String, selection: NSRange? = nil,
+                                  autoClosingPosition: Int? = nil) -> Edit {
         Edit(range: range, replacement: replacement,
-             selection: selection ?? NSRange(location: range.location + replacement.utf16.count, length: 0))
+             selection: selection ?? NSRange(location: range.location + replacement.utf16.count, length: 0),
+             autoClosingPosition: autoClosingPosition)
     }
 
     private struct Line {
@@ -70,20 +75,6 @@ public enum MarkdownEditing {
         return Line(range: NSRange(location: start, length: end - start),
                     body: source.substring(with: NSRange(location: start, length: contentsEnd - start)),
                     ending: source.substring(with: NSRange(location: contentsEnd, length: end - contentsEnd)))
-    }
-
-    private static func lines(_ source: NSString, through location: Int) -> [Line] {
-        var result: [Line] = [], start = 0
-        while start <= location {
-            let current = line(source, at: start)
-            // NSString reports the preceding line at EOF without a final
-            // newline. Do not count that line twice as its own list parent.
-            guard current.range.location == start else { break }
-            result.append(current)
-            guard NSMaxRange(current.range) > start else { break }
-            start = NSMaxRange(current.range)
-        }
-        return result
     }
 
     private struct Marker {
@@ -161,21 +152,23 @@ public enum MarkdownEditing {
         let current = line(source, at: selection.location)
         let prefix = current.prefix
         let beforeCaret = (current.body as NSString).substring(to: min(selection.location - current.range.location, current.body.utf16.count))
-        let history = lines(source, through: selection.location)
-        let ending = current.ending.isEmpty ? (history.last(where: { !$0.ending.isEmpty })?.ending ?? "\n") : current.ending
-        if let code = codeContext(history) {
+        let ending = current.ending.isEmpty && current.range.location > 0
+            ? line(source, at: current.range.location - 1).ending : current.ending
+        let newline = ending.isEmpty ? "\n" : ending
+        let parent = enclosingList(source, current: current)
+        if let code = codeContext(source, through: selection.location, current: current, parent: parent) {
             if code.isOpeningFence {
-                return replacing(selection, with: ending + prefix.continued(soft: true))
+                return replacing(selection, with: newline + prefix.continued(soft: true))
             }
             // Quotes are containers, not code indentation. Retain them, but
             // never interpret a literal '- ' or '1. ' inside a fence as a list.
             let quoteEnd = prefix.markers.filter(\.quote).prefix(code.quotes).last.map { NSMaxRange($0.range) } ?? 0
             let head = (beforeCaret as NSString).substring(to: min(quoteEnd, beforeCaret.utf16.count))
             let rest = String(beforeCaret.dropFirst(head.count))
-            return replacing(selection, with: ending + head + rest.prefix { $0 == " " || $0 == "\t" })
+            return replacing(selection, with: newline + head + rest.prefix { $0 == " " || $0 == "\t" })
         }
         guard selection.location - current.range.location >= prefix.end else {
-            return replacing(selection, with: ending)
+            return replacing(selection, with: newline)
         }
         if !soft, selection.length == 0, let last = prefix.markers.last,
            (current.body as NSString).substring(from: prefix.end).trimmingCharacters(in: .whitespaces).isEmpty {
@@ -183,24 +176,76 @@ public enum MarkdownEditing {
             return replacing(NSRange(location: current.range.location + last.range.location,
                                      length: current.body.utf16.count - last.range.location), with: "")
         }
-        if !soft, prefix.list == nil, let parent = enclosingList(history) {
-            return replacing(selection, with: ending + parent.prefix.continued(soft: false))
+        if !soft, prefix.list == nil, let parent {
+            return replacing(selection, with: newline + parent.prefix.continued(soft: false))
         }
-        return replacing(selection, with: ending + prefix.continued(soft: soft))
+        let insertion = newline + prefix.continued(soft: soft)
+        if !soft, selection.length == 0,
+           let renumbered = renumberedNewline(source, current: current, selection: selection,
+                                             prefix: prefix, insertion: insertion) {
+            return renumbered
+        }
+        return replacing(selection, with: insertion)
+    }
+
+    private static func renumberedNewline(_ source: NSString, current: Line, selection: NSRange,
+                                           prefix: Prefix, insertion: String) -> Edit? {
+        guard let marker = prefix.list else { return nil }
+        let expression = try! NSRegularExpression(pattern: #"^([0-9]{1,9})([.)])"#)
+        guard let opening = expression.firstMatch(in: marker.next,
+                                                   range: NSRange(location: 0, length: marker.next.utf16.count)),
+              let numberRange = Range(opening.range(at: 1), in: marker.next),
+              let number = Int(marker.next[numberRange]),
+              let punctuationRange = Range(opening.range(at: 2), in: marker.next) else { return nil }
+        let punctuation = String(marker.next[punctuationRange])
+        var nextNumber = number + 1
+        var position = NSMaxRange(current.range)
+        var changes: [Change] = []
+        while position < source.length {
+            let candidate = line(source, at: position)
+            guard NSMaxRange(candidate.range) > position else { break }
+            position = NSMaxRange(candidate.range)
+            if candidate.body.trimmingCharacters(in: .whitespaces).isEmpty { continue }
+            let other = candidate.prefix
+            guard other.containerQuotes.count == prefix.containerQuotes.count else { break }
+            if other.indent > prefix.indent { continue }
+            guard other.indent == prefix.indent, let sibling = other.list else { break }
+            let raw = (candidate.body as NSString).substring(with: sibling.range)
+            guard let match = expression.firstMatch(in: raw,
+                                                    range: NSRange(location: 0, length: raw.utf16.count)),
+                  let delimiter = Range(match.range(at: 2), in: raw),
+                  raw[delimiter] == punctuation else { break }
+            let range = NSRange(location: candidate.range.location + sibling.range.location + match.range(at: 1).location,
+                                length: match.range(at: 1).length)
+            changes.append(Change(range: range, text: String(nextNumber)))
+            nextNumber += 1
+        }
+        guard let last = changes.last else { return nil }
+        let editRange = NSRange(location: selection.location,
+                                length: NSMaxRange(last.range) - selection.location)
+        let tail = NSMutableString(string: source.substring(with: editRange))
+        for change in changes.reversed() {
+            tail.replaceCharacters(in: NSRange(location: change.range.location - editRange.location,
+                                               length: change.range.length), with: change.text)
+        }
+        return replacing(editRange, with: insertion + (tail as String),
+                         selection: NSRange(location: selection.location + insertion.utf16.count, length: 0))
     }
 
     /// A content-column continuation belongs to the nearest enclosing item.
     /// This also keeps Return after a Shift-Return in that item's list.
-    private static func enclosingList(_ history: [Line]) -> Line? {
-        guard let current = history.last else { return nil }
+    private static func enclosingList(_ source: NSString, current: Line) -> Line? {
         let prefix = current.prefix
-        for candidate in history.dropLast().reversed() {
+        var position = current.range.location
+        while position > 0 {
+            let candidate = line(source, at: position - 1)
+            position = candidate.range.location
             if candidate.body.trimmingCharacters(in: .whitespaces).isEmpty { continue }
             let other = candidate.prefix
             guard other.containerQuotes.count == prefix.containerQuotes.count else { break }
             if let marker = other.list, other.indent < prefix.indent,
                other.indent + marker.continuation.count <= prefix.indent { return candidate }
-            if other.indent < prefix.indent { break }
+            if other.indent < prefix.indent || (other.indent == 0 && prefix.indent == 0) { break }
         }
         return nil
     }
@@ -212,12 +257,34 @@ public enum MarkdownEditing {
         var isOpeningFence = false
     }
 
-    private static func codeContext(_ history: [Line]) -> CodeContext? {
+    private static func codeContext(_ source: NSString, through location: Int, current: Line,
+                                    parent: Line?) -> CodeContext? {
         var fence: (character: Character, count: Int, quotes: Int, indent: Int, line: Int)?
-        for current in history {
-            let prefix = current.prefix
+        var position = 0
+        let limit = min(source.length, NSMaxRange(current.range))
+        while position <= location {
+            if fence == nil {
+                let remaining = NSRange(location: position, length: max(0, limit - position))
+                let backtick = source.range(of: "```", options: .literal, range: remaining).location
+                let tilde = source.range(of: "~~~", options: .literal, range: remaining).location
+                let candidate = [backtick, tilde].filter { $0 != NSNotFound }.min()
+                guard let candidate else { break }
+                var candidateStart = 0, candidateEnd = 0, candidateContentsEnd = 0
+                source.getLineStart(&candidateStart, end: &candidateEnd, contentsEnd: &candidateContentsEnd,
+                                    for: NSRange(location: candidate, length: 0))
+                position = candidateStart
+            }
+            var start = 0, end = 0, contentsEnd = 0
+            source.getLineStart(&start, end: &end, contentsEnd: &contentsEnd,
+                                for: NSRange(location: position, length: 0))
+            guard start == position else { break }
+            let bodyRange = NSRange(location: start, length: contentsEnd - start)
+            let scanned = Line(range: NSRange(location: start, length: end - start),
+                               body: source.substring(with: bodyRange),
+                               ending: "")
+            let prefix = scanned.prefix
             let quoteEnd = prefix.markers.filter(\.quote).prefix(fence?.quotes ?? prefix.quoteCount).last.map { NSMaxRange($0.range) } ?? 0
-            let unquoted = (current.body as NSString).substring(from: quoteEnd)
+            let unquoted = (scanned.body as NSString).substring(from: quoteEnd)
             if let active = fence {
                 if prefix.quoteCount < active.quotes || (!unquoted.trimmingCharacters(in: .whitespaces).isEmpty &&
                     MarkdownIndentation.width(unquoted) < active.indent) {
@@ -228,29 +295,33 @@ public enum MarkdownEditing {
                     if run.count >= active.count, trimmed.dropFirst(run.count).trimmingCharacters(in: .whitespaces).isEmpty {
                         fence = nil
                     }
+                    guard end > position else { break }
+                    position = end
                     continue
                 }
             }
-            let content = (current.body as NSString).substring(from: prefix.end)
+            let content = (scanned.body as NSString).substring(from: prefix.end)
             if let first = content.first, first == "`" || first == "~" {
                 let count = content.prefix { $0 == first }.count
                 if count >= 3, first != "`" || !content.dropFirst(count).contains("`") {
                     let required = prefix.list.flatMap { marker -> Int? in
                         guard marker.range.location >= quoteEnd else { return nil }
-                        return MarkdownIndentation.width((current.body as NSString).substring(with:
+                        return MarkdownIndentation.width((scanned.body as NSString).substring(with:
                             NSRange(location: quoteEnd, length: max(0, marker.range.location - quoteEnd))))
                             + marker.continuation.count
                     } ?? 0
-                    fence = (first, count, prefix.quoteCount, required, current.range.location)
+                    fence = (first, count, prefix.quoteCount, required, scanned.range.location)
                 }
             }
+            guard end > position else { break }
+            position = end
         }
         if let fence {
-            return CodeContext(quotes: fence.quotes, isOpeningFence: fence.line == history.last?.range.location)
+            return CodeContext(quotes: fence.quotes, isOpeningFence: fence.line == current.range.location)
         }
-        guard let current = history.last, current.prefix.indent >= 4 else { return nil }
+        guard current.prefix.indent >= 4 else { return nil }
         // Four-space code outside a list; within a list, use its content column.
-        if let parent = enclosingList(history), let marker = parent.prefix.list {
+        if let parent, let marker = parent.prefix.list {
             let column = parent.prefix.indent + marker.continuation.count
             return current.prefix.indent >= column + 4 ? CodeContext(quotes: current.prefix.quoteCount) : nil
         }
@@ -283,19 +354,35 @@ public enum MarkdownEditing {
     }
 
     private static func selectedLines(_ source: NSString, _ selection: NSRange) -> [Line] {
-        if selection.length == 0 { return [line(source, at: selection.location)] }
+        var result = [line(source, at: selection.location)]
+        guard selection.length > 0 else { return result }
         let last = NSMaxRange(selection) - 1
-        return lines(source, through: last).filter { NSMaxRange($0.range) > selection.location || $0.range.location == selection.location }
+        while let previous = result.last, NSMaxRange(previous.range) <= last,
+              NSMaxRange(previous.range) < source.length {
+            result.append(line(source, at: NSMaxRange(previous.range)))
+        }
+        return result
     }
 
     private static func indent(_ source: NSString, _ selection: NSRange, outdent: Bool) -> Edit? {
         var selected = selectedLines(source, selection)
-        guard let first = selected.first, let marker = first.prefix.list,
-              codeContext(lines(source, through: first.range.location)) == nil else { return nil }
+        guard let first = selected.first, let marker = first.prefix.list else { return nil }
+        let parent = enclosingList(source, current: first)
+        guard codeContext(source, through: first.range.location, current: first, parent: parent) == nil else { return nil }
         let prefix = first.prefix
-        let previous = lines(source, through: first.range.location).dropLast().reversed().first {
-            !$0.body.trimmingCharacters(in: .whitespaces).isEmpty && $0.prefix.containerQuotes.count == prefix.containerQuotes.count &&
-                $0.prefix.indent <= prefix.indent && (!outdent || $0.prefix.indent < prefix.indent)
+        var previous: Line?
+        var position = first.range.location
+        while position > 0 {
+            let candidate = line(source, at: position - 1)
+            position = candidate.range.location
+            if candidate.body.trimmingCharacters(in: .whitespaces).isEmpty { continue }
+            let other = candidate.prefix
+            if other.containerQuotes.count != prefix.containerQuotes.count { break }
+            if other.indent <= prefix.indent && (!outdent || other.indent < prefix.indent) {
+                previous = candidate
+                break
+            }
+            if other.indent < prefix.indent { break }
         }
         let target: Int
         if outdent {
@@ -396,7 +483,7 @@ public enum MarkdownEditing {
         return nil
     }
 
-    private static func clipboardURL(_ string: String?) -> String? {
+    public static func clipboardURL(_ string: String?) -> String? {
         guard let value = string?.trimmingCharacters(in: .whitespacesAndNewlines),
               !value.isEmpty, !value.contains(where: \.isWhitespace),
               let url = URLComponents(string: value), let scheme = url.scheme?.lowercased(),
@@ -444,10 +531,12 @@ public enum MarkdownEditing {
         return count % 2 == 1
     }
 
-    private static func pair(_ source: NSString, _ selection: NSRange, input: String) -> Edit? {
+    private static func pair(_ source: NSString, _ selection: NSRange, input: String,
+                             autoClosingPositions: Set<Int>) -> Edit? {
         guard input.utf16.count == 1, pairs[input] != nil || pairs.values.contains(input),
               !isEscaped(source, at: selection.location) else { return nil }
         if selection.length == 0, selection.location < source.length, pairs.values.contains(input),
+           autoClosingPositions.contains(selection.location),
            source.substring(with: NSRange(location: selection.location, length: 1)) == input {
             return replacing(selection, with: "", selection: NSRange(location: selection.location + 1, length: 0))
         }
@@ -459,7 +548,8 @@ public enum MarkdownEditing {
             if input == closing, before?.isLetter == true || before?.isNumber == true || before == "`" { return nil }
         }
         return replacing(selection, with: input + source.substring(with: selection) + closing,
-                         selection: NSRange(location: selection.location + input.utf16.count, length: selection.length))
+                         selection: NSRange(location: selection.location + input.utf16.count, length: selection.length),
+                         autoClosingPosition: selection.location + input.utf16.count + selection.length)
     }
 }
 

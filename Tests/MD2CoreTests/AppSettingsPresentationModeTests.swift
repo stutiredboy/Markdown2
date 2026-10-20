@@ -32,6 +32,17 @@ struct AppSettingsPresentationModeTests {
         #expect(settings.presentationMode(isFileBacked: false) == .write)
     }
 
+    @Test func windowRestorationDefaultsToSystemAndCanBeOverridden() {
+        let suiteName = "AppSettingsRestoreTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(false, forKey: "NSQuitAlwaysKeepsWindows")
+        let settings = AppSettings(defaults: defaults)
+        #expect(!settings.restoresWindowsOnLaunch)
+        settings.restoresWindowsOnLaunch = true
+        #expect(AppSettings(defaults: defaults).restoresWindowsOnLaunch)
+    }
+
     @Test func newDocumentModeDoesNotAffectOpenedFileMode() {
         let settings = makeSettings()
         settings.newDocumentMode = .read

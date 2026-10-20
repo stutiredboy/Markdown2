@@ -70,7 +70,7 @@ final class ReadingImprovementsGUITests: XCTestCase {
         host.settings.zoomIn()
         host.spin(0.4)
         XCTAssertEqual(try evaluate("getComputedStyle(document.body).fontSize", in: webView) as? String, "22px")
-        XCTAssertEqual(try evaluate("getComputedStyle(document.querySelector('main')).maxWidth", in: webView) as? String, "640px")
+        XCTAssertEqual(try evaluate("getComputedStyle(document.querySelector('main')).maxWidth", in: webView) as? String, "880px")
         XCTAssertTrue((try evaluate("getComputedStyle(document.body).fontFamily", in: webView) as? String)?.contains("serif") == true)
         _ = try evaluate("window.getSelection().removeAllRanges()", in: webView)
         host.spin(0.25)

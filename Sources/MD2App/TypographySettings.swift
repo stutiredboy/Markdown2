@@ -41,9 +41,9 @@ enum ReadingWidth: String, Codable, CaseIterable, Identifiable, Sendable {
     }
     var css: String {
         switch self {
-        case .narrow: "640px"
-        case .comfortable: "800px"
-        case .wide: "1100px"
+        case .narrow: "40em"
+        case .comfortable: "50em"
+        case .wide: "68.75em"
         case .full: "none"
         }
     }

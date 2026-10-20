@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Testing
 @testable import MD2App
 
@@ -174,6 +175,82 @@ struct DocumentRecoveryTests {
         #expect(restored.text == "latest")
         #expect(!restored.isDirty)
         restored.closeDocument(discardRecovery: true)
+    }
+
+    @Test func cleanRecoveryRecordOmitsDocumentText() throws {
+        let (dir, repository) = try fixture()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("clean.md")
+        try String(repeating: "confidential notes\n", count: 100).write(to: url, atomically: true, encoding: .utf8)
+        let store = DocumentStore(recoveryRepository: repository)
+        store.open(url)
+        #expect(store.persistRecoveryNow())
+        let record = try #require(try FileManager.default.contentsOfDirectory(at: repository.directory,
+                                                                               includingPropertiesForKeys: nil).first)
+        let json = try String(contentsOf: record, encoding: .utf8)
+        #expect(!json.contains("confidential notes"))
+        #expect(!json.contains("\"text\""))
+        store.closeDocument(discardRecovery: true)
+    }
+
+    @Test func interruptedRestorationMarkerSurvivesUntilFinished() throws {
+        let (dir, repository) = try fixture()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        #expect(!repository.restorationWasInterrupted)
+        try repository.beginRestoration()
+        #expect(repository.restorationWasInterrupted)
+        #expect(try repository.load().isEmpty)
+        try repository.finishRestoration()
+        #expect(!repository.restorationWasInterrupted)
+    }
+
+    @Test func saveKeepsCreationDateAndExtendedAttributes() throws {
+        let (dir, repository) = try fixture()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("tagged.md")
+        try "before".write(to: url, atomically: true, encoding: .utf8)
+        let creation = Date(timeIntervalSince1970: 1_600_000_000)
+        try FileManager.default.setAttributes([.creationDate: creation], ofItemAtPath: url.path)
+        let name = "com.example.markdown2.test-tag"
+        let value = Array("blue".utf8)
+        let didSet = value.withUnsafeBytes { bytes in
+            setxattr(url.path, name, bytes.baseAddress, value.count, 0, 0)
+        }
+        #expect(didSet == 0)
+        let store = DocumentStore(recoveryRepository: repository)
+        store.open(url)
+        store.text = "after"
+        #expect(store.save())
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        let savedCreation = try #require(attributes[.creationDate] as? Date)
+        #expect(abs(savedCreation.timeIntervalSince(creation)) < 1)
+        var buffer = [UInt8](repeating: 0, count: 16)
+        let capacity = buffer.count
+        let length = buffer.withUnsafeMutableBytes { bytes in
+            getxattr(url.path, name, bytes.baseAddress, capacity, 0, 0)
+        }
+        #expect(length == value.count)
+        #expect(Array(buffer.prefix(value.count)) == value)
+        store.closeDocument(discardRecovery: true)
+    }
+
+    @Test func saveKeepsHardLinkedNamesTogether() throws {
+        let (dir, repository) = try fixture()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("original.md")
+        let alias = dir.appendingPathComponent("alias.md")
+        try "before".write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.linkItem(at: url, to: alias)
+        let store = DocumentStore(recoveryRepository: repository)
+        store.open(url)
+        store.text = "after"
+        #expect(store.save())
+        #expect(try String(contentsOf: alias, encoding: .utf8) == "after")
+        var originalInfo = stat(), aliasInfo = stat()
+        #expect(stat(url.path, &originalInfo) == 0)
+        #expect(stat(alias.path, &aliasInfo) == 0)
+        #expect(originalInfo.st_ino == aliasInfo.st_ino)
+        store.closeDocument(discardRecovery: true)
     }
 
     @Test func deletionNeverAutosavesBackToOldPath() async throws {

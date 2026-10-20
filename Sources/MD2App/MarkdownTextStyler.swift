@@ -197,8 +197,13 @@ enum MarkdownTextStyler {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 4 * scale
         paragraph.paragraphSpacing = 7 * scale
+        var autoClosings: [NSRange] = []
+        storage.enumerateAttribute(.markdownAutoClosing, in: range) { value, span, _ in
+            if value != nil { autoClosings.append(span) }
+        }
         storage.beginEditing()
         storage.setAttributes([.font: font, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph], range: range)
+        for span in autoClosings { storage.addAttribute(.markdownAutoClosing, value: true, range: span) }
         for span in plan.spans {
             let clipped = NSIntersectionRange(range, span.range)
             guard clipped.length > 0 else { continue }

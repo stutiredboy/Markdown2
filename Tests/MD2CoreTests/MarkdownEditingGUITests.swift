@@ -79,6 +79,54 @@ final class MarkdownEditingGUITests: XCTestCase {
         editor.paste(nil)
         harness.spin()
         XCTAssertEqual(harness.store.text, "()[", "a one-character paste must not create a pair")
+
+        let linkHarness = try EditingWindow("selected label")
+        defer { linkHarness.close() }
+        pasteboard.clearContents()
+        pasteboard.setString("https://example.com", forType: .string)
+        linkHarness.editor.setSelectedRange(NSRange(location: 0, length: linkHarness.editor.string.utf16.count))
+        linkHarness.editor.paste(nil)
+        linkHarness.spin()
+        XCTAssertEqual(linkHarness.store.text, "[selected label](https://example.com)")
+    }
+
+    @MainActor
+    func testOnlyTrackedClosersSkipOrDeleteAsPairs() throws {
+        let literal = try EditingWindow("foo()")
+        defer { literal.close() }
+        literal.editor.setSelectedRange(NSRange(location: 4, length: 0))
+        literal.editor.doCommand(by: #selector(NSResponder.deleteBackward(_:)))
+        literal.spin()
+        XCTAssertEqual(literal.store.text, "foo)")
+        literal.editor.setSelectedRange(NSRange(location: 3, length: 0))
+        literal.editor.insertText(")", replacementRange: NSRange(location: NSNotFound, length: 0))
+        literal.spin()
+        XCTAssertEqual(literal.store.text, "foo))")
+
+        let automatic = try EditingWindow("")
+        defer { automatic.close() }
+        automatic.editor.insertText("(", replacementRange: NSRange(location: NSNotFound, length: 0))
+        automatic.editor.insertText("x", replacementRange: NSRange(location: NSNotFound, length: 0))
+        automatic.spin()
+        XCTAssertEqual(automatic.store.text, "(x)")
+        automatic.editor.insertText(")", replacementRange: NSRange(location: NSNotFound, length: 0))
+        automatic.spin()
+        XCTAssertEqual(automatic.store.text, "(x)")
+        XCTAssertEqual(automatic.editor.selectedRange().location, 3)
+    }
+
+    @MainActor
+    func testOrderedListRenumberingUndoesWithTheInsertedItem() throws {
+        let original = "1. first\n2. second\n3. third"
+        let harness = try EditingWindow(original)
+        defer { harness.close() }
+        harness.editor.setSelectedRange(NSRange(location: "1. first".utf16.count, length: 0))
+        harness.editor.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        harness.spin()
+        XCTAssertEqual(harness.store.text, "1. first\n2. \n3. second\n4. third")
+        harness.store.undoManager.undo()
+        harness.spin()
+        XCTAssertEqual(harness.store.text, original)
     }
 
     @MainActor
@@ -107,7 +155,7 @@ final class MarkdownEditingGUITests: XCTestCase {
     }
 
     @MainActor
-    func testFormattingIsNotReplayedAfterModeSwitchOrSentToFindFields() throws {
+    func testFormattingFromReadModeSwitchesToEditorWithoutReplayingInFindFields() throws {
         let harness = try EditingWindow("text")
         defer { harness.close() }
         let editor = harness.editor
@@ -118,17 +166,16 @@ final class MarkdownEditingGUITests: XCTestCase {
         harness.store.requestMode(.read)
         harness.spin(for: 0.5)
         harness.store.requestFormat(.italic)
-        XCTAssertEqual(harness.store.formatCommand?.action, .bold)
-        harness.store.requestMode(.write)
+        XCTAssertEqual(harness.store.formatCommand?.action, .italic)
         harness.spin(for: 0.5)
-        XCTAssertEqual(harness.store.text, "**text**")
+        XCTAssertEqual(harness.store.text, "***text***")
         XCTAssertTrue(harness.store.editorSession.textView === editor)
         let field = NSTextField(frame: NSRect(x: 10, y: 10, width: 100, height: 24))
         harness.window.contentView?.addSubview(field)
         harness.window.makeFirstResponder(field)
         harness.store.requestFormat(.italic)
         harness.spin()
-        XCTAssertEqual(harness.store.text, "**text**")
+        XCTAssertEqual(harness.store.text, "***text***")
     }
 
     @MainActor

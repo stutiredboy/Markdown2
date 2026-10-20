@@ -13,17 +13,20 @@ public enum RenderedPlainText {
     private static let excludedClasses: Set<String> = ["front-matter", "footnote-ref", "footnote-backref", "diagram", "math", "toc", "md2-broken-image", "md2-line-gutter"]
 
     public static func extract(from body: String) -> String {
+        if Task.isCancelled { return "" }
         let source = body as NSString
         var output = ""
         var cursor = 0
         var excluded: [String] = []
-        for token in tokens.matches(in: body, range: NSRange(location: 0, length: source.length)) {
+        tokens.enumerateMatches(in: body, range: NSRange(location: 0, length: source.length)) { match, _, stop in
+            if Task.isCancelled { stop.pointee = true; return }
+            guard let token = match else { return }
             if excluded.isEmpty {
                 output += source.substring(with: NSRange(location: cursor, length: token.range.location - cursor))
             }
             let tag = source.substring(with: token.range)
             cursor = NSMaxRange(token.range)
-            if tag.hasPrefix("<!--") { continue }
+            if tag.hasPrefix("<!--") { return }
             let closing = tag.hasPrefix("</")
             let name = String(tag.dropFirst(closing ? 2 : 1).prefix { $0.isLetter || $0.isNumber }).lowercased()
             if closing {
@@ -41,6 +44,7 @@ public enum RenderedPlainText {
                 else if ["td", "th"].contains(name), closing { output += "\t" }
             }
         }
+        if Task.isCancelled { return "" }
         if excluded.isEmpty { output += source.substring(from: cursor) }
         return HTMLSafety.decodeAllEntities(output).trimmingCharacters(in: .whitespacesAndNewlines)
     }

@@ -44,7 +44,8 @@ struct DocumentFileIdentity: Codable, Sendable {
         guard fstat(handle.fileDescriptor, &info) == 0, info.st_nlink > 0 else { return nil }
         var path = [CChar](repeating: 0, count: Int(MAXPATHLEN))
         guard fcntl(handle.fileDescriptor, F_GETPATH, &path) == 0 else { return nil }
-        let url = URL(fileURLWithPath: String(cString: path))
+        let bytes = path.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        let url = URL(fileURLWithPath: String(decoding: bytes, as: UTF8.self))
         var current = stat()
         guard stat(url.path, &current) == 0, current.st_ino == info.st_ino, current.st_dev == info.st_dev else { return nil }
         return url
@@ -62,6 +63,51 @@ struct DocumentRecoverySnapshot: Codable, Sendable {
     var isDirty: Bool
     var windowFrame: String?
     var updatedAt = Date()
+
+    private enum CodingKeys: String, CodingKey {
+        case version, id, text, fileURL, identity, format, fingerprint, isDirty, windowFrame, updatedAt
+    }
+
+    init(id: UUID, text: String, fileURL: URL?, identity: DocumentFileIdentity?,
+         format: MarkdownFileFormat, fingerprint: DocumentFileFingerprint?, isDirty: Bool,
+         windowFrame: String?) {
+        self.id = id
+        self.text = text
+        self.fileURL = fileURL
+        self.identity = identity
+        self.format = format
+        self.fingerprint = fingerprint
+        self.isDirty = isDirty
+        self.windowFrame = windowFrame
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        version = try values.decode(Int.self, forKey: .version)
+        id = try values.decode(UUID.self, forKey: .id)
+        text = try values.decodeIfPresent(String.self, forKey: .text) ?? ""
+        fileURL = try values.decodeIfPresent(URL.self, forKey: .fileURL)
+        identity = try values.decodeIfPresent(DocumentFileIdentity.self, forKey: .identity)
+        format = try values.decode(MarkdownFileFormat.self, forKey: .format)
+        fingerprint = try values.decodeIfPresent(DocumentFileFingerprint.self, forKey: .fingerprint)
+        isDirty = try values.decode(Bool.self, forKey: .isDirty)
+        windowFrame = try values.decodeIfPresent(String.self, forKey: .windowFrame)
+        updatedAt = try values.decode(Date.self, forKey: .updatedAt)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(version, forKey: .version)
+        try values.encode(id, forKey: .id)
+        if isDirty || fileURL == nil { try values.encode(text, forKey: .text) }
+        try values.encodeIfPresent(fileURL, forKey: .fileURL)
+        try values.encodeIfPresent(identity, forKey: .identity)
+        try values.encode(format, forKey: .format)
+        try values.encodeIfPresent(fingerprint, forKey: .fingerprint)
+        try values.encode(isDirty, forKey: .isDirty)
+        try values.encodeIfPresent(windowFrame, forKey: .windowFrame)
+        try values.encode(updatedAt, forKey: .updatedAt)
+    }
 }
 
 /// One atomic record per open window. A bad record is retained for manual
@@ -70,6 +116,18 @@ struct DocumentRecoverySnapshot: Codable, Sendable {
 final class DocumentRecoveryRepository {
     let directory: URL
     private(set) var unreadableRecords: [URL] = []
+    private var restorationMarker: URL { directory.appendingPathComponent("restore-in-progress") }
+    var restorationWasInterrupted: Bool { FileManager.default.fileExists(atPath: restorationMarker.path) }
+
+    func beginRestoration() throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                               attributes: [.posixPermissions: 0o700])
+        try Data().write(to: restorationMarker, options: .atomic)
+    }
+
+    func finishRestoration() throws {
+        if restorationWasInterrupted { try FileManager.default.removeItem(at: restorationMarker) }
+    }
 
     init(directory: URL) { self.directory = directory }
 
@@ -105,6 +163,11 @@ final class DocumentRecoveryRepository {
                 guard snapshot.version == 1, url.lastPathComponent == "\(snapshot.id.uuidString).json" else {
                     unreadableRecords.append(url)
                     continue
+                }
+                // Migrate clean records written by older builds: remove their
+                // redundant plaintext copy as soon as the repository is read.
+                if !snapshot.isDirty, snapshot.fileURL != nil, !snapshot.text.isEmpty {
+                    try? write(snapshot)
                 }
                 records.append(snapshot)
             } catch { unreadableRecords.append(url) }

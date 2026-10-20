@@ -15,6 +15,18 @@ public struct MarkdownRenderer: Sendable {
         config: RenderConfig = .init(),
         assetMode: RenderAssetMode = .inline
     ) -> RenderedDocument {
+        if Task.isCancelled {
+            return RenderedDocument(html: "", body: "", outline: [], stats: DocumentStats(plainText: ""))
+        }
+        var config = config
+        if markdown.hasPrefix("---"),
+           let language = FrontMatterReader.fields(in: markdown)["lang"]?.lowercased() {
+            if language == "zh" || language.hasPrefix("zh-") {
+                config.alertLanguage = .simplifiedChinese
+            } else if language == "en" || language.hasPrefix("en-") {
+                config.alertLanguage = .english
+            }
+        }
         let lines = markdown.normalizedMarkdownLines
         let outline = outlineBuilder.build(from: markdown)
 
@@ -30,6 +42,9 @@ public struct MarkdownRenderer: Sendable {
         // re-assigns identical numbers as it emits each element.
         collectCrossReferenceLabels(lines, into: crossReferences, config: config)
         crossReferences.resetCounters()
+        if Task.isCancelled {
+            return RenderedDocument(html: "", body: "", outline: [], stats: DocumentStats(plainText: ""))
+        }
 
         let context = InlineContext(
             footnotes: footnotes,
@@ -40,6 +55,9 @@ public struct MarkdownRenderer: Sendable {
         )
 
         var body = renderBody(markdown, outline: outline, context: context)
+        if Task.isCancelled {
+            return RenderedDocument(html: "", body: "", outline: [], stats: DocumentStats(plainText: ""))
+        }
         if let section = footnoteSectionHTML(footnotes, inlineContext: context) {
             body += "\n" + section
         }
@@ -81,6 +99,7 @@ public struct MarkdownRenderer: Sendable {
         }
 
         while index < lines.count {
+            if Task.isCancelled { break }
             let line = lines[index]
             let trimmed = line.trimmedMarkdownLine
 
@@ -659,7 +678,9 @@ public struct MarkdownRenderer: Sendable {
         // quote's first line.
         let alertKind = quoteLines.first.flatMap { line -> String? in
             let marker = line.trimmingCharacters(in: .whitespaces)
-            return ["NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION"].first { marker == "[!\($0)]" }
+            return ["NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION"].first {
+                marker.caseInsensitiveCompare("[!\($0)]") == .orderedSame
+            }
         }
         if alertKind != nil { quoteLines.removeFirst() }
         let nestedMarkdown = quoteLines.joined(separator: "\n")
@@ -2067,7 +2088,7 @@ public struct MarkdownRenderer: Sendable {
         let patterns: [(Bool, String, String)] = [
             (features.highlight, #"(?<!=)==(?![=\s])(.+?)(?<![=\s])==(?!=)"#, "mark"),
             (features.superscript, #"(?<!\^)\^(?![\^\s])((?:\\ |[^\s^])+?)\^(?!\^)"#, "sup"),
-            (features.subscriptEnabled, #"(?<!~)~(?![~\s])((?:\\ |[^\s~])+?)~(?!~)"#, "sub")
+            (features.subscriptEnabled, #"(?<!~)~(?![~\s])((?:\\ |[^\s~\x{3000}-\x{303F}\x{FF00}-\x{FF65}])+?)~(?!~)"#, "sub")
         ]
         for (enabled, pattern, tag) in patterns where enabled {
             text = replaceMatches(in: text, pattern: pattern) { match, source in

@@ -1099,6 +1099,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// Coalesces rapid live content swaps (one per keystroke) into a single
         /// JS push, keeping typing smooth. The latest body wins.
         private var pendingLiveBody: String?
+        private var pendingLiveImages: [String: URL] = [:]
         private var liveUpdateWorkItem: DispatchWorkItem?
         private var liveUpdateGeneration = 0
         private static let liveUpdateDebounce: TimeInterval = 0.09
@@ -1117,14 +1118,28 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// preview's current source anchor. Called only when the page is loaded
         /// and no new diagram engine is required (the caller guarantees this).
         func applyLiveContent(_ bodyHTML: String, in webView: WKWebView) {
-            pendingLiveBody = documentLoader.prepareContent(bodyHTML, baseURL: lastBaseURL)
             liveUpdateGeneration += 1
             let generation = liveUpdateGeneration
             liveUpdateWorkItem?.cancel()
+            let baseURL = lastBaseURL
+            Task { [weak self, weak webView] in
+                let prepared = await Task.detached(priority: .userInitiated) {
+                    WebDocumentLoader.rewriteContent(bodyHTML, baseURL: baseURL)
+                }.value
+                guard let self, let webView, generation == self.liveUpdateGeneration else { return }
+                self.pendingLiveBody = prepared.html
+                self.pendingLiveImages = prepared.allowedImages
+                self.schedulePreparedLiveContent(in: webView, generation: generation)
+            }
+        }
+
+        private func schedulePreparedLiveContent(in webView: WKWebView, generation: Int) {
             let work = DispatchWorkItem { [weak self, weak webView] in
                 guard let self, let webView, let body = self.pendingLiveBody else { return }
                 guard generation == self.liveUpdateGeneration else { return }
                 self.pendingLiveBody = nil
+                self.documentLoader.installImages(self.pendingLiveImages)
+                self.pendingLiveImages = [:]
 
                 // An edit is in flight: keep the caret's rendered line in view
                 // (only if it scrolled off-screen) rather than re-affirming the
@@ -1244,6 +1259,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// a same-query search from running against the previous document body.
         func beginLoading() {
             isLoaded = false
+            liveUpdateGeneration += 1
+            liveUpdateWorkItem?.cancel()
+            pendingLiveBody = nil
+            pendingLiveImages = [:]
         }
 
         /// A full reload caused by an edit can emit one load-position anchor

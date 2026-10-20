@@ -60,6 +60,10 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    @Published var restoresWindowsOnLaunch: Bool {
+        didSet { defaults.set(restoresWindowsOnLaunch, forKey: Keys.restoresWindowsOnLaunch) }
+    }
+
     /// Whether the editor draws a source line-number gutter in its left inset.
     /// Display-only: it never changes the text, selection, or any geometry.
     @Published var showsLineNumbersInEditor: Bool {
@@ -169,6 +173,13 @@ final class AppSettings: ObservableObject {
             opensBlankDocumentOnLaunch = false
         } else {
             opensBlankDocumentOnLaunch = defaults.bool(forKey: Keys.opensBlankDocumentOnLaunch)
+        }
+        if defaults.object(forKey: Keys.restoresWindowsOnLaunch) == nil {
+            let systemValue = (defaults.object(forKey: "NSQuitAlwaysKeepsWindows") as? NSNumber)?.boolValue
+                ?? (defaults.persistentDomain(forName: UserDefaults.globalDomain)?["NSQuitAlwaysKeepsWindows"] as? NSNumber)?.boolValue
+            restoresWindowsOnLaunch = systemValue ?? true
+        } else {
+            restoresWindowsOnLaunch = defaults.bool(forKey: Keys.restoresWindowsOnLaunch)
         }
 
         if defaults.object(forKey: Keys.showsLineNumbersInEditor) == nil {
@@ -319,6 +330,7 @@ private enum Keys {
     static let modeShortcuts = "MD2.ModeShortcuts"
     static let showsOutlineByDefault = "MD2.ShowsOutlineByDefault"
     static let opensBlankDocumentOnLaunch = "MD2.OpensBlankDocumentOnLaunch"
+    static let restoresWindowsOnLaunch = "MD2.RestoresWindowsOnLaunch"
     static let showsLineNumbersInEditor = "MD2.ShowsLineNumbersInEditor"
     static let showsLineNumbersInPreview = "MD2.ShowsLineNumbersInPreview"
     static let attachmentFolder = "MD2.AttachmentFolder"
@@ -439,6 +451,8 @@ enum L10nKey: String, CaseIterable {
     case noResults
     case print
     case openBlankOnLaunch
+    case restoreWindowsOnLaunch, recoveryInterruptedTitle, recoveryInterruptedMessage, skipRecovery, restoreRecovery
+    case unsavedRecoveryTitle, unsavedRecoveryMessage, recoverDrafts
     case languageChangedTitle
     case languageChangedMessage
     case restartNow
@@ -475,7 +489,7 @@ enum L10nKey: String, CaseIterable {
     case markdownSyntax
     case enablesHighlight
     case enablesSuperscript
-    case enablesSubscript
+    case enablesSubscript, subscriptHelp
     case citationStyleLabel
     case citationAuthorYear
     case citationNumeric
@@ -618,6 +632,14 @@ enum L10n {
         .noResults: "No results",
         .print: "Print…",
         .openBlankOnLaunch: "Open a blank document on launch",
+        .restoreWindowsOnLaunch: "Restore windows when reopening the app",
+        .recoveryInterruptedTitle: "Window restoration was interrupted",
+        .recoveryInterruptedMessage: "Markdown2 stopped while restoring windows last time. You can skip restoration now; recovery records will be kept.",
+        .skipRecovery: "Skip Restoration",
+        .restoreRecovery: "Restore Windows",
+        .unsavedRecoveryTitle: "Unsaved drafts are available",
+        .unsavedRecoveryMessage: "Markdown2 found unsaved drafts from an earlier session. Restore them now?",
+        .recoverDrafts: "Recover Drafts",
         .languageChangedTitle: "Restart to apply the new language?",
         .languageChangedMessage: "The menu bar updates to the new language after Markdown2 restarts.",
         .restartNow: "Restart Now",
@@ -655,6 +677,7 @@ enum L10n {
         .enablesHighlight: "Highlight (==text==)",
         .enablesSuperscript: "Superscript (x^2^)",
         .enablesSubscript: "Subscript (H~2~O)",
+        .subscriptHelp: "Subscript text cannot contain Chinese punctuation or spaces; ranges such as 3~5 days remain plain text.",
         .citationStyleLabel: "Citation Style",
         .citationAuthorYear: "Author-Year",
         .citationNumeric: "Numeric",
@@ -772,6 +795,14 @@ enum L10n {
         .noResults: "无结果",
         .print: "打印…",
         .openBlankOnLaunch: "启动时打开空白文档",
+        .restoreWindowsOnLaunch: "重新打开 App 时恢复窗口",
+        .recoveryInterruptedTitle: "上次恢复窗口时中断",
+        .recoveryInterruptedMessage: "Markdown2 上次恢复窗口时意外退出。可以暂时跳过恢复；恢复记录会保留。",
+        .skipRecovery: "跳过恢复",
+        .restoreRecovery: "恢复窗口",
+        .unsavedRecoveryTitle: "发现未保存的草稿",
+        .unsavedRecoveryMessage: "Markdown2 发现之前会话中未保存的草稿。现在恢复吗？",
+        .recoverDrafts: "恢复草稿",
         .languageChangedTitle: "重启以应用新语言？",
         .languageChangedMessage: "菜单栏将在 Markdown2 重启后切换到新语言。",
         .restartNow: "立即重启",
@@ -809,6 +840,7 @@ enum L10n {
         .enablesHighlight: "高亮（==文字==）",
         .enablesSuperscript: "上标（x^2^）",
         .enablesSubscript: "下标（H~2~O）",
+        .subscriptHelp: "下标内容不能包含中文标点或空格；3~5天一类的范围写法保持原样。",
         .citationStyleLabel: "引用样式",
         .citationAuthorYear: "作者-年份",
         .citationNumeric: "数字编号",

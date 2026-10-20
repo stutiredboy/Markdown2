@@ -196,15 +196,21 @@ struct ContentView: View {
             guard let selection = selectedContent else { return }
             do { try await Task.sleep(for: .milliseconds(80)) } catch { return }
             let features = settings.inlineFeatures
-            let result = await Task.detached(priority: .utility) {
-                switch selection {
+            let worker = Task.detached(priority: .utility) { () -> DocumentStats? in
+                guard !Task.isCancelled else { return nil }
+                return switch selection {
                 case .markdown(let text):
                     MarkdownRenderer().render(text, config: RenderConfig(inlineFeatures: features), assetMode: .appScheme).stats
                 case .renderedHTML(let html):
                     DocumentStats(plainText: RenderedPlainText.extract(from: html))
                 }
-            }.value
-            guard !Task.isCancelled else { return }
+            }
+            let result = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard !Task.isCancelled, let result else { return }
             selectionStats = result
         }
         .onChange(of: document.documentIdentity) { _, _ in

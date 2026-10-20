@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import MD2Core
 import UniformTypeIdentifiers
@@ -91,11 +92,17 @@ final class DocumentStore: ObservableObject {
     @Published var formatCommand: MarkdownFormatCommand?
 
     func requestFormat(_ action: MarkdownEditing.Action) {
-        // Menu commands belong to the source editor, never a find field, a
-        // Settings control, or the retained but unmounted Read-mode text view.
-        guard let editor = editorSession.textView, let window = editor.window,
-              window.firstResponder === editor, !editor.hasMarkedText() else { return }
+        if editorSession.textView?.hasMarkedText() == true { return }
+        if let editor = editorSession.textView, let window = editor.window {
+            // A find field or Settings control owns the keyboard in Write mode.
+            guard window.firstResponder === editor else { return }
+            formatCommand = MarkdownFormatCommand(action: action)
+            return
+        }
+        // In Read mode the source editor is unmounted. Switch to it and let
+        // its first update consume the pending format request.
         formatCommand = MarkdownFormatCommand(action: action)
+        requestMode(.write)
     }
 
     /// The document's undo history. The window hands it to the Edit menu and the
@@ -721,6 +728,8 @@ final class DocumentStore: ObservableObject {
             pendingReloadDiscardsEdits = false
             startWatchingFile()
             persistRecoveryNow()
+            let directory = url.deletingLastPathComponent()
+            Task.detached(priority: .background) { LegacyPreviewCleaner.clean(in: directory) }
             return true
         } catch {
             alert = DocumentAlert(
@@ -770,7 +779,8 @@ final class DocumentStore: ObservableObject {
         guard let writtenData = data else { return false }
         do {
             cancelAutosave()
-            try writtenData.write(to: url, options: .atomic)
+            if Self.hasMultipleHardLinks(at: url), !persistRecoveryNow() { return false }
+            try Self.writePreservingMetadata(writtenData, to: url)
             lastKnownFingerprint = DocumentFileFingerprint.of(data: writtenData, at: url)
             fileURL = url
             fileIdentity = DocumentFileIdentity(url: url)
@@ -789,6 +799,43 @@ final class DocumentStore: ObservableObject {
             persistRecoveryNow()
             return false
         }
+    }
+
+    private static func writePreservingMetadata(_ data: Data, to url: URL) throws {
+        let manager = FileManager.default
+        guard manager.fileExists(atPath: url.path) else {
+            try data.write(to: url, options: .atomic)
+            return
+        }
+        if hasMultipleHardLinks(at: url) {
+            // Replacing an inode severs its other names. For a hard-linked file,
+            // update that inode after securing a recovery snapshot instead.
+            let original = try Data(contentsOf: url)
+            let handle = try FileHandle(forWritingTo: url)
+            defer { try? handle.close() }
+            do {
+                try handle.truncate(atOffset: 0)
+                try handle.write(contentsOf: data)
+                try handle.synchronize()
+            } catch {
+                try? handle.truncate(atOffset: 0)
+                try? handle.write(contentsOf: original)
+                try? handle.synchronize()
+                throw error
+            }
+            return
+        }
+        let replacement = try manager.url(for: .itemReplacementDirectory, in: .userDomainMask,
+                                          appropriateFor: url, create: true)
+        defer { try? manager.removeItem(at: replacement) }
+        let temporary = replacement.appendingPathComponent(UUID().uuidString)
+        try data.write(to: temporary)
+        _ = try manager.replaceItemAt(url, withItemAt: temporary, backupItemName: nil, options: [])
+    }
+
+    private static func hasMultipleHardLinks(at url: URL) -> Bool {
+        var info = stat()
+        return stat(url.path, &info) == 0 && info.st_nlink > 1
     }
 
     func resolveEncodingConversion(convertToUTF8: Bool) {
@@ -1105,7 +1152,7 @@ final class DocumentStore: ObservableObject {
         guard !isClosed, let recoveryRepository else { return true }
         do {
             try recoveryRepository.write(DocumentRecoverySnapshot(
-                id: recoveryID, text: text, fileURL: fileURL, identity: fileIdentity,
+                id: recoveryID, text: isDirty || fileURL == nil ? text : "", fileURL: fileURL, identity: fileIdentity,
                 format: fileFormat, fingerprint: lastKnownFingerprint, isDirty: isDirty,
                 windowFrame: windowFrame))
             recoveryErrorReported = false

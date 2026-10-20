@@ -6,6 +6,7 @@ extension NSAttributedString.Key {
     /// line/paragraph spacing and empty lines that a `.backgroundColor` text
     /// attribute would leave unshaded.
     static let markdownCodeBlock = NSAttributedString.Key("md2.markdownCodeBlock")
+    static let markdownAutoClosing = NSAttributedString.Key("md2.markdownAutoClosing")
 }
 
 /// Draws code-block shading by filling whole line-fragment rects (which include

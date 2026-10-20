@@ -40,6 +40,12 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
         // Read before Finder can deliver openURLs and create this session's records.
         do { pendingRecoverySnapshots = try recoveryRepository.load() }
         catch { recoveryReadFailed = true }
+        if !settings.restoresWindowsOnLaunch {
+            for snapshot in pendingRecoverySnapshots where !snapshot.isDirty {
+                try? recoveryRepository.remove(snapshot.id)
+            }
+            pendingRecoverySnapshots.removeAll { !$0.isDirty }
+        }
         knownModeShortcuts = Set(settings.modeShortcuts.assignments.map(\.shortcut))
         modeShortcutObservation = settings.$modeShortcuts.sink { [weak self] configuration in
             self?.knownModeShortcuts.formUnion(configuration.assignments.map(\.shortcut))
@@ -91,6 +97,10 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let recentDirectories = Set(recentDocuments.recentDocumentURLs.map { $0.deletingLastPathComponent() })
+        Task.detached(priority: .background) {
+            for directory in recentDirectories { LegacyPreviewCleaner.clean(in: directory) }
+        }
         if let url = fileURLFromLaunchArguments() {
             openInNewWindow(url)
         } else if !receivedOpenRequest,
@@ -98,7 +108,22 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
             // Only an ordinary app launch resumes the whole session. Finder's
             // open event usually arrives first; AppKit's launch flag also
             // suppresses restoration if that event has not reached us yet.
-            restoreDocumentWindows()
+            if settings.restoresWindowsOnLaunch {
+                restoreDocumentWindows()
+            } else if !pendingRecoverySnapshots.isEmpty {
+                if recoveryRepository.restorationWasInterrupted {
+                    restoreDocumentWindows(onlyDirty: true)
+                } else {
+                    let alert = NSAlert()
+                    alert.messageText = settings.text(.unsavedRecoveryTitle)
+                    alert.informativeText = settings.text(.unsavedRecoveryMessage)
+                    alert.addButton(withTitle: settings.text(.recoverDrafts))
+                    alert.addButton(withTitle: settings.text(.skipRecovery))
+                    if alert.runModal() == .alertFirstButtonReturn {
+                        restoreDocumentWindows(onlyDirty: true)
+                    }
+                }
+            }
             if documentWindows.isEmpty && settings.opensBlankDocumentOnLaunch {
                 newDocument()
             }
@@ -264,7 +289,17 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
     /// file open restores its newest matching record; additional versions stay
     /// pending for full session recovery, which preserves them as untitled drafts.
     @discardableResult
-    private func restoreDocumentWindows(matching requestedURL: URL? = nil) -> Bool {
+    private func restoreDocumentWindows(matching requestedURL: URL? = nil, onlyDirty: Bool = false) -> Bool {
+        if requestedURL == nil, !pendingRecoverySnapshots.isEmpty,
+           recoveryRepository.restorationWasInterrupted {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = settings.text(.recoveryInterruptedTitle)
+            alert.informativeText = settings.text(.recoveryInterruptedMessage)
+            alert.addButton(withTitle: settings.text(.skipRecovery))
+            alert.addButton(withTitle: settings.text(.restoreRecovery))
+            if alert.runModal() == .alertFirstButtonReturn { return false }
+        }
         let snapshots: [DocumentRecoverySnapshot]
         if let requestedURL {
             let match = pendingRecoverySnapshots.last { snapshot in
@@ -273,16 +308,23 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
             }
             snapshots = match.map { [$0] } ?? []
         } else {
-            snapshots = pendingRecoverySnapshots
+            snapshots = onlyDirty ? pendingRecoverySnapshots.filter(\.isDirty) : pendingRecoverySnapshots
         }
         let requestedWindow = requestedURL == nil
             ? documentWindows.first(where: { $0.window == NSApp.keyWindow })?.window : nil
         defer { requestedWindow?.makeKeyAndOrderFront(nil) }
+        var restoredCount = 0
         do {
+            if requestedURL == nil, !snapshots.isEmpty { try recoveryRepository.beginRestoration() }
             var restoredURLs = Set<URL>()
             for var snapshot in snapshots {
                 var url = snapshot.fileURL.flatMap { snapshot.identity?.resolve(fallback: $0) } ?? snapshot.fileURL
                 if let candidate = url?.resolvingSymlinksInPath(), !restoredURLs.insert(candidate).inserted {
+                    if !snapshot.isDirty {
+                        try recoveryRepository.remove(snapshot.id)
+                        pendingRecoverySnapshots.removeAll { $0.id == snapshot.id }
+                        continue
+                    }
                     // Two retained drafts can refer to one file (e.g. an earlier
                     // second app instance). Preserve both texts, with only one
                     // writer attached to the original file.
@@ -308,12 +350,14 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
                     window.makeKeyAndOrderFront(nil)
                 }
                 pendingRecoverySnapshots.removeAll { $0.id == snapshot.id }
+                restoredCount += 1
             }
             if requestedURL == nil && (recoveryReadFailed || !recoveryRepository.unreadableRecords.isEmpty) {
                 showRecoveryReadError()
             }
+            if requestedURL == nil, !snapshots.isEmpty { try recoveryRepository.finishRestoration() }
         } catch { showRecoveryReadError() }
-        return !snapshots.isEmpty
+        return restoredCount > 0
     }
 
     private func showRecoveryReadError() {
@@ -463,8 +507,30 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        // Quit preserves open windows and drafts. Explicit close still asks
-        // Save / Don't Save / Cancel and removes only that window's record.
+        if !settings.restoresWindowsOnLaunch {
+            for documentWindow in documentWindows {
+                if !confirmDiscardOrSaveIfNeeded(for: documentWindow.store) {
+                    pendingLanguageRelaunch = false
+                    documentWindow.window.makeKeyAndOrderFront(nil)
+                    return .terminateCancel
+                }
+            }
+            for documentWindow in documentWindows {
+                do { try recoveryRepository.remove(documentWindow.store.recoveryID) }
+                catch {
+                    pendingLanguageRelaunch = false
+                    return .terminateCancel
+                }
+            }
+            for snapshot in pendingRecoverySnapshots where !snapshot.isDirty {
+                try? recoveryRepository.remove(snapshot.id)
+            }
+            isTerminating = true
+            for documentWindow in documentWindows {
+                documentWindow.store.closeDocument(discardRecovery: false)
+            }
+            return .terminateNow
+        }
         for documentWindow in documentWindows {
             documentWindow.store.windowFrame = documentWindow.window.frameDescriptor
             if !documentWindow.store.prepareForTermination() {
