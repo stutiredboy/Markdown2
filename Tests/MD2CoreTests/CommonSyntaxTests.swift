@@ -3,34 +3,38 @@ import Testing
 @testable import MD2Core
 @testable import MD2App
 
-/// One terminator and one left-boundary character per normative range: both
-/// endpoints where a range has typo risk, plus the single-character ranges.
-private let bareURLBoundarySamples: [(label: String, character: Character)] = [
-    ("U+00B7 middle dot", "·"),
-    ("U+2013 en dash", "–"),
-    ("U+2014 em dash", "—"),
-    ("U+2018 left single quote", "‘"),
-    ("U+201D right double quote", "”"),
-    ("U+2026 ellipsis", "…"),
-    ("U+3001 ideographic comma", "、"),
-    ("U+3003 ditto mark", "〃"),
-    ("U+3008 left angle bracket", "〈"),
-    ("U+3011 right black lenticular bracket", "】"),
-    ("U+3014 left tortoise shell bracket", "〔"),
-    ("U+301F low double prime quote", "〟"),
-    ("U+3030 wavy dash", "〰"),
-    ("U+303D part alternation mark", "〽"),
-    ("U+30FB katakana middle dot", "・"),
-    ("U+FF01 fullwidth exclamation", "！"),
-    ("U+FF0F fullwidth solidus", "／"),
-    ("U+FF1A fullwidth colon", "："),
-    ("U+FF20 fullwidth at sign", "＠"),
-    ("U+FF3B fullwidth left bracket", "［"),
-    ("U+FF40 fullwidth grave accent", "｀"),
-    ("U+FF5B fullwidth left brace", "｛"),
-    ("U+FF65 halfwidth katakana middle dot", "･"),
-    ("U+200B zero width space", "\u{200B}")
-]
+/// Every character in the normative boundary set, not just range endpoints:
+/// a character dropped from the middle of a range fails here even though its
+/// range endpoints still pass.
+///
+/// Value: protects=every character in the normative boundary set terminates a bare URL and is a valid left boundary; fails_when=a mid-range character is dropped from the shared constant so endpoint samples still pass; why_new=the previous table sampled only 24 range endpoints; seam=none; no_claim=green proves literal characters only, not the entity spellings that stay literal by design.
+private let bareURLBoundarySamples: [(label: String, character: Character)] = {
+    let ranges: [(name: String, range: ClosedRange<UInt32>)] = [
+        ("middle dot", 0x00B7...0x00B7),
+        ("en/em dash", 0x2013...0x2014),
+        ("curly quote", 0x2018...0x201D),
+        ("ellipsis", 0x2026...0x2026),
+        ("ideographic punctuation", 0x3001...0x3003),
+        ("CJK angle/corner bracket", 0x3008...0x3011),
+        ("CJK tortoise-shell bracket", 0x3014...0x301F),
+        ("wavy dash", 0x3030...0x3030),
+        ("part alternation mark", 0x303D...0x303D),
+        ("katakana middle dot", 0x30FB...0x30FB),
+        ("fullwidth ASCII punctuation A", 0xFF01...0xFF0F),
+        ("fullwidth ASCII punctuation B", 0xFF1A...0xFF20),
+        ("fullwidth ASCII punctuation C", 0xFF3B...0xFF40),
+        ("fullwidth ASCII punctuation D", 0xFF5B...0xFF65),
+        ("zero width space", 0x200B...0x200B)
+    ]
+    var samples: [(label: String, character: Character)] = []
+    for (name, range) in ranges {
+        for value in range {
+            let codePoint = String(format: "U+%04X", value)
+            samples.append((label: "\(codePoint) \(name)", character: Character(Unicode.Scalar(value)!)))
+        }
+    }
+    return samples
+}()
 
 struct CommonSyntaxTests {
     private let renderer = MarkdownRenderer()
@@ -195,6 +199,55 @@ struct CommonSyntaxTests {
         let body = renderer.render("abchttps://example.com").body
         #expect(!body.contains("href=\"https://example.com\""), "\(body)")
         #expect(body.contains("abchttps://example.com"), "\(body)")
+
+        let wwwBody = renderer.render("abcwww.example.com").body
+        #expect(!wwwBody.contains("href=\"http://www.example.com\""), "\(wwwBody)")
+        #expect(wwwBody.contains("abcwww.example.com"), "\(wwwBody)")
+    }
+
+    /// Value: protects=the pre-existing ASCII `(` and `_` left boundaries still link bare URLs after the boundary-class rewrite; fails_when=either delimiter is dropped from the lookbehind; why_new=the existing suite covers `*` and `~` but not `(` or `_` as bare-URL left boundaries; seam=none; no_claim=green proves these two delimiters, not every ASCII boundary.
+    @Test(arguments: [
+        ("(https://example.com)", "(<a href=\"https://example.com\">https://example.com</a>)"),
+        ("_https://example.com", "_<a href=\"https://example.com\">https://example.com</a>")
+    ])
+    func existingASCIILeftBoundariesStillLink(sample: (String, String)) {
+        let body = renderer.render(sample.0).body
+        #expect(body.contains(sample.1), "\(body)")
+    }
+
+    /// Value: protects=full-width Latin letters and digits remain URL content and are not boundary characters; fails_when=the URL body is widened to every U+FF00 code point or the lookbehind accepts them as left boundaries; why_new=the boundary tables cover only punctuation and U+200B, and the spec previously contradicted this behavior; seam=none; no_claim=green proves these two spellings, not every full-width letter or digit.
+    @Test func fullwidthLettersAndDigitsAreURLContent() {
+        let body = renderer.render("https://example.comＡＢ１２").body
+        #expect(body.contains("<a href=\"https://example.comＡＢ１２\">https://example.comＡＢ１２</a>"), "\(body)")
+
+        let leading = renderer.render("Ａhttps://example.com").body
+        #expect(!leading.contains("href=\"https://example.com\""), "\(leading)")
+        #expect(leading.contains("Ａhttps://example.com"), "\(leading)")
+    }
+
+    /// Value: protects=characters outside the normative set stay in URL content and are not left boundaries; fails_when=an accidental range widening in the boundary class includes neighbouring code points; why_new=the inclusion table cannot catch accidental widening; seam=none; no_claim=green proves this one outside character, not every non-normative code point.
+    @Test func nonNormativeCharactersStayURLContent() {
+        let body = renderer.render("https://example.com/café").body
+        #expect(body.contains("<a href=\"https://example.com/café\">"), "\(body)")
+
+        let blocked = renderer.render("éhttps://example.com").body
+        #expect(!blocked.contains("href=\"https://example.com\""), "\(blocked)")
+    }
+
+    /// Value: protects=the boundary constant and the exhaustive test table stay in sync; fails_when=a character is added to one but not the other; why_new=the test table re-encodes the ranges independently; seam=bareURLBoundaryCharacters (non-test callers: 1, via protectBareAutolinks); no_claim=green proves set equality, not that both regex classes use the constant.
+    @Test func boundaryConstantMatchesSampleTable() {
+        let samples = Set(bareURLBoundarySamples.map(\.character))
+        #expect(samples == Set(MarkdownRenderer.bareURLBoundaryCharacters))
+    }
+
+    /// Value: protects=the bare-URL left-boundary widening leaves the email alternative unchanged, so Han before an address prevents a mailto link; fails_when=Han or the boundary set is merged into the email lookbehind; why_new=only the positive standalone email row exists; seam=none; no_claim=green proves this Han-adjacent spelling only, not every boundary character before an email.
+    @Test func hanBeforeEmailLeavesItUnlinked() {
+        let adjacent = renderer.render("访问foo@example.com").body
+        #expect(!adjacent.contains("href=\"mailto:foo@example.com\""), "\(adjacent)")
+        #expect(adjacent.contains("访问foo@example.com"), "\(adjacent)")
+
+        let standalone = renderer.render("foo@example.com").body
+        #expect(standalone.contains("href=\"mailto:foo@example.com\""), "\(standalone)")
     }
 
     @Test func autolinksRespectBoundariesAndProtectedContent() {

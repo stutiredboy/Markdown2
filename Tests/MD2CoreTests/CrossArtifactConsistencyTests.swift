@@ -63,7 +63,7 @@ struct CrossArtifactConsistencyTests {
             contentsOf: Fixtures.url("../../Docs/MarkdownSupport.md"),
             encoding: .utf8
         )
-        for token in ["full-width", "U+200B", "hostname", "truncat"] {
+        for token in ["full-width", "U+200B", "hostname", "truncat", "typographic"] {
             #expect(supportDoc.contains(token),
                     "Docs/MarkdownSupport.md is missing '\(token)' for the CJK autolink boundary")
         }

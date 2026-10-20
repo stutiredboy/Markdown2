@@ -2083,10 +2083,17 @@ public struct MarkdownRenderer: Sendable {
     /// candidate: CJK/typographic punctuation (including full-width forms) and
     /// the zero-width space U+200B, which ICU does not treat as `\s`. The set
     /// contains no ASCII characters, so it is safe inside a regex class.
-    private static let bareURLBoundaryCharacters =
-        "·–—‘’‚‛“”…、。〃〈〉《》「」『』【】〔〕〖〗〘〙〚〛〜〝〞〟〰〽・"
-        + "！＂＃＄％＆＇（）＊＋，－．／：；＜＝＞？＠［＼］＾＿｀｛｜｝～｟｠｡｢｣､･"
-        + "\u{200B}"
+    static let bareURLBoundaryCharacters: String = {
+        let characters =
+            "·–—‘’‚‛“”…、。〃〈〉《》「」『』【】〔〕〖〗〘〙〚〛〜〝〞〟〰〽・"
+            + "！＂＃＄％＆＇（）＊＋，－．／：；＜＝＞？＠［＼］＾＿｀｛｜｝～｟｠｡｢｣､･"
+            + "\u{200B}"
+        precondition(
+            characters.unicodeScalars.allSatisfy { $0.value > 0x7F },
+            "bare URL boundary characters must be non-ASCII and regex-class safe"
+        )
+        return characters
+    }()
 
     /// Runs after explicit links/images and protected code/math. Tokens for
     /// escaped punctuation/entities can be part of a URL; structural tokens

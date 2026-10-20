@@ -99,8 +99,10 @@ struct CompatibilityMatrixTests {
         }
     }
 
+    /// Value: protects=gfm-autolinks stays a Supported entry while declaring the CJK boundary divergence; fails_when=the entry is reclassified (for example to Best-effort) to accommodate the divergence; why_new=existing matrix tests accept any valid tier and the token guard checks text only; seam=none; no_claim=green proves the declared tier, not that every downstream doc renders it.
     @Test func gfmAutolinksDeclareCJKBoundaryDivergence() throws {
         let entry = try #require(try CompatibilityMatrix.load().entries.first { $0.id == "gfm-autolinks" })
+        #expect(entry.tier == "Supported", "gfm-autolinks tier changed: \(entry.tier)")
         let text = (entry.declaredBehavior + " " + entry.boundary).lowercased()
         for token in ["full-width", "left boundar", "intentional", "gfm", "u+200b"] {
             #expect(text.contains(token), "gfm-autolinks is missing '\(token)': \(text)")
