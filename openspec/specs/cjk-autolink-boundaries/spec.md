@@ -206,7 +206,7 @@ The `gfm-autolinks` entry in the machine-checked compatibility matrix SHALL reco
 
 ### Requirement: Lookalike continuations do not retarget a bare URL
 
-A bare-URL candidate SHALL NOT be anchored when the visible continuation, after restoring protected tokens/entities/escapes (including image alt text), stripping inline HTML, treating emphasis/strikethrough/highlight/sup/sub delimiters as markup, skipping invisible characters (Unicode format/control/combining scalars, including ZWSP/ZWNJ/ZWJ, bidi marks and tag characters, plus blank-rendering fillers), and folding IDNA/fullwidth forms, would change the apparent authority. The guard SHALL apply when the authority (host with optional port) ends the URL (no path, query, or fragment), SHALL read the continuation from the visible text of any protected token rather than after it, and SHALL bound the continuation scan (failing closed when the bound is reached before a delimiter). A candidate SHALL stay literal when the continuation contains an ASCII `@` before the next `/`, `?`, `#`, or whitespace; when it begins with one or more IDNA dots followed by a host label that is ASCII or is followed by another dot; when it begins with a fullwidth percent followed by `2e`/`2E`; or when it begins with a letter or digit and contains a dot. Ordinary prose continuations (`https://example.com。然后`, `https://example.com：然后`, `https://example.com％然后`, `https://example.com\u{200B}tail`, `https://example.com<em>end</em>`) SHALL remain linked.
+A bare-URL candidate SHALL NOT be anchored when the visible continuation, after restoring protected tokens/entities/escapes (including image alt text), stripping inline HTML, treating emphasis/strikethrough/highlight/sup/sub delimiters as markup, skipping invisible characters (Unicode format/control/combining scalars, including ZWSP/ZWNJ/ZWJ, bidi marks and tag characters, plus blank-rendering fillers), and folding IDNA/fullwidth forms, would change the apparent authority. The guard SHALL apply when the authority (host with optional port) ends the URL (no path, query, or fragment), SHALL read the continuation from the visible text of any protected token rather than after it, and SHALL bound the continuation scan (failing closed when the bound is reached before a delimiter). A candidate SHALL stay literal when the continuation contains an ASCII `@` before the next `/`, `?`, `#`, or whitespace; when it begins with one or more IDNA dots followed by a host label that is ASCII or is followed by another dot; when it begins with a fullwidth percent followed by `2e`/`2E`; when it begins with a host-label character (letter, digit, `-` or `_`); or when it begins with a letter or digit and contains a dot. Ordinary prose continuations (`https://example.com。然后`, `https://example.com：然后`, `https://example.com％然后`) SHALL remain linked.
 
 #### Scenario: Invisible terminator before a dot stays literal
 
@@ -252,6 +252,11 @@ A bare-URL candidate SHALL NOT be anchored when the visible continuation, after 
 
 - **WHEN** the source contains `https://evil.com。\u{200C}trusted.com`, `https://evil.com。\u{FE0F}trusted.com`, or `https://evil.com。\u{061C}trusted.com`
 - **THEN** no anchor is produced for `https://evil.com`
+
+#### Scenario: Split final label stays literal
+
+- **WHEN** the source contains `https://evil.co\u{200B}m` or `https://evil.co<span></span>m`
+- **THEN** no anchor is produced for `https://evil.co`
 
 #### Scenario: Long hostile line stays bounded
 

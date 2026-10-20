@@ -40,13 +40,17 @@ struct InlineRenderingPerformanceTests {
         #expect(body.hasSuffix(" &amp;</p>"))
     }
 
-    @Test func bareURLAdjacentToProtectedContent() {
+    /// A bare URL directly followed by protected host-label content reads as a
+    /// longer authority, so the candidate stays literal.
+    @Test func bareURLAdjacentToProtectedContentStaysLiteral() {
         let body = renderer.render("https://example.com`code` https://example.com<em>end</em>").body
-        #expect(body.contains(#"<a href="https://example.com">https://example.com</a><code>code</code>"#))
-        #expect(body.contains(#"<a href="https://example.com">https://example.com</a><em>end</em>"#))
+        #expect(!body.contains(#"<a href="https://example.com">https://example.com</a><code>code</code>"#))
+        #expect(!body.contains(#"<a href="https://example.com">https://example.com</a><em>end</em>"#))
+        #expect(body.contains("https://example.com"))
 
         let mathBody = renderer.render("https://example.com$x$").body
-        #expect(mathBody.contains(#"<a href="https://example.com">https://example.com</a><span class="math math-inline">x</span>"#))
+        #expect(!mathBody.contains(#"<a href="https://example.com">https://example.com</a>"#))
+        #expect(mathBody.contains("https://example.com"))
     }
 
     @Test func referenceKeyWithEntityResolves() {

@@ -462,7 +462,7 @@ struct CommonSyntaxTests {
         let cjk = renderer.render("https://example.com。" + String(repeating: "然", count: 700)).body
         #expect(cjk.contains("<a href=\"https://example.com\">"), "\(cjk)")
 
-        let padded = renderer.render("https://example.com" + String(repeating: "\u{200B}", count: 1_500) + "tail").body
+        let padded = renderer.render("https://example.com" + String(repeating: "\u{200B}", count: 1_500) + "。然后").body
         #expect(padded.contains("<a href=\"https://example.com\">"), "\(padded)")
     }
 
@@ -502,18 +502,31 @@ struct CommonSyntaxTests {
         #expect(HTMLSafety.decodeAllEntities("&#x200B;&#xFF20;") == "\u{200B}＠")
     }
 
-    /// Value: protects=ordinary prose continuations still link after the no-retarget guard; fails_when=the guard is broadened to suppress normal Chinese punctuation or inline HTML; why_new=the guard could regress the reported cases; seam=none; no_claim=green proves these continuations, not every prose case.
+    /// Value: protects=ordinary prose continuations still link after the no-retarget guard; fails_when=the guard is broadened to suppress normal Chinese punctuation; why_new=the guard could regress the reported cases; seam=none; no_claim=green proves these continuations, not every prose case.
     @Test(arguments: [
-        "https://example.com\u{200B}tail",
         "https://example.com。然后",
         "https://example.com：然后",
         "https://example.com％然后",
-        "https://example.com<em>end</em>",
         "https://example.com。然后 foo\(atSign)bar.com"
     ])
     func ordinaryContinuationsStillLink(source: String) {
         let body = renderer.render(source).body
         #expect(body.contains("<a href=\"https://example.com\">"), "\(body)")
+    }
+
+    /// Value: protects=a continuation that starts with a host-label character extends the final label and stays literal; fails_when=an invisible/empty-token cut hides the extension; why_new=the dot rules do not see a split final label; seam=none; no_claim=green proves these label-extension shapes only.
+    @Test(arguments: [
+        "https://evil.co\u{200B}m",
+        "https://evil.co<span></span>m",
+        "https://example.com\u{200B}tail",
+        "https://example.com<em>end</em>",
+        "https://example.com$x$"
+    ])
+    func labelExtensionStaysLiteral(source: String) {
+        let body = renderer.render(source).body
+        #expect(!body.contains("href=\"https://evil.co\""), "\(body)")
+        #expect(!body.contains("href=\"https://example.com\""), "\(body)")
+        #expect(body.contains("evil.co") || body.contains("example.com"), "\(body)")
     }
 
     /// Value: protects=path, query and fragment continuations still link because the host cannot be retargeted; fails_when=the authority scoping is removed; why_new=the port/authority split changed; seam=none; no_claim=green proves these three delimiters, not every non-authority continuation.
@@ -570,8 +583,12 @@ struct CommonSyntaxTests {
         #expect(!body.contains("href=\"https://reference.example.com\""))
         #expect(!body.contains("href=\"https://image.example.com\""))
         #expect(!body.contains("href=\"http://www.bad_domain.com\""))
-        #expect(body.contains("</a><code>code</code>"))
-        #expect(body.contains("</a><em>end</em>"))
+        // Direct host-label content after the URL extends the final label, so
+        // the candidate stays literal.
+        #expect(!body.contains("</a><code>code</code>"))
+        #expect(!body.contains("</a><em>end</em>"))
+        #expect(body.contains("https://example.com<code>code</code>"))
+        #expect(body.contains("https://example.com<em>end</em>"))
     }
 
     @Test(arguments: ["NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION"])

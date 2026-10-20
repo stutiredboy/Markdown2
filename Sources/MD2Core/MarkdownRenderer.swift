@@ -2353,6 +2353,13 @@ public struct MarkdownRenderer: Sendable {
                     // continuation. Fullwidth delimiters stay in it: a browser
                     // does not end the authority at them.
                     if visibleText.contains("@") { return candidate }
+                    // A continuation that starts with a host-label character
+                    // extends the final label: `evil.co` + invisible + `m`
+                    // reads as `evil.com` while the anchor is `evil.co`.
+                    if let first = visibleText.first,
+                       first.isLetter || first.isNumber || first == "-" || first == "_" {
+                        return candidate
+                    }
                     // Check the encoded-dot prefix before folding replaces it.
                     if visibleText.first == "%",
                        visibleText.dropFirst().prefix(2).lowercased() == Self.percentEncodedDot {
