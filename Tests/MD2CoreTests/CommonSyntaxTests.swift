@@ -397,7 +397,10 @@ struct CommonSyntaxTests {
         // Percent-encoded host dots fold before the label checks.
         "https://evil.com。例%2etrusted%2ecom",
         // A broken image renders its alt text in exported HTML/PDF.
-        "https://evil.com。![trusted.com](https://invalid.invalid/x.png)"
+        "https://evil.com。![trusted.com](https://invalid.invalid/x.png)",
+        // Alt text participates in document order, not appended after the token.
+        "https://evil.com\u{200B}[![.](https://invalid.invalid/x.png)trusted](https://target.example/x)",
+        "https://evil.com\u{200B}<img alt=\".\">trusted"
     ])
     func spoofContinuationsStayLiteral(source: String) {
         let body = renderer.render(source).body

@@ -2210,15 +2210,18 @@ public struct MarkdownRenderer: Sendable {
                let token = InlineProtector.tokenRegex.firstMatch(in: text, options: .anchored, range: NSRange(index..<text.endIndex, in: text)),
                let tokenRange = Range(token.range, in: text) {
                 // Restored fragments are HTML (code spans, links, entity
-                // spellings). Keep image alt text, strip tags, then decode
-                // entities in the remaining text nodes.
+                // spellings). Substitute image alt text in place (a broken
+                // image shows it), strip remaining tags, then decode entities
+                // once in document order.
                 let raw = protector.restore(in: String(text[tokenRange]))
-                let altText = Self.imageAltRegex.matches(in: raw, range: NSRange(raw.startIndex..., in: raw)).compactMap { match in
-                    Range(match.range(at: 1), in: raw).map { String(raw[$0]) }
-                }.joined(separator: " ")
-                let stripped = Self.htmlTagRegex.stringByReplacingMatches(
+                let withAlt = Self.imageAltRegex.stringByReplacingMatches(
                     in: raw,
                     range: NSRange(raw.startIndex..., in: raw),
+                    withTemplate: "$1"
+                )
+                let stripped = Self.htmlTagRegex.stringByReplacingMatches(
+                    in: withAlt,
+                    range: NSRange(withAlt.startIndex..., in: withAlt),
                     withTemplate: ""
                 )
                 // A missing entity table would silently leave named spellings
@@ -2228,7 +2231,6 @@ public struct MarkdownRenderer: Sendable {
                     return VisibleContinuation(scalars: result, exhausted: true)
                 }
                 let visibleText = HTMLSafety.decodeAllEntities(stripped)
-                    + (altText.isEmpty ? "" : HTMLSafety.decodeAllEntities(altText))
                 guard Self.appendVisibleContinuation(visibleText, to: &result) else {
                     return VisibleContinuation(scalars: result, exhausted: false)
                 }
