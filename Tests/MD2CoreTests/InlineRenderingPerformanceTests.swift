@@ -40,13 +40,17 @@ struct InlineRenderingPerformanceTests {
         #expect(body.hasSuffix(" &amp;</p>"))
     }
 
-    @Test func bareURLAdjacentToProtectedContent() {
+    /// A bare URL directly followed by protected host-label content reads as a
+    /// longer authority, so the candidate stays literal.
+    @Test func bareURLAdjacentToProtectedContentStaysLiteral() {
         let body = renderer.render("https://example.com`code` https://example.com<em>end</em>").body
-        #expect(body.contains(#"<a href="https://example.com">https://example.com</a><code>code</code>"#))
-        #expect(body.contains(#"<a href="https://example.com">https://example.com</a><em>end</em>"#))
+        #expect(!body.contains(#"<a href="https://example.com">https://example.com</a><code>code</code>"#))
+        #expect(!body.contains(#"<a href="https://example.com">https://example.com</a><em>end</em>"#))
+        #expect(body.contains("https://example.com"))
 
         let mathBody = renderer.render("https://example.com$x$").body
-        #expect(mathBody.contains(#"<a href="https://example.com">https://example.com</a><span class="math math-inline">x</span>"#))
+        #expect(!mathBody.contains(#"<a href="https://example.com">https://example.com</a>"#))
+        #expect(mathBody.contains("https://example.com"))
     }
 
     @Test func referenceKeyWithEntityResolves() {
@@ -338,6 +342,35 @@ struct InlineRenderingPerformanceTests {
 
     @Test func oneBareURLPerLineParagraphScalesLinearly() throws {
         try assertOnePerLineScales(.bareURLs)
+    }
+
+    /// The authority guard's continuation walk is bounded. An unbounded walk
+    /// from every candidate made a single long line quadratic (16 KB ≈ 6 s on
+    /// the measured machine); the bound keeps it linear.
+    @Test func repeatedTerminatedBareURLsRenderInBoundedTime() throws {
+        let small = String(repeating: "www.a。", count: 1_000)
+        let large = String(repeating: "www.a。", count: 2_000)
+        _ = renderer.render(large)
+
+        // gstack-timing-ok: quadratic scaling guard for the continuation scan; min-of-3 bounds timer noise
+        let smallMS = bestOf(3) { _ = renderer.render(small) }
+        // gstack-timing-ok: fail-fast ceiling; the unbounded scan took seconds on this input
+        try #require(
+            smallMS < 1_000,
+            "1,000 terminated bare-URL candidates took \(format(smallMS)) ms"
+        )
+
+        // gstack-timing-ok: the ratio is the quadratic guard; unbounded is ~4x per doubling
+        let largeMS = bestOf(3) { _ = renderer.render(large) }
+        #expect(
+            largeMS < smallMS * 3.0 + 2.0,
+            "terminated bare-URL candidates: 1,000=\(format(smallMS)) ms, 2,000=\(format(largeMS)) ms"
+        )
+        // gstack-timing-ok: absolute ceiling that bounds CI time on a regression
+        #expect(largeMS < 2_000, "2,000 terminated bare-URL candidates took \(format(largeMS)) ms")
+
+        let body = renderer.render(large).body
+        #expect(body.components(separatedBy: "。").count - 1 == 2_000, "rendered output is incomplete")
     }
 
     private func assertOnePerLineScales(_ workload: Workload) throws {
