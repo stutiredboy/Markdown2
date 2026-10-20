@@ -507,6 +507,7 @@ struct CommonSyntaxTests {
         "https://example.com。然后",
         "https://example.com：然后",
         "https://example.com％然后",
+        "https://example.com<br>next",
         "https://example.com。然后 foo\(atSign)bar.com"
     ])
     func ordinaryContinuationsStillLink(source: String) {
@@ -518,6 +519,9 @@ struct CommonSyntaxTests {
     @Test(arguments: [
         "https://evil.co\u{200B}m",
         "https://evil.co<span></span>m",
+        "https://evil.co\u{200B}\u{2065}m",
+        "https://evil.co<span></span>\u{2065}m",
+        "https://evil.co\u{200B}${}m$",
         "https://example.com\u{200B}tail",
         "https://example.com<em>end</em>",
         "https://example.com$x$"

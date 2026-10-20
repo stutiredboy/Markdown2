@@ -2128,8 +2128,10 @@ public struct MarkdownRenderer: Sendable {
     ]
 
     /// Invisible in the rendered text: Unicode format/control (and stray
-    /// combining) scalars, plus the blank-rendering fillers above.
+    /// combining) scalars, default-ignorable scalars, plus the blank-rendering
+    /// fillers above.
     private static func isInvisibleContinuationScalar(_ scalar: Unicode.Scalar) -> Bool {
+        if scalar.properties.isDefaultIgnorableCodePoint { return true }
         switch scalar.properties.generalCategory {
         case .format, .control, .nonspacingMark, .enclosingMark: return true
         default: break
@@ -2192,6 +2194,11 @@ public struct MarkdownRenderer: Sendable {
     private static let mathSpanRegex = try! NSRegularExpression(
         pattern: #"<span class="math math-(?:inline|display)">([\s\S]*?)</span>"#
     )
+    /// Block-level and void HTML boundaries end the visible authority line.
+    private static let blockBoundaryRegex = try! NSRegularExpression(
+        pattern: #"<(?:br|hr|p|div|li|ul|ol|blockquote|pre|table|tr|section|figure|figcaption|h[1-6])\b"#,
+        options: [.caseInsensitive]
+    )
 
     /// Walks the text after the URL, restoring protected tokens, stripping
     /// inline HTML, decoding entities/escapes, and skipping invisible
@@ -2210,8 +2217,13 @@ public struct MarkdownRenderer: Sendable {
             }
             sourceBudget -= scalarCount
             if character == InlineProtector.sentinelCharacter,
-               let token = InlineProtector.tokenRegex.firstMatch(in: text, options: .anchored, range: NSRange(index..<text.endIndex, in: text)),
-               let tokenRange = Range(token.range, in: text) {
+               let token = InlineProtector.tokenRegex.firstMatch(in: text, options: .anchored, range: NSRange(index..<text.endIndex, in: text)) {
+                // A token range that is not Character-aligned cannot be
+                // inspected; leave the candidate literal rather than link
+                // unchecked.
+                guard let tokenRange = Range(token.range, in: text) else {
+                    return VisibleContinuation(scalars: result, exhausted: true)
+                }
                 // Restored fragments are HTML (code spans, links, entity
                 // spellings). Substitute image alt text in place (a broken
                 // image shows it), strip remaining tags, then decode entities
@@ -2226,18 +2238,16 @@ public struct MarkdownRenderer: Sendable {
                 }
                 sourceBudget -= fragmentLength
                 // Inline math is typeset by KaTeX; its source text is not a
-                // faithful visible model. Fail closed when the TeX can hide a
-                // dot: a control sequence (`\ldotp`) or whitespace (KaTeX
-                // removes it, so `. foo` renders as `.foo`). Plain `$x$`
-                // continuations stay linked.
-                let mathMatches = Self.mathSpanRegex.matches(in: raw, range: NSRange(raw.startIndex..., in: raw))
-                for match in mathMatches {
-                    guard let innerRange = Range(match.range(at: 1), in: raw) else { continue }
-                    let inner = raw[innerRange]
-                    if inner.contains("\\")
-                        || inner.unicodeScalars.contains(where: { $0.properties.isWhitespace }) {
-                        return VisibleContinuation(scalars: result, exhausted: true)
-                    }
+                // faithful visible model (control sequences, grouping braces
+                // and ignored whitespace can all change the rendered text).
+                // Fail closed for any math span in the continuation.
+                if Self.mathSpanRegex.firstMatch(in: raw, range: NSRange(raw.startIndex..., in: raw)) != nil {
+                    return VisibleContinuation(scalars: result, exhausted: true)
+                }
+                // A block-level or void HTML boundary starts a new visible
+                // line; text after it is not part of the authority.
+                if Self.blockBoundaryRegex.firstMatch(in: raw, range: NSRange(raw.startIndex..., in: raw)) != nil {
+                    return VisibleContinuation(scalars: result, exhausted: false)
                 }
                 let withAlt = Self.imageAltRegex.stringByReplacingMatches(
                     in: raw,
