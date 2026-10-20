@@ -2109,6 +2109,9 @@ public struct MarkdownRenderer: Sendable {
         return String(bareURLBoundaryCharacters.filter { !lookalikes.contains($0) })
     }()
 
+    /// IDNA dot equivalents browsers fold into `.` when resolving a host.
+    static let idnaDots: Set<Character> = ["。", "．", "｡"]
+
     /// Runs after explicit links/images and protected code/math. Tokens for
     /// escaped punctuation/entities can be part of a URL; structural tokens
     /// terminate it so links never consume neighbouring code or another link.
@@ -2118,6 +2121,7 @@ public struct MarkdownRenderer: Sendable {
             let candidate = matchText(match, in: source)
             var prefix = candidate
             var suffix = ""
+            var firstNonLiteralToken: Range<String.Index>?
             let tokenPattern = "\u{E000}MD2-(\\d+)\u{E000}"
             if let regex = try? NSRegularExpression(pattern: tokenPattern) {
                 for token in regex.matches(in: candidate, range: NSRange(candidate.startIndex..., in: candidate)) {
@@ -2126,6 +2130,7 @@ public struct MarkdownRenderer: Sendable {
                           let range = Range(token.range, in: candidate) else { continue }
                     prefix = String(candidate[..<range.lowerBound])
                     suffix = String(candidate[range.lowerBound...])
+                    firstNonLiteralToken = range
                     break
                 }
             }
@@ -2154,6 +2159,52 @@ public struct MarkdownRenderer: Sendable {
                 let parts = domain.split(separator: ".", omittingEmptySubsequences: false)
                 guard parts.count >= 2, parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" } }),
                       parts.suffix(2).allSatisfy({ !$0.contains("_") }) else { return candidate }
+                // Only guard when the authority ends the URL. With a path,
+                // query or fragment present, the host cannot be retargeted by
+                // the visible continuation.
+                let authorityAtEnd = url[domainStart...].count == domain.count
+                if authorityAtEnd {
+                    // Do not anchor a prefix when the visible continuation would
+                    // fuse into a different authority: an invisible terminator
+                    // before a dot, an IDNA dot before a label, a colon before
+                    // userinfo, a fullwidth percent before an encoded dot, or an
+                    // inline raw-HTML token before a dot. Ordinary prose
+                    // continuations stay linked.
+                    if let tokenRange = firstNonLiteralToken,
+                       let afterToken = candidate[tokenRange.upperBound...].first,
+                       afterToken == "." || afterToken == "@" || Self.idnaDots.contains(afterToken) {
+                        return candidate
+                    }
+                    if let matchRange = Range(match.range, in: source) {
+                        let afterMatch = source[matchRange.upperBound...]
+                        if let terminator = afterMatch.first {
+                            let rest = afterMatch.dropFirst()
+                            switch terminator {
+                            case "\u{200B}":
+                                if let next = rest.first,
+                                   next == "." || next == "@" || Self.idnaDots.contains(next) {
+                                    return candidate
+                                }
+                            case "。", "｡":
+                                if let next = rest.first,
+                                   next.unicodeScalars.allSatisfy({ $0.isASCII }),
+                                   next.isLetter || next.isNumber {
+                                    return candidate
+                                }
+                            case "：":
+                                if rest.range(of: #"^[A-Za-z0-9._+-]*@"#, options: .regularExpression) != nil {
+                                    return candidate
+                                }
+                            case "％":
+                                if rest.lowercased().hasPrefix("2e") {
+                                    return candidate
+                                }
+                            default:
+                                break
+                            }
+                        }
+                    }
+                }
             } else {
                 guard let last = url.last, last.isLetter || last.isNumber else { return candidate }
             }

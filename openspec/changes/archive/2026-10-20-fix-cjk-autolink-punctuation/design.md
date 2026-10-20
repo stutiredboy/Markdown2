@@ -129,6 +129,10 @@ Do not duplicate assertions already covered by `autolinksRespectBoundariesAndPro
 
 The pass remains one cached regex plus the same post-processing; the character class grows by ~75 code points and U+200B. No new scan, allocation loop, or unbounded structure is added, so the asymptotic cost is unchanged. This is an estimate; no benchmark is added. The design and matrix text must not claim a measured "no performance impact."
 
+### D12: Lookalike continuations stay literal
+
+A candidate whose visible continuation would change the apparent authority is left literal. The guard applies only when the authority ends the URL (no path, query, or fragment). It covers U+200B before `.`/`@`/an IDNA dot, an IDNA dot before an ASCII host label, `：` before userinfo `@`, `％` before `2e`, and an inline raw-HTML token before `.`/`@`/an IDNA dot. Ordinary prose continuations (`https://example.com。然后`, `https://example.com：然后`, `https://example.com％然后`, `https://example.com\u{200B}tail`, `https://example.com<em>end</em>`) stay linked. Chosen over normalizing the whole URL: the guard is local, keeps the reported prose cases, and blocks the retargeting class.
+
 ## Boundary / body asymmetry
 
 ```text

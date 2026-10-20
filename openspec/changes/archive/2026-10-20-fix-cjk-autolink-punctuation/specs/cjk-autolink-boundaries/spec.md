@@ -195,6 +195,40 @@ The `gfm-autolinks` entry in the machine-checked compatibility matrix SHALL reco
 - **THEN** the autolinks entry mentions that full-width punctuation ends a bare URL, that U+200B is handled, and that Han text after the authority is absorbed into the hostname
 - **AND** a consistency test fails if those phrases disappear
 
+### Requirement: Lookalike continuations do not retarget a bare URL
+
+A bare-URL candidate SHALL NOT be anchored when the visible text immediately after the matched URL would change the apparent authority. The pass SHALL leave the candidate literal when the continuation is an invisible U+200B before `.`, `@`, or an IDNA dot equivalent (U+3002, U+FF0E, U+FF61); an IDNA dot equivalent before an ASCII host label; a full-width colon `：` before userinfo text ending in `@`; a full-width percent `％` before `2e`/`2E`; or an inline raw-HTML token immediately before `.`, `@`, or an IDNA dot equivalent. This guard SHALL apply only when the authority ends the URL (no path, query, or fragment). Ordinary prose continuations (`https://example.com。然后`, `https://example.com：然后`, `https://example.com％然后`, `https://example.com\u{200B}tail`, `https://example.com<em>end</em>`) SHALL remain linked.
+
+#### Scenario: Invisible terminator before a dot stays literal
+
+- **WHEN** the source contains `https://evil.com\u{200B}.trusted.com`
+- **THEN** no anchor is produced for `https://evil.com`
+
+#### Scenario: IDNA dot before a host label stays literal
+
+- **WHEN** the source contains `https://evil.com。trusted.com` or `https://evil.com｡trusted.com`
+- **THEN** no anchor is produced for `https://evil.com`
+
+#### Scenario: Userinfo lookalike stays literal
+
+- **WHEN** the source contains `https://evil.com：@trusted.com` or `https://evil.com：443@trusted.com`
+- **THEN** no anchor is produced for `https://evil.com`
+
+#### Scenario: Encoded dot stays literal
+
+- **WHEN** the source contains `https://evil.com％2etrusted.com`
+- **THEN** no anchor is produced for `https://evil.com`
+
+#### Scenario: Inline HTML token before a dot stays literal
+
+- **WHEN** the source contains `https://evil.com<span>.trusted.com</span>`
+- **THEN** no anchor is produced for `https://evil.com`
+
+#### Scenario: Ordinary prose continuation still links
+
+- **WHEN** the source contains `https://example.com。然后`
+- **THEN** `https://example.com` is rendered as an anchor
+
 ### Requirement: Regression coverage runs in the default suite
 
 The non-GUI test suite SHALL cover the reported CJK cases, one terminator and one left-boundary character from each normative range (both endpoints where a range has typo risk, plus the single-character ranges), `www.` variants, hostname-vs-path absorption, the entity exceptions, and U+200B. These tests SHALL run under plain `swift test` without GUI opt-in.

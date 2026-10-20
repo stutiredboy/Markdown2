@@ -21,6 +21,7 @@
 - [x] 3.6 Add U+200B assertions: `https://example.com\u{200B}tail` ends before the character, and `\u{200B}https://example.com` links.
 - [x] 3.7 Add the negative ASCII-boundary assertion for `abchttps://example.com` (and assert `abcwww.example.com` stays literal in `asciiIdentifierBoundariesStillBlock`).
 - [x] 3.8 Run `swift test --filter CommonSyntaxTests` and confirm the new cases pass and no existing autolink case regresses.
+- [x] 3.9 Add `spoofContinuationsStayLiteral` (U+200B before `.`/`@`, `。`/`｡` before a host label, `：` before userinfo, `％2e`, and an inline `<span>` before a dot) and `ordinaryContinuationsStillLink` (U+200B before `tail`, `。然后`, `：然后`, `％然后`, and `<em>end</em>`).
 
 ## 4. Compatibility artifacts
 

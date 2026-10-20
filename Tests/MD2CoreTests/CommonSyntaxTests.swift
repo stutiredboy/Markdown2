@@ -268,6 +268,35 @@ struct CommonSyntaxTests {
         #expect(leading.contains("<a href=\"https://example.com\">https://example.com</a>"), "\(leading)")
     }
 
+    /// Value: protects=an invisible/IDNA/userinfo continuation cannot retarget a bare link to a shorter host; fails_when=the guard is removed and the prefix links again; why_new=the visible lookalike test covers `．／＃＠？` but not U+200B/。｡/：userinfo/%2e/HTML tokens; seam=none; no_claim=green proves these eight continuations, not every Unicode lookalike combination.
+    @Test(arguments: [
+        "https://evil.com\u{200B}.trusted.com",
+        "https://evil.com\u{200B}@trusted.com",
+        "https://evil.com。trusted.com",
+        "https://evil.com｡trusted.com",
+        "https://evil.com：@trusted.com",
+        "https://evil.com：443@trusted.com",
+        "https://evil.com％2etrusted.com",
+        "https://evil.com<span>.trusted.com</span>"
+    ])
+    func spoofContinuationsStayLiteral(source: String) {
+        let body = renderer.render(source).body
+        #expect(!body.contains("<a href=\"https://evil.com\">"), "\(body)")
+    }
+
+    /// Value: protects=ordinary prose continuations still link after the no-retarget guard; fails_when=the guard is broadened to suppress normal Chinese punctuation or inline HTML; why_new=the guard could regress the reported cases; seam=none; no_claim=green proves these five continuations, not every prose case.
+    @Test(arguments: [
+        "https://example.com\u{200B}tail",
+        "https://example.com。然后",
+        "https://example.com：然后",
+        "https://example.com％然后",
+        "https://example.com<em>end</em>"
+    ])
+    func ordinaryContinuationsStillLink(source: String) {
+        let body = renderer.render(source).body
+        #expect(body.contains("<a href=\"https://example.com\">"), "\(body)")
+    }
+
     /// Value: protects=the boundary constant and the exhaustive test table stay in sync; fails_when=a character is added to one but not the other; why_new=the test table re-encodes the ranges independently; seam=bareURLBoundaryCharacters (non-test callers: 1, via protectBareAutolinks); no_claim=green proves set equality, not that both regex classes use the constant.
     @Test func boundaryConstantMatchesSampleTable() {
         let samples = Set(bareURLBoundarySamples.map(\.character))
