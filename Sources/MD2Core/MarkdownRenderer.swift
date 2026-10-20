@@ -2079,12 +2079,12 @@ public struct MarkdownRenderer: Sendable {
         return text
     }
 
-    /// Characters that end a bare URL and, when they precede one, make it a
-    /// candidate: CJK/typographic punctuation (including full-width forms) and
-    /// the zero-width space U+200B, which ICU does not treat as `\s`. The set
-    /// contains no ASCII characters, so it is safe inside a regex class.
-    /// Module-internal so `boundaryConstantMatchesSampleTable` can compare it;
-    /// not public API.
+    /// Characters that are valid left boundaries for a bare URL; most also
+    /// terminate its body (see `bareURLBodyTerminators`). CJK/typographic
+    /// punctuation (including full-width forms) and the zero-width space U+200B,
+    /// which ICU does not treat as `\s`. The set contains no ASCII characters,
+    /// so it is safe inside a regex class. Module-internal so
+    /// `boundaryConstantMatchesSampleTable` can compare it; not public API.
     static let bareURLBoundaryCharacters: String = {
         let characters =
             "·–—‘’‚‛“”…、。〃〈〉《》「」『』【】〔〕〖〗〘〙〚〛〜〝〞〟〰〽・"
@@ -2111,6 +2111,58 @@ public struct MarkdownRenderer: Sendable {
 
     /// IDNA dot equivalents browsers fold into `.` when resolving a host.
     static let idnaDots: Set<Character> = ["。", "．", "｡"]
+
+    private static let invisibleContinuationScalars: Set<UInt32> = [
+        0x200B, 0xFEFF, 0x00AD, 0x2060, 0x200E, 0x200F,
+        0x202A, 0x202B, 0x202C, 0x202D, 0x202E,
+        0x2066, 0x2067, 0x2068, 0x2069
+    ]
+
+    private static func normalizeContinuation(_ character: Character) -> Character {
+        if idnaDots.contains(character) { return "." }
+        switch character {
+        case "％": return "%"
+        case "：": return ":"
+        case "＠": return "@"
+        default:
+            guard character.unicodeScalars.count == 1,
+                  let scalar = character.unicodeScalars.first else { return character }
+            let value = scalar.value
+            if (0xFF01...0xFF5E).contains(value), let normalized = Unicode.Scalar(value - 0xFEE0) {
+                return Character(normalized)
+            }
+            return character
+        }
+    }
+
+    /// Walks the text after the URL, restoring protected tokens, decoding
+    /// entities/escapes, stripping inline HTML, and skipping invisible format
+    /// characters, so the guard sees what a browser sees.
+    private func visibleContinuation(after start: String.Index, in text: String, protector: InlineProtector) -> String {
+        var result = ""
+        var index = start
+        let regex = MarkdownRegex.expression("\u{E000}MD2-(\\d+)\u{E000}")
+        while index < text.endIndex {
+            if let regex,
+               let token = regex.firstMatch(in: text, options: .anchored, range: NSRange(index..<text.endIndex, in: text)),
+               let tokenRange = Range(token.range, in: text) {
+                let restored = HTMLSafety.decodeEntities(protector.restore(in: String(text[tokenRange])))
+                result += restored.replacingOccurrences(of: #"<[^>]*>"#, with: "", options: .regularExpression)
+                index = tokenRange.upperBound
+                continue
+            }
+            let character = text[index]
+            index = text.index(after: index)
+            if character.unicodeScalars.count == 1,
+               let scalar = character.unicodeScalars.first,
+               Self.invisibleContinuationScalars.contains(scalar.value) {
+                continue
+            }
+            if character.isWhitespace || character == "/" || character == "?" || character == "#" { break }
+            result.append(Self.normalizeContinuation(character))
+        }
+        return result
+    }
 
     /// Runs after explicit links/images and protected code/math. Tokens for
     /// escaped punctuation/entities can be part of a URL; structural tokens
@@ -2159,49 +2211,40 @@ public struct MarkdownRenderer: Sendable {
                 let parts = domain.split(separator: ".", omittingEmptySubsequences: false)
                 guard parts.count >= 2, parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" } }),
                       parts.suffix(2).allSatisfy({ !$0.contains("_") }) else { return candidate }
-                // Only guard when the authority ends the URL. With a path,
-                // query or fragment present, the host cannot be retargeted by
-                // the visible continuation.
-                let authorityAtEnd = url[domainStart...].count == domain.count
+                // Only guard when the authority ends the URL. A path, query or
+                // fragment keeps the host fixed; a port is part of the authority.
+                let authorityAtEnd = !url[domainStart...].contains { $0 == "/" || $0 == "?" || $0 == "#" }
                 if authorityAtEnd {
-                    // Do not anchor a prefix when the visible continuation would
-                    // fuse into a different authority: an invisible terminator
-                    // before a dot, an IDNA dot before a label, a colon before
-                    // userinfo, a fullwidth percent before an encoded dot, or an
-                    // inline raw-HTML token before a dot. Ordinary prose
-                    // continuations stay linked.
-                    if let tokenRange = firstNonLiteralToken,
-                       let afterToken = candidate[tokenRange.upperBound...].first,
-                       afterToken == "." || afterToken == "@" || Self.idnaDots.contains(afterToken) {
-                        return candidate
+                    let start: String.Index?
+                    let continuationText: String
+                    if let tokenRange = firstNonLiteralToken {
+                        start = tokenRange.upperBound
+                        continuationText = candidate
+                    } else if let matchRange = Range(match.range, in: source) {
+                        start = matchRange.upperBound
+                        continuationText = source
+                    } else {
+                        start = nil
+                        continuationText = source
                     }
-                    if let matchRange = Range(match.range, in: source) {
-                        let afterMatch = source[matchRange.upperBound...]
-                        if let terminator = afterMatch.first {
-                            let rest = afterMatch.dropFirst()
-                            switch terminator {
-                            case "\u{200B}":
-                                if let next = rest.first,
-                                   next == "." || next == "@" || Self.idnaDots.contains(next) {
-                                    return candidate
-                                }
-                            case "。", "｡":
-                                if let next = rest.first,
-                                   next.unicodeScalars.allSatisfy({ $0.isASCII }),
-                                   next.isLetter || next.isNumber {
-                                    return candidate
-                                }
-                            case "：":
-                                if rest.range(of: #"^[A-Za-z0-9._+-]*@"#, options: .regularExpression) != nil {
-                                    return candidate
-                                }
-                            case "％":
-                                if rest.lowercased().hasPrefix("2e") {
-                                    return candidate
-                                }
-                            default:
-                                break
-                            }
+                    if let start {
+                        let visible = visibleContinuation(after: start, in: continuationText, protector: protector)
+                        let authorityVisible = visible.prefix { $0 != "/" && $0 != "?" && $0 != "#" && !$0.isWhitespace }
+                        // Any userinfo '@' before the next delimiter or whitespace
+                        // resolves the full visible line to the host after it.
+                        if authorityVisible.contains("@") { return candidate }
+                        if authorityVisible.first == "%",
+                           authorityVisible.dropFirst().prefix(2).lowercased() == "2e" {
+                            return candidate
+                        }
+                        // One or more IDNA dots followed by a host label fuses
+                        // the visible continuation into a different authority.
+                        let afterDots = authorityVisible.drop { $0 == "." }
+                        if afterDots.count < authorityVisible.count,
+                           let next = afterDots.first,
+                           next.unicodeScalars.allSatisfy({ $0.isASCII }),
+                           next.isLetter || next.isNumber {
+                            return candidate
                         }
                     }
                 }

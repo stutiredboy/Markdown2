@@ -131,7 +131,7 @@ The pass remains one cached regex plus the same post-processing; the character c
 
 ### D12: Lookalike continuations stay literal
 
-A candidate whose visible continuation would change the apparent authority is left literal. The guard applies only when the authority ends the URL (no path, query, or fragment). It covers U+200B before `.`/`@`/an IDNA dot, an IDNA dot before an ASCII host label, `：` before userinfo `@`, `％` before `2e`, and an inline raw-HTML token before `.`/`@`/an IDNA dot. Ordinary prose continuations (`https://example.com。然后`, `https://example.com：然后`, `https://example.com％然后`, `https://example.com\u{200B}tail`, `https://example.com<em>end</em>`) stay linked. Chosen over normalizing the whole URL: the guard is local, keeps the reported prose cases, and blocks the retargeting class.
+A candidate whose visible continuation would change the apparent authority is left literal. The guard applies when the authority (host with optional port) ends the URL (no path, query, or fragment). It normalizes the visible continuation first: protected tokens/entities/escapes are restored, inline HTML is stripped, invisible format characters are skipped, and IDNA/fullwidth forms are folded. It then blocks any ASCII `@` before the next delimiter/whitespace, an IDNA dot before an ASCII or fullwidth host label, or a fullwidth percent before `2e`. Ordinary prose continuations (`https://example.com。然后`, `https://example.com：然后`, `https://example.com％然后`, `https://example.com\u{200B}tail`, `https://example.com<em>end</em>`) stay linked. Chosen over normalizing the whole URL: the guard is local, keeps the reported prose cases, and blocks the retargeting class.
 
 ## Boundary / body asymmetry
 
