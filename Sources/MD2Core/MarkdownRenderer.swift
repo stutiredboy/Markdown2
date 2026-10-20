@@ -2189,6 +2189,9 @@ public struct MarkdownRenderer: Sendable {
     private static let imageAltRegex = try! NSRegularExpression(pattern: #"<img\b[^>]*\balt="([^"]*)"[^>]*>"#)
     private static let htmlTagRegex = try! NSRegularExpression(pattern: #"<[^>]*>"#)
     private static let namedEntitySpelling = try! NSRegularExpression(pattern: #"&[A-Za-z][A-Za-z0-9]+;"#)
+    private static let mathSpanRegex = try! NSRegularExpression(
+        pattern: #"<span class="math math-(?:inline|display)">([\s\S]*?)</span>"#
+    )
 
     /// Walks the text after the URL, restoring protected tokens, stripping
     /// inline HTML, decoding entities/escapes, and skipping invisible
@@ -2214,12 +2217,27 @@ public struct MarkdownRenderer: Sendable {
                 // image shows it), strip remaining tags, then decode entities
                 // once in document order.
                 let raw = protector.restore(in: String(text[tokenRange]))
-                // Inline math may render a dot from a TeX control word
-                // (`\ldotp`); its source text is not a faithful visible model.
-                // Fail closed for any TeX control sequence in a math span.
-                if (raw.contains(PreviewClass.mathInline) || raw.contains(PreviewClass.mathDisplay)),
-                   raw.contains("\\") {
+                // A protected fragment's expanded text can be much larger than
+                // its placeholder; charge it to the source budget before any
+                // regex or decode work.
+                let fragmentLength = raw.unicodeScalars.count
+                if fragmentLength > sourceBudget {
                     return VisibleContinuation(scalars: result, exhausted: true)
+                }
+                sourceBudget -= fragmentLength
+                // Inline math is typeset by KaTeX; its source text is not a
+                // faithful visible model. Fail closed when the TeX can hide a
+                // dot: a control sequence (`\ldotp`) or whitespace (KaTeX
+                // removes it, so `. foo` renders as `.foo`). Plain `$x$`
+                // continuations stay linked.
+                let mathMatches = Self.mathSpanRegex.matches(in: raw, range: NSRange(raw.startIndex..., in: raw))
+                for match in mathMatches {
+                    guard let innerRange = Range(match.range(at: 1), in: raw) else { continue }
+                    let inner = raw[innerRange]
+                    if inner.contains("\\")
+                        || inner.unicodeScalars.contains(where: { $0.properties.isWhitespace }) {
+                        return VisibleContinuation(scalars: result, exhausted: true)
+                    }
                 }
                 let withAlt = Self.imageAltRegex.stringByReplacingMatches(
                     in: raw,
@@ -2244,7 +2262,6 @@ public struct MarkdownRenderer: Sendable {
                 if result.count > Self.continuationVisibleBudget {
                     return VisibleContinuation(scalars: result, exhausted: true)
                 }
-                sourceBudget -= max(0, text[tokenRange].unicodeScalars.count - scalarCount)
                 index = tokenRange.upperBound
                 continue
             }
@@ -2306,7 +2323,10 @@ public struct MarkdownRenderer: Sendable {
                 // Only guard when the authority ends the URL. A path, query or
                 // fragment keeps the host fixed; a port is part of the authority.
                 let authorityAtEnd = !url[domainStart...].contains { $0 == "/" || $0 == "?" || $0 == "#" }
-                if authorityAtEnd, let matchRange = Range(match.range, in: source) {
+                if authorityAtEnd {
+                    // A non-Character-aligned match range cannot be inspected;
+                    // leave the candidate literal rather than link unchecked.
+                    guard let matchRange = Range(match.range, in: source) else { return candidate }
                     // A non-literal token (code span, math, link/image) was cut
                     // from the URL. Its rendered text is visible, so read the
                     // continuation from the token's source start; starting
@@ -2333,15 +2353,16 @@ public struct MarkdownRenderer: Sendable {
                     // continuation. Fullwidth delimiters stay in it: a browser
                     // does not end the authority at them.
                     if visibleText.contains("@") { return candidate }
+                    // Check the encoded-dot prefix before folding replaces it.
+                    if visibleText.first == "%",
+                       visibleText.dropFirst().prefix(2).lowercased() == Self.percentEncodedDot {
+                        return candidate
+                    }
                     let folded = visibleText.replacingOccurrences(
                         of: "%2e",
                         with: ".",
                         options: .caseInsensitive
                     )
-                    if folded.first == "%",
-                       folded.dropFirst().prefix(2).lowercased() == Self.percentEncodedDot {
-                        return candidate
-                    }
                     // Punctuation the guard stripped from the URL tail is still
                     // visible before the token; skip it so the dot/label rules
                     // see the host-shaped part.

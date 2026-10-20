@@ -417,6 +417,11 @@ struct CommonSyntaxTests {
         "https://evil.com$\\ldotp$trusted",
         "https://evil.com$\\ldotp$trusted$\\ldotp$com",
         "https://evil.com\\(\\ldotp\\)trusted",
+        // KaTeX also removes whitespace, so a spaced dot renders as a dot.
+        "https://evil.com\u{200B}$. trusted.com$",
+        // A single non-ASCII label after an encoded dot is still a longer host.
+        "https://evil.com％2e中国",
+        "https://evil.com%2e中国",
     ])
     func spoofContinuationsStayLiteral(source: String) {
         let body = renderer.render(source).body
