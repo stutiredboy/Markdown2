@@ -390,6 +390,18 @@ struct CommonSyntaxTests {
         "https://evil.com。？@trusted.com",
         "https://evil.com。／@trusted.com",
         "https://evil.com。＃@trusted.com",
+        // No trailing dot: only the '@' rule can block these.
+        "https://evil.com。？@trusted",
+        "https://evil.com。？@-trusted",
+        // No trailing label dot: only the fullwidth-delimiter fold can block these.
+        "https://evil.com。＊trusted",
+        "https://evil.com。～trusted",
+        "https://evil.com。＝trusted",
+        "https://evil.com。＾trusted",
+        // No trailing label dot: only the invisible-scalar skip can block these.
+        "https://evil.com。\u{0301}trusted",
+        "https://evil.com。\u{FE0F}trusted",
+        "https://evil.com。\u{200C}trusted",
         // Punctuation stripped from the URL tail is still visible.
         "https://evil.com)。trusted.com",
         "https://evil.com!。trusted.com",
@@ -434,6 +446,15 @@ struct CommonSyntaxTests {
         // Under the source cap, the ordinary dot rule still blocks.
         let underCap = renderer.render("https://evil.com" + String(repeating: "\u{200B}", count: 900) + ".trusted.com").body
         #expect(!underCap.contains("href=\"https://evil.com\""), "\(underCap)")
+    }
+
+    /// Value: protects=in-window continuations still link: the visible window covers ordinary CJK prose and invisible padding below the source cap; fails_when=the budget is lowered or invisible padding consumes the visible window; why_new=the cap tests only assert the over-cap literal outcome; seam=none; no_claim=green proves these two in-window shapes only.
+    @Test func scanBudgetWindowKeepsOrdinaryContinuationsLinked() {
+        let cjk = renderer.render("https://example.com。" + String(repeating: "然", count: 700)).body
+        #expect(cjk.contains("<a href=\"https://example.com\">"), "\(cjk)")
+
+        let padded = renderer.render("https://example.com" + String(repeating: "\u{200B}", count: 1_500) + "tail").body
+        #expect(padded.contains("<a href=\"https://example.com\">"), "\(padded)")
     }
 
     /// Value: protects=a sentence-final dot after CJK prose stays literal under the IDN-label rule; fails_when=the relaxation treats the final dot as prose and links the shorter host; why_new=the positive prose rows cover only a continuation without a further dot; seam=none; no_claim=green pins this conservative contract, not that all sentence-final prose should stay literal.
