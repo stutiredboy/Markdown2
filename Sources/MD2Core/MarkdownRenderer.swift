@@ -2150,13 +2150,13 @@ public struct MarkdownRenderer: Sendable {
     /// when a delimiter ends the authority. Markdown emphasis/strikethrough/
     /// highlight/sup/sub delimiters are markup, not visible authority text;
     /// fullwidth delimiters fold before the check.
-    private static func appendVisibleContinuation(_ text: String, to result: inout String) -> Bool {
+    private static func appendVisibleContinuation(_ text: String, to result: inout [Unicode.Scalar]) -> Bool {
         for scalar in text.unicodeScalars {
             if scalar.properties.isWhitespace || scalar == "/" || scalar == "?" || scalar == "#" { return false }
             if isInvisibleContinuationScalar(scalar) { continue }
             let normalized = normalizeContinuation(scalar)
             if "*_~=^".unicodeScalars.contains(normalized) { continue }
-            result.unicodeScalars.append(normalized)
+            result.append(normalized)
         }
         return true
     }
@@ -2168,12 +2168,14 @@ public struct MarkdownRenderer: Sendable {
     private static let continuationSourceBudget = 1_024
 
     private struct VisibleContinuation {
-        var text: String
+        var scalars: [Unicode.Scalar]
         var exhausted: Bool
+        var text: String { String(String.UnicodeScalarView(scalars)) }
     }
 
-    private static let imageAltRegex = MarkdownRegex.expression(#"<img\b[^>]*\balt="([^"]*)"[^>]*>"#)
-    private static let htmlTagRegex = MarkdownRegex.expression(#"<[^>]*>"#)
+    private static let imageAltRegex = try! NSRegularExpression(pattern: #"<img\b[^>]*\balt="([^"]*)"[^>]*>"#)
+    private static let htmlTagRegex = try! NSRegularExpression(pattern: #"<[^>]*>"#)
+    private static let namedEntitySpelling = try! NSRegularExpression(pattern: #"&[A-Za-z][A-Za-z0-9]+;"#)
 
     /// Walks the text after the URL, restoring protected tokens, stripping
     /// inline HTML, decoding entities/escapes, and skipping invisible
@@ -2181,13 +2183,15 @@ public struct MarkdownRenderer: Sendable {
     /// before entities are decoded: an entity-encoded `>` inside an attribute
     /// must not become a tag boundary. Both budgets fail closed.
     private func visibleContinuation(after start: String.Index, in text: String, protector: InlineProtector) -> VisibleContinuation {
-        var result = ""
+        var result: [Unicode.Scalar] = []
         var index = start
         var sourceBudget = Self.continuationSourceBudget
         while index < text.endIndex {
             let character = text[index]
             let scalarCount = character.unicodeScalars.count
-            if scalarCount > sourceBudget { return VisibleContinuation(text: result, exhausted: true) }
+            if scalarCount > sourceBudget {
+                return VisibleContinuation(scalars: result, exhausted: true)
+            }
             sourceBudget -= scalarCount
             if character == InlineProtector.sentinelCharacter,
                let token = InlineProtector.tokenRegex.firstMatch(in: text, options: .anchored, range: NSRange(index..<text.endIndex, in: text)),
@@ -2196,24 +2200,27 @@ public struct MarkdownRenderer: Sendable {
                 // spellings). Keep image alt text, strip tags, then decode
                 // entities in the remaining text nodes.
                 let raw = protector.restore(in: String(text[tokenRange]))
-                var altText = ""
-                if let altRegex = Self.imageAltRegex {
-                    altText = altRegex.matches(in: raw, range: NSRange(raw.startIndex..., in: raw)).compactMap { match in
-                        Range(match.range(at: 1), in: raw).map { String(raw[$0]) }
-                    }.joined(separator: " ")
-                }
-                let stripped = Self.htmlTagRegex?.stringByReplacingMatches(
+                let altText = Self.imageAltRegex.matches(in: raw, range: NSRange(raw.startIndex..., in: raw)).compactMap { match in
+                    Range(match.range(at: 1), in: raw).map { String(raw[$0]) }
+                }.joined(separator: " ")
+                let stripped = Self.htmlTagRegex.stringByReplacingMatches(
                     in: raw,
                     range: NSRange(raw.startIndex..., in: raw),
                     withTemplate: ""
-                ) ?? raw
+                )
+                // A missing entity table would silently leave named spellings
+                // opaque: fail closed instead.
+                if !HTMLSafety.hasNamedEntityTable,
+                   Self.namedEntitySpelling.firstMatch(in: raw, range: NSRange(raw.startIndex..., in: raw)) != nil {
+                    return VisibleContinuation(scalars: result, exhausted: true)
+                }
                 let visibleText = HTMLSafety.decodeAllEntities(stripped)
                     + (altText.isEmpty ? "" : HTMLSafety.decodeAllEntities(altText))
-                if visibleText.unicodeScalars.count > Self.continuationVisibleBudget {
-                    return VisibleContinuation(text: result, exhausted: true)
-                }
                 guard Self.appendVisibleContinuation(visibleText, to: &result) else {
-                    return VisibleContinuation(text: result, exhausted: false)
+                    return VisibleContinuation(scalars: result, exhausted: false)
+                }
+                if result.count > Self.continuationVisibleBudget {
+                    return VisibleContinuation(scalars: result, exhausted: true)
                 }
                 sourceBudget -= max(0, text[tokenRange].unicodeScalars.count - scalarCount)
                 index = tokenRange.upperBound
@@ -2221,13 +2228,13 @@ public struct MarkdownRenderer: Sendable {
             }
             index = text.index(after: index)
             guard Self.appendVisibleContinuation(String(character), to: &result) else {
-                return VisibleContinuation(text: result, exhausted: false)
+                return VisibleContinuation(scalars: result, exhausted: false)
             }
-            if result.unicodeScalars.count > Self.continuationVisibleBudget {
-                return VisibleContinuation(text: result, exhausted: index < text.endIndex)
+            if result.count > Self.continuationVisibleBudget {
+                return VisibleContinuation(scalars: result, exhausted: true)
             }
         }
-        return VisibleContinuation(text: result, exhausted: false)
+        return VisibleContinuation(scalars: result, exhausted: false)
     }
 
     /// Runs after explicit links/images and protected code/math. Tokens for
@@ -2240,8 +2247,7 @@ public struct MarkdownRenderer: Sendable {
             var prefix = candidate
             var suffix = ""
             var firstNonLiteralToken: Range<String.Index>?
-            let regex = InlineProtector.tokenRegex
-            for token in regex.matches(in: candidate, range: NSRange(candidate.startIndex..., in: candidate)) {
+            for token in InlineProtector.tokenRegex.matches(in: candidate, range: NSRange(candidate.startIndex..., in: candidate)) {
                 guard let numberRange = Range(token.range(at: 1), in: candidate),
                       let number = Int(candidate[numberRange]), !protector.isLiteral(number),
                       let range = Range(token.range, in: candidate) else { continue }
@@ -2293,13 +2299,14 @@ public struct MarkdownRenderer: Sendable {
                     // A scan that hit its budget before a delimiter is unknown;
                     // fail closed rather than link the shorter host.
                     if tail.exhausted { return candidate }
-                    var visible = ""
+                    var visible: [Unicode.Scalar] = []
                     // Punctuation stripped from the URL tail is still visible
                     // before the token (`https://evil.com.`x``).
                     if Self.appendVisibleContinuation(trailing, to: &visible) {
-                        visible += tail.text
+                        visible.append(contentsOf: tail.scalars)
                     }
-                    let authorityVisible = visible.prefix { $0 != "/" && $0 != "?" && $0 != "#" && !$0.isWhitespace }
+                    let visibleText = String(String.UnicodeScalarView(visible))
+                    let authorityVisible = visibleText.prefix { $0 != "/" && $0 != "?" && $0 != "#" && !$0.isWhitespace }
                     // Any userinfo '@' before the next delimiter or whitespace
                     // resolves the full visible line to the host after it.
                     if authorityVisible.contains("@") { return candidate }
@@ -2313,15 +2320,10 @@ public struct MarkdownRenderer: Sendable {
                     if afterDots.count < authorityVisible.count,
                        let next = afterDots.first,
                        next.isLetter || next.isNumber {
-                        // A further dot extends the authority only when a host
-                        // label follows it; a sentence-final dot is prose.
+                        // A further dot after the label is a longer authority
+                        // even when the label is non-ASCII (IDNA folds it).
                         let label = afterDots.prefix { $0 != "." }
-                        if label.count < afterDots.count {
-                            let afterLabel = afterDots.dropFirst(label.count + 1)
-                            if let following = afterLabel.first, following.isLetter || following.isNumber {
-                                return candidate
-                            }
-                        }
+                        if label.count < afterDots.count { return candidate }
                         if next.isASCII { return candidate }
                     }
                     // Text that starts like a host label and contains a dot
@@ -3317,16 +3319,17 @@ private final class InlineProtector {
 
     private static let sentinelScalar: Unicode.Scalar = "\u{E000}"
     /// The sentinel as a Character, for the guard's fast-path check.
-    static let sentinelCharacter: Character = "\u{E000}"
+    static let sentinelCharacter = Character(String(sentinelScalar))
 
     /// The placeholder token grammar, shared by the pass that cuts non-literal
-    /// tokens and the guard that restores them.
-    static let tokenPattern = "\u{E000}MD2-(\\d+)\u{E000}"
+    /// tokens and the guard that restores them. Built from the one sentinel
+    /// definition so the grammar cannot drift from `protect()`.
+    static let tokenPattern = "\(sentinelCharacter)MD2-(\\d+)\(sentinelCharacter)"
     static let tokenRegex = try! NSRegularExpression(pattern: tokenPattern)
 
     /// Stores `fragment` and returns the private-use-area token standing in for it.
     func protect(_ fragment: String, source: String? = nil, literal: Bool = false) -> String {
-        let token = "\u{E000}MD2-\(fragments.count)\u{E000}"
+        let token = "\(Self.sentinelCharacter)MD2-\(fragments.count)\(Self.sentinelCharacter)"
         if literal { literals.insert(fragments.count) }
         sources.append(source ?? fragment)
         fragments.append(fragment)

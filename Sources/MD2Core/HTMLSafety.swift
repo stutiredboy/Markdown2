@@ -84,6 +84,10 @@ enum HTMLSafety {
     private static let allEntityPattern = try! NSRegularExpression(
         pattern: #"&(#(?:[xX][0-9a-fA-F]+|[0-9]+)|[A-Za-z][A-Za-z0-9]+);"#)
 
+    /// False when the bundled table failed to load; the bare-URL continuation
+    /// guard fails closed rather than trusting an opaque named spelling.
+    static var hasNamedEntityTable: Bool { !namedEntities.isEmpty }
+
     /// Decodes numeric and full HTML5 named references in one pass:
     /// `&amp;lt;` is visible as `&lt;`, not as `<`.
     static func decodeAllEntities(_ source: String) -> String {

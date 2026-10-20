@@ -378,6 +378,8 @@ struct CommonSyntaxTests {
         "https://evil.com。é.trusted.com",
         "https://evil.com。ä.trusted.com",
         "https://evil.com。然后.trusted.com",
+        "https://evil.com。рф。",
+        "https://evil.com。中国。",
         // A broken image renders its alt text in exported HTML/PDF.
         "https://evil.com。![trusted.com](https://invalid.invalid/x.png)"
     ])
@@ -398,6 +400,28 @@ struct CommonSyntaxTests {
         let marks = renderer.render("https://evil.com。" + String(repeating: "\u{0301}", count: 600) + ".trusted.com").body
         #expect(!marks.contains("href=\"https://evil.com\""), "\(marks)")
         #expect(marks.contains("evil.com"), "\(marks)")
+    }
+
+    /// Value: protects=the scan's fail-closed caps: a URL followed by more source padding or more visible continuation than the budgets stays literal; fails_when=a cap returns without exhausted and the short host links; why_new=the padding test stays under both caps; seam=none; no_claim=green proves the two cap boundaries, not every long continuation.
+    @Test func scanBudgetFailsClosed() {
+        let sourceCap = renderer.render("https://evil.com" + String(repeating: "\u{200B}", count: 1_100) + ".trusted.com").body
+        #expect(!sourceCap.contains("href=\"https://evil.com\""), "\(sourceCap)")
+        #expect(sourceCap.contains("evil.com"), "\(sourceCap)")
+
+        let visibleCap = renderer.render("https://example.com。" + String(repeating: "然", count: 600) + ".trusted.com").body
+        #expect(!visibleCap.contains("href=\"https://example.com\""), "\(visibleCap)")
+        #expect(visibleCap.contains("example.com"), "\(visibleCap)")
+
+        // Under the source cap, the ordinary dot rule still blocks.
+        let underCap = renderer.render("https://evil.com" + String(repeating: "\u{200B}", count: 900) + ".trusted.com").body
+        #expect(!underCap.contains("href=\"https://evil.com\""), "\(underCap)")
+    }
+
+    /// Value: protects=a sentence-final dot after CJK prose stays literal under the IDN-label rule; fails_when=the relaxation treats the final dot as prose and links the shorter host; why_new=the positive prose rows cover only a continuation without a further dot; seam=none; no_claim=green pins this conservative contract, not that all sentence-final prose should stay literal.
+    @Test func sentenceFinalDotAfterCJKProseStaysLiteral() {
+        let body = renderer.render("见 https://example.com。然后继续。").body
+        #expect(!body.contains("<a href=\"https://example.com\">"), "\(body)")
+        #expect(body.contains("example.com"), "\(body)")
     }
 
     /// Value: protects=an unpaired delimiter after a dot keeps the conservative literal result; fails_when=the delimiter handling starts linking prose that renders next to the authority; why_new=the delimiter rows are all paired markup; seam=none; no_claim=green pins the current conservative behavior, not a claim that prose should stay literal.
@@ -436,9 +460,7 @@ struct CommonSyntaxTests {
         "https://example.com：然后",
         "https://example.com％然后",
         "https://example.com<em>end</em>",
-        "https://example.com。然后 foo\(atSign)bar.com",
-        "见 https://example.com。然后继续。",
-        "详见https://example.com。谢谢。"
+        "https://example.com。然后 foo\(atSign)bar.com"
     ])
     func ordinaryContinuationsStillLink(source: String) {
         let body = renderer.render(source).body
