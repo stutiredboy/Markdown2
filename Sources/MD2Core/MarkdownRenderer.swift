@@ -2097,11 +2097,23 @@ public struct MarkdownRenderer: Sendable {
         return characters
     }()
 
+    /// Full-width structural lookalikes are valid left boundaries but must not
+    /// terminate the URL body: ending `https://evil.com．trusted.com` at `．`
+    /// would link `evil.com` while the text reads like a longer host.
+    static let bareURLStructuralLookalikes = "．／＃＠？"
+
+    /// The URL-body terminators: the full boundary set minus the structural
+    /// lookalikes above. The left-boundary lookbehind still uses the full set.
+    static let bareURLBodyTerminators: String = {
+        let lookalikes = Set(bareURLStructuralLookalikes)
+        return String(bareURLBoundaryCharacters.filter { !lookalikes.contains($0) })
+    }()
+
     /// Runs after explicit links/images and protected code/math. Tokens for
     /// escaped punctuation/entities can be part of a URL; structural tokens
     /// terminate it so links never consume neighbouring code or another link.
     private func protectBareAutolinks(_ text: String, protector: InlineProtector) -> String {
-        let pattern = #"(?<![^\s*_~(\p{sc=Han}\#(Self.bareURLBoundaryCharacters)])(?:https?://|www\.)[^\s<>\#(Self.bareURLBoundaryCharacters)]+|(?<![\w.+\-])[-A-Za-z0-9_+.]+@[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+"#
+        let pattern = #"(?<![^\s*_~(\p{sc=Han}\#(Self.bareURLBoundaryCharacters)])(?:https?://|www\.)[^\s<>\#(Self.bareURLBodyTerminators)]+|(?<![\w.+\-])[-A-Za-z0-9_+.]+@[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+"#
         return replaceMatches(in: text, pattern: pattern) { match, source in
             let candidate = matchText(match, in: source)
             var prefix = candidate

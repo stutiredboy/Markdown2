@@ -52,7 +52,7 @@ Add the boundary set to the body's negated character class and the Han/punctuati
 
 ### D2: One canonical boundary-character definition used by both rules
 
-Define a single module-internal constant, `bareURLBoundaryCharacters` (renamed from the earlier `cjkURLPunctuation` because it now includes U+200B; module-internal rather than file-private so `boundaryConstantMatchesSampleTable` can compare it through `@testable import`, not public API), and interpolate it into both the lookbehind and the body class of the raw-string pattern with `\#(...)`. The normative content:
+Define a single module-internal constant, `bareURLBoundaryCharacters` (renamed from the earlier `cjkURLPunctuation` because it now includes U+200B; module-internal rather than file-private so `boundaryConstantMatchesSampleTable` can compare it through `@testable import`, not public API). The left-boundary lookbehind uses the full constant; the URL body uses `bareURLBodyTerminators`, the constant minus the structural lookalikes `．／＃＠？`, which remain valid left boundaries so a lookalike cannot retarget a shorter host. Interpolate both into the raw-string pattern with `\#(...)`. The normative content:
 
 - U+00B7 `·`
 - U+2013–U+2014 `–—`

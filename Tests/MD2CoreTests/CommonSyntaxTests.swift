@@ -36,6 +36,10 @@ private let bareURLBoundarySamples: [(label: String, character: Character)] = {
     return samples
 }()
 
+private let bareURLTerminatorSamples = bareURLBoundarySamples.filter {
+    !MarkdownRenderer.bareURLStructuralLookalikes.contains($0.character)
+}
+
 struct CommonSyntaxTests {
     private let renderer = MarkdownRenderer()
     private let enabled = RenderConfig(inlineFeatures: .init(highlight: true, superscript: true, subscriptEnabled: true))
@@ -141,7 +145,7 @@ struct CommonSyntaxTests {
         #expect(body.contains("</a>\(sample.2)</p>"), "\(body)")
     }
 
-    @Test(arguments: bareURLBoundarySamples)
+    @Test(arguments: bareURLTerminatorSamples)
     func boundaryCharactersTerminateBareURLs(sample: (label: String, character: Character)) {
         let body = renderer.render("https://example.com/a\(sample.character)tail").body
         #expect(body.contains("<a href=\"https://example.com/a\">https://example.com/a</a>"), "\(sample.label): \(body)")
@@ -249,6 +253,19 @@ struct CommonSyntaxTests {
     @Test func supplementaryHanIsAValidLeftBoundary() {
         let body = renderer.render("\u{20000}https://example.com").body
         #expect(body.contains("\u{20000}<a href=\"https://example.com\">https://example.com</a>"), "\(body)")
+    }
+
+    /// Value: protects=full-width structural lookalikes are valid left boundaries but stay URL content, so a lookalike cannot retarget a link to a shorter host; fails_when=the URL body terminates at one of them again; why_new=the terminator table covers prose punctuation, not the host-deception case; seam=none; no_claim=green proves these five lookalikes, not every full-width code point.
+    @Test(arguments: ["．", "／", "＃", "＠", "？"] as [Character])
+    func structuralLookalikesStayURLContent(character: Character) {
+        let deception = renderer.render("https://evil.com\(character)trusted.com").body
+        #expect(!deception.contains("<a href=\"https://evil.com\">"), "\(deception)")
+
+        let path = renderer.render("https://example.com/a\(character)tail").body
+        #expect(path.contains("<a href=\"https://example.com/a\(character)tail\">"), "\(path)")
+
+        let leading = renderer.render("\(character)https://example.com").body
+        #expect(leading.contains("<a href=\"https://example.com\">https://example.com</a>"), "\(leading)")
     }
 
     /// Value: protects=the boundary constant and the exhaustive test table stay in sync; fails_when=a character is added to one but not the other; why_new=the test table re-encodes the ranges independently; seam=bareURLBoundaryCharacters (non-test callers: 1, via protectBareAutolinks); no_claim=green proves set equality, not that both regex classes use the constant.

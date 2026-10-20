@@ -27,6 +27,8 @@ The bare-URL pass SHALL treat the following literal source characters as URL ter
 - U+FF5B–U+FF65 `｛｜｝～｟｠｡｢｣､･`
 - U+200B ZERO WIDTH SPACE
 
+The full-width structural lookalikes `．` (U+FF0E), `／` (U+FF0F), `＃` (U+FF03), `＠` (U+FF20) and `？` (U+FF1F) SHALL NOT terminate a bare URL; they remain valid left boundaries and stay in the URL body, so `https://evil.com．trusted.com` does not link a shorter host than the text appears to show.
+
 Full-width letters and digits (U+FF10–U+FF19, U+FF21–U+FF3A, U+FF41–U+FF5A) are content, not punctuation. They SHALL NOT terminate a bare URL and SHALL NOT be valid left boundaries; a bare URL that contains them SHALL include them in the anchor text and destination. The rule SHALL apply to literal source characters; authored HTML entity spellings SHALL keep the existing entity-recovery behavior defined by the preserved-behavior requirement. The existing trailing ASCII punctuation cleanup, unmatched-closing-parenthesis handling, trailing entity spellings, and domain validation SHALL remain unchanged.
 
 #### Scenario: Full-width comma after a URL path
@@ -74,7 +76,7 @@ Full-width letters and digits (U+FF10–U+FF19, U+FF21–U+FF3A, U+FF41–U+FF5A
 
 ### Requirement: CJK text, full-width punctuation, and U+200B are valid left boundaries
 
-A bare URL (`http://`, `https://`, or `www.`) SHALL be recognized when immediately preceded by a Han character (`\p{sc=Han}`), by any character in the normative terminator set above, or by U+200B, in addition to the existing boundaries: start of text, whitespace, `*`, `_`, `~`, and `(`. A URL immediately preceded by any other character SHALL NOT be linked, preserving the existing ASCII identifier behavior. The left-boundary rule SHALL use the same normative set as the URL terminator rule.
+A bare URL (`http://`, `https://`, or `www.`) SHALL be recognized when immediately preceded by a Han character (`\p{sc=Han}`), by any character in the normative terminator set above, or by U+200B, in addition to the existing boundaries: start of text, whitespace, `*`, `_`, `~`, and `(`. A URL immediately preceded by any other character SHALL NOT be linked, preserving the existing ASCII identifier behavior. The left-boundary rule SHALL use the full normative boundary set: the URL-body terminator set plus the structural lookalikes that stay URL content.
 
 #### Scenario: Han character immediately before the scheme
 
