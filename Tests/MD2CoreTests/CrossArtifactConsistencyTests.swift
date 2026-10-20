@@ -58,6 +58,17 @@ struct CrossArtifactConsistencyTests {
                 "Docs/MarkdownSupport.md should reference the authoritative CompatibilityMatrix.md")
     }
 
+    @Test func supportDocDocumentsCJKBareURLAutolinkBoundaries() throws {
+        let supportDoc = try String(
+            contentsOf: Fixtures.url("../../Docs/MarkdownSupport.md"),
+            encoding: .utf8
+        )
+        for token in ["full-width", "U+200B", "hostname", "truncat"] {
+            #expect(supportDoc.contains(token),
+                    "Docs/MarkdownSupport.md is missing '\(token)' for the CJK autolink boundary")
+        }
+    }
+
     @Test func outOfScopeConstructsAreNotAdvertisedAsSupported() throws {
         for entry in try CompatibilityMatrix.load().entries where entry.tier == "Out-of-scope" {
             #expect(entry.docLabel != "Supported", "\(entry.id) is Out-of-scope but docLabel is Supported")

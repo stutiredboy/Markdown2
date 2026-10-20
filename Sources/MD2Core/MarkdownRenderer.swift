@@ -2079,11 +2079,20 @@ public struct MarkdownRenderer: Sendable {
         return text
     }
 
+    /// Characters that end a bare URL and, when they precede one, make it a
+    /// candidate: CJK/typographic punctuation (including full-width forms) and
+    /// the zero-width space U+200B, which ICU does not treat as `\s`. The set
+    /// contains no ASCII characters, so it is safe inside a regex class.
+    private static let bareURLBoundaryCharacters =
+        "·–—‘’‚‛“”…、。〃〈〉《》「」『』【】〔〕〖〗〘〙〚〛〜〝〞〟〰〽・"
+        + "！＂＃＄％＆＇（）＊＋，－．／：；＜＝＞？＠［＼］＾＿｀｛｜｝～｟｠｡｢｣､･"
+        + "\u{200B}"
+
     /// Runs after explicit links/images and protected code/math. Tokens for
     /// escaped punctuation/entities can be part of a URL; structural tokens
     /// terminate it so links never consume neighbouring code or another link.
     private func protectBareAutolinks(_ text: String, protector: InlineProtector) -> String {
-        let pattern = #"(?<![^\s*_~(])(?:https?://|www\.)[^\s<>]+|(?<![\w.+\-])[-A-Za-z0-9_+.]+@[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+"#
+        let pattern = #"(?<![^\s*_~(\p{sc=Han}\#(Self.bareURLBoundaryCharacters)])(?:https?://|www\.)[^\s<>\#(Self.bareURLBoundaryCharacters)]+|(?<![\w.+\-])[-A-Za-z0-9_+.]+@[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+"#
         return replaceMatches(in: text, pattern: pattern) { match, source in
             let candidate = matchText(match, in: source)
             var prefix = candidate

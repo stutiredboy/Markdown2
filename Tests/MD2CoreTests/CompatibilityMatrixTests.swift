@@ -98,4 +98,12 @@ struct CompatibilityMatrixTests {
             }
         }
     }
+
+    @Test func gfmAutolinksDeclareCJKBoundaryDivergence() throws {
+        let entry = try #require(try CompatibilityMatrix.load().entries.first { $0.id == "gfm-autolinks" })
+        let text = (entry.declaredBehavior + " " + entry.boundary).lowercased()
+        for token in ["full-width", "left boundar", "intentional", "gfm", "u+200b"] {
+            #expect(text.contains(token), "gfm-autolinks is missing '\(token)': \(text)")
+        }
+    }
 }

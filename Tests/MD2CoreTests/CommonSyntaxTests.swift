@@ -3,6 +3,35 @@ import Testing
 @testable import MD2Core
 @testable import MD2App
 
+/// One terminator and one left-boundary character per normative range: both
+/// endpoints where a range has typo risk, plus the single-character ranges.
+private let bareURLBoundarySamples: [(label: String, character: Character)] = [
+    ("U+00B7 middle dot", "·"),
+    ("U+2013 en dash", "–"),
+    ("U+2014 em dash", "—"),
+    ("U+2018 left single quote", "‘"),
+    ("U+201D right double quote", "”"),
+    ("U+2026 ellipsis", "…"),
+    ("U+3001 ideographic comma", "、"),
+    ("U+3003 ditto mark", "〃"),
+    ("U+3008 left angle bracket", "〈"),
+    ("U+3011 right black lenticular bracket", "】"),
+    ("U+3014 left tortoise shell bracket", "〔"),
+    ("U+301F low double prime quote", "〟"),
+    ("U+3030 wavy dash", "〰"),
+    ("U+303D part alternation mark", "〽"),
+    ("U+30FB katakana middle dot", "・"),
+    ("U+FF01 fullwidth exclamation", "！"),
+    ("U+FF0F fullwidth solidus", "／"),
+    ("U+FF1A fullwidth colon", "："),
+    ("U+FF20 fullwidth at sign", "＠"),
+    ("U+FF3B fullwidth left bracket", "［"),
+    ("U+FF40 fullwidth grave accent", "｀"),
+    ("U+FF5B fullwidth left brace", "｛"),
+    ("U+FF65 halfwidth katakana middle dot", "･"),
+    ("U+200B zero width space", "\u{200B}")
+]
+
 struct CommonSyntaxTests {
     private let renderer = MarkdownRenderer()
     private let enabled = RenderConfig(inlineFeatures: .init(highlight: true, superscript: true, subscriptEnabled: true))
@@ -96,6 +125,7 @@ struct CommonSyntaxTests {
     @Test(arguments: [
         ("https://example.com/a_(b)).", "https://example.com/a_(b)", ")."),
         ("www.example.com/a?!", "http://www.example.com/a", "?!"),
+        ("www.example.com/a.b.", "http://www.example.com/a.b", "."),
         ("https://example.com/?a=1&b=2", "https://example.com/?a=1&amp;b=2", ""),
         ("https://example.com/?a=1&amp;b=2", "https://example.com/?a=1&amp;b=2", ""),
         ("https://example.com/a&copy;", "https://example.com/a", "&amp;copy;"),
@@ -105,6 +135,66 @@ struct CommonSyntaxTests {
         let body = renderer.render(sample.0).body
         #expect(body.contains("href=\"\(sample.1)\""), "\(body)")
         #expect(body.contains("</a>\(sample.2)</p>"), "\(body)")
+    }
+
+    @Test(arguments: bareURLBoundarySamples)
+    func boundaryCharactersTerminateBareURLs(sample: (label: String, character: Character)) {
+        let body = renderer.render("https://example.com/a\(sample.character)tail").body
+        #expect(body.contains("<a href=\"https://example.com/a\">https://example.com/a</a>"), "\(sample.label): \(body)")
+        #expect(body.contains("</a>\(sample.character)tail"), "\(sample.label): \(body)")
+    }
+
+    @Test(arguments: bareURLBoundarySamples)
+    func boundaryCharactersPrecedeBareURLs(sample: (label: String, character: Character)) {
+        let body = renderer.render("x\(sample.character)https://example.com").body
+        #expect(body.contains("<a href=\"https://example.com\">https://example.com</a>"), "\(sample.label): \(body)")
+    }
+
+    @Test(arguments: [
+        ("见 https://example.com/docs，然后继续。", "https://example.com/docs", "，然后继续。"),
+        ("见 https://example.com，然后继续。", "https://example.com", "，然后继续。"),
+        ("参考 https://zh.wikipedia.org/wiki/北京。", "https://zh.wikipedia.org/wiki/北京", "。"),
+        ("https://example.com/wiki/北京，更多", "https://example.com/wiki/北京", "，更多")
+    ])
+    func cjkPunctuationBoundsReportedBareLinks(sample: (String, String, String)) {
+        let (source, destination, tail) = sample
+        let body = renderer.render(source).body
+        #expect(body.contains("<a href=\"\(destination)\">\(destination)</a>"), "\(body)")
+        #expect(body.contains("</a>\(tail)"), "\(body)")
+    }
+
+    @Test func cjkBoundariesApplyToWwwAutolinks() {
+        let leading = renderer.render("访问www.example.com").body
+        #expect(leading.contains("<a href=\"http://www.example.com\">www.example.com</a>"), "\(leading)")
+
+        let trailing = renderer.render("www.example.com。").body
+        #expect(trailing.contains("<a href=\"http://www.example.com\">www.example.com</a>"), "\(trailing)")
+        #expect(trailing.contains("</a>。</p>"), "\(trailing)")
+    }
+
+    @Test func hanAfterAuthorityIsAbsorbedIntoHostname() {
+        let path = renderer.render("https://example.com/wiki/北京").body
+        #expect(path.contains("<a href=\"https://example.com/wiki/北京\">https://example.com/wiki/北京</a>"), "\(path)")
+
+        let absorbed = renderer.render("https://example.com然后继续").body
+        #expect(absorbed.contains("<a href=\"https://example.com然后继续\">https://example.com然后继续</a>"), "\(absorbed)")
+
+        let afterHan = renderer.render("访问https://example.com然后继续").body
+        #expect(afterHan.contains("访问<a href=\"https://example.com然后继续\">"), "\(afterHan)")
+    }
+
+    @Test func entityEncodedPunctuationKeepsExistingBehavior() {
+        let trailing = renderer.render("https://example.com/a&#xff0c;然后").body
+        #expect(trailing.contains("<a href=\"https://example.com/a，然后\">"), "\(trailing)")
+
+        let leading = renderer.render("&#xff1a;https://example.com").body
+        #expect(!leading.contains("<a href=\"https://example.com\">"), "\(leading)")
+    }
+
+    @Test func asciiIdentifierBoundariesStillBlock() {
+        let body = renderer.render("abchttps://example.com").body
+        #expect(!body.contains("href=\"https://example.com\""), "\(body)")
+        #expect(body.contains("abchttps://example.com"), "\(body)")
     }
 
     @Test func autolinksRespectBoundariesAndProtectedContent() {
