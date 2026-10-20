@@ -2083,13 +2083,15 @@ public struct MarkdownRenderer: Sendable {
     /// candidate: CJK/typographic punctuation (including full-width forms) and
     /// the zero-width space U+200B, which ICU does not treat as `\s`. The set
     /// contains no ASCII characters, so it is safe inside a regex class.
+    /// Module-internal so `boundaryConstantMatchesSampleTable` can compare it;
+    /// not public API.
     static let bareURLBoundaryCharacters: String = {
         let characters =
             "·–—‘’‚‛“”…、。〃〈〉《》「」『』【】〔〕〖〗〘〙〚〛〜〝〞〟〰〽・"
             + "！＂＃＄％＆＇（）＊＋，－．／：；＜＝＞？＠［＼］＾＿｀｛｜｝～｟｠｡｢｣､･"
             + "\u{200B}"
         precondition(
-            characters.unicodeScalars.allSatisfy { $0.value > 0x7F },
+            characters.unicodeScalars.allSatisfy { !$0.isASCII },
             "bare URL boundary characters must be non-ASCII and regex-class safe"
         )
         return characters

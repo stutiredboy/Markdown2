@@ -104,7 +104,7 @@ struct CompatibilityMatrixTests {
         let entry = try #require(try CompatibilityMatrix.load().entries.first { $0.id == "gfm-autolinks" })
         #expect(entry.tier == "Supported", "gfm-autolinks tier changed: \(entry.tier)")
         let text = (entry.declaredBehavior + " " + entry.boundary).lowercased()
-        for token in ["full-width", "left boundar", "intentional", "gfm", "u+200b"] {
+        for token in ["full-width", "left boundar", "han", "intentional", "gfm", "u+200b", "truncat", "hostname", "entity"] {
             #expect(text.contains(token), "gfm-autolinks is missing '\(token)': \(text)")
         }
     }

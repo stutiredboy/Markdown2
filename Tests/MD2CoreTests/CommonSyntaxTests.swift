@@ -234,6 +234,16 @@ struct CommonSyntaxTests {
         #expect(!blocked.contains("href=\"https://example.com\""), "\(blocked)")
     }
 
+    /// Value: protects=code points adjacent to every normative range stay URL content and are not left boundaries; fails_when=an off-by-one range widening includes a neighbouring code point; why_new=the é probe is not adjacent to any range, and the constant/table sync test cannot catch a consistent widening; seam=none; no_claim=green proves these edge neighbours, not every non-normative code point.
+    @Test(arguments: ["\u{200C}", "\u{200D}", "\u{2012}", "\u{2015}", "\u{201E}", "\u{3004}", "\u{30FC}", "\u{FF66}"] as [Character])
+    func adjacentNonNormativeCodePointsStayURLContent(character: Character) {
+        let body = renderer.render("https://example.com/a\(character)tail").body
+        #expect(body.contains("<a href=\"https://example.com/a\(character)tail\">"), "\(body)")
+
+        let blocked = renderer.render("x\(character)https://example.com").body
+        #expect(!blocked.contains("href=\"https://example.com\""), "\(blocked)")
+    }
+
     /// Value: protects=the boundary constant and the exhaustive test table stay in sync; fails_when=a character is added to one but not the other; why_new=the test table re-encodes the ranges independently; seam=bareURLBoundaryCharacters (non-test callers: 1, via protectBareAutolinks); no_claim=green proves set equality, not that both regex classes use the constant.
     @Test func boundaryConstantMatchesSampleTable() {
         let samples = Set(bareURLBoundarySamples.map(\.character))
@@ -248,6 +258,9 @@ struct CommonSyntaxTests {
 
         let standalone = renderer.render("foo@example.com").body
         #expect(standalone.contains("href=\"mailto:foo@example.com\""), "\(standalone)")
+
+        let punctuation = renderer.render("，foo@example.com").body
+        #expect(punctuation.contains("href=\"mailto:foo@example.com\""), "\(punctuation)")
     }
 
     @Test func autolinksRespectBoundariesAndProtectedContent() {
