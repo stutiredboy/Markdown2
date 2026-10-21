@@ -112,6 +112,56 @@ final class ReadingImprovementsGUITests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(host.find(NSTableView.self)).selectedRow, 0)
     }
 
+    @MainActor func testOutlineClickKeepsAdjacentParentSelectedUntilPreviewScroll() throws {
+        let paragraph = String(repeating: "Detailed section text that makes the preview scrollable. ", count: 80)
+        let markdown: String
+        if let fixturePath = ProcessInfo.processInfo.environment["MD2_OUTLINE_REPRO_FILE"] {
+            markdown = try String(contentsOfFile: fixturePath, encoding: .utf8)
+        } else {
+            markdown = """
+            # Introduction
+
+            \(paragraph)
+
+            ### 3.1　运维质量改进项目界定
+
+            #### 3.1.1　利益相关方识别与客户需求调研
+
+            \(paragraph)
+
+            #### 3.1.2　核心质量指标、目标与安全约束
+
+            \(paragraph)
+            """
+        }
+        let host = ReadingWindow(markdown, mode: .read)
+        defer { host.close() }
+        let webView = try host.preview()
+        let headings = host.store.rendered.outline
+        let parent = try XCTUnwrap(headings.first { $0.title.contains("3.1　") })
+        let child = try XCTUnwrap(headings.first { $0.title.contains("3.1.1　") })
+        let list = try XCTUnwrap(host.find(NSTableView.self))
+        let parentRow = try XCTUnwrap(headings.firstIndex(of: parent))
+        let childRow = try XCTUnwrap(headings.firstIndex(of: child))
+        _ = try evaluate("window.requestAnimationFrame = function (callback) { return setTimeout(callback, 16); }; void 0;", in: webView)
+        // A prior preview click is not a scroll gesture. It must not make the
+        // later programmatic outline jump look user initiated.
+        _ = try evaluate("window.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));", in: webView)
+
+        list.scrollRowToVisible(parentRow)
+        host.spin(0.2)
+        list.selectRowIndexes(IndexSet(integer: parentRow), byExtendingSelection: false)
+        host.spin(1.5)
+        XCTAssertEqual(list.selectedRow, parentRow, "A click should keep its selected heading until the reader scrolls (rows: \(list.numberOfRows), parent: \(parentRow))")
+
+        if ProcessInfo.processInfo.environment["MD2_OUTLINE_REPRO_FILE"] == nil {
+            _ = try evaluate("window.dispatchEvent(new WheelEvent('wheel', {deltaY: 100, bubbles: true})); window.scrollTo(0, document.getElementById('\(child.id)').offsetTop + 80);", in: webView)
+            host.spin(0.3)
+            let afterScroll = try evaluate("JSON.stringify({anchor:window.__md2CaptureAnchor(), y:window.scrollY, target:document.getElementById('\(child.id)').offsetTop})", in: webView)
+            XCTAssertEqual(list.selectedRow, childRow, String(describing: afterScroll))
+        }
+    }
+
     @MainActor private func evaluate(_ script: String, in webView: WKWebView) throws -> Any? {
         let done = expectation(description: "JavaScript")
         var output: Any?

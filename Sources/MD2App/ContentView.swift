@@ -96,6 +96,10 @@ struct ContentView: View {
     /// fallback when the live capture does not answer in time.
     @State private var previewAnchor: ViewportAnchor?
     @State private var outlineSourceLine = 1
+    /// Keep an explicitly chosen heading selected across the preview's own
+    /// jump and layout reports. A nearby child heading may enter the viewport
+    /// anchor band even though the reader has not scrolled it themselves.
+    @State private var clickedOutlineHeadingID: String?
     @State private var editorSelection: String?
     @State private var previewSelection: String?
     @State private var selectionStats: DocumentStats?
@@ -172,10 +176,12 @@ struct ContentView: View {
                 if showsOutline {
                     OutlineSidebar(
                         headings: document.rendered.outline,
-                        selectedHeadingID: document.rendered.outline.heading(atOrAbove: outlineSourceLine)?.id,
+                        selectedHeadingID: clickedOutlineHeadingID
+                            ?? document.rendered.outline.heading(atOrAbove: outlineSourceLine)?.id,
                         settings: settings,
                         width: DocumentLayoutMetrics.outlineSidebarWidth,
                         onSelect: { heading in
+                            clickedOutlineHeadingID = heading.id
                             outlineSourceLine = heading.line
                             document.jump(to: heading)
                         }
@@ -215,6 +221,7 @@ struct ContentView: View {
         }
         .onChange(of: document.documentIdentity) { _, _ in
             outlineSourceLine = 1
+            clickedOutlineHeadingID = nil
             editorSelection = nil
             previewSelection = nil
             selectionStats = nil
@@ -224,6 +231,7 @@ struct ContentView: View {
             dismissPreviewFind()
         }
         .onChange(of: mode) { _, _ in
+            clickedOutlineHeadingID = nil
             editorSelection = nil
             previewSelection = nil
             selectionStats = nil
@@ -693,13 +701,17 @@ struct ContentView: View {
                 viewportReader: editorViewport,
                 onAnchorLineChange: { line, drivesPreviewSync in
                     editorAnchorLine = line
-                    if !inSplit || splitSyncSource != .preview { outlineSourceLine = line }
+                    if !inSplit || splitSyncSource != .preview {
+                        outlineSourceLine = line
+                        if drivesPreviewSync { clickedOutlineHeadingID = nil }
+                    }
                     // A genuine user scroll or the mode-switch settle aligns the
                     // preview; an edit-induced caret-reveal scroll must not (the
                     // edit-follow keeps the caret visible instead).
                     if inSplit, drivesPreviewSync { syncEditorToPreview(line: line) }
                 },
                 onTextEdit: { caretLine in
+                    clickedOutlineHeadingID = nil
                     if inSplit { markEditorEditInSplit(caretLine: caretLine) }
                 },
                 onEnterPreview: { handleEditorEscape() },
@@ -774,6 +786,7 @@ struct ContentView: View {
                     if !inSplit || splitSyncSource != .editor {
                         outlineSourceLine = anchor.targetSourceLine
                             ?? document.rendered.outline.heading(forID: anchor.fallbackHeadingID ?? "")?.line ?? 1
+                        if isUserInitiated { clickedOutlineHeadingID = nil }
                     }
                     if inSplit, isUserInitiated { syncPreviewToEditor(anchor: anchor) }
                 },
@@ -939,7 +952,10 @@ private struct OutlineSidebar: View {
                       let heading = headings.first(where: { $0.id == newID }) else {
                     return
                 }
-                onSelect(heading)
+                // The List writes its selection during a SwiftUI view update.
+                // Defer the document jump so its published bindings are changed
+                // after that update has completed.
+                DispatchQueue.main.async { onSelect(heading) }
             }
         )
     }

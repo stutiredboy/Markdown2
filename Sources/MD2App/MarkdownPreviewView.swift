@@ -295,6 +295,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
             // height does not move the target, so we don't scroll (avoiding a
             // pointless late jump). We stop on a user scroll or once stable.
             function keepPinned(getTargetY, silent) {
+                // A recent click inside the preview is not evidence that this
+                // programmatic jump was a user scroll. Only gestures that occur
+                // after pinning starts may mark its final anchor as user driven.
+                lastUserScrollIntentAt = 0;
                 suppressUntil = Date.now() + 2600;
                 var cancelled = false;
                 function onUser() { cancelled = true; }
