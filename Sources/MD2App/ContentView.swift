@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import MD2Core
 import SwiftUI
@@ -934,6 +935,7 @@ private struct OutlineSidebar: View {
     let width: CGFloat
     let onSelect: (Heading) -> Void
     @State private var keyboardSelectedHeadingID: String?
+    @State private var selectionSync = OutlineSelectionSyncState()
 
     private var activeHeadingID: String? {
         keyboardSelectedHeadingID ?? selectedHeadingID
@@ -948,6 +950,7 @@ private struct OutlineSidebar: View {
             get: { activeHeadingID },
             set: { newID in
                 keyboardSelectedHeadingID = newID
+                if selectionSync.isApplying { return }
                 guard let newID,
                       let heading = headings.first(where: { $0.id == newID }) else {
                     return
@@ -1002,6 +1005,11 @@ private struct OutlineSidebar: View {
                 }
                 .listStyle(.sidebar)
                 .focusable()
+                .background(OutlineNativeSelectionFollower(
+                    headingIDs: headings.map(\.id),
+                    selectedHeadingID: selectedHeadingID,
+                    selectionSync: selectionSync
+                ))
                 // Arrow keys move the selection without jumping; Return activates.
                 .onMoveCommand(perform: moveSelection)
                 .onSubmit(activateSelectedHeading)
@@ -1043,6 +1051,95 @@ private struct OutlineSidebar: View {
             in: headings,
             currentID: activeHeadingID
         )
+    }
+}
+
+/// SwiftUI List does not reliably reveal or select a newly active row when it
+/// was outside the realized rows. The native table can do both without
+/// rebuilding the List or moving keyboard focus away from the preview.
+@MainActor
+private final class OutlineSelectionSyncState {
+    var isApplying = false
+}
+
+private final class OutlineFollowerAnchorView: NSView {
+    var onAttach: (() -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        DispatchQueue.main.async { [weak self] in self?.onAttach?() }
+    }
+}
+
+private struct OutlineNativeSelectionFollower: NSViewRepresentable {
+    let headingIDs: [String]
+    let selectedHeadingID: String?
+    let selectionSync: OutlineSelectionSyncState
+
+    func makeNSView(context: Context) -> OutlineFollowerAnchorView {
+        OutlineFollowerAnchorView(frame: .zero)
+    }
+
+    func updateNSView(_ view: OutlineFollowerAnchorView, context: Context) {
+        let coordinator = context.coordinator
+        coordinator.headingIDs = headingIDs
+        coordinator.selectedHeadingID = selectedHeadingID
+        coordinator.selectionSync = selectionSync
+        view.onAttach = { [weak view, weak coordinator] in
+            guard let view, let coordinator else { return }
+            coordinator.applySelection(in: view)
+        }
+        DispatchQueue.main.async { [weak view, weak coordinator] in
+            guard let view, let coordinator else { return }
+            coordinator.applySelection(in: view)
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    @MainActor final class Coordinator {
+        var headingIDs: [String] = []
+        var selectedHeadingID: String?
+        var selectionSync: OutlineSelectionSyncState?
+        private weak var lastTable: NSTableView?
+        private var lastHeadingID: String?
+        private var lastRow: Int?
+
+        func applySelection(in view: NSView) {
+            guard let selectedHeadingID else {
+                lastTable = nil
+                lastHeadingID = nil
+                lastRow = nil
+                return
+            }
+            guard let row = headingIDs.firstIndex(of: selectedHeadingID) else { return }
+            if lastHeadingID == selectedHeadingID,
+               lastRow == row,
+               lastTable?.window === view.window { return }
+            guard let root = view.window?.contentView,
+                  let table = Self.findTable(in: root, rowCount: headingIDs.count) else { return }
+
+            let rowRect = table.rect(ofRow: row)
+            if !table.visibleRect.contains(rowRect) {
+                table.scrollRowToVisible(row)
+            }
+            if table.selectedRow != row {
+                selectionSync?.isApplying = true
+                table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                selectionSync?.isApplying = false
+            }
+            lastTable = table
+            lastHeadingID = selectedHeadingID
+            lastRow = row
+        }
+
+        private static func findTable(in view: NSView, rowCount: Int) -> NSTableView? {
+            if let table = view as? NSTableView, table.numberOfRows == rowCount { return table }
+            for child in view.subviews {
+                if let table = findTable(in: child, rowCount: rowCount) { return table }
+            }
+            return nil
+        }
     }
 }
 

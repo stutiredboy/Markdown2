@@ -142,7 +142,6 @@ final class ReadingImprovementsGUITests: XCTestCase {
         let child = try XCTUnwrap(headings.first { $0.title.contains("3.1.1　") })
         let list = try XCTUnwrap(host.find(NSTableView.self))
         let parentRow = try XCTUnwrap(headings.firstIndex(of: parent))
-        let childRow = try XCTUnwrap(headings.firstIndex(of: child))
         _ = try evaluate("window.requestAnimationFrame = function (callback) { return setTimeout(callback, 16); }; void 0;", in: webView)
         // A prior preview click is not a scroll gesture. It must not make the
         // later programmatic outline jump look user initiated.
@@ -154,12 +153,48 @@ final class ReadingImprovementsGUITests: XCTestCase {
         host.spin(1.5)
         XCTAssertEqual(list.selectedRow, parentRow, "A click should keep its selected heading until the reader scrolls (rows: \(list.numberOfRows), parent: \(parentRow))")
 
-        if ProcessInfo.processInfo.environment["MD2_OUTLINE_REPRO_FILE"] == nil {
-            _ = try evaluate("window.dispatchEvent(new WheelEvent('wheel', {deltaY: 100, bubbles: true})); window.scrollTo(0, document.getElementById('\(child.id)').offsetTop + 80);", in: webView)
-            host.spin(0.3)
-            let afterScroll = try evaluate("JSON.stringify({anchor:window.__md2CaptureAnchor(), y:window.scrollY, target:document.getElementById('\(child.id)').offsetTop})", in: webView)
-            XCTAssertEqual(list.selectedRow, childRow, String(describing: afterScroll))
+        _ = try evaluate("window.dispatchEvent(new WheelEvent('wheel', {deltaY: 100, bubbles: true})); window.scrollTo(0, document.getElementById('\(child.id)').offsetTop + 80);", in: webView)
+        host.spin(0.3)
+        let anchorLine = try XCTUnwrap((evaluate("window.__md2CaptureAnchor().line", in: webView) as? NSNumber)?.intValue)
+        let activeHeading = try XCTUnwrap(headings.heading(atOrAbove: anchorLine))
+        let activeRow = try XCTUnwrap(headings.firstIndex(of: activeHeading))
+        XCTAssertEqual(list.selectedRow, activeRow)
+        XCTAssertTrue(list.visibleRect.contains(list.rect(ofRow: activeRow)))
+    }
+
+    @MainActor func testOutlineFollowsPreviewBeyondVisibleSidebarRows() throws {
+        let paragraph = String(repeating: "This section has enough text to occupy the reading viewport. ", count: 30)
+        let markdown = (1...55).map { "# Section \($0)\n\n\(paragraph)" }.joined(separator: "\n\n")
+        let host = ReadingWindow(markdown, mode: .read)
+        defer { host.close() }
+        let webView = try host.preview()
+        let list = try XCTUnwrap(host.find(NSTableView.self))
+        XCTAssertEqual(list.numberOfRows, 55)
+
+        for targetRow in [20, 45, 5] {
+            let target = host.store.rendered.outline[targetRow]
+            _ = try evaluate("window.dispatchEvent(new WheelEvent('wheel', {deltaY: 500, bubbles: true})); window.scrollTo(0, document.getElementById('\(target.id)').offsetTop + 30);", in: webView)
+            host.spin(0.45)
+
+            let rowFrame = list.rect(ofRow: targetRow)
+            XCTAssertEqual(list.selectedRow, targetRow)
+            XCTAssertTrue(list.visibleRect.contains(rowFrame), "Selected row \(targetRow) is outside the sidebar viewport: \(rowFrame), \(list.visibleRect)")
+            let scrollDifference = try XCTUnwrap(evaluate("Math.abs(window.scrollY - (document.getElementById('\(target.id)').offsetTop + 30))", in: webView) as? Double)
+            XCTAssertLessThan(scrollDifference, 2, "Following the outline must not jump the preview")
         }
+
+        // Browsing the outline is independent of preview scroll following.
+        // A deliberate row selection must still navigate the preview.
+        let clickedRow = 35
+        list.scrollRowToVisible(clickedRow)
+        host.spin(0.2)
+        list.selectRowIndexes(IndexSet(integer: clickedRow), byExtendingSelection: false)
+        _ = try evaluate("window.requestAnimationFrame = function (callback) { return setTimeout(callback, 16); }; void 0;", in: webView)
+        host.spin(1.5)
+        XCTAssertEqual(list.selectedRow, clickedRow)
+        let clickedID = host.store.rendered.outline[clickedRow].id
+        let jumpDifference = try XCTUnwrap(evaluate("Math.abs(window.scrollY - document.getElementById('\(clickedID)').offsetTop)", in: webView) as? Double)
+        XCTAssertLessThan(jumpDifference, 2)
     }
 
     @MainActor private func evaluate(_ script: String, in webView: WKWebView) throws -> Any? {
