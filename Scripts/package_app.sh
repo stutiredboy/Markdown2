@@ -143,6 +143,13 @@ CODESIGN_IDENTITY="${MARKDOWN2_CODESIGN_IDENTITY:--}"
 codesign --force --deep --sign "$CODESIGN_IDENTITY" "$APP_DIR"
 codesign --verify --deep --strict "$APP_DIR"
 
+# CI only needs the signed bundle. Do not change Launch Services registrations
+# or the runner's default Markdown editor during build verification or release.
+if [ -n "${CI:-}" ]; then
+    echo "Built $APP_DIR"
+    exit 0
+fi
+
 # Launch Services bookkeeping.
 #
 # dist/ is a build artifact, not an install. Finder's "Open With" menu lists

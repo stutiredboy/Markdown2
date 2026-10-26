@@ -1,0 +1,45 @@
+name: PR macOS 15 verification
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-package:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run default tests (GUI tests remain opt-in)
+        run: swift test
+
+      - name: Build and package without installing or publishing
+        env:
+          CI: "true"
+          MARKDOWN2_VERSION: v0.7.0
+        run: bash Scripts/package_app.sh
+
+      - name: Verify macOS 15 floor and packaged app
+        run: |
+          set -euo pipefail
+          minos="$(otool -l dist/Markdown2.app/Contents/MacOS/Markdown2 | awk '/cmd LC_BUILD_VERSION/ { found=1 } found && $1 == "minos" { print $2; exit }')"
+          test "$minos" = "15.0"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' dist/Markdown2.app/Contents/Info.plist)" = "15.0"
+          plutil -lint dist/Markdown2.app/Contents/Info.plist
+          test -f dist/Markdown2.app/Contents/Resources/AppIcon.icns
+          test -d dist/Markdown2.app/Contents/Resources/MD2_MD2Core.bundle
+          codesign --verify --deep --strict dist/Markdown2.app
+
+      - name: Verify local DMG and app signature inside
+        run: |
+          set -euo pipefail
+          hdiutil create -volname Markdown2 -srcfolder dist/Markdown2.app -ov -format UDZO dist/Markdown2-ci.dmg
+          hdiutil verify dist/Markdown2-ci.dmg
+          mount_dir="$(mktemp -d)"
+          trap 'hdiutil detach "$mount_dir" >/dev/null 2>&1 || true; rmdir "$mount_dir" 2>/dev/null || true' EXIT
+          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mount_dir" dist/Markdown2-ci.dmg
+          codesign --verify --deep --strict "$mount_dir/Markdown2.app"
