@@ -165,7 +165,7 @@ public enum MarkdownEditing {
             let quoteEnd = prefix.markers.filter(\.quote).prefix(code.quotes).last.map { NSMaxRange($0.range) } ?? 0
             let head = (beforeCaret as NSString).substring(to: min(quoteEnd, beforeCaret.utf16.count))
             let rest = String(beforeCaret.dropFirst(head.count))
-            return replacing(selection, with: newline + head + rest.prefix { $0 == " " || $0 == "\t" })
+            return replacing(selection, with: newline + head + String(rest.prefix { $0 == " " || $0 == "\t" }))
         }
         guard selection.location - current.range.location >= prefix.end else {
             return replacing(selection, with: newline)

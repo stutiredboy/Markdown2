@@ -48,7 +48,7 @@ struct LineNumberExportIsolationTests {
         }
     }
 
-    @Test func theGutterScriptIsNeverPartOfRenderedHTML() {
+    @Test @MainActor func theGutterScriptIsNeverPartOfRenderedHTML() {
         let html = MarkdownRenderer().render(markdown).html
         let enabled = MarkdownPreviewView.lineNumberGutterScript(showsLineNumbers: true)
         let disabled = MarkdownPreviewView.lineNumberGutterScript(showsLineNumbers: false)
@@ -58,7 +58,7 @@ struct LineNumberExportIsolationTests {
         #expect(enabled.contains("__md2RenderLineNumbers"))
 
         #expect(!html.contains(enabled))
-        #expect(!html.contains(MarkdownPreviewView.lineNumberGutterScript(showsLineNumbers: false)))
+        #expect(!html.contains(disabled))
         // A distinctive fragment, independent of the boolean interpolated at the end.
         #expect(!html.contains("__md2RenderLineNumbers"))
     }
@@ -74,7 +74,7 @@ struct LineNumberExportIsolationTests {
         #expect(rendered.body == MarkdownRenderer().render(markdown, config: config).body)
     }
 
-    @Test func theGutterStyleIsGatedBehindItsSwitchClass() {
+    @Test @MainActor func theGutterStyleIsGatedBehindItsSwitchClass() {
         // Defense in depth: every gutter style rule is scoped under
         // `html.md2-line-numbers`, so even a leaked stylesheet stays inert — the
         // class is only ever set by the preview script.
@@ -96,7 +96,7 @@ struct LineNumberExportIsolationTests {
         }
     }
 
-    @Test func theGutterDigitsAreGeneratedContentNotText() {
+    @Test @MainActor func theGutterDigitsAreGeneratedContentNotText() {
         // The digits come from `content: attr(...)`, so the layer holds no text
         // nodes: find, selection, and copy cannot see them even in the preview.
         let script = MarkdownPreviewView.lineNumberGutterScript(showsLineNumbers: true)
