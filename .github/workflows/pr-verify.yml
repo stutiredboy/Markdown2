@@ -14,8 +14,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The heartbeat benchmark has a 200 ms deadline. Run it without other
+      # Swift Testing cases competing for the shared runner's CPU.
       - name: Run default tests (GUI tests remain opt-in)
-        run: swift test
+        run: swift test --skip 'P1RegressionTests.renderingYieldsMainActorAndLatestRevisionWins'
+
+      - name: Verify main actor heartbeat in isolation
+        run: swift test --filter 'P1RegressionTests.renderingYieldsMainActorAndLatestRevisionWins'
 
       - name: Build and package without installing or publishing
         env:
