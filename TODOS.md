@@ -77,21 +77,6 @@ Tracked work considered and explicitly deferred from in-flight changes. Each ite
 
 **Start here:** scan once for code spans and both math delimiter pairs in reading order; the earliest opener owns the span; apply the matched delimiter's guards (currency/`$$`/whitespace rules for `$`, none for `\(`).
 
-## Restored fragments in link/image `alt` and `title` attributes (pre-existing)
-
-**What:** Stop protected constructs (code, math, raw HTML) from splicing renderer markup into `alt` and `title` attribute values. `renderImages` and `renderLinks` insert the still-tokenized source into those attributes, and the final restore expands it; `HTMLSafety.isSafeURL` guards only `href`/`src`.
-
-**Why:** `![a $x$ b](img.png)` renders `<img ... alt="a <span class="math math-inline">x</span> b">`, breaking the attribute. No script-execution path was found (the injected markup is sanitized), but the escaping boundary leaks. Found by the pre-landing review (2026-10-19).
-
-**Current state:** `href`/`src` are restored-then-checked with the raw-character guard; `alt`/`title` are out of its declared scope and pinned only by existing output tests.
-
-**Pros:** Closes the attribute-injection class; makes the guard comment true.
-**Cons / cost:** `protect` currently defaults `source:` to rendered HTML for code/math, so attribute contexts need a plain-text source per construct (or a refusal rule); touches every protect call site. (human: ~1 day / CC: ~2-3h)
-
-**Depends on:** nothing; the D4 token-boundary tests are the before-state proof.
-
-**Start here:** give every protect call an authored plain-text `source`, build `alt`/`title` from `source(in:)` + `escapeAttribute`, and add alt/title assertions.
-
 ## Authored placeholder-token output amplification (pre-existing)
 
 **What:** Bound the output growth from well-formed authored `\u{E000}MD2-<n>\u{E000}` tokens that reference real fragments. Each occurrence re-inserts the whole fragment, so output = occurrences × fragment size; a 7.5 KB input can produce about 1 MB of output.
