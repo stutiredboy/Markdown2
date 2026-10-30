@@ -291,6 +291,19 @@ struct InlineRenderingPerformanceTests {
         #expect(!body.contains("MD2-"))
     }
 
+    /// A prepended concatenation mark (U+0600) joins the token's opening
+    /// sentinel into one grapheme cluster, so the literal run before the token
+    /// ends mid-cluster.
+    /// Value: protects=the resolver copies literal runs with exact scalar bounds;
+    /// fails_when=a run is sliced or appended at Character granularity, which
+    /// drops or duplicates the mark; why_new=only a run that starts mid-cluster
+    /// was covered; seam=none; no_claim=only the run before one token.
+    @Test func prependedMarkBeforeSentinelIsKept() {
+        let body = renderer.render("a\u{0600}`x`").body
+        // Bytes, not Characters, so the cluster cannot blur the comparison.
+        #expect(body.utf8.contains(">a\u{0600}<code>x</code></p>".utf8))
+    }
+
     /// The verbatim-span scan shares the destination rule; a raw `](` still opens
     /// a pseudo-destination when its `]` is escaped, so `\(x\)` after it stays
     /// literal rather than becoming a math span.

@@ -1430,6 +1430,8 @@ public struct MarkdownRenderer: Sendable {
         guard !spans.isEmpty else { return text }
 
         // Span bounds are scalar indices; slicing the String keeps them exact.
+        // The output always holds tokens, so it is never ASCII, and the slices'
+        // inherited flags cost nothing (unlike `InlineProtector.resolveTokens`).
         var result = ""
         result.reserveCapacity(text.utf8.count)
         var cursor = text.startIndex
@@ -3901,6 +3903,15 @@ private final class InlineProtector {
     /// demand; everything else is copied literally, including malformed tokens
     /// and indexes at or above the limit. The scan uses Unicode scalars so a
     /// combining mark after the sentinel cannot hide a well-formed token.
+    ///
+    /// Each literal run is copied as `String(text[run])`: slicing keeps the
+    /// scalar-aligned bounds exact even mid-grapheme, and the copy rescans its
+    /// bytes, so restored output that is all ASCII keeps the stdlib's ASCII
+    /// flag. Both alternatives are slower overall. Appending through
+    /// `unicodeScalars` re-encodes scalar by scalar (about 20× slower on
+    /// token-dense text). Appending the `Substring` directly inherits the
+    /// flags of the whole text, which holds non-ASCII sentinels, so the output
+    /// loses the ASCII fast path for every later `NSRange` conversion.
     private func resolveTokens(in text: String, limit: Int, emitting: Emission) -> String {
         guard text.unicodeScalars.contains(Self.sentinelScalar) else { return text }
 
@@ -3911,10 +3922,10 @@ private final class InlineProtector {
 
         while cursor < scalars.endIndex {
             guard let start = scalars[cursor...].firstIndex(of: Self.sentinelScalar) else {
-                result.unicodeScalars.append(contentsOf: scalars[cursor...])
+                result.append(String(text[cursor...]))
                 break
             }
-            result.unicodeScalars.append(contentsOf: scalars[cursor..<start])
+            result.append(String(text[cursor..<start]))
 
             if let token = token(in: text, from: start), token.index < limit {
                 ensureExpanded(token.index)
