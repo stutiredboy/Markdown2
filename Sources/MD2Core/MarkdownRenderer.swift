@@ -1464,7 +1464,11 @@ public struct MarkdownRenderer: Sendable {
                 return matchText(match, in: source)
             }
 
-            return protector.protect("<span class=\"\(PreviewClass.math) \(PreviewClass.mathInline)\">\(escapeHTML(String(source[range])))</span>")
+            let tex = escapeHTML(String(source[range]))
+            return protector.protect(
+                "<span class=\"\(PreviewClass.math) \(PreviewClass.mathInline)\">\(tex)</span>",
+                source: "$\(tex)$"
+            )
         }
     }
 
@@ -1494,7 +1498,11 @@ public struct MarkdownRenderer: Sendable {
                 return matchText(match, in: source)
             }
 
-            return protector.protect("<span class=\"\(PreviewClass.math) \(PreviewClass.mathInline)\">\(escapeHTML(String(source[range])))</span>")
+            let tex = escapeHTML(String(source[range]))
+            return protector.protect(
+                "<span class=\"\(PreviewClass.math) \(PreviewClass.mathInline)\">\(tex)</span>",
+                source: "\\(\(tex)\\)"
+            )
         }
     }
 
@@ -1520,7 +1528,11 @@ public struct MarkdownRenderer: Sendable {
             }
 
             let url = String(source[urlRange])
-            return protector.protect("<a href=\"\(escapeAttribute(url))\">\(escapeHTML(url))</a>")
+            let visible = escapeHTML(url)
+            return protector.protect(
+                "<a href=\"\(escapeAttribute(url))\">\(visible)</a>",
+                source: "&lt;\(visible)&gt;"
+            )
         }
     }
 
@@ -1528,7 +1540,8 @@ public struct MarkdownRenderer: Sendable {
     /// Everything outside this tag allowlist is escaped as visible source.
     private func protectRawHTML(_ text: String, protector: InlineProtector) -> String {
         replaceMatches(in: text, pattern: #"</?(?:abbr|b|br|cite|code|del|details|div|em|i|img|kbd|mark|small|span|strong|sub|summary|sup|u)(?:\s+[^<>]*)?/?>"#) { match, source in
-            protector.protect(HTMLSafety.sanitizeTag(protector.restore(in: matchText(match, in: source))))
+            let tag = matchText(match, in: source)
+            return protector.protect(HTMLSafety.sanitizeTag(protector.restore(in: tag)), source: escapeHTML(tag))
         }
     }
 
@@ -1555,7 +1568,8 @@ public struct MarkdownRenderer: Sendable {
             if let labelRange = Range(match.range(at: 1), in: text),
                let reference = footnotes.registerReference(String(text[labelRange])) {
                 rebuilt += protector.protect(
-                    "<sup class=\"footnote-ref\"><a id=\"\(reference.refAnchor)\" href=\"#\(reference.defAnchor)\">\(reference.number)</a></sup>"
+                    "<sup class=\"footnote-ref\"><a id=\"\(reference.refAnchor)\" href=\"#\(reference.defAnchor)\">\(reference.number)</a></sup>",
+                    source: escapeHTML(String(text[matchRange]))
                 )
             } else {
                 rebuilt += text[matchRange]
@@ -1610,7 +1624,10 @@ public struct MarkdownRenderer: Sendable {
                 let key = String(whole.dropFirst())
                 if citations.register(key) {
                     let item = CitationItem(key: key, suppressAuthor: false, locator: nil)
-                    rebuilt += protector.protect("<span class=\"citation\">\(escapeHTML(citations.renderInText(item)))</span>")
+                    rebuilt += protector.protect(
+                        "<span class=\"citation\">\(escapeHTML(citations.renderInText(item)))</span>",
+                        source: escapeHTML(whole)
+                    )
                 } else {
                     rebuilt += whole
                 }
@@ -1640,7 +1657,7 @@ public struct MarkdownRenderer: Sendable {
             citations.register(item.key)
         }
         let display = citations.renderParenthetical(items)
-        return protector.protect("<span class=\"citation\">\(escapeHTML(display))</span>")
+        return protector.protect("<span class=\"citation\">\(escapeHTML(display))</span>", source: escapeHTML("[\(inner)]"))
     }
 
     /// Parses the interior of `[ … ]` into citation items, splitting multiple
@@ -1712,7 +1729,10 @@ public struct MarkdownRenderer: Sendable {
                   let number = crossReferences.number(for: label) else {
                 return matchText(match, in: source)
             }
-            return protector.protect("<a class=\"cross-ref\" href=\"#\(escapeAttribute(label))\">\(escapeHTML(number))</a>")
+            return protector.protect(
+                "<a class=\"cross-ref\" href=\"#\(escapeAttribute(label))\">\(escapeHTML(number))</a>",
+                source: escapeHTML(matchText(match, in: source))
+            )
         }
     }
 
@@ -1883,9 +1903,12 @@ public struct MarkdownRenderer: Sendable {
             let src = String(source[srcRange])
             guard HTMLSafety.isSafeURL(protector.restore(in: src)) else { return alt }
 
+            // `alt` and `title` are attribute values: protected code, math and
+            // raw HTML keep their authored spelling there instead of splicing
+            // renderer markup into the attribute.
             let title: String
             if match.range(at: 3).location != NSNotFound, let titleRange = Range(match.range(at: 3), in: source) {
-                title = " title=\"\(source[titleRange])\""
+                title = " title=\"\(protector.attributeText(in: String(source[titleRange])))\""
             } else {
                 title = ""
             }
@@ -1895,20 +1918,23 @@ public struct MarkdownRenderer: Sendable {
             // preserved as literal text so unrelated braces after an image survive.
             var explicit: (width: Int?, height: Int?) = (nil, nil)
             var figLabel: String?
+            var attributeBlock = ""
             var trailing = ""
             if match.range(at: 4).location != NSNotFound, let attrRange = Range(match.range(at: 4), in: source) {
                 let attrText = String(source[attrRange])
+                attributeBlock = "{\(attrText)}"
                 figLabel = self.figureLabel(in: attrText)
                 if self.looksLikeSizeAttributes(attrText) {
                     explicit = self.parseSizeAttributes(attrText)
                 }
                 if figLabel == nil, !self.looksLikeSizeAttributes(attrText) {
-                    trailing = "{\(attrText)}"
+                    trailing = attributeBlock
                 }
             }
 
+            let altText = protector.attributeText(in: alt)
             func img(_ extra: String) -> String {
-                "<img src=\"\(src)\" alt=\"\(alt)\"\(title)\(extra)>"
+                "<img src=\"\(src)\" alt=\"\(altText)\"\(title)\(extra)>"
             }
 
             // The image element, sized from explicit attributes or the URL.
@@ -1933,6 +1959,12 @@ public struct MarkdownRenderer: Sendable {
                 imageHTML = img("")
             }
 
+            // The source stops at `)`. A consumed `{…}` block drops keys it does
+            // not know, and the resolver expands an entry's source together with
+            // its fragment, so a token DAG hidden in a dropped key must not
+            // reach the source either.
+            let syntax = String(self.matchText(match, in: source).dropLast(attributeBlock.count))
+
             // A `#fig:label` (with an active context to number it) becomes a
             // captioned, numbered figure; the caption renders simple inline markup
             // while the image attributes stay inert plain text.
@@ -1940,12 +1972,15 @@ public struct MarkdownRenderer: Sendable {
                 let number = figureNumbers[match.range.location]
                     ?? context.crossReferences.assignFigure(label: figLabel)
                 let caption = self.renderEscapedInlineContent(alt, protector: protector)
-                return protector.protect("<figure class=\"figure\" id=\"\(self.escapeAttribute(figLabel))\">"
-                    + imageHTML
-                    + "<figcaption class=\"fig-caption\">Figure \(number): \(caption)</figcaption></figure>")
+                return protector.protect(
+                    "<figure class=\"figure\" id=\"\(self.escapeAttribute(figLabel))\">"
+                        + imageHTML
+                        + "<figcaption class=\"fig-caption\">Figure \(number): \(caption)</figcaption></figure>",
+                    source: syntax
+                )
             }
 
-            return protector.protect(imageHTML) + trailing
+            return protector.protect(imageHTML, source: syntax) + trailing
         }
     }
 
@@ -2008,13 +2043,13 @@ public struct MarkdownRenderer: Sendable {
 
             let title: String
             if match.range(at: 4).location != NSNotFound, let titleRange = Range(match.range(at: 4), in: source) {
-                title = " title=\"\(source[titleRange])\""
+                title = " title=\"\(protector.attributeText(in: String(source[titleRange])))\""
             } else {
                 title = ""
             }
 
             let label = self.renderEscapedInlineContent(renderOptionalInline(String(source[labelRange]), features: features), protector: protector)
-            return protector.protect("<a href=\"\(href)\"\(title)>\(label)</a>")
+            return protector.protect("<a href=\"\(href)\"\(title)>\(label)</a>", source: self.matchText(match, in: source))
         }
     }
 
@@ -2057,7 +2092,10 @@ public struct MarkdownRenderer: Sendable {
             }
             let originalKey = protector.source(in: key)
             let originalLabel = protector.source(in: label)
-            guard !LinkReference.isReserved(originalLabel), !LinkReference.isReserved(originalKey),
+            // Reserved markers (`[!NOTE]`, `[^id]`, `[@key]`) are typed text, so
+            // test the tokenized spelling: a leading construct such as an image
+            // (`[![badge](b.svg)][ci]`) is never mistaken for one.
+            guard !LinkReference.isReserved(label), !LinkReference.isReserved(key),
                   HTMLSafety.decodeEntities(originalKey).unicodeScalars.count <= 999,
                   let reference = context.references[LinkReference.normalize(originalKey)],
                   !protector.restore(in: label).contains("<a ") else {
@@ -2065,18 +2103,18 @@ public struct MarkdownRenderer: Sendable {
             }
             let title = reference.title.map { " title=\"\(escapeAttribute($0))\"" } ?? ""
             let content = renderEmphasis(renderOptionalInline(label, features: context.config.inlineFeatures))
+            let authored = String(text[cursor..<end])
             // Restore the definition destination before the safety check: an
             // authored token in the definition must not reach href/src as
             // renderer markup.
             let destination = protector.restore(in: reference.destination)
             if !HTMLSafety.isSafeURL(destination) {
-                result += protector.protect(image ? escapeHTML(HTMLSafety.decodeEntities(originalLabel)) : content)
+                result += protector.protect(image ? escapeHTML(HTMLSafety.decodeEntities(originalLabel)) : content, source: authored)
             } else if image {
-                let alt = HTMLSafety.decodeEntities(protector.restore(in: label))
-                    .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-                result += protector.protect("<img src=\"\(escapeAttribute(destination))\" alt=\"\(escapeAttribute(alt))\"\(title)>")
+                let alt = protector.attributeText(in: label)
+                result += protector.protect("<img src=\"\(escapeAttribute(destination))\" alt=\"\(alt)\"\(title)>", source: authored)
             } else {
-                result += protector.protect("<a href=\"\(escapeAttribute(destination))\"\(title)>\(content)</a>")
+                result += protector.protect("<a href=\"\(escapeAttribute(destination))\"\(title)>\(content)</a>", source: authored)
             }
             cursor = end
         }
@@ -2481,8 +2519,10 @@ public struct MarkdownRenderer: Sendable {
                 guard let last = url.last, last.isLetter || last.isNumber else { return candidate }
             }
             let destination = isURL ? (url.hasPrefix("www.") ? "http://" + url : url) : "mailto:" + url
-            return protector.protect("<a href=\"\(escapeAttribute(HTMLSafety.decodeEntities(destination)))\">\(escapeHTML(HTMLSafety.decodeEntities(url)))</a>")
-                + escapeHTML(trailing) + suffix
+            return protector.protect(
+                "<a href=\"\(escapeAttribute(HTMLSafety.decodeEntities(destination)))\">\(escapeHTML(HTMLSafety.decodeEntities(url)))</a>",
+                source: escapeHTML(url)
+            ) + escapeHTML(trailing) + suffix
         }
     }
 
@@ -3434,16 +3474,21 @@ private struct LinkDestinationIndex {
 /// Holds the three parallel facts inline rendering swaps out for placeholder
 /// tokens so they survive HTML-escaping and the later regex passes untouched:
 /// the rendered `fragments`, the authored `sources` (recovered by bare-URL and
-/// reference-link matching), and the indexes marked `literals` (which only
-/// terminate bare-URL matching). A reference type so the ordered pipeline
-/// passes share one accumulator.
+/// reference-link matching, and by attribute text), and the indexes marked
+/// `literals` (escapes and entities, which stand for plain text: bare-URL
+/// matching reads through them and attribute text emits their rendered form).
+/// A reference type so the ordered pipeline passes share one accumulator.
 ///
-/// `restore(in:)` and `source(in:)` share one linear resolver. Tokens have the
-/// form `\u{E000}MD2-<n>\u{E000}`, and `protect` is append-only: an entry at
-/// index N can only contain tokens with index < N. The resolver expands each
-/// entry once against already-expanded lower indexes (the `expandedCount`
-/// watermark), then scans the requested text once and replaces each token by
-/// direct index lookup. Author text that merely resembles a token, malformed
+/// Every source is HTML-escaped authored text, matching the escaped text the
+/// later passes see, so any mix of sources and literal fragments is safe in a
+/// double-quoted attribute value.
+///
+/// `restore(in:)`, `source(in:)`, and `attributeText(in:)` share one linear
+/// resolver. Tokens have the form `\u{E000}MD2-<n>\u{E000}`, and `protect` is
+/// append-only: an entry at index N can only contain tokens with index < N.
+/// The resolver expands each entry once against already-expanded lower indexes
+/// (the `expandedCount` watermark), then scans the requested text once and
+/// replaces each token by direct index lookup. Author text that merely resembles a token, malformed
 /// tokens, leading-zero indexes, and out-of-range or forward references stay
 /// literal.
 ///
@@ -3469,10 +3514,12 @@ private final class InlineProtector {
     static let tokenRegex = try! NSRegularExpression(pattern: tokenPattern)
 
     /// Stores `fragment` and returns the private-use-area token standing in for it.
-    func protect(_ fragment: String, source: String? = nil, literal: Bool = false) -> String {
+    /// `source` is the HTML-escaped authored spelling the fragment replaces; it
+    /// may contain tokens of earlier entries, which resolve to their sources.
+    func protect(_ fragment: String, source: String, literal: Bool = false) -> String {
         let token = "\(Self.sentinelCharacter)MD2-\(fragments.count)\(Self.sentinelCharacter)"
         if literal { literals.insert(fragments.count) }
-        sources.append(source ?? fragment)
+        sources.append(source)
         fragments.append(fragment)
         expanded.append(false)
         return token
@@ -3490,9 +3537,20 @@ private final class InlineProtector {
         resolve(text, emitting: .fragment)
     }
 
+    /// Returns escaped `text` as a double-quoted attribute value (image `alt`,
+    /// link `title`): escapes and entities resolve to the literal they stand
+    /// for, and every other construct keeps its authored spelling, so renderer
+    /// markup never reaches the attribute.
+    func attributeText(in text: String) -> String {
+        resolve(text, emitting: .attributeText)
+    }
+
     private enum Emission {
         case fragment
         case source
+        /// Chooses a view per top-level token; `ensureExpanded` has already
+        /// resolved nested tokens in both views.
+        case attributeText
     }
 
     private func resolve(_ text: String, emitting: Emission) -> String {
@@ -3578,6 +3636,7 @@ private final class InlineProtector {
         switch emitting {
         case .fragment: return fragments[index]
         case .source: return sources[index]
+        case .attributeText: return isLiteral(index) ? fragments[index] : sources[index]
         }
     }
 

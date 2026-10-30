@@ -291,17 +291,23 @@ struct InlineRenderingPerformanceTests {
 
     /// A crafted token DAG in a discarded attribute must not be materialized.
     /// The eager watermark expanded every fragment; the lazy resolver expands
-    /// only what the final text references.
-    @Test func discardedAttributeFragmentsStayUnexpanded() {
+    /// only what the final text references. A consumed size block and a figure
+    /// block both drop unknown keys, so neither image's authored source may
+    /// carry the block either.
+    @Test(arguments: [
+        ("width=1", #"<img src="p.png" alt="a" width="1">"#),
+        ("#fig:f", #"<figure class="figure" id="fig:f"><img src="p.png" alt="a">"#)
+    ])
+    func discardedAttributeFragmentsStayUnexpanded(_ kept: String, _ image: String) {
         let sentinel = "\u{E000}"
         func token(_ index: Int) -> String { "\(sentinel)MD2-\(index)\(sentinel)" }
         let spans = (0..<24).reversed().map { index in
             index == 0 ? "`x`" : "`" + String(repeating: token(index), count: 2) + "`"
         }.joined(separator: " ")
         let start = ContinuousClock.now
-        let body = renderer.render("![a](p.png){width=1 junk=\(spans)} `y`").body
+        let body = renderer.render("![a](p.png){\(kept) junk=\(spans)} `y`").body
         #expect(start.duration(to: .now) < .seconds(1))
-        #expect(body.contains(#"<img src="p.png" alt="a" width="1">"#))
+        #expect(body.contains(image))
         #expect(body.contains("<code>y</code>"))
     }
 
