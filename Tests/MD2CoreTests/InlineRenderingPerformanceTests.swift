@@ -237,6 +237,20 @@ struct InlineRenderingPerformanceTests {
         #expect(body.contains(#"href="https://example.com""#))
     }
 
+    /// Value: protects=destination classification reads Unicode scalars, the unit
+    /// the link pattern matches, so a combining mark after `)` still closes the
+    /// destination for autolinks and paren math alike; fails_when=the tracker reads
+    /// grapheme clusters, where `)` plus a mark is not a paren; why_new=the shared
+    /// tracker moved from Characters to scalars; seam=none; no_claim=only a mark
+    /// after the closing paren.
+    @Test func combiningMarkAfterClosingParenStillClosesTheDestination() {
+        let autolink = renderer.render("[a](b)\u{301} <https://example.com>").body
+        #expect(autolink.contains(#"href="https://example.com""#))
+
+        let math = renderer.render("[a](b)\u{301} \\(x\\)").body
+        #expect(math.contains(#"<span class="math math-inline">x</span>"#))
+    }
+
     /// Regression: ISSUE-003 — an authored well-formed token in a link
     /// destination must not splice a renderer fragment into the href attribute.
     /// The destination guard rejects raw markup characters before the anchor is
@@ -277,11 +291,11 @@ struct InlineRenderingPerformanceTests {
         #expect(!body.contains("MD2-"))
     }
 
-    /// The paren-math pass shares the destination index; a raw `](` still opens
+    /// The verbatim-span scan shares the destination rule; a raw `](` still opens
     /// a pseudo-destination when its `]` is escaped, so `\(x\)` after it stays
     /// literal rather than becoming a math span.
     /// Value: protects=paren-math destination classification after an escaped `](`;
-    /// fails_when=the index drops the escaped opener or the math pass uses another
+    /// fails_when=the tracker drops the escaped opener or the scan uses another
     /// classifier; why_new=the math pass had no escaped-bracket test; seam=none;
     /// no_claim=only this escaped-bracket arrangement.
     @Test func parenMathAfterEscapedBracketDestinationStaysLiteral() {
@@ -442,10 +456,11 @@ struct InlineRenderingPerformanceTests {
 
     /// Regression: the paren-math pass previously used the backward
     /// isInsideLinkDestination scan, so N `\(\)` spans on one line were O(N²).
-    /// The shared destination index makes the pass linear.
+    /// The verbatim-span scan tracks the destination rule incrementally, which
+    /// keeps it linear.
     /// Value: protects=paren-math destination classification scales linearly;
-    /// fails_when=the math pass returns to a per-match backward scan or the
-    /// destination index regresses; why_new=no scaling test covered the math
+    /// fails_when=the scan returns to a per-match backward scan or the
+    /// destination tracker regresses; why_new=no scaling test covered the math
     /// pass; seam=none; no_claim=only the no-opener workload, not math inside
     /// real destinations.
     @Test func manyParenMathSpansScaleLinearly() throws {
@@ -492,6 +507,12 @@ struct InlineRenderingPerformanceTests {
         case bareURLsWithEntities
         case referenceLinks
         case referenceLinksWithProtectedKeys
+        /// Code spans and both inline math forms claimed by the one scan.
+        case verbatimSpans
+        /// Currency `$` signs: every `$` attempt fails at the next one.
+        case unpairedDollars
+        /// `\(` openers with no closer: quadratic before the scan's failure frontier.
+        case unterminatedParenMath
 
         var testDescription: String { rawValue }
 
@@ -520,6 +541,12 @@ struct InlineRenderingPerformanceTests {
                     return "[\(key)]: https://example.com/path/\(index)"
                 }.joined(separator: "\n")
                 return body + "\n\n" + definitions
+            case .verbatimSpans:
+                return (0..<count).map { "`c\($0)` $x_\($0)$ \\(y_\($0)\\)" }.joined(separator: " ")
+            case .unpairedDollars:
+                return (0..<count).map { "costs $\($0) today" }.joined(separator: " ")
+            case .unterminatedParenMath:
+                return (0..<count).map { "\\(x\($0)" }.joined(separator: " ")
             }
         }
 
@@ -547,6 +574,13 @@ struct InlineRenderingPerformanceTests {
                 return body.components(separatedBy: #"href="https://example.com/?a="#).count - 1 == count
                     && body.contains(#"href="https://example.com/?a=\#(count - 1)&amp;b=2""#)
                     && !body.contains("&amp;amp;")
+            case .verbatimSpans:
+                return body.components(separatedBy: "<code>c").count - 1 == count
+                    && body.components(separatedBy: "math-inline").count - 1 == 2 * count
+            case .unpairedDollars:
+                return body.components(separatedBy: "$").count - 1 == count && !body.contains("math-inline")
+            case .unterminatedParenMath:
+                return body.components(separatedBy: "(x").count - 1 == count && !body.contains("math-inline")
             }
         }
     }

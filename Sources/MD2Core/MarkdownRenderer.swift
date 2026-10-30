@@ -1389,16 +1389,15 @@ public struct MarkdownRenderer: Sendable {
     /// adding a new inline construct means inserting one entry at the right point
     /// in this list.
     ///
-    /// Both math passes sit ahead of ``protectBackslashEscapes`` on purpose: their
-    /// delimiters (`$`, `\(`, `\)`) are built from backslash-escapable punctuation,
-    /// so the escape pass would otherwise dismantle them before math ever saw them.
+    /// The verbatim-span pass (code spans and both inline math forms) sits ahead of
+    /// ``protectBackslashEscapes`` on purpose: the math delimiters (`$`, `\(`, `\)`)
+    /// are built from backslash-escapable punctuation, so the escape pass would
+    /// otherwise dismantle them before math ever saw them.
     private func inlineHTML(_ markdown: String, context: InlineContext? = nil) -> String {
         let protector = InlineProtector()
 
         let pipeline: [(String) -> String] = [
-            { protectCodeSpans($0, protector: protector) },
-            { protectInlineMath($0, protector: protector) },
-            { protectInlineParenMath($0, protector: protector) },
+            { protectVerbatimSpans($0, protector: protector) },
             { protectBackslashEscapes($0, protector: protector) },
             { protectHTMLEntities($0, protector: protector) },
             { protectAutolinks($0, protector: protector) },
@@ -1420,18 +1419,44 @@ public struct MarkdownRenderer: Sendable {
         return protector.restore(in: transformed)
     }
 
-    /// Inline code spans `` `...` ``. The inner text is escaped and the whole span
-    /// is protected so later passes never reinterpret code content.
-    private func protectCodeSpans(_ text: String, protector: InlineProtector) -> String {
-        replaceMatches(in: text, pattern: #"(?<!`)(`+)(?!`)([\s\S]*?)(?<!`)\1(?!`)"#) { match, source in
-            guard let codeRange = Range(match.range(at: 2), in: source) else {
-                return matchText(match, in: source)
-            }
-            var code = String(source[codeRange]).replacingOccurrences(of: "\n", with: " ")
+    /// Inline code spans `` `...` `` and inline math `$...$` / `\(...\)`, claimed
+    /// by one reading-order scan (``VerbatimSpanScanner``) so the earliest opener
+    /// owns its span and the content reaches its renderer verbatim: `$x$` inside
+    /// `\(\text{$x$}\)` is TeX, not a nested span. Code content is escaped with
+    /// newlines folded to spaces; math content is escaped TeX in a `math-inline`
+    /// span. Each span is protected so later passes never reinterpret it.
+    private func protectVerbatimSpans(_ text: String, protector: InlineProtector) -> String {
+        let spans = VerbatimSpanScanner.spans(in: text)
+        guard !spans.isEmpty else { return text }
+
+        // Span bounds are scalar indices; slicing the String keeps them exact.
+        var result = ""
+        result.reserveCapacity(text.utf8.count)
+        var cursor = text.startIndex
+        for span in spans {
+            result.append(contentsOf: text[cursor..<span.range.lowerBound])
+            result.append(protectedFragment(for: span, in: text, protector: protector))
+            cursor = span.range.upperBound
+        }
+        result.append(contentsOf: text[cursor...])
+        return result
+    }
+
+    private func protectedFragment(for span: VerbatimSpan, in text: String, protector: InlineProtector) -> String {
+        let content = String(text[span.content])
+        switch span.kind {
+        case .code:
+            var code = content.replacingOccurrences(of: "\n", with: " ")
             if code.hasPrefix(" "), code.hasSuffix(" "), code.contains(where: { $0 != " " }) {
                 code = String(code.dropFirst().dropLast())
             }
-            return protector.protect("<code>\(escapeHTML(code))</code>", source: escapeHTML(matchText(match, in: source)))
+            return protector.protect("<code>\(escapeHTML(code))</code>", source: escapeHTML(String(text[span.range])))
+        case .dollarMath, .parenMath:
+            let tex = escapeHTML(content)
+            return protector.protect(
+                "<span class=\"\(PreviewClass.math) \(PreviewClass.mathInline)\">\(tex)</span>",
+                source: span.kind == .dollarMath ? "$\(tex)$" : "\\(\(tex)\\)"
+            )
         }
     }
 
@@ -1444,62 +1469,6 @@ public struct MarkdownRenderer: Sendable {
             }
 
             return protector.protect(escapeHTML(String(source[escapedRange])), source: escapeHTML(matchText(match, in: source)), literal: true)
-        }
-    }
-
-    /// Inline math `$...$`. Runs after code protection (so `$` inside code is never
-    /// a delimiter) but before backslash-escape protection, so TeX commands made of
-    /// backslash + punctuation (`\,`, `\%`, `\{`, …) reach the math engine verbatim.
-    /// The pattern itself guards against escapes: an escaped `\$` never opens math,
-    /// and inside the span every backslash is consumed together with its following
-    /// character, so an interior `\$` cannot close the span. The opening `$` must
-    /// not be followed by whitespace, the closing `$` must not be preceded by
-    /// whitespace, and `$$` (display math) is excluded.
-    private func protectInlineMath(_ text: String, protector: InlineProtector) -> String {
-        replaceMatches(in: text, pattern: #"(?<![$\\])\$(?![\s$])((?:\\.|[^\\$])+?)(?<!\s)\$(?!\$)"#) { match, source in
-            guard let range = Range(match.range(at: 1), in: source) else {
-                return matchText(match, in: source)
-            }
-
-            let tex = escapeHTML(String(source[range]))
-            return protector.protect(
-                "<span class=\"\(PreviewClass.math) \(PreviewClass.mathInline)\">\(tex)</span>",
-                source: "$\(tex)$"
-            )
-        }
-    }
-
-    /// Inline math `\(...\)`, the LaTeX spelling of `$...$`. It shares
-    /// ``protectInlineMath``'s pipeline slot for the same reason: `(` and `)` are
-    /// both backslash-escapable punctuation, so if the escape pass ran first it
-    /// would consume the delimiters and the span would degrade to a literal
-    /// parenthesized expression — the exact defect this pass exists to fix.
-    ///
-    /// The pattern opens on `\(` only when that backslash is not itself escaped
-    /// (`\\(`), so an authored literal backslash does not start a span. Inside the
-    /// span a backslash is consumed together with the following character, so
-    /// `\(a\\ b\)` keeps the row separator verbatim while an interior `\)` cannot
-    /// close the span early. Spaces are permitted at both ends (LaTeX allows
-    /// `\( x \)`), and an empty span is left literal.
-    ///
-    /// Link and image destinations are excluded: inside `](…)` a `\(` is a
-    /// CommonMark escape for a literal paren, not a math delimiter. Claiming it
-    /// here would break `[link](\(foo\))`, whose destination must stay `(foo)` —
-    /// the escape pass is what feeds those parens through to the `href`.
-    private func protectInlineParenMath(_ text: String, protector: InlineProtector) -> String {
-        let destinations = LinkDestinationIndex(scanning: text)
-        return replaceMatches(in: text, pattern: #"(?<!\\)\\\(((?:\\.|[^\\])+?)\\\)"#) { match, source in
-            guard let range = Range(match.range(at: 1), in: source),
-                  let matchRange = Range(match.range, in: source),
-                  !destinations.contains(matchRange.lowerBound) else {
-                return matchText(match, in: source)
-            }
-
-            let tex = escapeHTML(String(source[range]))
-            return protector.protect(
-                "<span class=\"\(PreviewClass.math) \(PreviewClass.mathInline)\">\(tex)</span>",
-                source: "\\(\(tex)\\)"
-            )
         }
     }
 
@@ -3420,77 +3389,138 @@ private enum DiagramKind: String {
     }
 }
 
-/// A precomputed view of inline link and image destinations (`](…`) for one
-/// inline pass (autolinks or paren math). Each opener records the position just
-/// after its `(` and the first unescaped, depth-zero `)` after it (or `nil`
-/// when unterminated). A lookup binary-searches the opener at or before a
-/// position and reports whether that position lies before the matching close,
-/// which is exactly the old nearest-opener, forward-depth scan without its
-/// per-match prefix walk.
+/// The nearest-opener rule for inline link and image destinations (`](…`),
+/// applied one Unicode scalar at a time — the unit the inline patterns match, so
+/// a combining mark after a parenthesis does not hide it. A `(` straight after
+/// `]` opens a destination, and the first unescaped `)` that brings the paren
+/// balance back below that `(` closes it. A position is inside a destination
+/// when the most recent opener before it has not closed, so the state is the
+/// global balance plus the open opener's level. A backslash skips the next unit
+/// for balance purposes, but a raw `](` still opens when its `]` is escaped,
+/// matching the original backward search.
 ///
-/// The index is built in one left-to-right pass: paren balance is tracked
-/// globally (escaped characters skipped), and every unescaped `)` is recorded
-/// under the balance level it leaves behind. An opener whose balance just after
-/// its `(` is `B` closes at the first later `)` recorded at level `B - 1`.
-/// An opener is recorded for a raw `](` even when the `]` is backslash-escaped,
-/// matching the previous backward search; the escaped character is still
-/// skipped for close bookkeeping.
+/// ``LinkDestinationIndex`` replays the rule over a whole string for random
+/// access. ``VerbatimSpanScanner`` feeds it the scan's output prefix, so link
+/// syntax inside an already-claimed span reads as one opaque unit, as that
+/// span's placeholder token does for every later pass.
+private struct LinkDestinationTracker {
+    enum Unit {
+        case backslash
+        case openParen
+        case closeParen
+        case closeBracket
+        case other
+
+        init(_ scalar: Unicode.Scalar) {
+            switch scalar {
+            case "\\": self = .backslash
+            case "(": self = .openParen
+            case ")": self = .closeParen
+            case "]": self = .closeBracket
+            default: self = .other
+            }
+        }
+    }
+
+    enum Event {
+        case opened
+        case closed
+    }
+
+    private var balance = 0
+    /// The balance just after the open opener's `(`, while it is open.
+    private var openLevel: Int?
+    private var afterBracket = false
+    private var escaping = false
+
+    var isInsideDestination: Bool { openLevel != nil }
+
+    /// Whether `text` holds a raw `](`, without which no destination can open.
+    /// Both scalars are ASCII, so a byte walk decides it — far cheaper than a
+    /// substring search on this per-paragraph path.
+    static func mayOpenDestination(in text: String) -> Bool {
+        var previous: UInt8 = 0
+        for byte in text.utf8 {
+            if byte == UInt8(ascii: "("), previous == UInt8(ascii: "]") { return true }
+            previous = byte
+        }
+        return false
+    }
+
+    @discardableResult
+    mutating func consume(_ unit: Unit) -> Event? {
+        if escaping {
+            escaping = false
+            afterBracket = unit == .closeBracket
+            return nil
+        }
+
+        let opensDestination = afterBracket
+        afterBracket = false
+        switch unit {
+        case .backslash:
+            escaping = true
+        case .openParen:
+            balance += 1
+            if opensDestination {
+                openLevel = balance
+                return .opened
+            }
+        case .closeParen:
+            balance -= 1
+            if let level = openLevel, balance < level {
+                openLevel = nil
+                return .closed
+            }
+        case .closeBracket:
+            afterBracket = true
+        case .other:
+            break
+        }
+        return nil
+    }
+}
+
+/// A precomputed view of inline link and image destinations for one inline
+/// pass (autolinks): ``LinkDestinationTracker`` replayed over the text once,
+/// recording each opener's start (just after its `(`) and its close. A lookup
+/// binary-searches the opener at or before a position and reports whether that
+/// position lies before the close. An opener still open when the next one
+/// appears keeps a `nil` close: every later lookup consults the newer opener,
+/// so the older one's eventual close cannot matter.
 private struct LinkDestinationIndex {
     private struct Span {
         let start: String.Index
-        let close: String.Index?
+        var close: String.Index?
     }
 
     private let spans: [Span]
 
     init(scanning text: String) {
-        // Most inline passes contain no link syntax at all; skip the character
-        // walk (and its allocations) in that common case.
-        guard text.contains("](") else {
+        // Most inline passes contain no link syntax at all; skip the scalar walk
+        // (and its allocations) in that common case.
+        guard LinkDestinationTracker.mayOpenDestination(in: text) else {
             spans = []
             return
         }
 
-        var openers: [(start: String.Index, base: Int)] = []
-        var closesByBalance: [Int: [String.Index]] = [:]
-        var balance = 0
-        var previous: Character?
-        var cursor = text.startIndex
-
-        while cursor < text.endIndex {
-            let character = text[cursor]
-
-            if character == "\\" {
-                guard let next = text.index(cursor, offsetBy: 2, limitedBy: text.endIndex) else { break }
-                let escaped = text[text.index(after: cursor)]
-                cursor = next
-                // A raw `](` opens a destination even when its `]` is escaped;
-                // the old backward search matched that spelling. Close
-                // bookkeeping still skips the escaped character.
-                previous = escaped == "]" ? "]" : nil
-                continue
+        let scalars = text.unicodeScalars
+        var tracker = LinkDestinationTracker()
+        var spans: [Span] = []
+        var cursor = scalars.startIndex
+        while cursor < scalars.endIndex {
+            let next = scalars.index(after: cursor)
+            switch tracker.consume(.init(scalars[cursor])) {
+            case .opened:
+                spans.append(Span(start: next, close: nil))
+            case .closed:
+                spans[spans.count - 1].close = cursor
+            case nil:
+                break
             }
-
-            if character == "(" {
-                balance += 1
-                if previous == "]" {
-                    openers.append((text.index(after: cursor), balance))
-                }
-            } else if character == ")" {
-                balance -= 1
-                closesByBalance[balance, default: []].append(cursor)
-            }
-
-            previous = character
-            cursor = text.index(after: cursor)
+            cursor = next
         }
-
-        spans = openers.map { opener in
-            Span(
-                start: opener.start,
-                close: Self.firstClose(after: opener.start, at: opener.base - 1, in: closesByBalance)
-            )
-        }
+        self.spans = spans
     }
 
     func contains(_ index: String.Index) -> Bool {
@@ -3512,27 +3542,245 @@ private struct LinkDestinationIndex {
         guard let close = span.close else { return true }
         return index < close
     }
+}
 
-    private static func firstClose(
-        after start: String.Index,
-        at level: Int,
-        in closesByBalance: [Int: [String.Index]]
-    ) -> String.Index? {
-        guard let positions = closesByBalance[level] else { return nil }
+/// One inline code span or inline math span claimed by ``VerbatimSpanScanner``.
+private struct VerbatimSpan {
+    enum Kind {
+        case code
+        case dollarMath
+        case parenMath
+    }
 
-        var low = 0
-        var high = positions.count
-        while low < high {
-            let middle = (low + high) / 2
-            // The old forward scan starts at `start` and checks that character,
-            // so a close exactly at `start` is the matching close.
-            if positions[middle] < start {
-                low = middle + 1
+    let kind: Kind
+    /// The whole span, delimiters included.
+    let range: Range<String.Index>
+    /// The verbatim content between the delimiters.
+    let content: Range<String.Index>
+}
+
+/// Claims inline code spans, `$...$` math, and `\(...\)` math in one
+/// left-to-right scan over Unicode scalars, so delimiter ownership follows
+/// reading order: the earliest opener with a valid closer owns its span, and
+/// nothing inside it is reinterpreted. Independent sequential passes could not
+/// establish that — `$x$` inside `\(\text{$x$}\)` was claimed first and
+/// restored as nested HTML, so the outer TeX silently lost its dollar signs.
+///
+/// Each delimiter keeps the guards the former regex passes encoded:
+/// - A code span opens at a maximal backtick run and closes at the next run of
+///   exactly the same length; a run with no such closer is literal.
+/// - `$` opens when it is not preceded by `$` or `\` and not followed by
+///   whitespace or `$`. It closes at the first `$` that is not preceded by
+///   whitespace and not followed by `$`; any other `$` ends the attempt.
+/// - `\(` opens when its backslash is not preceded by a backslash and does not
+///   sit inside a link or image destination, and closes at the first `\)`; an
+///   empty span is literal.
+/// - Inside both math forms a backslash pairs with the next scalar, so `\$`
+///   and `\)` cannot close early and TeX commands stay intact; a backslash
+///   before a line terminator or at the end ends the attempt.
+///
+/// Code spans bind tighter than math, as the former pass order made them: a
+/// math span may contain a whole code span, whose backticks are then TeX
+/// source, but never closes inside one, so the code span in "costs $5, set
+/// `$HOME`" survives. Between the two math forms reading order decides, and
+/// the other form's delimiters inside an owned span are plain TeX.
+///
+/// The scan is linear. Backtick runs are paired once up front. A failed `$`
+/// attempt stops at the first `$` it reaches, and no later `$` opener lies
+/// before that point. A failed `\(` attempt records where it stopped, because
+/// every later opener before that point reads the same items from its own
+/// content start and would fail the same way.
+private struct VerbatimSpanScanner {
+    private struct CodeSpan {
+        let content: Range<String.Index>
+        let end: String.Index
+    }
+
+    private let scalars: String.UnicodeScalarView
+    /// Code spans keyed by the index of their opening run.
+    private let codeSpans: [String.Index: CodeSpan]
+    /// `nil` when the text holds no `](`, so no `\(` can sit in a destination.
+    private var destinations: LinkDestinationTracker?
+    /// `\(` attempts opening before this index fail without reading.
+    private var parenFailureFrontier: String.Index?
+    private var spans: [VerbatimSpan] = []
+
+    static func spans(in text: String) -> [VerbatimSpan] {
+        guard mayOpenSpan(text) else { return [] }
+        var scanner = VerbatimSpanScanner(text)
+        scanner.scan()
+        return scanner.spans
+    }
+
+    private init(_ text: String) {
+        scalars = text.unicodeScalars
+        codeSpans = Self.pairCodeSpans(in: scalars)
+        if LinkDestinationTracker.mayOpenDestination(in: text) {
+            destinations = LinkDestinationTracker()
+        }
+    }
+
+    /// Whether `text` holds a backtick, a `$`, or a `\(`, the only places a span
+    /// can open. One byte walk, since all three are ASCII.
+    private static func mayOpenSpan(_ text: String) -> Bool {
+        var previous: UInt8 = 0
+        for byte in text.utf8 {
+            if byte == UInt8(ascii: "`") || byte == UInt8(ascii: "$")
+                || (byte == UInt8(ascii: "(") && previous == UInt8(ascii: "\\")) {
+                return true
+            }
+            previous = byte
+        }
+        return false
+    }
+
+    /// Pairs backtick runs left to right as the code-span grammar does: a maximal
+    /// run opens, the next run of exactly the same length closes, and a run with
+    /// no such successor is literal. Successors are found in one right-to-left
+    /// sweep, so no run rescans the text for its closer.
+    private static func pairCodeSpans(in scalars: String.UnicodeScalarView) -> [String.Index: CodeSpan] {
+        var runs: [(start: String.Index, end: String.Index, length: Int)] = []
+        var cursor = scalars.startIndex
+        while let start = scalars[cursor...].firstIndex(of: "`") {
+            var end = start
+            var length = 0
+            while end < scalars.endIndex, scalars[end] == "`" {
+                end = scalars.index(after: end)
+                length += 1
+            }
+            runs.append((start, end, length))
+            cursor = end
+        }
+        guard runs.count > 1 else { return [:] }
+
+        var successors = [Int?](repeating: nil, count: runs.count)
+        var latestByLength: [Int: Int] = [:]
+        for index in runs.indices.reversed() {
+            successors[index] = latestByLength[runs[index].length]
+            latestByLength[runs[index].length] = index
+        }
+
+        var codeSpans: [String.Index: CodeSpan] = [:]
+        var index = 0
+        while index < runs.count {
+            guard let closer = successors[index] else {
+                index += 1
+                continue
+            }
+            codeSpans[runs[index].start] = CodeSpan(content: runs[index].end..<runs[closer].start, end: runs[closer].end)
+            index = closer + 1
+        }
+        return codeSpans
+    }
+
+    private mutating func scan() {
+        var cursor = scalars.startIndex
+        while cursor < scalars.endIndex {
+            let scalar = scalars[cursor]
+            if let span = span(openingWith: scalar, at: cursor) {
+                spans.append(span)
+                // The claimed span becomes one placeholder token downstream.
+                destinations?.consume(.other)
+                cursor = span.range.upperBound
             } else {
-                high = middle
+                destinations?.consume(.init(scalar))
+                cursor = scalars.index(after: cursor)
             }
         }
-        return low < positions.count ? positions[low] : nil
+    }
+
+    private mutating func span(openingWith scalar: Unicode.Scalar, at start: String.Index) -> VerbatimSpan? {
+        switch scalar {
+        case "`":
+            return codeSpans[start].map { VerbatimSpan(kind: .code, range: start..<$0.end, content: $0.content) }
+        case "$":
+            let previous = precedingScalar(start)
+            guard previous != "$", previous != "\\" else { return nil }
+            return dollarMath(openingAt: start)
+        case "\\":
+            let next = scalars.index(after: start)
+            guard next < scalars.endIndex, scalars[next] == "(", precedingScalar(start) != "\\",
+                  destinations?.isInsideDestination != true else { return nil }
+            return parenMath(openingAt: start)
+        default:
+            return nil
+        }
+    }
+
+    private func precedingScalar(_ index: String.Index) -> Unicode.Scalar? {
+        index > scalars.startIndex ? scalars[scalars.index(before: index)] : nil
+    }
+
+    private func dollarMath(openingAt start: String.Index) -> VerbatimSpan? {
+        let contentStart = scalars.index(after: start)
+        guard contentStart < scalars.endIndex,
+              scalars[contentStart] != "$",
+              !scalars[contentStart].properties.isWhitespace else { return nil }
+
+        var cursor = contentStart
+        while cursor < scalars.endIndex {
+            guard scalars[cursor] == "$" else {
+                guard let next = contentItemEnd(at: cursor) else { return nil }
+                cursor = next
+                continue
+            }
+            // Content cannot hold a bare `$`: the first one closes or ends the attempt.
+            let end = scalars.index(after: cursor)
+            guard !scalars[scalars.index(before: cursor)].properties.isWhitespace,
+                  end == scalars.endIndex || scalars[end] != "$" else { return nil }
+            return VerbatimSpan(kind: .dollarMath, range: start..<end, content: contentStart..<cursor)
+        }
+        return nil
+    }
+
+    private mutating func parenMath(openingAt start: String.Index) -> VerbatimSpan? {
+        if let frontier = parenFailureFrontier, start < frontier { return nil }
+
+        let contentStart = scalars.index(start, offsetBy: 2)
+        var cursor = contentStart
+        while cursor < scalars.endIndex {
+            // The closer is tried only after at least one content item.
+            if cursor > contentStart, scalars[cursor] == "\\" {
+                let next = scalars.index(after: cursor)
+                if next < scalars.endIndex, scalars[next] == ")" {
+                    return VerbatimSpan(kind: .parenMath, range: start..<scalars.index(after: next), content: contentStart..<cursor)
+                }
+            }
+            guard let next = contentItemEnd(at: cursor) else { break }
+            cursor = next
+        }
+        parenFailureFrontier = cursor
+        return nil
+    }
+
+    /// The end of the math-content item at `cursor`: a whole code span, a
+    /// backslash and the scalar it escapes, or one scalar. A backslash right
+    /// before a code span stands alone, because code binds tighter and the code
+    /// span is the next item. `nil` when a backslash has nothing it may escape —
+    /// a line terminator or the end of the text — which ends the attempt, as the
+    /// `\\.` alternative did in the former patterns.
+    private func contentItemEnd(at cursor: String.Index) -> String.Index? {
+        let scalar = scalars[cursor]
+        let next = scalars.index(after: cursor)
+        if scalar == "`" {
+            return codeSpans[cursor]?.end ?? next
+        }
+        guard scalar == "\\" else { return next }
+        guard next < scalars.endIndex else { return nil }
+
+        let escaped = scalars[next]
+        if escaped == "`", codeSpans[next] != nil { return next }
+        return Self.isLineTerminator(escaped) ? nil : scalars.index(after: next)
+    }
+
+    /// The scalars a regular-expression `.` does not match.
+    private static func isLineTerminator(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x0A...0x0D, 0x85, 0x2028, 0x2029:
+            return true
+        default:
+            return false
+        }
     }
 }
 
