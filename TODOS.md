@@ -47,21 +47,6 @@ Tracked work considered and explicitly deferred from in-flight changes. Each ite
 
 **Start here:** extend the top-level block emitter to stamp `li` elements (mirroring the footnote `li` path at `:980`), update `MetadataInvariantTests`' exception list, then extend `__md2RenderLineNumbers`' eligibility rules to nested `li` anchors.
 
-## Pre-scan doesn't traverse containers (forward `\ref` into quoted/list equations unresolved)
-
-**What:** Make `collectCrossReferenceLabels` (the whole-document pre-scan that pre-registers equation/figure/table numbers) walk blockquotes and dedented list content exactly as the render walk does, so labels inside containers are registered and forward `\ref{}`s to them resolve.
-
-**Why:** The render walk descends into blockquotes (recursive render) and dedented list content; the label pre-scan (`Sources/MD2Core/MarkdownRenderer.swift:1452`) checks only fences, indented code, top-level math, and tables. An equation inside a blockquote renders numbered, but a `\ref{}` appearing earlier in the document stays a dead link, and numbering can disagree when nested equations precede top-level ones. Pre-existing for `$$` blocks; bare `\begin{env}` blocks inherit it. Surfaced by the Codex outside voice during the `add-latex-math-compat` eng review (2026-09-24) and documented there as a declared boundary rather than fixed.
-
-**Current state:** The change's matrix boundary text scopes the numbering/`\ref{}` guarantee to top-level blocks, and a test pins the quoted-env limitation.
-
-**Pros:** Forward references resolve everywhere; numbering is consistent in all containers; the pre-scan and render walk share one traversal shape.
-**Cons / cost:** Traversal rework in the cross-reference path plus nested-numbering tests; must keep `resetCounters()` rewind semantics intact so render-walk numbers stay identical. (human: ~1 day / CC: ~1-2h)
-
-**Depends on:** nothing; independent of the latex-math change (which only documents the limitation).
-
-**Start here:** extract the render walk's container traversal (blockquote recursion, list dedent) into a shape the pre-scan can share, then assert pre-scan/render numbering parity for documents with equations inside containers.
-
 ## Left-to-right delimiter ownership scan (inline pipeline)
 
 **What:** Replace the independent inline passes for code/math (`protectCodeSpans`, `protectInlineMath`, and the new `protectInlineParenMath`) with one left-to-right scan that establishes delimiter ownership by position, then applies each delimiter's own rules.
@@ -91,21 +76,6 @@ Tracked work considered and explicitly deferred from in-flight changes. Each ite
 **Depends on:** D4 sign-off.
 
 **Start here:** measure the output/input ratio in `DocumentRenderWorker`, choose a cap or literal policy, and add a repo-size regression.
-
-## Cross-container figure numbering and the forward `\ref` map
-
-**What:** Reconcile the figure pre-scan with the render walk for figures in footnotes and table captions, so a forward `\ref` and the caption agree across containers.
-
-**Why:** The pre-scan walks source lines and table blocks but does not register `#fig:` labels in footnotes or table captions; a footnote figure placed before a body figure makes a forward `\ref{fig:body}` render 2 while the body caption is Figure 1. Found by the adversarial review (2026-10-19); the same traversal gap is the existing "Pre-scan doesn't traverse containers" item for equations.
-
-**Current state:** Same-inline-pass figures are numbered in document order and tested; cross-container numbering is a declared boundary.
-
-**Pros:** One numbering story for every container; the `\ref` map becomes trustworthy.
-**Cons / cost:** Traversal rework in the pre-scan plus nested-numbering tests; must keep `resetCounters()` rewind semantics. (human: ~1 day / CC: ~1-2h)
-
-**Depends on:** nothing; independent of the latex-math TODO (which covers equations).
-
-**Start here:** share the render walk's container traversal with `collectCrossReferenceLabels`, then assert pre-scan/render figure parity for footnotes and table captions.
 
 ## Adopt `.gstack/pregate.json` on the base branch
 

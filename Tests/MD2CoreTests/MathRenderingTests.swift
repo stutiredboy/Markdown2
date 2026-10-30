@@ -662,10 +662,9 @@ struct MathRenderingTests {
         #expect(!body.contains("math-display"))
     }
 
-    @Test func equationInsideBlockquoteIsNotPreRegistered() {
-        // Declared limitation: the label pre-scan does not traverse blockquotes, so
-        // the container's equation is numbered and labeled, but a forward `\ref{}`
-        // from outside it stays unresolved.
+    @Test func forwardReferenceIntoQuotedEnvironmentResolves() {
+        // `\ref{}` resolves after the render walk has numbered every container,
+        // so a reference above a quoted environment reaches it.
         let markdown = #"""
         See \ref{eq:q}.
 
@@ -676,7 +675,8 @@ struct MathRenderingTests {
 
         let body = MarkdownRenderer().render(markdown).body.withoutSourceLineMetadata
 
-        #expect(body.contains(#"id="eq:q""#))
-        #expect(body.contains(#"\ref{eq:q}"#))
+        #expect(body.contains(#"<div class="numbered-equation" id="eq:q">"#))
+        #expect(body.contains(##"<a class="cross-ref" href="#eq:q">1</a>"##))
+        #expect(!body.contains(#"\ref{eq:q}"#))
     }
 }

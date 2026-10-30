@@ -77,8 +77,9 @@ struct InlineRenderingPerformanceTests {
         #expect(body.contains("Figure 2: two"))
     }
 
-    /// A labeled image dropped for an unsafe URL keeps its number so the
-    /// pre-scan-derived `\ref` map and the visible captions stay aligned.
+    /// A labeled image dropped for an unsafe URL still consumes its number: the
+    /// prepare pass numbers every labeled image in document order before any of
+    /// them is rendered.
     @Test func droppedLabeledImageConsumesItsNumber() {
         let body = renderer.render("![bad](javascript:x){#fig:bad} ![good](g.png){#fig:good}").body
         #expect(body.contains("Figure 2: good"))
