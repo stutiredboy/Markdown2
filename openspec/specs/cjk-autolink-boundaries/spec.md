@@ -2,12 +2,12 @@
 
 ## Purpose
 
-Define the bare-URL boundary contract for CJK/typographic punctuation and the
-zero-width space (U+200B): where a bare URL terminates, which characters may
+Define the bare-URL boundary contract for CJK/typographic punctuation
+(including full-width, vertical and small forms) and invisible format characters
+such as the zero-width space (U+200B): where a bare URL terminates, which characters may
 precede it, how Han text is treated inside a URL path versus the authority, the
 literal-only entity exception, and the compatibility-matrix declaration of the
 intentional GFM divergence.
-
 ## Requirements
 ### Requirement: Literal CJK and typographic punctuation terminates bare URLs
 
@@ -25,9 +25,16 @@ The bare-URL pass SHALL treat the following literal source characters as URL ter
 - U+FF1A–U+FF20 `：；＜＝＞？＠`
 - U+FF3B–U+FF40 `［＼］＾＿｀`
 - U+FF5B–U+FF65 `｛｜｝～｟｠｡｢｣､･`
+- U+FE10–U+FE19 `︐︑︒︓︔︕︖︗︘︙` (vertical forms)
+- U+FE30–U+FE4F `︰︱︲︳︴︵︶︷︸︹︺︻︼︽︾︿﹀﹁﹂﹃﹄﹅﹆﹇﹈﹉﹊﹋﹌﹍﹎﹏` (CJK compatibility forms)
+- U+FE50–U+FE52, U+FE54–U+FE66, U+FE68–U+FE6B `﹐﹑﹒﹔﹕﹖﹗﹘﹙﹚﹛﹜﹝﹞﹟﹠﹡﹢﹣﹤﹥﹦﹨﹩﹪﹫` (small form variants; U+FE53 and U+FE67 are unassigned and excluded)
 - U+200B ZERO WIDTH SPACE
+- U+00AD SOFT HYPHEN, U+2060 WORD JOINER, U+FEFF ZERO WIDTH NO-BREAK SPACE
+- U+061C ARABIC LETTER MARK, U+200E–U+200F LEFT-TO-RIGHT MARK and RIGHT-TO-LEFT MARK, U+2066–U+2069 LEFT-TO-RIGHT ISOLATE through POP DIRECTIONAL ISOLATE
 
-The full-width structural lookalikes `．` (U+FF0E), `／` (U+FF0F), `＃` (U+FF03), `＠` (U+FF20), `？` (U+FF1F), `－` (U+FF0D) and `＿` (U+FF3F) SHALL NOT terminate a bare URL; they remain valid left boundaries and stay in the URL body, so `https://evil.com．trusted.com` does not link a shorter host than the text appears to show. `－` and `＿` fold to the host-valid `-` and `_`, which is why they are in this set.
+The invisible format characters in the set render nothing (or only a hyphenation or direction hint) and never belong in a URL. U+200C ZERO WIDTH NON-JOINER and U+200D ZERO WIDTH JOINER (IDNA context joiners, emoji sequences), variation selectors, and the bidi embedding and override controls U+202A–U+202E SHALL NOT be in the set: a URL that contains one keeps it as URL content, and none of them is a valid left boundary.
+
+The structural lookalikes are the boundary characters whose compatibility form (NFKC) is `.`, `/`, `#`, `@`, `?`, `-` or `_`: the full-width `．` (U+FF0E), `／` (U+FF0F), `＃` (U+FF03), `＠` (U+FF20), `？` (U+FF1F), `－` (U+FF0D) and `＿` (U+FF3F); the vertical `︖` (U+FE16), `︳` (U+FE33) and `︴` (U+FE34); the low lines `﹍` (U+FE4D), `﹎` (U+FE4E) and `﹏` (U+FE4F); and the small `﹒` (U+FE52), `﹖` (U+FE56), `﹟` (U+FE5F), `﹣` (U+FE63) and `﹫` (U+FE6B). They SHALL NOT terminate a bare URL; they remain valid left boundaries and stay in the URL body, so `https://evil.com．trusted.com` and `https://evil.com﹒trusted.com` do not link a shorter host than the text appears to show. The forms of `-` and `_` are host-valid, which is why they are in this set.
 
 Full-width letters and digits (U+FF10–U+FF19, U+FF21–U+FF3A, U+FF41–U+FF5A) are content, not punctuation. They SHALL NOT terminate a bare URL and SHALL NOT be valid left boundaries; a bare URL that contains them SHALL include them in the anchor text and destination. The rule SHALL apply to literal source characters; authored HTML entity spellings SHALL keep the existing entity-recovery behavior defined by the preserved-behavior requirement. The existing trailing ASCII punctuation cleanup, unmatched-closing-parenthesis handling, trailing entity spellings, and domain validation SHALL remain unchanged.
 
@@ -56,17 +63,41 @@ Full-width letters and digits (U+FF10–U+FF19, U+FF21–U+FF3A, U+FF41–U+FF5A
 - **THEN** the anchor ends at `北京`
 - **AND** `，更多` follows the anchor as text outside the link
 
-#### Scenario: Every normative range terminates a URL
+#### Scenario: Every normative character terminates a URL
 
-- **WHEN** a bare URL is followed by a terminator character tested at both endpoints of each normative range (and the single-character ranges)
+- **WHEN** a bare URL with a path is followed by any terminator character in the normative set
 - **THEN** the anchor ends before that character
 - **AND** the character and the following text appear outside the anchor
 
-#### Scenario: Zero-width space terminates a URL
+#### Scenario: Zero-width space terminates a URL path
 
-- **WHEN** the source contains `https://example.com\u{200B}tail`
-- **THEN** the anchor destination is `https://example.com`
+- **WHEN** the source contains `https://example.com/a\u{200B}tail`
+- **THEN** the anchor destination is `https://example.com/a`
 - **AND** the U+200B character and `tail` appear outside the anchor
+
+#### Scenario: Small comma after a URL
+
+- **WHEN** the source contains `https://example.com﹐tail`
+- **THEN** `https://example.com` is rendered as an anchor rather than left literal
+- **AND** `﹐tail` follows the anchor as text outside the link
+
+#### Scenario: Vertical full stop after a URL
+
+- **WHEN** the source contains `见 https://example.com/docs﹐然后继续︒` or `https://example.com︒然后`
+- **THEN** the anchor ends before `﹐` or `︒`
+- **AND** the compatibility form and the following text appear outside the anchor
+
+#### Scenario: Invisible format character ends a URL path
+
+- **WHEN** the source contains `见\u{FEFF}https://example.com/path\u{FEFF}。`
+- **THEN** the anchor destination is `https://example.com/path`, with no invisible character in it
+- **AND** the U+FEFF character and `。` appear outside the anchor
+
+#### Scenario: Excluded format characters stay URL content
+
+- **WHEN** the source contains `https://example.com/a\u{200D}tail` or `https://example.com/a\u{202E}tail`
+- **THEN** the anchor destination includes the joiner or override control and `tail`
+- **AND** neither character is a valid left boundary before `https://example.com`
 
 #### Scenario: ASCII trailing cleanup is unchanged
 
@@ -102,10 +133,22 @@ A bare URL (`http://`, `https://`, or `www.`) SHALL be recognized when immediate
 - **THEN** `https://example.com` is rendered as an anchor
 - **AND** the U+200B character remains outside the anchor
 
-#### Scenario: Every normative range is a valid left boundary
+#### Scenario: Every normative character is a valid left boundary
 
-- **WHEN** each terminator character tested at both endpoints of its normative range immediately precedes `https://example.com`
+- **WHEN** any character in the normative boundary set, terminator or structural lookalike, immediately precedes `https://example.com`
 - **THEN** the URL is rendered as an anchor
+
+#### Scenario: Bidi-wrapped and BOM-prefixed URLs
+
+- **WHEN** the source contains `\u{2067}https://example.com\u{2069}`, `زر \u{200F}https://example.com\u{200F} الآن`, or `见\u{FEFF}https://example.com`
+- **THEN** `https://example.com` is rendered as an anchor
+- **AND** the isolate, mark, or U+FEFF characters remain outside the anchor
+
+#### Scenario: Vertical colon before the scheme
+
+- **WHEN** the source contains `链接︓https://example.com﹔`
+- **THEN** `https://example.com` is rendered as an anchor
+- **AND** `链接︓` and `﹔` remain outside the anchor
 
 #### Scenario: `www.` variants use the same boundaries
 
@@ -183,12 +226,14 @@ The change SHALL NOT alter the protection of code spans, math spans, existing Ma
 
 ### Requirement: The boundary rule is declared in the compatibility matrix and docs
 
-The `gfm-autolinks` entry in the machine-checked compatibility matrix SHALL record in its declared behavior and boundary text that CJK/typographic punctuation (including full-width forms) and U+200B terminate a bare URL, that Han characters and the same set are valid left boundaries, that the rule is an intentional adjustment to GFM, and that the known trade-offs are URL truncation, hostname absorption, and the literal-only entity exception. The generated `Docs/CompatibilityMatrix.md` SHALL be regenerated from the matrix data rather than hand-edited, and `Docs/MarkdownSupport.md` SHALL describe the same behavior and trade-offs. The entry's support tier SHALL remain `Supported`. The divergence SHALL be declared in the entry text rather than by reclassifying corpus examples, because the vendored GFM examples are ASCII and do not exercise it.
+The `gfm-autolinks` entry in the machine-checked compatibility matrix SHALL record in its declared behavior and boundary text that CJK/typographic punctuation (including full-width forms and the vertical and small forms U+FE10–U+FE19, U+FE30–U+FE4F and U+FE50–U+FE6B), U+200B, and the enumerated invisible format characters (U+00AD, U+2060, U+FEFF, and the bidi marks and isolates U+061C, U+200E–U+200F and U+2066–U+2069) terminate a bare URL, that Han characters and the same set are valid left boundaries, that the rule is an intentional adjustment to GFM, which format characters stay outside the set (U+200C/U+200D and the bidi embedding and override controls U+202A–U+202E), and that the known trade-offs are URL truncation, hostname absorption, and the literal-only entity exception. The generated `Docs/CompatibilityMatrix.md` SHALL be regenerated from the matrix data rather than hand-edited, and `Docs/MarkdownSupport.md` SHALL describe the same behavior and trade-offs. The entry's support tier SHALL remain `Supported`. The divergence SHALL be declared in the entry text rather than by reclassifying corpus examples, because the vendored GFM examples are ASCII and do not exercise it.
 
 #### Scenario: Matrix entry declares the intentional adjustment
 
 - **WHEN** a developer reads the `gfm-autolinks` entry
 - **THEN** its declared behavior or boundary text states that full-width/CJK punctuation and U+200B terminate bare URLs
+- **AND** it names the vertical and small form ranges and the enumerated invisible format characters as part of the set, not as outside it
+- **AND** it names U+202A–U+202E as outside the set
 - **AND** it states that Han characters and full-width punctuation are valid left boundaries
 - **AND** it identifies the rule as an intentional adjustment to GFM
 - **AND** it states the hostname-absorption and entity-exception trade-offs
@@ -202,11 +247,12 @@ The `gfm-autolinks` entry in the machine-checked compatibility matrix SHALL reco
 
 - **WHEN** a reader opens `Docs/MarkdownSupport.md`
 - **THEN** the autolinks entry mentions that full-width punctuation ends a bare URL, that U+200B is handled, and that Han text after the authority is absorbed into the hostname
+- **AND** it names the vertical and small form ranges, U+FEFF, and the excluded U+202A–U+202E controls
 - **AND** a consistency test fails if those phrases disappear
 
 ### Requirement: Lookalike continuations do not retarget a bare URL
 
-A bare-URL candidate SHALL NOT be anchored when the visible continuation, after restoring protected tokens/entities/escapes (including image alt text), skipping footnote reference markers (a generated note number, never authority text, so what follows the marker is checked as if adjacent), stripping inline HTML, treating emphasis/strikethrough/highlight/sup/sub delimiters as markup, skipping invisible characters (Unicode format/control/combining and default-ignorable scalars, including ZWSP/ZWNJ/ZWJ, bidi marks and tag characters, plus blank-rendering fillers), and folding IDNA/fullwidth forms, would change the apparent authority. A protected math span in the continuation SHALL leave the candidate literal, and a block-level or void HTML boundary SHALL end the continuation. The guard SHALL apply when the authority (host with optional port) ends the URL (no path, query, or fragment), SHALL read the continuation from the visible text of any protected token rather than after it, and SHALL bound the continuation scan (failing closed when the bound is reached before a delimiter). A candidate SHALL stay literal when the continuation contains an ASCII `@` before the next `/`, `?`, `#`, or whitespace; when it begins with one or more IDNA dots followed by a host label that is ASCII or is followed by another dot; when it begins with a fullwidth percent followed by `2e`/`2E`; when it begins with a host-label character (letter, digit, `-` or `_`); or when it begins with a letter or digit and contains a dot. Ordinary prose continuations (`https://example.com。然后`, `https://example.com：然后`, `https://example.com％然后`) SHALL remain linked.
+A bare-URL candidate SHALL NOT be anchored when the visible continuation, after restoring protected tokens/entities/escapes (including image alt text), skipping footnote reference markers (a generated note number, never authority text, so what follows the marker is checked as if adjacent), stripping inline HTML, treating emphasis/strikethrough/highlight/sup/sub delimiters as markup, skipping invisible characters (Unicode format/control/combining and default-ignorable scalars, including ZWSP/ZWNJ/ZWJ, bidi marks and tag characters, plus blank-rendering fillers), and folding IDNA/fullwidth forms and the vertical and small forms in the boundary set to their single-scalar compatibility form (`︒` reads as an IDNA dot, `﹒` as `.`, `﹫` as `@`, `﹪` as `%`, `﹣` as `-`), would change the apparent authority. A protected math span in the continuation SHALL leave the candidate literal, and a block-level or void HTML boundary SHALL end the continuation. The guard SHALL apply when the authority (host with optional port) ends the URL (no path, query, or fragment), SHALL read the continuation from the visible text of any protected token rather than after it, and SHALL bound the continuation scan (failing closed when the bound is reached before a delimiter). A candidate SHALL stay literal when the continuation contains an ASCII `@` before the next `/`, `?`, `#`, or whitespace; when it begins with one or more IDNA dots followed by a host label that is ASCII or is followed by another dot; when it begins with a fullwidth percent followed by `2e`/`2E`; when it begins with a host-label character (letter, digit, `-` or `_`); or when it begins with a letter or digit and contains a dot. Ordinary prose continuations (`https://example.com。然后`, `https://example.com：然后`, `https://example.com％然后`) SHALL remain linked.
 
 #### Scenario: Invisible terminator before a dot stays literal
 
@@ -265,6 +311,16 @@ A bare-URL candidate SHALL NOT be anchored when the visible continuation, after 
 - **AND** `https://evil.com[^1].trusted.com` and `https://evil.co[^1]m` produce no anchor for the shorter host
 - **AND** an authored superscript (`https://evil.co<sup>m</sup>`) is still read as visible text
 
+#### Scenario: Vertical and small forms fold in the continuation
+
+- **WHEN** the source contains `https://evil.com︒trusted.com`, `https://evil.com︒ｔｒｕｓｔｅｄ`, `https://evil.com，﹫trusted`, `https://evil.com﹪2e中国`, or `https://evil.co\u{200B}﹣m`
+- **THEN** no anchor is produced for the shorter host
+
+#### Scenario: Added invisible boundaries keep the label-extension rule
+
+- **WHEN** the source contains `https://example.com\u{FEFF}tail`, `https://evil.co\u{2060}m`, `https://evil.co\u{00AD}m`, or `https://evil.co\u{200E}m`
+- **THEN** no anchor is produced for the shorter host, because the visible text reads as one longer host label
+
 #### Scenario: Long hostile line stays bounded
 
 - **WHEN** a line repeats `www.a。` thousands of times
@@ -277,7 +333,7 @@ A bare-URL candidate SHALL NOT be anchored when the visible continuation, after 
 
 ### Requirement: Regression coverage runs in the default suite
 
-The non-GUI test suite SHALL cover the reported CJK cases, one terminator and one left-boundary character from each normative range (both endpoints where a range has typo risk, plus the single-character ranges), `www.` variants, hostname-vs-path absorption, the entity exceptions, and U+200B. These tests SHALL run under plain `swift test` without GUI opt-in.
+The non-GUI test suite SHALL cover the reported CJK cases, every character in the normative set as a left boundary and every terminator as a URL terminator, the structural-lookalike rule (the lookalikes are exactly the boundary characters whose compatibility form is URL-structural), the code points adjacent to each range together with the unassigned gaps and the excluded format characters, `www.` variants, hostname-vs-path absorption, the entity exceptions, U+200B, and the vertical/small-form folds in both continuation guards. These tests SHALL run under plain `swift test` without GUI opt-in.
 
 #### Scenario: CJK cases are covered by default tests
 
@@ -286,7 +342,7 @@ The non-GUI test suite SHALL cover the reported CJK cases, one terminator and on
 
 ### Requirement: Lookalike continuations do not retarget an email autolink
 
-An email autolink candidate SHALL NOT be anchored when its visible continuation reads as more of its domain. The visible continuation SHALL be computed by the same walk as the bare-URL guard (restoring protected tokens/entities/escapes including image alt text, skipping footnote reference markers, stripping inline HTML, treating emphasis/strikethrough/highlight/sup/sub delimiters as markup, skipping invisible characters, and folding IDNA/fullwidth forms), and the walk SHALL end at the first visible character that is neither a host-label character (letter, digit, `-` or `_`) nor a dot, so the check reads only the host-shaped prefix. A candidate SHALL stay literal when the continuation begins with an `@`; when a label of the host-shaped prefix begins with a host-label character outside the Han, Hiragana, Katakana and Hangul scripts (the first label extends the final domain label; each later label follows a dot); or when the walk fails closed (scan budget, protected math, provisional cross-reference) before the prefix ends. A label that begins with a Han, Hiragana, Katakana or Hangul character SHALL NOT block the link, so CJK prose written flush against an address stays linked. The email match pattern and its left boundary SHALL remain unchanged, and the `gfm-autolinks` matrix entry and `Docs/MarkdownSupport.md` SHALL declare the guard.
+An email autolink candidate SHALL NOT be anchored when its visible continuation reads as more of its domain. The visible continuation SHALL be computed by the same walk as the bare-URL guard (restoring protected tokens/entities/escapes including image alt text, skipping footnote reference markers, stripping inline HTML, treating emphasis/strikethrough/highlight/sup/sub delimiters as markup, skipping invisible characters, and folding IDNA/fullwidth forms and the vertical and small forms in the boundary set), and the walk SHALL end at the first visible character that is neither a host-label character (letter, digit, `-` or `_`) nor a dot, so the check reads only the host-shaped prefix. A candidate SHALL stay literal when the continuation begins with an `@`; when a label of the host-shaped prefix begins with a host-label character outside the Han, Hiragana, Katakana and Hangul scripts (the first label extends the final domain label; each later label follows a dot); or when the walk fails closed (scan budget, protected math, provisional cross-reference) before the prefix ends. A label that begins with a Han, Hiragana, Katakana or Hangul character SHALL NOT block the link, so CJK prose written flush against an address stays linked. The email match pattern and its left boundary SHALL remain unchanged, and the `gfm-autolinks` matrix entry and `Docs/MarkdownSupport.md` SHALL declare the guard.
 
 #### Scenario: IDNA dot before an ASCII label stays literal
 
@@ -311,7 +367,12 @@ An email autolink candidate SHALL NOT be anchored when its visible continuation 
 
 #### Scenario: An at sign straight after the address stays literal
 
-- **WHEN** the source contains `foo@evil.com@trusted.com` or `foo@evil.com＠trusted.com`
+- **WHEN** the source contains `foo@evil.com@trusted.com`, `foo@evil.com＠trusted.com`, or `foo@evil.com﹫trusted.com`
+- **THEN** no `mailto:` anchor is produced
+
+#### Scenario: Vertical and small full stops fold to a dot
+
+- **WHEN** the source contains `foo@evil.com︒trusted.com` or `foo@evil.com﹒trusted.com`
 - **THEN** no `mailto:` anchor is produced
 
 #### Scenario: CJK prose after an address still links
@@ -322,7 +383,7 @@ An email autolink candidate SHALL NOT be anchored when its visible continuation 
 
 #### Scenario: Address lists still link
 
-- **WHEN** the source contains `foo@example.com、bar@example.com` or `foo@example.com，bar@example.com`
+- **WHEN** the source contains `foo@example.com、bar@example.com`, `foo@example.com，bar@example.com`, or `foo@example.com﹑bar@example.com`
 - **THEN** both addresses are rendered as `mailto:` anchors
 
 #### Scenario: An ASCII word after the address's full stop stays literal
