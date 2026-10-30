@@ -69,6 +69,20 @@ struct CrossArtifactConsistencyTests {
         }
     }
 
+    @Test func supportDocDocumentsCompatibilityFormAndFormatCharacterBoundaries() throws {
+        let supportDoc = try String(
+            contentsOf: Fixtures.url("../../Docs/MarkdownSupport.md"),
+            encoding: .utf8
+        )
+        for token in ["U+FE10–U+FE19", "U+FE30–U+FE4F", "U+FE50–U+FE6B", "U+FEFF", "U+202A–U+202E"] {
+            #expect(supportDoc.contains(token),
+                    "Docs/MarkdownSupport.md is missing '\(token)' for the autolink boundary set")
+        }
+        let outside = try #require(supportDoc.components(separatedBy: ". ").first { $0.contains("are outside the set") })
+        #expect(!outside.contains("U+FE10") && !outside.contains("U+FEFF"),
+                "Docs/MarkdownSupport.md still lists added boundary characters outside the set: \(outside)")
+    }
+
     @Test func supportDocDocumentsEmailContinuationGuard() throws {
         let supportDoc = try String(
             contentsOf: Fixtures.url("../../Docs/MarkdownSupport.md"),

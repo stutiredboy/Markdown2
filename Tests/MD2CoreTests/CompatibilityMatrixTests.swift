@@ -118,4 +118,17 @@ struct CompatibilityMatrixTests {
         }
         #expect(!text.contains("email autolink boundaries are unchanged"), "gfm-autolinks still declares email unchanged: \(text)")
     }
+
+    /// Value: protects=gfm-autolinks declares the vertical/small CJK forms and the invisible format characters as boundaries, the lookalike rule, and the excluded bidi controls; fails_when=the entry drops them or still lists them as outside the enumerated set; why_new=the CJK token guard passes on the narrower set; seam=none; no_claim=green proves the declaration text, not the renderer behavior (CommonSyntaxTests covers that).
+    @Test func gfmAutolinksDeclareCompatibilityFormsAndFormatCharacters() throws {
+        let entry = try #require(try CompatibilityMatrix.load().entries.first { $0.id == "gfm-autolinks" })
+        let text = (entry.declaredBehavior + " " + entry.boundary).lowercased()
+        for token in ["u+fe10–u+fe19", "u+fe30–u+fe4f", "u+fe50–u+fe6b", "u+feff", "u+2066–u+2069", "compatibility form", "u+202a–u+202e"] {
+            #expect(text.contains(token), "gfm-autolinks is missing '\(token)': \(text)")
+        }
+        let outside = try #require(text.components(separatedBy: ". ").first { $0.contains("outside the enumerated set") })
+        for token in ["u+fe10", "u+feff", "u+00ad", "u+2060"] {
+            #expect(!outside.contains(token), "gfm-autolinks still lists '\(token)' outside the set: \(outside)")
+        }
+    }
 }
