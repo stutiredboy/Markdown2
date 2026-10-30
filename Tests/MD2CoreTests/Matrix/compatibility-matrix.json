@@ -179,7 +179,7 @@
       "sections": ["Inlines"],
       "tier": "Supported",
       "baselineRelationship": "reference-match",
-      "declaredBehavior": "Inline parsing runs in a fixed precedence: code spans, then escapes, math, entities, autolinks, raw HTML, then emphasis/links/images.",
+      "declaredBehavior": "Inline parsing runs in a fixed precedence: code spans and inline math (claimed in one reading-order scan, where code spans bind tighter), then escapes, entities, autolinks, raw HTML, then emphasis/links/images.",
       "boundary": "n/a",
       "docLabel": "Supported"
     },
@@ -352,7 +352,7 @@
       "tier": "Supported",
       "baselineRelationship": "not-in-corpus",
       "declaredBehavior": "Inline `$…$` / `\\(…\\)` and display `$$…$$` / `\\[…\\]` TeX, plus bare `\\begin{env}…\\end{env}` environments, are typeset offline with bundled KaTeX (incl. mhchem).",
-      "boundary": "Commands outside KaTeX's subset render as an inline KaTeX error rather than blanking; currency `$` and `$` in code stay literal; a `\\(…\\)` inside a link destination stays a literal-parenthesis escape. A recognized environment is typeset in its starred form, which suppresses the engine's own CSS-counter row numbering so Markdown2 stays the only authority (an explicit `\\tag{}` still renders); one label per environment block yields one number, and engine-rejected environments (`multline`, `eqnarray`, `displaymath`, `subequations`) are reported rather than typeset. A closer scan bails at a fenced-code boundary, and `$…$` nested inside `\\(…\\)` loses its dollar signs to the earlier inline pass.",
+      "boundary": "Commands outside KaTeX's subset render as an inline KaTeX error rather than blanking; currency `$` and `$` in code stay literal; a `\\(…\\)` inside a link destination stays a literal-parenthesis escape. A recognized environment is typeset in its starred form, which suppresses the engine's own CSS-counter row numbering so Markdown2 stays the only authority (an explicit `\\tag{}` still renders); one label per environment block yields one number, and engine-rejected environments (`multline`, `eqnarray`, `displaymath`, `subequations`) are reported rather than typeset. A closer scan bails at a fenced-code boundary. Inline code spans and both inline math forms are claimed in reading order: the earliest opener owns its span and the other form's delimiters inside it are TeX (`\\(\\text{$x$}\\)` keeps its dollar signs), while code spans bind tighter - a code span inside math is TeX source, and math never closes inside a code span.",
       "docLabel": "Supported",
       "localTests": ["MathRenderingTests", "MathEngineConformanceTests"]
     },

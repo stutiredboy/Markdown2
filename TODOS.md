@@ -47,21 +47,6 @@ Tracked work considered and explicitly deferred from in-flight changes. Each ite
 
 **Start here:** extend the top-level block emitter to stamp `li` elements (mirroring the footnote `li` path at `:980`), update `MetadataInvariantTests`' exception list, then extend `__md2RenderLineNumbers`' eligibility rules to nested `li` anchors.
 
-## Left-to-right delimiter ownership scan (inline pipeline)
-
-**What:** Replace the independent inline passes for code/math (`protectCodeSpans`, `protectInlineMath`, and the new `protectInlineParenMath`) with one left-to-right scan that establishes delimiter ownership by position, then applies each delimiter's own rules.
-
-**Why:** Independent sequential passes cannot establish ownership. A `$...$` span inside a prospective `\(...\)` span is claimed first, and its protection token (`\u{E000}MD2-<n>\u{E000}`, `MarkdownRenderer.swift:2522`) restores as nested HTML — the outer math span's `textContent` then drops the inner markup, silently altering valid input (`\text{$x$}` reaches the engine as `\text{x}`). The same class exists today for code spans inside `$...$` math. Demonstrated against the bundled KaTeX by the Codex outside voice during the `add-latex-math-compat` eng review (2026-09-24).
-
-**Current state:** Declared boundary in the change's design (cross-delimiter risk text) plus a test pinning current behavior (span produced, inner span nests on restore, no crash). That test is the regression baseline for this refactor.
-
-**Pros:** The verbatim-TeX guarantee holds for every nesting combination; removes the whole silent-alteration class rather than one instance; one ownership scanner replaces N passes whose order is only comments.
-**Cons / cost:** Touches the most regression-sensitive inline machinery in the renderer; every existing math/code-span test needs re-verification against the new scanner. (human: ~2-3 days / CC: ~2-4h)
-
-**Depends on:** `add-latex-math-compat` landing (its boundary test is the before-state proof).
-
-**Start here:** scan once for code spans and both math delimiter pairs in reading order; the earliest opener owns the span; apply the matched delimiter's guards (currency/`$$`/whitespace rules for `$`, none for `\(`).
-
 ## Authored placeholder-token output amplification (pre-existing)
 
 **What:** Bound the output growth from well-formed authored `\u{E000}MD2-<n>\u{E000}` tokens that reference real fragments. Each occurrence re-inserts the whole fragment, so output = occurrences × fragment size; a 7.5 KB input can produce about 1 MB of output.
@@ -92,20 +77,20 @@ Tracked work considered and explicitly deferred from in-flight changes. Each ite
 
 **Start here:** copy the local config, add the `!.gstack/pregate.json` exception, and run `gstack-pregate validate` before committing.
 
-## Deferred inline review refactors (token grammar and close bookkeeping)
+## Deferred inline review refactor (token grammar)
 
-**What:** Expose one token-scanning API on `InlineProtector` for `protectBareAutolinks` (removing the independent `MD2-(\d+)` regex and `Int()` conversion) and replace the global-balance close bookkeeping in `LinkDestinationIndex` with a stack (about -28 lines; fuzz-verified equivalent).
+**What:** Expose one token-scanning API on `InlineProtector` for `protectBareAutolinks`, removing the independent `MD2-(\d+)` regex and `Int()` conversion.
 
-**Why:** The token grammar lives in three places with different leading-zero/Unicode behavior, and the balance bookkeeping re-derives what a stack records directly. Both were found by the pre-landing review (2026-10-19); the user deferred them from this change.
+**Why:** The token grammar lives in three places with different leading-zero/Unicode behavior. Found by the pre-landing review (2026-10-19); the user deferred it from that change. Its sibling, the `LinkDestinationIndex` close bookkeeping, was replaced by the shared `LinkDestinationTracker` in `scan-inline-delimiter-ownership`.
 
-**Current state:** Existing tests pin the current behavior; the deferred refactors have no behavior change.
+**Current state:** Existing tests pin the current behavior; the deferred refactor has no behavior change.
 
-**Pros:** One token grammar; simpler close bookkeeping; fewer drift surfaces.
-**Cons / cost:** Touches the bare-URL and destination hot paths; needs the full suite and a re-fuzz. (human: ~0.5 day / CC: ~1-2h)
+**Pros:** One token grammar; fewer drift surfaces.
+**Cons / cost:** Touches the bare-URL hot path; needs the full suite and a re-fuzz. (human: ~2-3h / CC: ~30-60min)
 
 **Depends on:** nothing.
 
-**Start here:** add `InlineProtector.firstToken(in:)` using the scalar parser, then switch `protectBareAutolinks`; do the stack refactor separately with the fuzz harness.
+**Start here:** add `InlineProtector.firstToken(in:)` using the scalar parser, then switch `protectBareAutolinks`.
 
 ## Reproducible release probe for the inline workloads
 

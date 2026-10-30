@@ -318,15 +318,96 @@ struct MathRenderingTests {
         #expect(document.html.contains("()"))
     }
 
-    @Test func dollarMathNestedInParenDelimitedMathDoesNotBreakTheDocument() {
-        // Declared cross-delimiter boundary: the `$` pass runs first and claims the
-        // inner span, so the outer span's text content drops the `$` signs. This
-        // pins "no crash, nothing blanked" rather than a typeset result.
-        let document = MarkdownRenderer().render(#"Outer \( x $y$ z \) end."#)
+    // MARK: Delimiter ownership (reading order)
 
-        #expect(document.html.contains(#"<span class="math math-inline">y</span>"#))
-        #expect(document.html.contains("Outer"))
-        #expect(document.html.contains("end."))
+    /// Value: protects=dollar signs inside `\(...\)` reach the engine as TeX;
+    /// fails_when=the `$` form is claimed before the outer span or restores as a
+    /// nested span; why_new=the former test pinned the nested-span defect as a
+    /// declared boundary; seam=none; no_claim=only `$` inside `\(...\)`, not other
+    /// nesting combinations.
+    @Test func dollarSignsInsideParenDelimitedMathReachTheEngine() {
+        let outer = MarkdownRenderer().render(#"Outer \( x $y$ z \) end."#).html
+        #expect(outer.contains(#"Outer <span class="math math-inline"> x $y$ z </span> end."#))
+
+        let text = MarkdownRenderer().render(#"\(\text{$x$}\)"#).body
+        #expect(text.contains(#"<span class="math math-inline">\text{$x$}</span>"#))
+        #expect(text.components(separatedBy: "math-inline").count - 1 == 1)
+    }
+
+    /// Value: protects=a code span wholly inside a math span is TeX source, and a
+    /// backslash before it does not split it; fails_when=code spans are claimed
+    /// first and restore as nested `<code>`, or a closer inside the code span ends
+    /// the math; why_new=no test covered code inside math; seam=none;
+    /// no_claim=only these three shapes, not every backtick-run length.
+    @Test(arguments: [
+        (#"a $a `b` c$ z"#, #"<span class="math math-inline">a `b` c</span>"#),
+        (#"\(a `\)` b\) z"#, #"<span class="math math-inline">a `\)` b</span>"#),
+        (#"$a \`b$` c$"#, #"<span class="math math-inline">a \`b$` c</span>"#)
+    ])
+    func codeSpanInsideMathIsTeXSource(_ markdown: String, _ span: String) {
+        let html = MarkdownRenderer().render(markdown).html
+
+        #expect(html.contains(span))
+        #expect(!html.contains("<code>"))
+    }
+
+    /// Value: protects=the opener and closer guards the scan carries over from the
+    /// former regex passes; fails_when=a hand-written guard drifts — `$` before
+    /// whitespace, `$` after `$` or `\`, a closer before `$`, a backslash before an
+    /// in-line line terminator, or `\(` after a backslash opens or closes a span;
+    /// why_new=no test exercised these guards while they lived in the patterns;
+    /// seam=none; no_claim=only the listed guards, one shape each.
+    @Test(arguments: [
+        ("a $ x$ b", "a $ x$ b"),
+        ("a $x$$ b", "a $x$$ b"),
+        (#"a \$x$ b"#, "a $x$ b"),
+        ("a $$x$ b", "a $$x$ b"),
+        ("$a\\\u{2028}b$", "$a\\\u{2028}b$"),
+        ("\\(a\\\u{2028}b\\)", "(a\\\u{2028}b)"),
+        (#"a \\(x\) b"#, #"a \(x) b"#)
+    ])
+    func carriedOverGuardsKeepTextLiteral(_ markdown: String, _ literal: String) {
+        let body = MarkdownRenderer().render(markdown).body
+
+        #expect(body.contains(literal))
+        #expect(!body.contains("math-inline"))
+    }
+
+    /// Value: protects=code spans bind tighter than math, so a math candidate whose
+    /// closer sits inside a code span is not math; fails_when=the scan lets the
+    /// earliest `$` or `\(` own a span that cuts through a code span (pure reading
+    /// order, as Pandoc does); why_new=currency followed by shell code was only
+    /// protected implicitly by the old pass order; seam=none; no_claim=only closers
+    /// inside a code span, not openers inside one (covered by the inline-code tests).
+    @Test(arguments: [
+        ("The plan costs $20/month. Set `$API_KEY` first.", "<code>$API_KEY</code>"),
+        ("Then $a ` b$ and ` c", "<code>b$ and</code>"),
+        (#"Then \(a ` \) ` b"#, #"<code>\)</code>"#)
+    ])
+    func mathDoesNotCloseInsideACodeSpan(_ markdown: String, _ code: String) {
+        let html = MarkdownRenderer().render(markdown).html
+
+        #expect(html.contains(code))
+        #expect(!html.contains("class=\"math"))
+    }
+
+    /// Value: protects=between `$...$` and `\(...\)` the earliest opener owns its
+    /// span and the other form's delimiters are plain TeX; fails_when=one form keeps
+    /// a fixed priority (the old `$`-first order merged `\(a$b\) and \(c$d\)` into
+    /// one nested span); why_new=no test crossed the two math forms; seam=none;
+    /// no_claim=only these crossings, not three-way nesting.
+    @Test func earliestOpenerOwnsBetweenMathForms() {
+        let pair = MarkdownRenderer().render(#"\(a$b\) and \(c$d\)"#).html
+        #expect(pair.contains(#"<span class="math math-inline">a$b</span> and <span class="math math-inline">c$d</span>"#))
+
+        let parenFirst = MarkdownRenderer().render(#"\( a $b \) c$"#).html
+        #expect(parenFirst.contains(#"<span class="math math-inline"> a $b </span> c$"#))
+
+        let dollarFirst = MarkdownRenderer().render(#"$a \( b$ c \)"#).html
+        #expect(dollarFirst.contains(#"<span class="math math-inline">a \( b</span> c )"#))
+
+        let nested = MarkdownRenderer().render(#"$\text{\(x\)}$"#).html
+        #expect(nested.contains(#"<span class="math math-inline">\text{\(x\)}</span>"#))
     }
 
     @Test func parenDelimitedMathInsideInlineCodeStaysLiteral() {
@@ -374,6 +455,30 @@ struct MathRenderingTests {
 
         #expect(document.html.contains(#"<span class="math math-inline">x</span>"#))
         #expect(document.html.contains(##"<a href="url">"##))
+    }
+
+    /// Value: protects=link syntax inside an already-claimed span cannot open a
+    /// destination for a later `\(`; fails_when=the scan feeds a claimed span's raw
+    /// scalars to the destination tracker instead of one opaque unit; why_new=the
+    /// old pass saw code spans as tokens but paren spans raw, and no test pinned
+    /// either; seam=none; no_claim=only `](` inside code and paren math.
+    @Test func linkSyntaxInsideAClaimedSpanDoesNotHideLaterParenMath() {
+        let afterCode = MarkdownRenderer().render(#"Type `](` then \(x\) here"#).html
+        #expect(afterCode.contains(#"<span class="math math-inline">x</span>"#))
+
+        let afterMath = MarkdownRenderer().render(#"\(](\) then \(y\)"#).html
+        #expect(afterMath.contains(#"<span class="math math-inline">](</span> then <span class="math math-inline">y</span>"#))
+    }
+
+    /// Value: protects=a `\(` rejected inside a destination does not swallow a later
+    /// opener outside it; fails_when=the scan skips past the rejected candidate's
+    /// would-be span, as the old match-then-filter pass did; why_new=no test had a
+    /// second opener after the destination closes; seam=none; no_claim=only this
+    /// single-destination arrangement.
+    @Test func rejectedParenOpenerInsideDestinationDoesNotSwallowLaterMath() {
+        let html = MarkdownRenderer().render(#"[a](\(x) \(y\))"#).html
+
+        #expect(html.contains(##"<a href="(x">a</a> <span class="math math-inline">y</span>)"##))
     }
 
     // MARK: Native math environments (no `$$` wrapper)
