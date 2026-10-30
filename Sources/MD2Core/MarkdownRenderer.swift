@@ -1918,15 +1918,17 @@ public struct MarkdownRenderer: Sendable {
             // preserved as literal text so unrelated braces after an image survive.
             var explicit: (width: Int?, height: Int?) = (nil, nil)
             var figLabel: String?
+            var attributeBlock = ""
             var trailing = ""
             if match.range(at: 4).location != NSNotFound, let attrRange = Range(match.range(at: 4), in: source) {
                 let attrText = String(source[attrRange])
+                attributeBlock = "{\(attrText)}"
                 figLabel = self.figureLabel(in: attrText)
                 if self.looksLikeSizeAttributes(attrText) {
                     explicit = self.parseSizeAttributes(attrText)
                 }
                 if figLabel == nil, !self.looksLikeSizeAttributes(attrText) {
-                    trailing = "{\(attrText)}"
+                    trailing = attributeBlock
                 }
             }
 
@@ -1957,6 +1959,12 @@ public struct MarkdownRenderer: Sendable {
                 imageHTML = img("")
             }
 
+            // The source stops at `)`. A consumed `{…}` block drops keys it does
+            // not know, and the resolver expands an entry's source together with
+            // its fragment, so a token DAG hidden in a dropped key must not
+            // reach the source either.
+            let syntax = String(self.matchText(match, in: source).dropLast(attributeBlock.count))
+
             // A `#fig:label` (with an active context to number it) becomes a
             // captioned, numbered figure; the caption renders simple inline markup
             // while the image attributes stay inert plain text.
@@ -1968,12 +1976,11 @@ public struct MarkdownRenderer: Sendable {
                     "<figure class=\"figure\" id=\"\(self.escapeAttribute(figLabel))\">"
                         + imageHTML
                         + "<figcaption class=\"fig-caption\">Figure \(number): \(caption)</figcaption></figure>",
-                    source: self.matchText(match, in: source)
+                    source: syntax
                 )
             }
 
-            let whole = self.matchText(match, in: source)
-            return protector.protect(imageHTML, source: String(whole.dropLast(trailing.count))) + trailing
+            return protector.protect(imageHTML, source: syntax) + trailing
         }
     }
 
