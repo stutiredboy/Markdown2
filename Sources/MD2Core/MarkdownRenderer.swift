@@ -2167,17 +2167,62 @@ public struct MarkdownRenderer: Sendable {
         return false
     }
 
+    private static func isHostLabelCharacter(_ character: Character) -> Bool {
+        character.isLetter || character.isNumber || character == "-" || character == "_"
+    }
+
+    /// Han, kana and Hangul attach to the neighbouring word without a space
+    /// and cannot pass for an ASCII host label.
+    private static let cjkProseRegex = try! NSRegularExpression(
+        pattern: #"\A[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Hangul}]"#
+    )
+
+    private static func isCJKProseCharacter(_ character: Character) -> Bool {
+        let text = String(character)
+        return cjkProseRegex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
+
+    /// True when the visible continuation after an email address reads as
+    /// more of its domain: an `@` straight after it, or a host-shaped prefix
+    /// (host-label characters and dots) with a label that starts outside the
+    /// CJK scripts. The first label fuses onto the final domain label
+    /// (`foo@evil.co` + invisible + `m`); later labels follow a dot
+    /// (`foo@evil.com。trusted.com`). CJK prose such as
+    /// `foo@example.com。然后继续。` keeps the link.
+    private static func continuationExtendsEmailDomain(_ visible: String) -> Bool {
+        if visible.first == "@" { return true }
+        var atLabelStart = true
+        for character in visible {
+            if character == "." {
+                atLabelStart = true
+            } else if isHostLabelCharacter(character) {
+                if atLabelStart, !isCJKProseCharacter(character) { return true }
+                atLabelStart = false
+            } else {
+                return false
+            }
+        }
+        return false
+    }
+
     /// Appends the browser-visible form of `text` to `result`; returns false
-    /// when a delimiter ends the authority. Markdown emphasis/strikethrough/
-    /// highlight/sup/sub delimiters are markup, not visible authority text;
-    /// fullwidth delimiters fold before the check.
-    private static func appendVisibleContinuation(_ text: String, to result: inout [Unicode.Scalar]) -> Bool {
+    /// when a delimiter ends the authority or, with `hostPrefixOnly`, once a
+    /// visible scalar that cannot continue a host name has been appended.
+    /// Markdown emphasis/strikethrough/highlight/sup/sub delimiters are
+    /// markup, not visible authority text; fullwidth delimiters fold before
+    /// the check.
+    private static func appendVisibleContinuation(
+        _ text: String,
+        to result: inout [Unicode.Scalar],
+        hostPrefixOnly: Bool = false
+    ) -> Bool {
         for scalar in text.unicodeScalars {
             if scalar.properties.isWhitespace || scalar == "/" || scalar == "?" || scalar == "#" { return false }
             if isInvisibleContinuationScalar(scalar) { continue }
             let normalized = normalizeContinuation(scalar)
             if "*_~=^".unicodeScalars.contains(normalized) { continue }
             result.append(normalized)
+            if hostPrefixOnly, normalized != ".", !isHostLabelCharacter(Character(normalized)) { return false }
         }
         return true
     }
@@ -2214,13 +2259,26 @@ public struct MarkdownRenderer: Sendable {
     private static let mathSpanRegex = try! NSRegularExpression(
         pattern: #"<span class="math math-(?:inline|display)">([\s\S]*?)</span>"#
     )
+    /// A whole footnote-reference fragment as `applyFootnoteReferences` emits
+    /// it. Its only text is a generated note number, so the shape cannot carry
+    /// authored authority text.
+    private static let footnoteReferenceRegex = try! NSRegularExpression(
+        pattern: ##"\A<sup class="footnote-ref"><a id="[^"]*" href="#[^"]*">[0-9]+</a></sup>\z"##
+    )
 
-    /// Walks the text after the URL, restoring protected tokens, stripping
-    /// inline HTML, decoding entities/escapes, and skipping invisible
+    /// Walks the text after a bare URL or email, restoring protected tokens,
+    /// stripping inline HTML, decoding entities/escapes, and skipping invisible
     /// characters, so the guard sees what a browser sees. Tags are stripped
     /// before entities are decoded: an entity-encoded `>` inside an attribute
     /// must not become a tag boundary. Both budgets fail closed.
-    private func visibleContinuation(after start: String.Index, in text: String, protector: InlineProtector) -> VisibleContinuation {
+    /// `hostPrefixOnly` ends the walk at the first visible scalar that cannot
+    /// continue a host name, for checks that read only the host-shaped prefix.
+    private func visibleContinuation(
+        after start: String.Index,
+        in text: String,
+        protector: InlineProtector,
+        hostPrefixOnly: Bool = false
+    ) -> VisibleContinuation {
         var result: [Unicode.Scalar] = []
         var index = start
         var sourceBudget = Self.continuationSourceBudget
@@ -2259,6 +2317,14 @@ public struct MarkdownRenderer: Sendable {
                     return VisibleContinuation(scalars: result, exhausted: true)
                 }
                 sourceBudget -= fragmentLength
+                // A footnote marker renders a generated superscript number, not
+                // authority text. Skip it rather than read its digits as an
+                // extension of the final host label; what follows it is still
+                // checked as if it were adjacent.
+                if Self.footnoteReferenceRegex.firstMatch(in: raw, range: NSRange(raw.startIndex..., in: raw)) != nil {
+                    index = tokenRange.upperBound
+                    continue
+                }
                 // Inline math is typeset by KaTeX; its source text is not a
                 // faithful visible model (control sequences, grouping braces
                 // and ignored whitespace can all change the rendered text).
@@ -2320,7 +2386,7 @@ public struct MarkdownRenderer: Sendable {
                     return VisibleContinuation(scalars: result, exhausted: true)
                 }
                 let visibleText = HTMLSafety.decodeAllEntities(stripped)
-                guard Self.appendVisibleContinuation(visibleText, to: &result) else {
+                guard Self.appendVisibleContinuation(visibleText, to: &result, hostPrefixOnly: hostPrefixOnly) else {
                     return VisibleContinuation(scalars: result, exhausted: false)
                 }
                 if result.count > Self.continuationVisibleBudget {
@@ -2333,7 +2399,7 @@ public struct MarkdownRenderer: Sendable {
                 continue
             }
             index = text.index(after: index)
-            guard Self.appendVisibleContinuation(String(character), to: &result) else {
+            guard Self.appendVisibleContinuation(String(character), to: &result, hostPrefixOnly: hostPrefixOnly) else {
                 return VisibleContinuation(scalars: result, exhausted: false)
             }
             if result.count > Self.continuationVisibleBudget {
@@ -2470,6 +2536,19 @@ public struct MarkdownRenderer: Sendable {
                 }
             } else {
                 guard let last = url.last, last.isLetter || last.isNumber else { return candidate }
+                // The domain always ends an email address, so a continuation
+                // that reads as more of the domain would show a longer address
+                // than the mailto: target. Only the host-shaped prefix matters,
+                // so the walk stops where it ends; a scan that fails closed
+                // before then leaves the candidate literal.
+                guard let matchRange = Range(match.range, in: source) else { return candidate }
+                let tail = visibleContinuation(
+                    after: matchRange.upperBound,
+                    in: source,
+                    protector: protector,
+                    hostPrefixOnly: true
+                )
+                if tail.exhausted || Self.continuationExtendsEmailDomain(tail.text) { return candidate }
             }
             let destination = isURL ? (url.hasPrefix("www.") ? "http://" + url : url) : "mailto:" + url
             return protector.protect(

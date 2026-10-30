@@ -380,6 +380,38 @@ struct InlineRenderingPerformanceTests {
         #expect(body.components(separatedBy: "。").count - 1 == 2_000, "rendered output is incomplete")
     }
 
+    /// The email guard reads only the host-shaped prefix after each address,
+    /// so a long line of addresses joined by CJK punctuation and Han text stays
+    /// linear: every walk ends at the next separator.
+    /// Value: protects=the email continuation walk stays bounded per address;
+    /// fails_when=the walk reads the whole continuation (or past the next
+    /// address) from every candidate; why_new=the bare-URL bound test does not
+    /// exercise the email alternative; seam=none; no_claim=only this
+    /// separator-joined workload, not every email-dense line.
+    @Test func repeatedEmailAutolinksRenderInBoundedTime() throws {
+        let make = { (count: Int) in String(repeating: "x@a.co然后、", count: count) }
+        let small = make(1_000)
+        let large = make(2_000)
+        _ = renderer.render(large)
+
+        // gstack-timing-ok: quadratic scaling guard for the email continuation walk; min-of-3 bounds timer noise
+        let smallMS = bestOf(3) { _ = renderer.render(small) }
+        // gstack-timing-ok: fail-fast ceiling that bounds CI time on a regression
+        try #require(smallMS < 1_000, "1,000 email autolinks took \(format(smallMS)) ms")
+
+        // gstack-timing-ok: the ratio is the quadratic guard; an unbounded walk is ~4x per doubling
+        let largeMS = bestOf(3) { _ = renderer.render(large) }
+        #expect(
+            largeMS < smallMS * 3.0 + 2.0,
+            "email autolinks: 1,000=\(format(smallMS)) ms, 2,000=\(format(largeMS)) ms"
+        )
+        // gstack-timing-ok: absolute ceiling that bounds CI time on a regression
+        #expect(largeMS < 2_000, "2,000 email autolinks took \(format(largeMS)) ms")
+
+        let body = renderer.render(large).body
+        #expect(body.components(separatedBy: "href=\"mailto:x@a.co\"").count - 1 == 2_000, "rendered output is incomplete")
+    }
+
     private func assertOnePerLineScales(_ workload: Workload) throws {
         _ = renderer.render(workload.onePerLine(count: 32))
 

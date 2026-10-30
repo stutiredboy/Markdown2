@@ -108,4 +108,14 @@ struct CompatibilityMatrixTests {
             #expect(text.contains(token), "gfm-autolinks is missing '\(token)': \(text)")
         }
     }
+
+    /// Value: protects=gfm-autolinks keeps declaring the email continuation guard and its CJK prose exception; fails_when=the email sentences are dropped or reverted to "email boundaries are unchanged"; why_new=the CJK token guard predates the email guard and passes without it; seam=none; no_claim=green proves the declaration text, not the renderer behavior (CommonSyntaxTests covers that).
+    @Test func gfmAutolinksDeclareEmailContinuationGuard() throws {
+        let entry = try #require(try CompatibilityMatrix.load().entries.first { $0.id == "gfm-autolinks" })
+        let text = (entry.declaredBehavior + " " + entry.boundary).lowercased()
+        for token in ["email address is not anchored", "more of its domain", "hiragana", "hangul", "address lists", "footnote marker"] {
+            #expect(text.contains(token), "gfm-autolinks is missing '\(token)': \(text)")
+        }
+        #expect(!text.contains("email autolink boundaries are unchanged"), "gfm-autolinks still declares email unchanged: \(text)")
+    }
 }

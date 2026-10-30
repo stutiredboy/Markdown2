@@ -69,6 +69,17 @@ struct CrossArtifactConsistencyTests {
         }
     }
 
+    @Test func supportDocDocumentsEmailContinuationGuard() throws {
+        let supportDoc = try String(
+            contentsOf: Fixtures.url("../../Docs/MarkdownSupport.md"),
+            encoding: .utf8
+        )
+        for token in ["email address whose visible continuation", "more of its domain", "address lists", "footnote marker"] {
+            #expect(supportDoc.contains(token),
+                    "Docs/MarkdownSupport.md is missing '\(token)' for the email continuation guard")
+        }
+    }
+
     @Test func outOfScopeConstructsAreNotAdvertisedAsSupported() throws {
         for entry in try CompatibilityMatrix.load().entries where entry.tier == "Out-of-scope" {
             #expect(entry.docLabel != "Supported", "\(entry.id) is Out-of-scope but docLabel is Supported")
