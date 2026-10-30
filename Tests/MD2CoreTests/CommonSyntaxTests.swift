@@ -581,6 +581,107 @@ struct CommonSyntaxTests {
         #expect(punctuation.contains("href=\"mailto:foo@example.com\""), "\(punctuation)")
     }
 
+    /// Value: protects=a continuation that reads as more of the domain cannot retarget an email autolink to a shorter mailto: address; fails_when=the email branch skips the visible-continuation guard or reads past the host-shaped prefix incorrectly; why_new=the bare-URL spoof table never exercises the email alternative; seam=none; no_claim=green proves these continuations, not every Unicode lookalike combination.
+    @Test(arguments: [
+        // IDNA dots fuse the following label into the domain.
+        "foo\(atSign)evil.com。trusted.com",
+        "foo\(atSign)evil.com｡trusted.com",
+        "foo\(atSign)evil.com．trusted.com",
+        "foo\(atSign)evil.com。ｔｒｕｓｔｅｄ.com",
+        // Invisible scalars are skipped before the dot.
+        "foo\(atSign)evil.com\u{200B}.trusted.com",
+        "foo\(atSign)evil.com\u{FEFF}.trusted.com",
+        "foo\(atSign)evil.com\u{00AD}.trusted.com",
+        "foo\(atSign)evil.com\u{2060}.trusted.com",
+        "foo\(atSign)evil.com。\u{200C}trusted.com",
+        // A split or fullwidth final label extends the domain.
+        "foo\(atSign)evil.co\u{200B}m",
+        "foo\(atSign)evil.coｍ",
+        "foo\(atSign)evil.co<span></span>m",
+        "foo\(atSign)evil.com\u{200B}-trusted.com",
+        // Entities, escapes, inline HTML, markup and image alt text restore to
+        // the same visible continuation.
+        "foo\(atSign)evil.com&#46;trusted.com",
+        "foo\(atSign)evil.com\\.trusted.com",
+        "foo\(atSign)evil.com。&#x200b;trusted.com",
+        "foo\(atSign)evil.com<span>.trusted.com</span>",
+        "foo\(atSign)evil.com。*trusted.com*",
+        "foo\(atSign)evil.com。~~trusted.com~~",
+        "foo\(atSign)evil.com![.trusted.com](x.png)",
+        // Protected tokens show host-label text.
+        "foo\(atSign)evil.com`x`",
+        "foo\(atSign)evil.com[m](/x)",
+        // A later ASCII or non-CJK label still fuses into the domain.
+        "foo\(atSign)evil.com然后.trusted.com",
+        "foo\(atSign)evil.com。é.trusted.com",
+        // An address straight followed by an at sign.
+        "foo\(atSign)evil.com\(atSign)trusted.com",
+        "foo\(atSign)evil.com＠trusted.com",
+        "foo\(atSign)evil.com\u{200B}\(atSign)trusted.com",
+        // Math is not a faithful visible model; the scan fails closed.
+        "foo\(atSign)evil.com$\\ldotp$trusted",
+    ])
+    func emailSpoofContinuationsStayLiteral(source: String) {
+        let body = renderer.render(source).body
+        #expect(!body.contains("href=\"mailto:"), "\(body)")
+        // The candidate must stay visible as literal text, not be dropped.
+        #expect(body.contains("foo\(atSign)evil.co"), "\(body)")
+    }
+
+    /// Value: protects=CJK prose, address lists and sentence punctuation after an email still link once the continuation guard applies; fails_when=the guard treats Han/kana/Hangul as a host label, reads past the first separator, or keeps the URL guard's whole-continuation `@` rule; why_new=the spoof table only asserts literal outcomes; seam=none; no_claim=green proves these prose shapes, not every language that writes text flush against an address.
+    @Test(arguments: [
+        ("联系 foo\(atSign)example.com。然后继续。", "。然后继续。"),
+        ("foo\(atSign)example.com。我们会在24小时内回复。谢谢。", "。我们会在24小时内回复。谢谢。"),
+        ("邮箱：foo\(atSign)example.com获取", "获取"),
+        ("foo\(atSign)example.com、bar\(atSign)example.com", "、<a href=\"mailto:bar\(atSign)example.com\">"),
+        ("foo\(atSign)example.com，bar\(atSign)example.com", "，<a href=\"mailto:bar\(atSign)example.com\">"),
+        ("foo\(atSign)example.comまでご連絡ください", "までご連絡ください"),
+        ("foo\(atSign)example.com으로 보내주세요", "으로 보내주세요"),
+        // The walk stops at the separator, before the math span it would fail
+        // closed on.
+        ("foo\(atSign)example.com，see $x$", "，see <span class=\"math math-inline\">"),
+        ("foo\(atSign)example.com.", ".</p>"),
+        ("(foo\(atSign)example.com).", ").</p>"),
+        ("foo\(atSign)example.com&period;", "&period;</p>"),
+        ("**foo\(atSign)example.com**。", "</strong>。</p>")
+    ])
+    func emailProseContinuationsStillLink(sample: (String, String)) {
+        let body = renderer.render(sample.0).body
+        #expect(body.contains("<a href=\"mailto:foo\(atSign)example.com\">foo\(atSign)example.com</a>\(sample.1)"), "\(body)")
+    }
+
+    /// Value: protects=a sentence that starts with an ASCII word after an email's full stop keeps the conservative literal result shared with bare URLs; fails_when=the email guard starts linking an IDNA dot followed by an ASCII label; why_new=the prose rows cover only CJK continuations; seam=none; no_claim=green pins this declared trade-off, not that such prose should stay literal.
+    @Test func asciiLabelAfterEmailFullStopStaysLiteral() {
+        let body = renderer.render("foo\(atSign)example.com。GitHub 上也可以").body
+        #expect(!body.contains("href=\"mailto:"), "\(body)")
+        #expect(body.contains("foo\(atSign)example.com。GitHub"), "\(body)")
+    }
+
+    /// Value: protects=a footnote marker after a bare URL or email keeps the link, while what follows the marker is still guarded; fails_when=the guard reads the marker's generated number as host-label digits again, or skips past the marker without checking the rest; why_new=the URL guard dropped links before footnotes and no test covered a footnote after an autolink; seam=none; no_claim=green proves real footnote markers, not every superscript.
+    @Test func footnoteMarkerAfterAutolinkKeepsTheLink() {
+        let note = "\n\n[^1]: note"
+        let url = renderer.render("See https://example.com[^1]." + note).body
+        #expect(url.contains("<a href=\"https://example.com\">https://example.com</a><sup class=\"footnote-ref\">"), "\(url)")
+
+        let email = renderer.render("Mail foo\(atSign)example.com[^1]，然后" + note).body
+        #expect(email.contains("<a href=\"mailto:foo\(atSign)example.com\">foo\(atSign)example.com</a><sup class=\"footnote-ref\">"), "\(email)")
+
+        for source in ["https://evil.com[^1].trusted.com", "foo\(atSign)evil.com[^1].trusted.com", "https://evil.co[^1]m"] {
+            let body = renderer.render(source + note).body
+            #expect(!body.contains("href=\"https://evil.co"), "\(body)")
+            #expect(!body.contains("href=\"mailto:"), "\(body)")
+            #expect(body.contains("evil.co"), "\(body)")
+        }
+
+        // Only footnote markers are skipped: an authored superscript is still
+        // visible host-label text.
+        for source in ["https://evil.co<sup>m</sup>", "foo\(atSign)evil.co<sup>m</sup>"] {
+            let body = renderer.render(source).body
+            #expect(!body.contains("href=\"https://evil.co\""), "\(body)")
+            #expect(!body.contains("href=\"mailto:"), "\(body)")
+        }
+    }
+
     @Test func autolinksRespectBoundariesAndProtectedContent() {
         let body = renderer.render(#"""
         `https://code.example.com` $https://math.example.com$
