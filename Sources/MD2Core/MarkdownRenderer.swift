@@ -37,11 +37,6 @@ public struct MarkdownRenderer: Sendable {
 
         let citations = CitationContext(entries: config.bibliography, style: config.citationStyle)
         let crossReferences = CrossReferenceContext(numberAllEquations: config.numberAllEquations)
-        // Pre-scan labels so a `\ref{}` before its target resolves (mirroring the
-        // footnote pre-scan); the counters are then rewound so the render walk
-        // re-assigns identical numbers as it emits each element.
-        collectCrossReferenceLabels(lines, into: crossReferences, config: config)
-        crossReferences.resetCounters()
         if Task.isCancelled {
             return RenderedDocument(html: "", body: "", outline: [], stats: DocumentStats(plainText: ""))
         }
@@ -61,6 +56,9 @@ public struct MarkdownRenderer: Sendable {
         if let section = footnoteSectionHTML(footnotes, inlineContext: context) {
             body += "\n" + section
         }
+        // Every element is numbered by now, footnote figures included, so each
+        // `\ref{}` resolves to the number its target displays.
+        body = crossReferences.resolveReferences(in: body)
         if let bibliography = bibliographySectionHTML(citations) {
             body += "\n" + bibliography
         }
@@ -355,8 +353,7 @@ public struct MarkdownRenderer: Sendable {
     /// Handles both single-line and multi-line forms. Returns `nil` when the
     /// matching closing delimiter is absent, so the text falls through to normal
     /// paragraph handling. The raw TeX is exposed (rather than finished HTML) so
-    /// both the label pre-scan and the render walk can inspect it for
-    /// `\label`/`\tag`.
+    /// the render walk can inspect it for `\label`/`\tag`.
     private func mathBlockContent(from lines: [String], startIndex: Int) -> (tex: String, nextIndex: Int)? {
         let trimmed = lines[startIndex].trimmedMarkdownLine
         let delimiters: (open: String, close: String)
@@ -1719,66 +1716,29 @@ public struct MarkdownRenderer: Sendable {
 
     // MARK: Cross-references
 
-    /// Cross-reference pass (after citations, before HTML-escaping). Resolves
-    /// `\ref{label}` to the referenced element's number via `CrossReferenceContext`,
-    /// emitting a protected anchor; an undefined label is left literal.
+    /// Cross-reference pass (after citations, before HTML-escaping). Each
+    /// `\ref{label}` becomes a protected provisional anchor that `render`
+    /// resolves once the whole document is numbered, so a reference may precede
+    /// its target or point into any container; a label that names no element
+    /// renders as its literal text.
     private func applyCrossReferences(_ text: String, protector: InlineProtector, crossReferences: CrossReferenceContext?) -> String {
-        guard let crossReferences, crossReferences.hasLabels else { return text }
+        guard let crossReferences, text.contains(#"\ref{"#) else { return text }
         return replaceMatches(in: text, pattern: #"\\ref\{([^}]+)\}"#) { match, source in
+            // A label holding an earlier pass's token (code, an entity, an escape)
+            // can name no element, and its literal must restore through this
+            // protector, so it stays in the text.
             guard let label = capture(match, 1, in: source),
-                  let number = crossReferences.number(for: label) else {
+                  !label.unicodeScalars.contains(InlineProtector.sentinelScalar) else {
                 return matchText(match, in: source)
             }
-            return protector.protect(
-                "<a class=\"cross-ref\" href=\"#\(escapeAttribute(label))\">\(escapeHTML(number))</a>",
-                source: escapeHTML(matchText(match, in: source))
+            let literal = escapeHTML(matchText(match, in: source))
+            // The literal skips the remaining passes, so it applies the
+            // paragraph's soft line break itself.
+            let anchor = crossReferences.provisionalAnchor(
+                for: label,
+                literal: literal.replacingOccurrences(of: "\n", with: "<br>")
             )
-        }
-    }
-
-    /// Whole-document pre-scan that assigns figure/table/equation numbers and
-    /// registers labels, so a `\ref{}` that appears before its target resolves.
-    /// Walks the same block structure as the render walk (skipping code and
-    /// consuming math/table blocks), then `resetCounters()` rewinds so the render
-    /// walk re-derives identical numbers as it emits each element.
-    private func collectCrossReferenceLabels(_ lines: [String], into context: CrossReferenceContext, config: RenderConfig) {
-        var index = 0
-        while index < lines.count {
-            if index == 0, lines[index].trimmedMarkdownLine == "---",
-               let frontMatter = frontMatterBlock(from: lines, startIndex: index) {
-                index = frontMatter.nextIndex
-                continue
-            }
-            if let fence = fencedCodeBlock(from: lines, startIndex: index) {
-                index = fence.nextIndex
-                continue
-            }
-            if let code = indentedCodeBlock(from: lines, startIndex: index) {
-                index = code.nextIndex
-                continue
-            }
-            if let math = mathBlockContent(from: lines, startIndex: index) {
-                let info = equationLabelTag(in: math.tex)
-                context.assignEquation(label: info.label, tag: info.tag)
-                index = math.nextIndex
-                continue
-            }
-            if let table = tableBlock(from: lines, startIndex: index) {
-                for line in lines[index..<min(table.nextIndex, lines.count)] {
-                    for label in figureLabels(in: line) { context.assignFigure(label: label) }
-                }
-                var next = table.nextIndex
-                if next < lines.count, let caption = parseTableCaption(lines[next]) {
-                    context.assignTable(label: caption.label)
-                    next += 1
-                }
-                index = next
-                continue
-            }
-            for label in figureLabels(in: lines[index]) {
-                context.assignFigure(label: label)
-            }
-            index += 1
+            return protector.protect(anchor, source: literal)
         }
     }
 
@@ -1792,18 +1752,6 @@ public struct MarkdownRenderer: Sendable {
             return nil
         }
         return (inlineHTML(trimmed, context: context), startIndex + 1)
-    }
-
-    /// Extracts every `#fig:label` id from the images on a line, in order, for the
-    /// label pre-scan.
-    private func figureLabels(in line: String) -> [String] {
-        guard let regex = try? NSRegularExpression(pattern: #"!\[[^\]]*\]\([^)]*\)\{([^}]*)\}"#) else {
-            return []
-        }
-        return MarkdownLinkSyntax.candidateRanges(in: line, includeImageMarker: true).compactMap { regex.firstMatch(in: line, options: .anchored, range: $0) }.compactMap { match in
-            guard let attributes = capture(match, 1, in: line) else { return nil }
-            return figureLabel(in: attributes)
-        }
     }
 
     /// The `fig:…` id inside an image attribute block, e.g. `#fig:flow` → `fig:flow`.
@@ -2316,6 +2264,11 @@ public struct MarkdownRenderer: Sendable {
                 // and ignored whitespace can all change the rendered text).
                 // Fail closed for any math span in the continuation.
                 if Self.mathSpanRegex.firstMatch(in: raw, range: NSRange(raw.startIndex..., in: raw)) != nil {
+                    return VisibleContinuation(scalars: result, exhausted: true)
+                }
+                // A cross-reference shows a number (or its literal) that is
+                // decided only after the whole document renders; fail closed.
+                if CrossReferenceContext.containsProvisionalAnchor(raw) {
                     return VisibleContinuation(scalars: result, exhausted: true)
                 }
                 // A block-level or void HTML boundary starts a new visible

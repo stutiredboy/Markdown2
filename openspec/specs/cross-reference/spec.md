@@ -36,6 +36,40 @@ The system SHALL detect `\ref{label}` in inline text and SHALL resolve it to the
 - **THEN** the output shows the literal text `\ref{eq:foo}` styled as code
 - **AND** no cross-reference resolution occurs
 
+#### Scenario: Undefined label keeps its authored text
+- **WHEN** inline text contains `\ref{eq:a_b_c}` and no label `eq:a_b_c` exists
+- **THEN** the literal text `\ref{eq:a_b_c}` is rendered, with no emphasis applied inside it
+
+#### Scenario: Reference inside link syntax acts as the anchor it may become
+- **WHEN** a `\ref{label}` appears inside a link or image destination, or inside reference-link text
+- **THEN** the destination is treated as unsafe and the link text stays inert, as for any anchor fragment, whether or not `label` exists
+
+### Requirement: One numbering authority for every container
+The system SHALL number figures, tables, and equations in the order the rendered document displays them — top-level blocks, blockquotes and alerts, list items, and table captions in place, and footnote content after the body — and SHALL resolve every `\ref{label}` after the whole document is numbered. A `\ref{}` SHALL render the number its target displays, whether it appears before or after the target and whichever container either sits in. When a label is defined more than once, every `\ref{}` to it SHALL resolve to the last definition. An element inside a code block SHALL NOT be numbered or become a reference target.
+
+#### Scenario: Forward reference into a container resolves
+- **WHEN** a paragraph contains `see \ref{eq:quoted}` and a later blockquote contains `$$a = 1 \label{eq:quoted}$$`
+- **THEN** the reference renders the quoted equation's number
+
+#### Scenario: Container content shifts later numbers consistently
+- **WHEN** a blockquote equation labeled `eq:quoted` precedes a top-level equation labeled `eq:top`
+- **THEN** the top-level equation displays `(2)`
+- **AND** `\ref{eq:top}` resolves to `2`
+
+#### Scenario: Footnote figures are numbered after body figures
+- **WHEN** a footnote contains `![Note](n.png){#fig:note}` and the body contains `![Body](b.png){#fig:body}` after the footnote definition
+- **THEN** the body figure is captioned "Figure 1: Body" and the footnote figure "Figure 2: Note"
+- **AND** `\ref{fig:body}` resolves to `1` and `\ref{fig:note}` to `2`
+
+#### Scenario: Image inside a quoted code fence is not a target
+- **WHEN** a blockquote holds a fenced code block containing `![Code](c.png){#fig:code}`
+- **THEN** no figure number is consumed by it
+- **AND** `\ref{fig:code}` renders as literal text
+
+#### Scenario: Duplicate label resolves to its last definition
+- **WHEN** two figures carry `{#fig:x}` and `\ref{fig:x}` appears before, between, and after them
+- **THEN** every reference resolves to `2`
+
 ### Requirement: Figure auto-numbering and labeling
 The system SHALL auto-number figures sequentially in document order. A figure is defined as an image with a Pandoc-style attribute containing an ID: `![caption](src){#fig:label}`. The system SHALL assign the next sequential figure number and SHALL render the caption with the prefix "Figure N: " where N is the assigned number. The figure's label SHALL be registered for cross-reference resolution.
 
