@@ -24,7 +24,18 @@ private let bareURLBoundarySamples: [(label: String, character: Character)] = {
         ("fullwidth ASCII punctuation B", 0xFF1A...0xFF20),
         ("fullwidth ASCII punctuation C", 0xFF3B...0xFF40),
         ("fullwidth ASCII punctuation D", 0xFF5B...0xFF65),
-        ("zero width space", 0x200B...0x200B)
+        ("vertical form", 0xFE10...0xFE19),
+        ("CJK compatibility form", 0xFE30...0xFE4F),
+        ("small form variant A", 0xFE50...0xFE52),
+        ("small form variant B", 0xFE54...0xFE66),
+        ("small form variant C", 0xFE68...0xFE6B),
+        ("zero width space", 0x200B...0x200B),
+        ("soft hyphen", 0x00AD...0x00AD),
+        ("word joiner", 0x2060...0x2060),
+        ("zero width no-break space", 0xFEFF...0xFEFF),
+        ("arabic letter mark", 0x061C...0x061C),
+        ("left-to-right/right-to-left mark", 0x200E...0x200F),
+        ("directional isolate", 0x2066...0x2069)
     ]
     var samples: [(label: String, character: Character)] = []
     for (name, range) in ranges {
@@ -177,6 +188,23 @@ struct CommonSyntaxTests {
         #expect(body.contains("</a>\(tail)"), "\(body)")
     }
 
+    /// Value: protects=vertical/small CJK forms and the added invisible format characters end a bare URL in prose and stay outside the anchor, including authority-only URLs that run the continuation guard; fails_when=one of them is absorbed into the URL (the link is lost or the href carries an invisible character) or the guard rejects an ordinary continuation; why_new=the exhaustive tables use an ASCII path and `tail`, never the reported prose shapes; seam=none; no_claim=green proves these spellings, not every combination of the added characters.
+    @Test(arguments: [
+        ("https://example.com﹐tail", "", "https://example.com", "﹐tail"),
+        ("见 https://example.com/docs﹐然后继续︒", "见 ", "https://example.com/docs", "﹐然后继续︒"),
+        ("https://example.com︒然后", "", "https://example.com", "︒然后"),
+        ("链接︓https://example.com﹔", "链接︓", "https://example.com", "﹔"),
+        ("见\u{FEFF}https://example.com/path\u{FEFF}。", "见\u{FEFF}", "https://example.com/path", "\u{FEFF}。"),
+        ("\u{2067}https://example.com\u{2069}", "\u{2067}", "https://example.com", "\u{2069}"),
+        ("زر \u{200F}https://example.com\u{200F} الآن", "زر \u{200F}", "https://example.com", "\u{200F} الآن"),
+        ("https://example.com\u{00AD}，然后", "", "https://example.com", "\u{00AD}，然后")
+    ])
+    func compatibilityFormsAndFormatCharactersBoundReportedBareLinks(sample: (String, String, String, String)) {
+        let (source, before, destination, after) = sample
+        let body = renderer.render(source).body
+        #expect(body.contains("\(before)<a href=\"\(destination)\">\(destination)</a>\(after)"), "\(body)")
+    }
+
     @Test func cjkBoundariesApplyToWwwAutolinks() {
         let leading = renderer.render("访问www.example.com").body
         #expect(leading.contains("<a href=\"http://www.example.com\">www.example.com</a>"), "\(leading)")
@@ -247,7 +275,12 @@ struct CommonSyntaxTests {
     }
 
     /// Value: protects=code points adjacent to every normative range stay URL content and are not left boundaries; fails_when=an off-by-one range widening includes a neighbouring code point; why_new=the é probe is not adjacent to any range, and the constant/table sync test cannot catch a consistent widening; seam=none; no_claim=green proves these edge neighbours, not every non-normative code point.
-    @Test(arguments: ["\u{00B6}", "\u{00B8}", "\u{200C}", "\u{2012}", "\u{2015}", "\u{2017}", "\u{201E}", "\u{2025}", "\u{2027}", "\u{3004}", "\u{3012}", "\u{3013}", "\u{3020}", "\u{302F}", "\u{3031}", "\u{303C}", "\u{303E}", "\u{30FC}", "\u{FF10}", "\u{FF19}", "\u{FF21}", "\u{FF3A}", "\u{FF41}", "\u{FF5A}", "\u{FF66}"] as [Character])
+    @Test(arguments: ["\u{00B6}", "\u{00B8}", "\u{200C}", "\u{2012}", "\u{2015}", "\u{2017}", "\u{201E}", "\u{2025}", "\u{2027}", "\u{3004}", "\u{3012}", "\u{3013}", "\u{3020}", "\u{302F}", "\u{3031}", "\u{303C}", "\u{303E}", "\u{30FC}", "\u{FF10}", "\u{FF19}", "\u{FF21}", "\u{FF3A}", "\u{FF41}", "\u{FF5A}", "\u{FF66}",
+        // Compatibility-form neighbours and the unassigned gaps inside the small forms.
+        "\u{FE0F}", "\u{FE1A}", "\u{FE2F}", "\u{FE53}", "\u{FE67}", "\u{FE6C}", "\u{FE70}",
+        // Format-character neighbours, and the joiners and bidi embedding/override
+        // controls that are deliberately outside the set.
+        "\u{00AC}", "\u{00AE}", "\u{061B}", "\u{200D}", "\u{2061}", "\u{2065}", "\u{206A}", "\u{202A}", "\u{202C}", "\u{202E}", "\u{FEFC}"] as [Character])
     func adjacentNonNormativeCodePointsStayURLContent(character: Character) {
         let body = renderer.render("https://example.com/a\(character)tail").body
         #expect(body.contains("<a href=\"https://example.com/a\(character)tail\">"), "\(body)")
@@ -263,8 +296,8 @@ struct CommonSyntaxTests {
         #expect(body.contains("\u{20000}<a href=\"https://example.com\">https://example.com</a>"), "\(body)")
     }
 
-    /// Value: protects=full-width structural lookalikes are valid left boundaries but stay URL content, so a lookalike cannot retarget a link to a shorter host; fails_when=the URL body terminates at one of them again; why_new=the terminator table covers prose punctuation, not the host-deception case; seam=none; no_claim=green proves these seven lookalikes, not every full-width code point.
-    @Test(arguments: ["．", "／", "＃", "＠", "？", "－", "＿"] as [Character])
+    /// Value: protects=full-width, vertical and small structural lookalikes are valid left boundaries but stay URL content, so a lookalike cannot retarget a link to a shorter host; fails_when=the URL body terminates at one of them again; why_new=the terminator table covers prose punctuation, not the host-deception case; seam=none; no_claim=green proves these eighteen lookalikes, not every compatibility code point.
+    @Test(arguments: ["．", "／", "＃", "＠", "？", "－", "＿", "︖", "﹒", "﹖", "﹟", "﹣", "﹫", "︳", "︴", "﹍", "﹎", "﹏"] as [Character])
     func structuralLookalikesStayURLContent(character: Character) {
         let deception = renderer.render("https://evil.com\(character)trusted.com").body
         #expect(!deception.contains("<a href=\"https://evil.com\">"), "\(deception)")
@@ -277,9 +310,18 @@ struct CommonSyntaxTests {
         #expect(leading.contains("<a href=\"https://example.com\">https://example.com</a>"), "\(leading)")
     }
 
-    /// Value: protects=the structural lookalike set stays exactly the seven declared characters; fails_when=a character is added to the production set without a matching test argument; why_new=the terminator table derives its exclusions from the production constant, so a silent addition would not fail the terminator test; seam=none; no_claim=green proves set equality, not that every lookalike is handled in every position.
+    /// Value: protects=the structural lookalike set stays exactly the eighteen declared characters; fails_when=a character is added to the production set without a matching test argument; why_new=the terminator table derives its exclusions from the production constant, so a silent addition would not fail the terminator test; seam=none; no_claim=green proves set equality, not that every lookalike is handled in every position.
     @Test func structuralLookalikesStayInSync() {
-        #expect(Set(MarkdownRenderer.bareURLStructuralLookalikes) == Set("．／＃＠？－＿"))
+        #expect(Set(MarkdownRenderer.bareURLStructuralLookalikes) == Set("．／＃＠？－＿︖﹒﹖﹟﹣﹫︳︴﹍﹎﹏"))
+    }
+
+    /// Value: protects=the lookalike rule (a boundary character whose compatibility form is `.`, `/`, `#`, `@`, `?`, `-` or `_`) holds for the whole boundary set; fails_when=a future boundary addition folds to a URL-structural character but is left a terminator, or a lookalike is added that folds to something else; why_new=the sync test pins a literal list, not the rule that produced it; seam=bareURLBoundaryCharacters and bareURLStructuralLookalikes; no_claim=green proves the NFKC rule on this platform's Unicode tables, not browser IDNA mapping.
+    @Test func structuralLookalikesAreTheStructuralCompatibilityForms() {
+        let structural: Set<String> = [".", "/", "#", "@", "?", "-", "_"]
+        let derived = Set(MarkdownRenderer.bareURLBoundaryCharacters.filter {
+            structural.contains(String($0).precomposedStringWithCompatibilityMapping)
+        })
+        #expect(derived == Set(MarkdownRenderer.bareURLStructuralLookalikes))
     }
 
     /// Value: protects=an invisible/IDNA/userinfo continuation cannot retarget a bare link to a shorter host; fails_when=the guard is removed and the prefix links again; why_new=the visible lookalike test covers `．／＃＠？－＿` but not the masked/IDNA/userinfo/port/token continuations; seam=none; no_claim=green proves these continuations, not every Unicode lookalike combination.
@@ -430,6 +472,16 @@ struct CommonSyntaxTests {
         // A single non-ASCII label after an encoded dot is still a longer host.
         "https://evil.com％2e中国",
         "https://evil.com%2e中国",
+        // Vertical and small forms fold to their compatibility form: `︒` is an
+        // IDNA dot, `﹫` an at sign, `﹪` a percent sign.
+        "https://evil.com︒trusted.com",
+        "https://evil.com︒ｔｒｕｓｔｅｄ",
+        "https://evil.com，﹫trusted",
+        "https://evil.com﹪2e中国",
+        // The added invisible boundaries are skipped like U+200B.
+        "https://evil.com\u{FEFF}.trusted.com",
+        "https://evil.com\u{200F}\(atSign)trusted.com",
+        "https://evil.com\u{2069}。trusted.com",
     ])
     func spoofContinuationsStayLiteral(source: String) {
         let body = renderer.render(source).body
@@ -533,7 +585,16 @@ struct CommonSyntaxTests {
         "https://evil.co[m<br>](https://x)",
         "https://evil.co[.trusted<br>](https://x)",
         "https://evil.co[m<div>](https://x)",
+        "https://evil.co\u{FEFF}m",
+        "https://evil.co\u{2060}m",
+        "https://evil.co\u{00AD}m",
+        "https://evil.co\u{200E}m",
+        // A small hyphen-minus folds to a host hyphen.
+        "https://evil.co\u{200B}﹣m",
         "https://example.com\u{200B}tail",
+        // The same reading applies to the added invisible boundaries: the text
+        // shows `example.comtail`, so no shorter host is linked.
+        "https://example.com\u{FEFF}tail",
         "https://example.com<em>end</em>",
         "https://example.com$x$"
     ])
@@ -588,6 +649,9 @@ struct CommonSyntaxTests {
         "foo\(atSign)evil.com｡trusted.com",
         "foo\(atSign)evil.com．trusted.com",
         "foo\(atSign)evil.com。ｔｒｕｓｔｅｄ.com",
+        // Vertical and small full stops fold to a dot.
+        "foo\(atSign)evil.com︒trusted.com",
+        "foo\(atSign)evil.com﹒trusted.com",
         // Invisible scalars are skipped before the dot.
         "foo\(atSign)evil.com\u{200B}.trusted.com",
         "foo\(atSign)evil.com\u{FEFF}.trusted.com",
@@ -617,6 +681,7 @@ struct CommonSyntaxTests {
         // An address straight followed by an at sign.
         "foo\(atSign)evil.com\(atSign)trusted.com",
         "foo\(atSign)evil.com＠trusted.com",
+        "foo\(atSign)evil.com﹫trusted.com",
         "foo\(atSign)evil.com\u{200B}\(atSign)trusted.com",
         // Math is not a faithful visible model; the scan fails closed.
         "foo\(atSign)evil.com$\\ldotp$trusted",
@@ -635,6 +700,8 @@ struct CommonSyntaxTests {
         ("邮箱：foo\(atSign)example.com获取", "获取"),
         ("foo\(atSign)example.com、bar\(atSign)example.com", "、<a href=\"mailto:bar\(atSign)example.com\">"),
         ("foo\(atSign)example.com，bar\(atSign)example.com", "，<a href=\"mailto:bar\(atSign)example.com\">"),
+        ("foo\(atSign)example.com﹑bar\(atSign)example.com", "﹑<a href=\"mailto:bar\(atSign)example.com\">"),
+        ("联系 foo\(atSign)example.com︒然后继续︒", "︒然后继续︒"),
         ("foo\(atSign)example.comまでご連絡ください", "までご連絡ください"),
         ("foo\(atSign)example.com으로 보내주세요", "으로 보내주세요"),
         // The walk stops at the separator, before the math span it would fail

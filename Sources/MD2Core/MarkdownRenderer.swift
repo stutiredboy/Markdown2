@@ -2088,15 +2088,27 @@ public struct MarkdownRenderer: Sendable {
 
     /// Characters that are valid left boundaries for a bare URL; most also
     /// terminate its body (see `bareURLBodyTerminators`). CJK/typographic
-    /// punctuation (including full-width forms) and the zero-width space U+200B,
-    /// which ICU does not treat as `\s`. The set contains no ASCII characters,
-    /// so it is safe inside a regex class. Module-internal so
-    /// `boundaryConstantMatchesSampleTable` can compare it; not public API.
+    /// punctuation (including full-width, vertical and small forms), and
+    /// invisible format characters that ICU does not treat as `\s` and that
+    /// never belong in a URL: the zero-width space, soft hyphen, word joiner,
+    /// zero-width no-break space (BOM), and the bidi marks and isolates that
+    /// wrap URLs in right-to-left text. ZWNJ/ZWJ (IDNA context joiners, emoji
+    /// sequences) and the bidi embedding/override controls stay outside. The
+    /// set contains no ASCII characters, so it is safe inside a regex class.
+    /// Module-internal so `boundaryConstantMatchesSampleTable` can compare it;
+    /// not public API.
     static let bareURLBoundaryCharacters: String = {
         let characters =
             "·–—‘’‚‛“”…、。〃〈〉《》「」『』【】〔〕〖〗〘〙〚〛〜〝〞〟〰〽・"
             + "！＂＃＄％＆＇（）＊＋，－．／：；＜＝＞？＠［＼］＾＿｀｛｜｝～｟｠｡｢｣､･"
-            + "\u{200B}"
+            // U+FE10–U+FE19 vertical forms.
+            + "︐︑︒︓︔︕︖︗︘︙"
+            // U+FE30–U+FE4F CJK compatibility forms.
+            + "︰︱︲︳︴︵︶︷︸︹︺︻︼︽︾︿﹀﹁﹂﹃﹄﹅﹆﹇﹈﹉﹊﹋﹌﹍﹎﹏"
+            // U+FE50–U+FE6B small form variants (U+FE53 and U+FE67 are unassigned).
+            + "﹐﹑﹒﹔﹕﹖﹗﹘﹙﹚﹛﹜﹝﹞﹟﹠﹡﹢﹣﹤﹥﹦﹨﹩﹪﹫"
+            + "\u{200B}\u{00AD}\u{2060}\u{FEFF}"
+            + "\u{061C}\u{200E}\u{200F}\u{2066}\u{2067}\u{2068}\u{2069}"
         precondition(
             characters.unicodeScalars.allSatisfy { !$0.isASCII },
             "bare URL boundary characters must be non-ASCII and regex-class safe"
@@ -2104,11 +2116,13 @@ public struct MarkdownRenderer: Sendable {
         return characters
     }()
 
-    /// Full-width structural lookalikes are valid left boundaries but must not
-    /// terminate the URL body: ending `https://evil.com．trusted.com` at `．`
-    /// would link `evil.com` while the text reads like a longer host. `－` and
-    /// `＿` fold to host-valid `-`/`_`, so they stay body content too.
-    static let bareURLStructuralLookalikes = "．／＃＠？－＿"
+    /// Structural lookalikes are valid left boundaries but must not terminate
+    /// the URL body: ending `https://evil.com．trusted.com` at `．` would link
+    /// `evil.com` while the text reads like a longer host. They are exactly the
+    /// boundary characters whose compatibility form is `.`, `/`, `#`, `@`, `?`,
+    /// `-` or `_` (full-width, vertical and small forms); `-` and `_` are
+    /// host-valid, so their forms stay body content too.
+    static let bareURLStructuralLookalikes = "．／＃＠？－＿" + "︖﹒﹖﹟﹣﹫" + "︳︴﹍﹎﹏"
 
     /// The URL-body terminators: the full boundary set minus the structural
     /// lookalikes above. The left-boundary lookbehind still uses the full set.
@@ -2124,6 +2138,21 @@ public struct MarkdownRenderer: Sendable {
     private static let fullwidthASCIIDelta: UInt32 = 0xFEE0
     private static let fullwidthASCIIRange: ClosedRange<UInt32> = 0xFF01...0xFF5E
     private static let percentEncodedDot = "2e"
+
+    /// Vertical and small forms in the boundary set fold to their single-scalar
+    /// compatibility form (`﹫` reads as `@`, `︒` as `。`), as full-width ASCII
+    /// does. Forms without one (`︙`, `︰`, the overlines) stay as written.
+    private static let compatibilityFormRange: ClosedRange<UInt32> = 0xFE10...0xFE6B
+    private static let compatibilityFormFolds: [UInt32: Unicode.Scalar] = {
+        var folds: [UInt32: Unicode.Scalar] = [:]
+        for scalar in bareURLBoundaryCharacters.unicodeScalars where compatibilityFormRange.contains(scalar.value) {
+            let form = String(scalar).precomposedStringWithCompatibilityMapping.unicodeScalars
+            if form.count == 1, let folded = form.first, folded != scalar {
+                folds[scalar.value] = folded
+            }
+        }
+        return folds
+    }()
 
     /// Blank-rendering code points that are not format characters or marks.
     private static let blankRenderingFillers: Set<UInt32> = [
@@ -2147,6 +2176,10 @@ public struct MarkdownRenderer: Sendable {
     }
 
     private static func normalizeContinuation(_ scalar: Unicode.Scalar) -> Unicode.Scalar {
+        var scalar = scalar
+        if compatibilityFormRange.contains(scalar.value), let folded = compatibilityFormFolds[scalar.value] {
+            scalar = folded
+        }
         if idnaDots.contains(Character(scalar)) { return "." }
         if fullwidthASCIIRange.contains(scalar.value),
            let normalized = Unicode.Scalar(scalar.value - fullwidthASCIIDelta) {
