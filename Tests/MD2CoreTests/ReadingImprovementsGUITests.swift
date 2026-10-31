@@ -61,14 +61,14 @@ final class ReadingImprovementsGUITests: XCTestCase {
             var selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
         })();
         """, in: webView)
-        host.spin(0.4)
+        host.spin(until: { selection != nil })
         XCTAssertEqual(DocumentStats(plainText: RenderedPlainText.extract(from: try XCTUnwrap(selection))).words, 6)
         XCTAssertEqual(try evaluate("getComputedStyle(document.querySelector('main')).maxWidth", in: webView) as? String, "800px")
         host.settings.typography.readingWidth = .narrow
         host.settings.typography.readingFont = .serif
         host.settings.typography.fontSize = 20
         host.settings.zoomIn()
-        host.spin(0.4)
+        host.spin(until: { (try? evaluate("getComputedStyle(document.body).fontSize", in: webView)) as? String == "22px" })
         XCTAssertEqual(try evaluate("getComputedStyle(document.body).fontSize", in: webView) as? String, "22px")
         XCTAssertEqual(try evaluate("getComputedStyle(document.querySelector('main')).maxWidth", in: webView) as? String, "880px")
         XCTAssertTrue((try evaluate("getComputedStyle(document.body).fontFamily", in: webView) as? String)?.contains("serif") == true)
@@ -77,7 +77,7 @@ final class ReadingImprovementsGUITests: XCTestCase {
         // SwiftUI refreshes callback closures when typography changes.
         coordinator.onSelectionChange = { selection = $0; onSelection($0) }
         _ = try evaluate("document.dispatchEvent(new Event('selectionchange'))", in: webView)
-        host.spin(0.2)
+        host.spin(until: { selection == nil })
         XCTAssertNil(selection)
         XCTAssertFalse(host.store.rendered.html.contains("md2-typography"))
     }
@@ -251,6 +251,14 @@ final class ReadingImprovementsGUITests: XCTestCase {
     func spin(_ duration: TimeInterval) {
         let deadline = Date().addingTimeInterval(duration)
         while Date() < deadline { _ = RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01)) }
+    }
+
+    /// Spins until `condition` holds or `timeout` passes. Waiting on the outcome
+    /// instead of a fixed interval lets a slow CI runner take longer to deliver
+    /// a WebKit round trip without failing the assertion that follows.
+    func spin(until condition: () -> Bool, timeout: TimeInterval = 5) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline { spin(0.02) }
     }
     func close() {
         window.orderOut(nil)
