@@ -14,10 +14,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The heartbeat benchmark has a 200 ms deadline. Run it without other
-      # Swift Testing cases competing for the shared runner's CPU.
-      - name: Run default tests (GUI tests remain opt-in)
-        run: swift test --skip 'P1RegressionTests.renderingYieldsMainActorAndLatestRevisionWins'
+      # The heartbeat benchmark has a 200 ms deadline, and the inline scaling
+      # suite compares a 500-fragment render against a 1,000-fragment one.
+      # Run each without other Swift Testing cases competing for the shared
+      # runner's three cores: under that load the longer sample rarely lands in
+      # a quiet slot, so a linear 2x path measured 3.2-3.6x.
+      - name: Run default tests (GUI suites run in gui-tests)
+        run: swift test --skip 'P1RegressionTests.renderingYieldsMainActorAndLatestRevisionWins' --skip 'InlineRenderingPerformanceTests'
+
+      - name: Verify inline scaling ratios in isolation
+        run: swift test --filter 'InlineRenderingPerformanceTests'
 
       - name: Verify main actor heartbeat in isolation
         run: swift test --filter 'P1RegressionTests.renderingYieldsMainActorAndLatestRevisionWins'
@@ -48,3 +54,38 @@ jobs:
           trap 'hdiutil detach "$mount_dir" >/dev/null 2>&1 || true; rmdir "$mount_dir" 2>/dev/null || true' EXIT
           hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mount_dir" dist/Markdown2-ci.dmg
           codesign --verify --deep --strict "$mount_dir/Markdown2.app"
+
+  gui-tests:
+    # The MD2_RUN_GUI_TESTS suites guard failures that throw nothing: dark or
+    # clipped PDFs, a Settings window that opens itself at launch, gutters that
+    # stop drawing, undo that crashes after a mode switch. GitHub's macOS
+    # runners log in a user session with a window server, so AppKit windows
+    # and WebKit render here as they do on a developer's Mac.
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # This job runs XCTest only. Every GUI-gated case is an XCTest case, and
+      # the Swift Testing suites (timing ratios, the heartbeat) already run in
+      # build-test-package; running them twice would only double their noise.
+      - name: Check that GUI-gated tests are XCTest cases
+        run: |
+          # /dev/null keeps grep off stdin if no file imports Testing.
+          if grep -l 'MD2_RUN_GUI_TESTS' /dev/null $(grep -rl '^import Testing' Tests); then
+            echo "::error::The Swift Testing files above read MD2_RUN_GUI_TESTS, but gui-tests runs XCTest only. Write GUI-gated cases as XCTest cases."
+            exit 1
+          fi
+
+      - name: Run XCTest with GUI suites enabled
+        env:
+          MD2_RUN_GUI_TESTS: "1"
+        run: |
+          set -o pipefail
+          swift test --disable-swift-testing 2>&1 | tee "$RUNNER_TEMP/gui-tests.log"
+
+      # A skipped GUI test passes green, so every skip must be one the
+      # allowlist expects on this runner.
+      - name: Reject unexpected skips
+        if: ${{ !cancelled() }}
+        run: python3 Scripts/check_test_skips.py "$RUNNER_TEMP/gui-tests.log" .github/gui-expected-skips.txt

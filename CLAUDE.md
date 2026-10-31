@@ -14,17 +14,18 @@
 - 非 GUI 套件：`swift test`
 - GUI/WebKit 套件（导出、打印、Mermaid/flow/sequence 渲染、PDF 外观）：`MD2_RUN_GUI_TESTS=1 swift test --filter MermaidOffscreenRenderingTests --filter PDFExportEndToEndVerification`
 
-GUI 测试通过 `MD2_RUN_GUI_TESTS=1` 选择性开启，`swift test` 与 CI 默认会跳过。**任何改动 `Sources/MD2App/PDFExporter.swift` 或 `Sources/MD2App/DocumentPrinter.swift`（PDF 导出/打印路径）的提交，落地前必须在本地跑 GUI 套件** —— 这条路径的失败大多是静默的（深色/反转 PDF、被裁剪或消失的图），不抛错，只有 GUI 测试或人工导出能抓到。
+GUI 测试通过 `MD2_RUN_GUI_TESTS=1` 选择性开启：本地 `swift test` 默认会跳过，CI 的 `gui-tests` job 在每个 PR 上开启它们（见下文）。**任何改动 `Sources/MD2App/PDFExporter.swift` 或 `Sources/MD2App/DocumentPrinter.swift`（PDF 导出/打印路径）的提交，落地前必须在本地跑 GUI 套件** —— 这条路径的失败大多是静默的（深色/反转 PDF、被裁剪或消失的图），不抛错，只有 GUI 测试或人工导出能抓到。
 
 `PDFExporter.swift` 里两行是 load-bearing，删了会静默回归（深色 PDF），改它们之前先看对应 GUI 测试：
 - `hostWindow.appearance = NSAppearance(named: .aqua)` —— 强制浅色外观（守：`testPDFExporterForcesLightAppearanceOnHostWindow`、`testForcedLightAppearanceUsesDefaultMermaidTheme`）
 - `printStyleScript` 里的 `img, canvas, svg:not(.diagram-mermaid svg)` 选择器 —— 保留 Mermaid 自然尺寸（守：`testNarrowMermaidKeepsNaturalSizeUnderPrintOverride`、`testWideMermaidFitsPrintableColumnUnderPrintOverride`、`testNonMermaidMediaCappedUnderPrintOverride`）
 
-另见 `TODOS.md`：无头 GUI CI lane（让 `MD2_RUN_GUI_TESTS` 在 CI 自动跑）尚未实现。
+CI 的 GUI lane：`.github/workflows/pr-verify.yml` 的 `gui-tests` job 在 GitHub 的 `macos-15` runner（有登录会话和 window server）上跑 `MD2_RUN_GUI_TESTS=1 swift test --disable-swift-testing`（只跑 XCTest：GUI 门控用例必须写成 XCTest，Swift Testing 套件已在 `build-test-package` 跑过，job 里有一步会拦住读 `MD2_RUN_GUI_TESTS` 的 Swift Testing 文件），再用 `Scripts/check_test_skips.py` 拒绝 `.github/gui-expected-skips.txt` 之外的任何 skip —— 被跳过的 GUI 测试同样是绿的，不查 skip，这个 lane 什么都证明不了。新增的 `XCTSkip` 路径如果会在 runner 上触发，必须在 allowlist 里加一条（钉住测试名和 skip 原因的开头）并写明为什么 runner 跑不了，否则 CI 失败。runner 镜像已授予 Accessibility，所以 `SettingsWindowPresentationGUITests` 里需要它的 Settings 命令用例在 CI 上也会真跑。CI 只覆盖 macOS 15，开发机覆盖当前系统，两者互补，所以上面"落地前在本地跑"的要求不变。
 
 Find/delete GUI guards: the delete-after-reveal test and the find responsiveness
-benchmark in `Tests/MD2CoreTests/` are `MD2_RUN_GUI_TESTS`-gated and skipped by
-`swift test` and CI. After changing the find/reveal/highlight path in
+benchmark in `Tests/MD2CoreTests/` are `MD2_RUN_GUI_TESTS`-gated: plain
+`swift test` skips them and CI's `gui-tests` job runs them. After changing
+the find/reveal/highlight path in
 `Sources/MD2App/MarkdownEditorView.swift`, run
 `MD2_RUN_GUI_TESTS=1 swift test --filter FindFindDeleteGUITests` locally before landing —
 this path fails silently (Backspace deletes a whole word, find-mode stutter), and

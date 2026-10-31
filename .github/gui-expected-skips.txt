@@ -1,0 +1,17 @@
+# Skips the gui-tests job expects on GitHub's macos-15 runner. Every other
+# skip fails the job (Scripts/check_test_skips.py), because a skipped GUI test
+# passes green without guarding anything. Each entry is pinned to its test and
+# to the start of its skip reason; say why it cannot run on the runner.
+
+# Needs the Simplified Chinese Pinyin input source, which the runner does not
+# enable; the marked-text contract it exercises is tested headlessly.
+MD2CoreTests.MarkdownEditingGUITests/testPinyinReturnCommitsLatinLettersWithoutContinuingList | Enable Simplified Chinese Pinyin
+
+# A manual export tool: it runs only when a developer points it at a file.
+MD2CoreTests.PDFExportEndToEndVerification/testExportProvidedMarkdownPath | Set MD2_VERIFY_PDF_SOURCE and MD2_VERIFY_PDF_OUTPUT
+
+# Need the Pandoc binary, which the runner image does not include; they skip in
+# build-test-package for the same reason (see PandocConverterTests).
+MD2CoreTests.PandocConverterTests/testRealConversionDeletesPartialOutputOnFailure | Pandoc not installed.
+MD2CoreTests.PandocConverterTests/testRealConversionEmbedsRelativeImage | Pandoc not installed.
+MD2CoreTests.PandocConverterTests/testRealConversionProducesValidDocx | Pandoc not installed.

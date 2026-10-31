@@ -6,8 +6,9 @@ import MD2Core
 @testable import MD2App
 
 /// GUI-gated verification for the find reveal/delete fix and find-mode
-/// responsiveness. `swift test` and CI skip these (`MD2_RUN_GUI_TESTS` unset);
-/// run with `MD2_RUN_GUI_TESTS=1 swift test --filter FindFindDeleteGUITests`.
+/// responsiveness. Plain `swift test` skips these (`MD2_RUN_GUI_TESTS` unset)
+/// and CI's `gui-tests` job runs them; run locally with
+/// `MD2_RUN_GUI_TESTS=1 swift test --filter FindFindDeleteGUITests`.
 ///
 /// These need a GUI session: the delete test drives a real key window and first
 /// responder (the find query field owns focus until the user clicks into the
@@ -69,9 +70,16 @@ final class FindFindDeleteGUITests: XCTestCase {
         while large.utf8.count < 1_000_000 {
             large += sentence
         }
+        let matchCount = large.utf8.reduce(0) { $1 == UInt8(ascii: "e") ? $0 + 1 : $0 }
         let textView = NSTextView()
         textView.isRichText = false
         textView.string = large
+        // Reading `layoutManager` settles the view on TextKit 1, the stack the
+        // coordinator paints through, so the counting manager can replace it.
+        _ = textView.layoutManager
+        let layoutManager = HighlightEditCountingLayoutManager()
+        try XCTUnwrap(textView.textContainer).replaceLayoutManager(layoutManager)
+        XCTAssertIdentical(textView.layoutManager, layoutManager)
         let coordinator = MarkdownEditorView.Coordinator(
             text: Binding(get: { large }, set: { large = $0 })
         )
@@ -89,18 +97,35 @@ final class FindFindDeleteGUITests: XCTestCase {
             searchSeconds, 5.0,
             "settled search + highlight repaint took \(searchSeconds)s on a ~1 MB document"
         )
+        // Positive control: the counter sees the coordinator's painting, so the
+        // navigation budget below cannot pass because nothing was counted.
+        XCTAssertGreaterThanOrEqual(
+            layoutManager.highlightEdits, matchCount,
+            "the search should paint all \(matchCount) matches through the counted layout manager"
+        )
 
-        // Navigation must swap only the two affected highlight colors, so it must
-        // be far cheaper than a full re-paint of every match.
+        // Navigation must swap only the two affected highlight colors: demote
+        // the previous current match (remove + add) and paint the new one. That
+        // edit count is the incremental property itself, so it holds on any
+        // machine; a full repaint makes tens of thousands of edits per step.
+        layoutManager.highlightEdits = 0
         let navStart = clock.now
         for _ in 0..<50 {
             coordinator.navigateFind(forward: true, in: textView)
         }
         let navElapsed = clock.now - navStart
         let navSeconds = Self.seconds(navElapsed)
+        XCTAssertLessThanOrEqual(
+            layoutManager.highlightEdits, 50 * 3,
+            "50 find-navigation steps made \(layoutManager.highlightEdits) highlight edits — the per-navigation highlight swap is not incremental"
+        )
+        // Absolute ceiling that bounds CI time on a regression elsewhere in the
+        // step (selection, reveal, reporting); the edit count above is the
+        // primary assertion. About 0.7 s on a developer Mac and 1.1 s on a CI
+        // runner, so a tight bound here would measure the machine instead.
         XCTAssertLessThan(
-            navSeconds, 1.0,
-            "50 find-navigation steps took \(navSeconds)s — the per-navigation highlight swap is not incremental"
+            navSeconds, 5.0,
+            "50 find-navigation steps took \(navSeconds)s on a ~1 MB document"
         )
     }
 
@@ -311,5 +336,28 @@ final class FindFindDeleteGUITests: XCTestCase {
     private static func seconds(_ duration: Duration) -> Double {
         let components = duration.components
         return Double(components.seconds) + Double(components.attoseconds) / 1e18
+    }
+}
+
+/// Counts the temporary-attribute edits find highlighting makes, so a test can
+/// assert how much a step repaints without timing it.
+private final class HighlightEditCountingLayoutManager: NSLayoutManager {
+    var highlightEdits = 0
+
+    override func addTemporaryAttribute(
+        _ attrName: NSAttributedString.Key,
+        value: Any,
+        forCharacterRange charRange: NSRange
+    ) {
+        highlightEdits += 1
+        super.addTemporaryAttribute(attrName, value: value, forCharacterRange: charRange)
+    }
+
+    override func removeTemporaryAttribute(
+        _ attrName: NSAttributedString.Key,
+        forCharacterRange charRange: NSRange
+    ) {
+        highlightEdits += 1
+        super.removeTemporaryAttribute(attrName, forCharacterRange: charRange)
     }
 }
