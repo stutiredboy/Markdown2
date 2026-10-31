@@ -91,18 +91,3 @@ Tracked work considered and explicitly deferred from in-flight changes. Each ite
 **Depends on:** nothing.
 
 **Start here:** search `html.utf8` for `>` in `taggedWithSourceLines` and add a paragraph test that starts with U+0301.
-
-## Reproducible release probe for the inline workloads
-
-**What:** Add the fragment/autolink/paren-math workloads to `Scripts/benchmark_p1.swift` (or a sibling probe) so the before/after numbers in `measurements.md` can be reproduced from the checked-in script.
-
-**Why:** The 2026-10-18 measurements came from an ad-hoc release probe; the checked-in benchmark has no fragment scenario, so reviewers cannot re-derive the speedups. The design makes committed benchmark documentation optional, so this is not a blocker.
-
-**Current state:** Timing evidence is the regression suite's ratios plus `measurements.md`.
-
-**Pros:** Reproducible performance evidence for future changes.
-**Cons / cost:** A small script addition plus a documented command. (human: ~2h / CC: ~15min)
-
-**Depends on:** nothing.
-
-**Start here:** reuse the `swiftc -O` probe layout from `measurements.md`, add the eight single-line workloads and the one-per-line cases, and record the command in the README or the change notes.
