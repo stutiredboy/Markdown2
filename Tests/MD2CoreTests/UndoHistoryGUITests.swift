@@ -5,8 +5,9 @@ import XCTest
 @testable import MD2App
 
 /// GUI-gated regression guards for undo-history integrity across the editor's
-/// lifecycle. `swift test` and CI skip these (`MD2_RUN_GUI_TESTS` unset); run
-/// with `MD2_RUN_GUI_TESTS=1 swift test --filter UndoHistoryGUITests`.
+/// lifecycle. Plain `swift test` skips these (`MD2_RUN_GUI_TESTS` unset) and
+/// CI's `gui-tests` job runs them; run locally with
+/// `MD2_RUN_GUI_TESTS=1 swift test --filter UndoHistoryGUITests`.
 ///
 /// Each test hosts the real `ContentView` in a window whose delegate answers
 /// with the document's undo manager, as `MD2AppDelegate` does, and drives it the

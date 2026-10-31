@@ -11,7 +11,8 @@ import XCTest
 /// (document windows are AppKit-managed) — so without the
 /// `.defaultLaunchBehavior(.suppressed)` opt-out the Settings window opens by
 /// itself on every launch, including the Finder opens that launch the app.
-/// `swift test` and CI skip this suite; run it with
+/// Plain `swift test` skips this suite and CI's `gui-tests` job runs it; run it
+/// locally with
 /// `MD2_RUN_GUI_TESTS=1 swift test --filter SettingsWindowPresentationGUITests`.
 ///
 /// This is the repo's first multi-process GUI test: it builds a real app bundle

@@ -6,8 +6,9 @@ import MD2Core
 @testable import MD2App
 
 /// GUI-gated verification for the find reveal/delete fix and find-mode
-/// responsiveness. `swift test` and CI skip these (`MD2_RUN_GUI_TESTS` unset);
-/// run with `MD2_RUN_GUI_TESTS=1 swift test --filter FindFindDeleteGUITests`.
+/// responsiveness. Plain `swift test` skips these (`MD2_RUN_GUI_TESTS` unset)
+/// and CI's `gui-tests` job runs them; run locally with
+/// `MD2_RUN_GUI_TESTS=1 swift test --filter FindFindDeleteGUITests`.
 ///
 /// These need a GUI session: the delete test drives a real key window and first
 /// responder (the find query field owns focus until the user clicks into the
