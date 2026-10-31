@@ -14,10 +14,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The heartbeat benchmark has a 200 ms deadline. Run it without other
-      # Swift Testing cases competing for the shared runner's CPU.
+      # The heartbeat benchmark has a 200 ms deadline, and the inline scaling
+      # suite compares a 500-fragment render against a 1,000-fragment one.
+      # Run each without other Swift Testing cases competing for the shared
+      # runner's three cores: under that load the longer sample rarely lands in
+      # a quiet slot, so a linear 2x path measured 3.2-3.6x.
       - name: Run default tests (GUI suites run in gui-tests)
-        run: swift test --skip 'P1RegressionTests.renderingYieldsMainActorAndLatestRevisionWins'
+        run: swift test --skip 'P1RegressionTests.renderingYieldsMainActorAndLatestRevisionWins' --skip 'InlineRenderingPerformanceTests'
+
+      - name: Verify inline scaling ratios in isolation
+        run: swift test --filter 'InlineRenderingPerformanceTests'
 
       - name: Verify main actor heartbeat in isolation
         run: swift test --filter 'P1RegressionTests.renderingYieldsMainActorAndLatestRevisionWins'
