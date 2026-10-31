@@ -2300,14 +2300,10 @@ public struct MarkdownRenderer: Sendable {
                character.unicodeScalars.contains(InlineProtector.sentinelScalar) {
                 return VisibleContinuation(scalars: result, exhausted: true)
             }
+            // Read with the resolver's grammar: text it would leave literal is
+            // read here as the visible characters it is.
             if character == InlineProtector.sentinelCharacter,
-               let token = InlineProtector.tokenRegex.firstMatch(in: text, options: .anchored, range: NSRange(index..<text.endIndex, in: text)) {
-                // A token range that is not Character-aligned cannot be
-                // inspected; leave the candidate literal rather than link
-                // unchecked.
-                guard let tokenRange = Range(token.range, in: text) else {
-                    return VisibleContinuation(scalars: result, exhausted: true)
-                }
+               let tokenRange = InlineProtector.token(at: index, in: text)?.range {
                 // Restored fragments are HTML (code spans, links, entity
                 // spellings). Substitute image alt text in place (a broken
                 // image shows it), strip remaining tags, then decode entities
@@ -2423,14 +2419,18 @@ public struct MarkdownRenderer: Sendable {
             var prefix = candidate
             var suffix = ""
             var firstNonLiteralToken: Range<String.Index>?
-            for token in InlineProtector.tokenRegex.matches(in: candidate, range: NSRange(candidate.startIndex..., in: candidate)) {
-                guard let numberRange = Range(token.range(at: 1), in: candidate),
-                      let number = Int(candidate[numberRange]), !protector.isLiteral(number),
-                      let range = Range(token.range, in: candidate) else { continue }
-                prefix = String(candidate[..<range.lowerBound])
-                suffix = String(candidate[range.lowerBound...])
-                firstNonLiteralToken = range
-                break
+            // The resolver's grammar decides what is a token, so text it would
+            // emit literally never cuts the URL. A literal token (an escape or
+            // entity) is consumed whole and stays part of the URL.
+            var cursor = candidate.startIndex
+            while let token = InlineProtector.firstToken(in: candidate, from: cursor) {
+                guard protector.isLiteral(token.index) else {
+                    prefix = String(candidate[..<token.range.lowerBound])
+                    suffix = String(candidate[token.range.lowerBound...])
+                    firstNonLiteralToken = token.range
+                    break
+                }
+                cursor = token.range.upperBound
             }
             // source() retains authored entity spellings for the trailing-entity
             // rule; decodeEntities removes the renderer's outer escaping only.
@@ -3822,12 +3822,6 @@ private final class InlineProtector {
     /// The sentinel as a Character, for the guard's fast-path check.
     static let sentinelCharacter = Character(String(sentinelScalar))
 
-    /// The placeholder token grammar, shared by the pass that cuts non-literal
-    /// tokens and the guard that restores them. Built from the one sentinel
-    /// definition so the grammar cannot drift from `protect()`.
-    static let tokenPattern = "\(sentinelCharacter)MD2-(\\d+)\(sentinelCharacter)"
-    static let tokenRegex = try! NSRegularExpression(pattern: tokenPattern)
-
     /// Stores `fragment` and returns the private-use-area token standing in for it.
     /// `source` is the HTML-escaped authored spelling the fragment replaces; it
     /// may contain tokens of earlier entries, which resolve to their sources.
@@ -3915,43 +3909,25 @@ private final class InlineProtector {
     private func resolveTokens(in text: String, limit: Int, emitting: Emission) -> String {
         guard text.unicodeScalars.contains(Self.sentinelScalar) else { return text }
 
-        let scalars = text.unicodeScalars
         var result = ""
         result.reserveCapacity(text.utf8.count)
-        var cursor = scalars.startIndex
-
-        while cursor < scalars.endIndex {
-            guard let start = scalars[cursor...].firstIndex(of: Self.sentinelScalar) else {
-                result.append(String(text[cursor...]))
-                break
-            }
-            result.append(String(text[cursor..<start]))
-
-            if let token = token(in: text, from: start), token.index < limit {
-                ensureExpanded(token.index)
-                result.append(entry(token.index, emitting: emitting))
-                cursor = token.end
-            } else {
-                result.unicodeScalars.append(Self.sentinelScalar)
-                cursor = scalars.index(after: start)
-            }
+        var cursor = text.startIndex
+        while let token = Self.firstToken(in: text, from: cursor, limit: limit) {
+            result.append(String(text[cursor..<token.range.lowerBound]))
+            ensureExpanded(token.index)
+            result.append(entry(token.index, emitting: emitting))
+            cursor = token.range.upperBound
         }
+        result.append(String(text[cursor...]))
         return result
     }
 
     private func tokenIndices(in text: String, limit: Int) -> [Int] {
-        guard text.unicodeScalars.contains(Self.sentinelScalar) else { return [] }
-        let scalars = text.unicodeScalars
         var indices: [Int] = []
-        var cursor = scalars.startIndex
-        while cursor < scalars.endIndex {
-            guard let start = scalars[cursor...].firstIndex(of: Self.sentinelScalar) else { break }
-            if let token = token(in: text, from: start), token.index < limit {
-                indices.append(token.index)
-                cursor = token.end
-            } else {
-                cursor = scalars.index(after: start)
-            }
+        var cursor = text.startIndex
+        while let token = Self.firstToken(in: text, from: cursor, limit: limit) {
+            indices.append(token.index)
+            cursor = token.range.upperBound
         }
         return indices
     }
@@ -3964,12 +3940,33 @@ private final class InlineProtector {
         }
     }
 
-    /// Parses `\u{E000}MD2-<canonical decimal>\u{E000}` starting at `start`.
-    /// Leading zeros, overflow, and a missing closing sentinel are malformed and
-    /// leave the text literal, matching the old exact-spelling replacements.
-    /// Scalar-based so a following combining mark does not change the token.
-    private func token(in text: String, from start: String.Index) -> (index: Int, end: String.Index)? {
+    /// The first token at or after `start` whose index is below `limit`, found
+    /// the way the resolver reads tokens: a token is consumed whole, so its
+    /// closing sentinel cannot open another, and any other sentinel is one
+    /// literal scalar. This is the one token scan; the resolver passes its
+    /// entry count as `limit`, and callers that only locate tokens pass none.
+    static func firstToken(
+        in text: String,
+        from start: String.Index,
+        limit: Int = .max
+    ) -> (index: Int, range: Range<String.Index>)? {
         let scalars = text.unicodeScalars
+        var cursor = start
+        while let sentinel = scalars[cursor...].firstIndex(of: sentinelScalar) {
+            if let token = token(at: sentinel, in: text), token.index < limit { return token }
+            cursor = scalars.index(after: sentinel)
+        }
+        return nil
+    }
+
+    /// Parses `\u{E000}MD2-<canonical decimal>\u{E000}` starting at `start`;
+    /// this is the one token grammar. Only ASCII digits count. Leading zeros,
+    /// overflow, and a missing closing sentinel are malformed and leave the
+    /// text literal, matching the old exact-spelling replacements.
+    /// Scalar-based so a following combining mark does not change the token.
+    static func token(at start: String.Index, in text: String) -> (index: Int, range: Range<String.Index>)? {
+        let scalars = text.unicodeScalars
+        guard start < scalars.endIndex, scalars[start] == sentinelScalar else { return nil }
         var cursor = scalars.index(after: start)
         for expected in "MD2-".unicodeScalars {
             guard cursor < scalars.endIndex, scalars[cursor] == expected else { return nil }
@@ -3991,8 +3988,8 @@ private final class InlineProtector {
         }
 
         guard digits > 0, !(leadingZero && digits > 1),
-              cursor < scalars.endIndex, scalars[cursor] == Self.sentinelScalar else { return nil }
-        return (value, scalars.index(after: cursor))
+              cursor < scalars.endIndex, scalars[cursor] == sentinelScalar else { return nil }
+        return (value, start..<scalars.index(after: cursor))
     }
 }
 
