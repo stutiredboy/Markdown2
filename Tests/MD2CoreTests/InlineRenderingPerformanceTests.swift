@@ -378,15 +378,23 @@ struct InlineRenderingPerformanceTests {
     @Test(arguments: Workload.allCases)
     func doublingInlineFragmentsDoesNotQuadruple(_ workload: Workload) throws {
         _ = renderer.render(workload.document(count: 32))
+        let small = workload.document(count: 500)
+        let large = workload.document(count: 1_000)
 
-        let smallMS = bestOf(3) { _ = renderer.render(workload.document(count: 500)) }
-        // gstack-timing-ok: quadratic scaling guard; min-of-3 and the absolute ceiling bound timer noise
+        let firstSmallMS = elapsedMS { _ = renderer.render(small) }
+        // gstack-timing-ok: fail-fast ceiling; a case this slow is not doubled
         try #require(
-            smallMS < 1_000,
-            "\(workload.testDescription): 500 fragments took \(format(smallMS)) ms; refusing to run the doubled case"
+            firstSmallMS < 1_000,
+            "\(workload.testDescription): 500 fragments took \(format(firstSmallMS)) ms; refusing to run the doubled case"
         )
 
-        let largeMS = bestOf(3) { _ = renderer.render(workload.document(count: 1_000)) }
+        // gstack-timing-ok: quadratic scaling guard; alternating min-of-5 and the absolute ceiling bound timer noise
+        let (smallMS, largeMS) = interleavedBestOf(
+            5,
+            firstSmallMS: firstSmallMS,
+            small: { _ = renderer.render(small) },
+            large: { _ = renderer.render(large) }
+        )
         // gstack-timing-ok: quadratic scaling guard; the ratio is the primary assertion
         #expect(
             largeMS < smallMS * 3.0 + 2.0,
@@ -398,7 +406,7 @@ struct InlineRenderingPerformanceTests {
             "\(workload.testDescription): 1,000 fragments took \(format(largeMS)) ms"
         )
 
-        let body = renderer.render(workload.document(count: 1_000)).body
+        let body = renderer.render(large).body
         #expect(workload.matches(body, count: 1_000), "\(workload.testDescription): rendered output is incomplete")
         #expect(!body.contains(sentinel), "\(workload.testDescription): a placeholder token leaked into the body")
         #expect(!body.contains("MD2-"), "\(workload.testDescription): an MD2- marker leaked into the body")
@@ -420,16 +428,21 @@ struct InlineRenderingPerformanceTests {
         let large = String(repeating: "www.a。", count: 2_000)
         _ = renderer.render(large)
 
-        // gstack-timing-ok: quadratic scaling guard for the continuation scan; min-of-3 bounds timer noise
-        let smallMS = bestOf(3) { _ = renderer.render(small) }
+        let firstSmallMS = elapsedMS { _ = renderer.render(small) }
         // gstack-timing-ok: fail-fast ceiling; the unbounded scan took seconds on this input
         try #require(
-            smallMS < 1_000,
-            "1,000 terminated bare-URL candidates took \(format(smallMS)) ms"
+            firstSmallMS < 1_000,
+            "1,000 terminated bare-URL candidates took \(format(firstSmallMS)) ms"
         )
 
+        // gstack-timing-ok: quadratic scaling guard for the continuation scan; alternating min-of-5 bounds timer noise
+        let (smallMS, largeMS) = interleavedBestOf(
+            5,
+            firstSmallMS: firstSmallMS,
+            small: { _ = renderer.render(small) },
+            large: { _ = renderer.render(large) }
+        )
         // gstack-timing-ok: the ratio is the quadratic guard; unbounded is ~4x per doubling
-        let largeMS = bestOf(3) { _ = renderer.render(large) }
         #expect(
             largeMS < smallMS * 3.0 + 2.0,
             "terminated bare-URL candidates: 1,000=\(format(smallMS)) ms, 2,000=\(format(largeMS)) ms"
@@ -455,13 +468,18 @@ struct InlineRenderingPerformanceTests {
         let large = make(2_000)
         _ = renderer.render(large)
 
-        // gstack-timing-ok: quadratic scaling guard for the email continuation walk; min-of-3 bounds timer noise
-        let smallMS = bestOf(3) { _ = renderer.render(small) }
+        let firstSmallMS = elapsedMS { _ = renderer.render(small) }
         // gstack-timing-ok: fail-fast ceiling that bounds CI time on a regression
-        try #require(smallMS < 1_000, "1,000 email autolinks took \(format(smallMS)) ms")
+        try #require(firstSmallMS < 1_000, "1,000 email autolinks took \(format(firstSmallMS)) ms")
 
+        // gstack-timing-ok: quadratic scaling guard for the email continuation walk; alternating min-of-5 bounds timer noise
+        let (smallMS, largeMS) = interleavedBestOf(
+            5,
+            firstSmallMS: firstSmallMS,
+            small: { _ = renderer.render(small) },
+            large: { _ = renderer.render(large) }
+        )
         // gstack-timing-ok: the ratio is the quadratic guard; an unbounded walk is ~4x per doubling
-        let largeMS = bestOf(3) { _ = renderer.render(large) }
         #expect(
             largeMS < smallMS * 3.0 + 2.0,
             "email autolinks: 1,000=\(format(smallMS)) ms, 2,000=\(format(largeMS)) ms"
@@ -475,15 +493,23 @@ struct InlineRenderingPerformanceTests {
 
     private func assertOnePerLineScales(_ workload: Workload) throws {
         _ = renderer.render(workload.onePerLine(count: 32))
+        let small = workload.onePerLine(count: 1_000)
+        let large = workload.onePerLine(count: 2_000)
 
-        let smallMS = bestOf(3) { _ = renderer.render(workload.onePerLine(count: 1_000)) }
-        // gstack-timing-ok: quadratic scaling guard; min-of-3 and the absolute ceiling bound timer noise
+        let firstSmallMS = elapsedMS { _ = renderer.render(small) }
+        // gstack-timing-ok: fail-fast ceiling; a case this slow is not doubled
         try #require(
-            smallMS < 1_000,
-            "\(workload.testDescription) one-per-line: 1,000 fragments took \(format(smallMS)) ms"
+            firstSmallMS < 1_000,
+            "\(workload.testDescription) one-per-line: 1,000 fragments took \(format(firstSmallMS)) ms"
         )
 
-        let largeMS = bestOf(3) { _ = renderer.render(workload.onePerLine(count: 2_000)) }
+        // gstack-timing-ok: quadratic scaling guard; alternating min-of-5 and the absolute ceiling bound timer noise
+        let (smallMS, largeMS) = interleavedBestOf(
+            5,
+            firstSmallMS: firstSmallMS,
+            small: { _ = renderer.render(small) },
+            large: { _ = renderer.render(large) }
+        )
         // gstack-timing-ok: quadratic scaling guard; the ratio is the primary assertion
         #expect(
             largeMS < smallMS * 3.0 + 2.0,
@@ -495,7 +521,7 @@ struct InlineRenderingPerformanceTests {
             "\(workload.testDescription) one-per-line: 2,000 fragments took \(format(largeMS)) ms"
         )
 
-        let body = renderer.render(workload.onePerLine(count: 2_000)).body
+        let body = renderer.render(large).body
         #expect(workload.matches(body, count: 2_000), "\(workload.testDescription) one-per-line: rendered output is incomplete")
         #expect(!body.contains(sentinel))
         #expect(!body.contains("MD2-"))
@@ -515,26 +541,54 @@ struct InlineRenderingPerformanceTests {
             (0..<count).map { _ in "\\(x\\)" }.joined(separator: " ")
         }
         _ = renderer.render(make(32))
-        let smallMS = bestOf(3) { _ = renderer.render(make(500)) }
-        // gstack-timing-ok: quadratic scaling guard; min-of-3 and the absolute ceiling bound timer noise
-        try #require(smallMS < 1_000, "500 paren-math spans took \(format(smallMS)) ms")
-        let largeMS = bestOf(3) { _ = renderer.render(make(1_000)) }
+        let small = make(500)
+        let large = make(1_000)
+        let firstSmallMS = elapsedMS { _ = renderer.render(small) }
+        // gstack-timing-ok: fail-fast ceiling; a case this slow is not doubled
+        try #require(firstSmallMS < 1_000, "500 paren-math spans took \(format(firstSmallMS)) ms")
+        // gstack-timing-ok: quadratic scaling guard; alternating min-of-5 bounds timer noise
+        let (smallMS, largeMS) = interleavedBestOf(
+            5,
+            firstSmallMS: firstSmallMS,
+            small: { _ = renderer.render(small) },
+            large: { _ = renderer.render(large) }
+        )
         // gstack-timing-ok: quadratic scaling guard; the ratio is the primary assertion
         #expect(largeMS < smallMS * 3.0 + 2.0, "500=\(format(smallMS)) ms, 1,000=\(format(largeMS)) ms")
-        let body = renderer.render(make(1_000)).body
+        let body = renderer.render(large).body
         #expect(body.components(separatedBy: "math-inline").count - 1 == 1_000)
     }
 
     // MARK: - Helpers
 
-    private func bestOf(_ runs: Int, _ body: () -> Void) -> Double {
-        var best = Double.infinity
-        for _ in 0..<runs {
-            let start = ContinuousClock.now
-            body()
-            best = min(best, milliseconds(start.duration(to: .now)))
+    private func elapsedMS(_ body: () -> Void) -> Double {
+        let start = ContinuousClock.now
+        body()
+        return milliseconds(start.duration(to: .now))
+    }
+
+    /// The fastest N and 2N render times over `rounds` alternating rounds,
+    /// counting `firstSmallMS` (the fail-fast N run) as the first N run. Timed
+    /// one size after the other, a slow stretch on a shared CI runner could
+    /// cover only the longer 2N runs and read as a quadratic: linear 2x paths
+    /// measured 3.2-4.3x that way. Alternating the sizes makes such a stretch
+    /// slow both alike. A pair that misses the 3x + 2 ms bound gets `rounds`
+    /// more rounds before it is reported, so only a slowdown that persists
+    /// fails; a real quadratic (about 4x per doubling) misses both times.
+    private func interleavedBestOf(
+        _ rounds: Int,
+        firstSmallMS: Double,
+        small: () -> Void,
+        large: () -> Void
+    ) -> (small: Double, large: Double) {
+        var bestSmall = firstSmallMS
+        var bestLarge = Double.infinity
+        for round in 0..<(2 * rounds) {
+            if round == rounds, bestLarge < bestSmall * 3.0 + 2.0 { break }
+            if round > 0 { bestSmall = min(bestSmall, elapsedMS(small)) }
+            bestLarge = min(bestLarge, elapsedMS(large))
         }
-        return best
+        return (bestSmall, bestLarge)
     }
 
     private func milliseconds(_ duration: Duration) -> Double {
