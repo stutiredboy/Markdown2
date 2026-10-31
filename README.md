@@ -87,6 +87,12 @@ Scripts/functional_test.sh
 swift test
 ```
 
+To time the inline renderer's scaling workloads in a release build, or to compare them with an older revision, see [Docs/Benchmarks/inline](Docs/Benchmarks/inline/README.md):
+
+```sh
+bash Scripts/benchmark_inline.sh
+```
+
 ## License
 
 Markdown2 is open source under the [MIT License](LICENSE).

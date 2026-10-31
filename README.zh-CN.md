@@ -87,6 +87,12 @@ Scripts/functional_test.sh
 swift test
 ```
 
+用 release 构建测量行内渲染的扩展性工作负载，或与旧版本对比，见 [Docs/Benchmarks/inline](Docs/Benchmarks/inline/README.md)：
+
+```sh
+bash Scripts/benchmark_inline.sh
+```
+
 ## 许可证
 
 Markdown2 基于 [MIT License](LICENSE) 开源。
