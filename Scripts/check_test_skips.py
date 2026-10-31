@@ -5,8 +5,9 @@ A GUI-gated test that skips passes green, so a lane that runs with
 MD2_RUN_GUI_TESTS=1 proves nothing unless every skip is accounted for: a lost
 environment variable, a window server that never came up, or a new skip path
 would otherwise land silently. This reads the `swift test` output, collects
-every "Test skipped" line, and checks each one against an allowlist of
-expected skips, each pinned to its test and to the start of its reason.
+every skipped XCTest case with its reason, and checks each one against an
+allowlist of expected skips, each pinned to its test and to the start of its
+reason.
 
 Allowlist format, one entry per line (blank lines and `#` comments ignored):
 
@@ -18,7 +19,11 @@ Usage:
 import re
 import sys
 
-SKIP_LINE = re.compile(r": -\[(?P<suite>[\w.]+) (?P<test>\w+)\] : Test skipped - (?P<reason>.*)$")
+# XCTest prints this line for every skipped case, so it decides what skipped.
+SKIPPED_CASE = re.compile(r"Test Case '-\[(?P<suite>[\w.]+) (?P<test>\w+)\]' skipped")
+# The reason line has no " - reason" for a bare `XCTSkip()`; such a skip has
+# an empty reason, which no allowlist entry matches.
+SKIP_REASON = re.compile(r": -\[(?P<suite>[\w.]+) (?P<test>\w+)\] : Test skipped(?: - (?P<reason>.*))?$")
 EXECUTED_LINE = re.compile(r"Executed \d+ tests?, with ")
 
 
@@ -40,25 +45,30 @@ def load_allowlist(path):
 
 def main(log_path, allowlist_path):
     allowed = load_allowlist(allowlist_path)
-    skipped = {}
+    skipped = set()
+    reasons = {}
     ran = False
     with open(log_path, encoding="utf-8", errors="replace") as handle:
         for line in handle:
+            line = line.rstrip("\n")
             ran = ran or bool(EXECUTED_LINE.search(line))
-            match = SKIP_LINE.search(line.rstrip("\n"))
-            if match:
-                skipped[f"{match['suite']}/{match['test']}"] = match["reason"]
+            if match := SKIPPED_CASE.search(line):
+                skipped.add(f"{match['suite']}/{match['test']}")
+            elif match := SKIP_REASON.search(line):
+                reasons[f"{match['suite']}/{match['test']}"] = match["reason"] or ""
 
     if not ran:
         sys.exit(f"{log_path}: no XCTest summary found; the test run did not happen or was not captured")
 
     unexpected = []
-    for test_id, reason in sorted(skipped.items()):
+    for test_id in sorted(skipped):
+        reason = reasons.get(test_id, "")
+        shown = reason or "(no reason given)"
         prefix = allowed.get(test_id)
         if prefix is None:
-            unexpected.append(f"  {test_id}: {reason}")
+            unexpected.append(f"  {test_id}: {shown}")
         elif not reason.startswith(prefix):
-            unexpected.append(f"  {test_id}: {reason}\n    (allowed only with reason starting: {prefix})")
+            unexpected.append(f"  {test_id}: {shown}\n    (allowed only with reason starting: {prefix})")
 
     for test_id in sorted(set(allowed) - set(skipped)):
         print(f"note: expected skip did not occur (the test ran, or no longer exists): {test_id}")

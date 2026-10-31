@@ -65,7 +65,8 @@ jobs:
       # build-test-package; running them twice would only double their noise.
       - name: Check that GUI-gated tests are XCTest cases
         run: |
-          if grep -l 'MD2_RUN_GUI_TESTS' $(grep -rl '^import Testing' Tests); then
+          # /dev/null keeps grep off stdin if no file imports Testing.
+          if grep -l 'MD2_RUN_GUI_TESTS' /dev/null $(grep -rl '^import Testing' Tests); then
             echo "::error::The Swift Testing files above read MD2_RUN_GUI_TESTS, but gui-tests runs XCTest only. Write GUI-gated cases as XCTest cases."
             exit 1
           fi
