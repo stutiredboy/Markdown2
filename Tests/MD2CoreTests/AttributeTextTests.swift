@@ -115,4 +115,33 @@ struct AttributeTextTests {
             #expect(!body.contains(#"<a href="https://evil.com">"#), "\(markdown)")
         }
     }
+
+
+    /// Value: protects=every HTML-special character is escaped even when a combining mark joins it into a larger grapheme; fails_when=escaping searches `Character`s (as `String.replacingOccurrences` does), so `"` + U+0301 is not a `"` and stays raw; why_new=no test escaped a special character inside a grapheme cluster; seam=none; no_claim=green proves the five characters with one mark each, not other cluster shapes.
+    @Test(arguments: [
+        ("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"), ("\"", "&quot;")
+    ])
+    func escapingReachesSpecialCharactersJoinedByAMark(_ character: String, _ entity: String) {
+        let mark = "\u{0301}"
+        #expect(HTMLEscaping.escape("a\(character)\(mark)b").unicodeScalars.elementsEqual("a\(entity)\(mark)b".unicodeScalars))
+        #expect(HTMLEscaping.escapeAttribute("'\(mark)\(character)\(mark)").unicodeScalars.elementsEqual("&#39;\(mark)\(entity)\(mark)".unicodeScalars))
+        #expect(HTMLEscaping.escape("'\(mark)") == "'\(mark)")
+    }
+
+    /// Value: protects=author text cannot close an attribute and add an event handler; fails_when=a `"` that a combining mark joins reaches an href, src or alt unescaped, which a browser reads as the end of the value followed by `onerror=…` or `onmouseover=…`; why_new=the well-formedness check covered protected constructs, not clusters around a quote; seam=none; no_claim=green proves these four attribute paths (bare URL, angle autolink, image alt, link title), not the raw-HTML sanitizer's own attributes.
+    @Test(arguments: [
+        "see https://a.com/x&quot;\u{0301}/onmouseover=alert(1)// next",
+        "<https://a.com/x\"\u{0301}/onmouseover=alert(1)//>",
+        "![a\"\u{0301}/onerror=alert(1)//](x.png)",
+        "[l](https://e.example \"t\"\u{0301}/onmouseover=alert(1)//\")"
+    ])
+    func combiningMarkCannotCloseAnAttribute(_ markdown: String) {
+        let body = renderer.render(markdown).body
+        let tags = startTags(in: body)
+        #expect(tags.all > 0, "\(body)")
+        #expect(tags.wellFormed == tags.all, "\(body)")
+        let scalars = Array(body.unicodeScalars)
+        #expect(!zip(scalars, scalars.dropFirst()).contains { $0 == "\"" && $1 == "\u{0301}" }, "\(body)")
+        #expect(body.contains("&quot;\u{0301}"), "\(body)")
+    }
 }

@@ -50,6 +50,43 @@ final class PreviewSecurityGUITests: XCTestCase {
         controller.removeAllScriptMessageHandlers()
     }
 
+    /// A `"` that a combining mark joins into one grapheme must still be escaped,
+    /// or WebKit reads it as the end of the attribute value and the rest of the
+    /// author text as new attributes, including event handlers.
+    @MainActor func testCombiningMarkAfterQuoteCannotAddEventHandlers() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1", "Requires WebKit GUI session")
+        _ = NSApplication.shared
+        let configuration = WKWebViewConfiguration()
+        let coordinator = MarkdownPreviewView.Coordinator()
+        coordinator.documentLoader.install(on: configuration)
+        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 600, height: 400), configuration: configuration)
+        let loaded = expectation(description: "loaded")
+        let delegate = SecurityNavigationDelegate { loaded.fulfill() }
+        webView.navigationDelegate = delegate
+        let mark = "\u{0301}"
+        let markdown = """
+        see https://a.com/x&quot;\(mark)/onmouseover=window.pwned=1// next
+
+        <https://a.com/y"\(mark)/onmouseover=window.pwned=2//>
+
+        ![a"\(mark)/onerror=window.pwned=3//](missing.png)
+
+        [l](https://e.example "t"\(mark)/onmouseover=window.pwned=4//")
+        """
+        let rendered = MarkdownRenderer().render(markdown, assetMode: .appScheme)
+        coordinator.documentLoader.load(rendered.html, baseURL: nil, in: webView)
+        wait(for: [loaded], timeout: 15)
+
+        // Positive control: the payloads rendered as the elements under test.
+        XCTAssertEqual(try evaluate("document.querySelectorAll('main a[href], main img').length", in: webView) as? Int, 4)
+        let handlers = try evaluate(
+            "[...document.querySelectorAll('*')].flatMap(e => [...e.attributes].filter(a => a.name.startsWith('on')).map(a => e.tagName + ' ' + a.name)).join(',')",
+            in: webView
+        ) as? String
+        XCTAssertEqual(handlers, "", "author text added event handlers")
+        XCTAssertEqual(try evaluate("typeof window.pwned", in: webView) as? String, "undefined")
+    }
+
     @MainActor private func evaluate(_ script: String, in webView: WKWebView) throws -> Any? {
         let done = expectation(description: "script")
         var value: Any?
