@@ -128,6 +128,40 @@ struct InlineRenderingPerformanceTests {
         #expect(body.contains("\(sentinel)MD2-0"))
     }
 
+    /// Value: protects=the bare-URL cut reads tokens with the resolver's grammar; fails_when=the cut treats a leading-zero spelling as a token (an `Int()` conversion reads `MD2-00` as entry 0) while the resolver emits it literally; why_new=the grammar tests covered resolution only, not the cut; seam=none; no_claim=green proves only a leading-zero spelling in a URL path and host.
+    @Test func leadingZeroSpellingDoesNotCutBareURL() {
+        // In the path, the literal spelling is URL text like any other.
+        let path = renderer.render("`x` https://a.com/p\(sentinel)MD2-00\(sentinel) end").body
+        #expect(path.contains(#"<a href="https://a.com/p\#(sentinel)MD2-00\#(sentinel)">"#))
+        // In the host, the existing host check rejects it and the URL stays literal.
+        let host = renderer.render("`x` https://a.com\(sentinel)MD2-00\(sentinel) end").body
+        #expect(!host.contains("<a href"))
+        #expect(host.contains(" https://a.com\(sentinel)MD2-00\(sentinel) end"))
+    }
+
+    /// Value: protects=a structural token after a shared sentinel still ends a bare URL; fails_when=a malformed spelling consumes the sentinel it shares with the next token, so the code span's source joins the link and the code span disappears; why_new=the shared-sentinel test covered resolution only, not the cut; seam=none; no_claim=green proves only these four malformed spellings before one code-span token.
+    @Test(arguments: ["\u{0661}", "\u{FF11}", String(repeating: "9", count: 25), "00"])
+    func structuralTokenAfterSharedSentinelEndsBareURL(_ digits: String) {
+        let body = renderer.render(
+            "`x` https://a.com/p\(sentinel)MD2-\(digits)\(sentinel)MD2-0\(sentinel) end"
+        ).body
+        #expect(body.contains(#"<a href="https://a.com/p\#(sentinel)MD2-\#(digits)">"#))
+        #expect(body.contains("</a><code>x</code> end</p>"))
+        #expect(!body.contains("`"))
+    }
+
+    /// Value: protects=the continuation guard reads tokens with the resolver's grammar; fails_when=the guard consumes a malformed spelling as a token, skipping its closing sentinel, so a sentinel fused into a grapheme is read as visible text instead of failing closed; why_new=no test covered a malformed spelling in the continuation; seam=none; no_claim=green proves only this footnote-marker arrangement.
+    @Test func continuationReadsMalformedSpellingAsText() {
+        let note = "\n\n[^1]: n"
+        // Read as plain characters, the spelling leaves the authority alone.
+        let plain = renderer.render("https://a.com[^1]\(sentinel)MD2-00\(sentinel)m\(note)").body
+        #expect(plain.contains(#"<a href="https://a.com">"#))
+        // Its closing sentinel fused with a combining mark cannot be read: fail closed.
+        let fused = renderer.render("https://a.com[^1]\(sentinel)MD2-00\(sentinel)\u{0301}m\(note)").body
+        #expect(!fused.contains(#"<a href="https://a.com">"#))
+        #expect(fused.contains(#"<p data-md2-source-line="1">https://a.com<sup class="footnote-ref">"#))
+    }
+
     /// The label is inside a protected link fragment; expanding that fragment
     /// only resolves indexes below its own, so the authored forward reference
     /// stays literal.

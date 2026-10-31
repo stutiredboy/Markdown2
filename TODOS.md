@@ -62,20 +62,35 @@ Tracked work considered and explicitly deferred from in-flight changes. Each ite
 
 **Start here:** copy the local config, add the `!.gstack/pregate.json` exception, and run `gstack-pregate validate` before committing.
 
-## Deferred inline review refactor (token grammar)
+## Pre-existing bare-URL bugs found by the token-grammar differential
 
-**What:** Expose one token-scanning API on `InlineProtector` for `protectBareAutolinks`, removing the independent `MD2-(\d+)` regex and `Int()` conversion.
+**What:** Fix two bare-URL bugs. (1) A trailing entity after a bare URL is double-escaped: `see https://a.com&amp; next` renders `</a>&amp;amp; next`, so the reader sees `&amp;` instead of `&`. (2) A combining mark right after `http://`, `https://` or `www.` turns the URL into a `mailto:` link: `http://` + U+0301 + `x.com` renders `<a href="mailto:http://…x.com">`.
 
-**Why:** The token grammar lives in three places with different leading-zero/Unicode behavior. Found by the pre-landing review (2026-10-19); the user deferred it from that change. Its sibling, the `LinkDestinationIndex` close bookkeeping, was replaced by the shared `LinkDestinationTracker` in `scan-inline-delimiter-ownership`.
+**Why:** Both surfaced in the `unify-token-grammar` differential run (2026-10-31) and reproduce on `main` with no private-use text, so they are independent of that change and were left out of its scope.
 
-**Current state:** Existing tests pin the current behavior; the deferred refactor has no behavior change.
+**Current state:** (1) `protectBareAutolinks` moves a trailing entity spelling, which `source(in:)` deliberately keeps authored, into `trailing`, then emits `escapeHTML(trailing)`. (2) The `isURL` check uses `Character`-level `hasPrefix`, so a mark that fuses with the scheme's last character fails it and the candidate falls through to the email branch.
 
-**Pros:** One token grammar; fewer drift surfaces.
-**Cons / cost:** Touches the bare-URL hot path; needs the full suite and a re-fuzz. (human: ~2-3h / CC: ~30-60min)
+**Pros:** Small, local fixes in one function; (1) is visible in ordinary prose.
+**Cons / cost:** Each changes output for its inputs, so each needs tests and a differential run over the real corpus. (human: ~2h / CC: ~30-45min)
 
 **Depends on:** nothing.
 
-**Start here:** add `InlineProtector.firstToken(in:)` using the scalar parser, then switch `protectBareAutolinks`.
+**Start here:** in `protectBareAutolinks`, emit the trailing entity spelling as the entity it already is, and compare the scheme prefixes on `unicodeScalars`; reuse the `swiftc -O` differential probe described in the `unify-token-grammar` design.
+
+## Source-line attribute lands on the closing tag after a leading combining mark
+
+**What:** A paragraph whose text starts with a combining mark gets its `data-md2-source-line` attribute on the closing tag: U+0301 + `para` renders `<p>…para</p data-md2-source-line="1">`.
+
+**Why:** The HTML is invalid, and the block loses its line mapping, which the preview gutter and mode-switch anchoring read. Found by the same differential run (2026-10-31); reproduces on `main`.
+
+**Current state:** `taggedWithSourceLines` finds the end of the opening tag with `html.firstIndex(of: ">")`, a `Character` search. A combining mark at the start of the content fuses with the opening tag's `>` into one grapheme, so the search lands on the closing tag.
+
+**Pros:** A one-line fix (search the UTF-8 or scalar view).
+**Cons / cost:** It touches how every block is stamped, so `MetadataInvariantTests`, the conformance suite and the GUI gutter suites must stay green. (human: ~1h / CC: ~15-30min)
+
+**Depends on:** nothing.
+
+**Start here:** search `html.utf8` for `>` in `taggedWithSourceLines` and add a paragraph test that starts with U+0301.
 
 ## Reproducible release probe for the inline workloads
 
