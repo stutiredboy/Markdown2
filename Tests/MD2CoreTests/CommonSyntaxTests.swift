@@ -152,13 +152,58 @@ struct CommonSyntaxTests {
         ("www.example.com/a.b.", "http://www.example.com/a.b", "."),
         ("https://example.com/?a=1&b=2", "https://example.com/?a=1&amp;b=2", ""),
         ("https://example.com/?a=1&amp;b=2", "https://example.com/?a=1&amp;b=2", ""),
-        ("https://example.com/a&copy;", "https://example.com/a", "&amp;copy;"),
+        ("https://example.com/a&copy;", "https://example.com/a", "&copy;"),
         ("first.last+tag@example.com", "mailto:first.last+tag@example.com", "")
     ])
     func bareLinks(_ sample: (String, String, String)) {
         let body = renderer.render(sample.0).body
         #expect(body.contains("href=\"\(sample.1)\""), "\(body)")
         #expect(body.contains("</a>\(sample.2)</p>"), "\(body)")
+    }
+
+    /// Value: protects=text cut from a bare URL's tail (a trailing entity, trailing punctuation, or everything from `<`) renders as it would outside a URL; fails_when=the tail is re-escaped from its authored spelling, so `&amp;` shows as the text `&amp;`; why_new=the only trailing-entity row pinned the double-escaped output; seam=none; no_claim=green proves these spellings, not every token that can end a URL.
+    @Test(arguments: [
+        ("see https://example.com/a&amp; next", ">https://example.com/a</a>&amp; next</p>"),
+        ("see https://example.com/a&amp;. next", ">https://example.com/a</a>&amp;. next</p>"),
+        ("see https://example.com&period; next", ">https://example.com</a>&period; next</p>"),
+        ("see https://example.com&lt; next", ">https://example.com</a>&lt; next</p>"),
+        ("see https://example.com/a<b&amp;c next", ">https://example.com/a</a>&lt;b&amp;c next</p>"),
+        // A name HTML does not define stays text, as GFM renders it.
+        ("see https://example.com/a&hl; next", ">https://example.com/a</a>&amp;hl; next</p>"),
+        // An escaped `&` is text, so its spelling stays visible.
+        ("see https://example.com/a\\&amp; next", "</a>&amp;amp; next</p>")
+    ])
+    func textCutFromBareURLTailRendersAsOutsideOne(_ sample: (String, String)) {
+        let body = renderer.render(sample.0).body
+        #expect(body.contains(sample.1), "\(body)")
+    }
+
+    /// Value: protects=the continuation guard reads a trailing entity as the character it renders, so `&nbsp;` ends the authority as a typed no-break space does; fails_when=the guard reads the entity's spelling, sees the `@` after it, and leaves the URL literal; why_new=the spoof table covers only the literal direction of this read; seam=none; no_claim=green proves the no-break space, not every entity that renders as whitespace.
+    @Test func trailingEntityEndsAuthorityAsItsCharacterDoes() {
+        let typed = renderer.render("see https://example.com\u{00A0}`user\(atSign)host` next").body
+        #expect(typed.contains("<a href=\"https://example.com\">https://example.com</a>"), "\(typed)")
+        // The code span ends the URL, so the entity is the cut tail.
+        let entity = renderer.render("see https://example.com&nbsp;`user\(atSign)host` next").body
+        #expect(entity.contains("<a href=\"https://example.com\">https://example.com</a>&nbsp;<code>"), "\(entity)")
+    }
+
+    /// Value: protects=a combining mark right after `http://`, `https://` or `www.` cannot turn the candidate into a `mailto:` link; fails_when=the scheme check compares `Character`s, the fused mark fails it, and the URL falls through to the email branch; why_new=no test put a mark against the scheme; seam=none; no_claim=green proves these three prefixes, not every scalar that fuses with `/` or `.`.
+    @Test(arguments: ["see http://\u{0301}x.com next", "see https://\u{0301}x.com next", "see www.\u{0301}x.com next"])
+    func combiningMarkAfterSchemeIsNotAnEmail(source: String) {
+        let body = renderer.render(source).body
+        #expect(!body.contains("mailto:"), "\(body)")
+        // A host label cannot start with a mark, so the candidate stays text.
+        #expect(!body.contains("<a "), "\(body)")
+        #expect(body.contains("x.com"), "\(body)")
+    }
+
+    /// Value: protects=a `<` that a combining mark joins into one grapheme still ends a bare URL, and a mark elsewhere in the path stays URL content; fails_when=the `<` search compares `Character`s and the anchor swallows `<` and the text after it; why_new=the `<` cut was only tested with plain text after it; seam=none; no_claim=green proves U+0301, not every extending scalar.
+    @Test func fusedAngleBracketStillEndsBareURL() {
+        let fused = renderer.render("see https://example.com/x<\u{0301}b next").body
+        #expect(fused.contains("<a href=\"https://example.com/x\">https://example.com/x</a>&lt;\u{0301}b next</p>"), "\(fused)")
+
+        let pathMark = renderer.render("see https://example.com/e\u{0301} next").body
+        #expect(pathMark.contains("<a href=\"https://example.com/e\u{0301}\">"), "\(pathMark)")
     }
 
     @Test(arguments: bareURLTerminatorSamples)
@@ -381,6 +426,10 @@ struct CommonSyntaxTests {
         "https://evil.com。&period;trusted.com",
         // A backslash-escaped dot is restored to the same visible continuation.
         "https://evil.com。\\.trusted.com",
+        // A trailing entity renders as the character it names, so the guard
+        // reads `&period;` as the dot it shows before the token.
+        "https://evil.com&period;`trusted`",
+        "https://evil.com&period;[trusted](/x)",
         // Format, combining and blank-rendering scalars are transparent even
         // when they attach to the terminator and form one grapheme.
         "https://evil.com。\u{200C}trusted.com",

@@ -60,16 +60,20 @@ enum HTMLSafety {
         0x9E: 0x017E, 0x9F: 0x0178
     ]
 
+    private static let narrowEntityPattern = try! NSRegularExpression(
+        pattern: #"&#(?:[xX]([0-9a-fA-F]+)|([0-9]+));?|&(colon|Tab|NewLine|amp|quot|apos|lt|gt);"#)
+    private static let narrowEntityNames = [
+        "colon": ":", "Tab": "\t", "NewLine": "\n", "amp": "&", "quot": "\"", "apos": "'", "lt": "<", "gt": ">"
+    ]
+
     static func decodeEntities(_ source: String) -> String {
-        let regex = try! NSRegularExpression(pattern: #"&#(?:[xX]([0-9a-fA-F]+)|([0-9]+));?|&(colon|Tab|NewLine|amp|quot|apos|lt|gt);"#)
-        let names = ["colon": ":", "Tab": "\t", "NewLine": "\n", "amp": "&", "quot": "\"", "apos": "'", "lt": "<", "gt": ">"]
         let ns = source as NSString
         var result = ""
         var cursor = 0
-        for match in regex.matches(in: source, range: NSRange(location: 0, length: ns.length)) {
+        for match in narrowEntityPattern.matches(in: source, range: NSRange(location: 0, length: ns.length)) {
             result += ns.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
             if match.range(at: 3).location != NSNotFound {
-                result += names[ns.substring(with: match.range(at: 3))] ?? ""
+                result += narrowEntityNames[ns.substring(with: match.range(at: 3))] ?? ""
             } else {
                 let hex = match.range(at: 1).location != NSNotFound
                 let digits = ns.substring(with: match.range(at: hex ? 1 : 2))
