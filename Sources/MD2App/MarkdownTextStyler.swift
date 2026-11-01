@@ -110,6 +110,37 @@ actor MarkdownStyleWorker {
     }
 }
 
+/// The line a text view's viewport is positioned on: the line fragment one
+/// container inset below the viewport's top, where a jump or a mode switch
+/// puts its target line, and how far that point sits below the fragment's top.
+private struct ViewportLine {
+    let character: Int
+    let offset: CGFloat
+
+    @MainActor init?(of textView: NSTextView) {
+        guard let layoutManager = textView.layoutManager,
+              let container = textView.textContainer,
+              layoutManager.numberOfGlyphs > 0 else { return nil }
+        // One inset below the viewport's top in the text view is the
+        // viewport's own top in container coordinates.
+        let top = textView.visibleRect.minY
+        let glyph = layoutManager.glyphIndex(for: NSPoint(x: 0, y: top), in: container)
+        var line = NSRange()
+        let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: &line)
+        character = layoutManager.characterIndexForGlyph(at: line.location)
+        offset = top - fragment.minY
+    }
+
+    /// The scroll offset that keeps the line in place after a reflow.
+    @MainActor func scrollOffset(in textView: NSTextView) -> CGFloat? {
+        guard let layoutManager = textView.layoutManager,
+              character < (textView.string as NSString).length else { return nil }
+        let glyph = layoutManager.glyphIndexForCharacter(at: character)
+        let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        return max(0, fragment.minY + offset)
+    }
+}
+
 @MainActor
 final class MarkdownStylingController {
     private let worker = MarkdownStyleWorker()
@@ -147,14 +178,20 @@ final class MarkdownStylingController {
                 let selection = textView.selectedRanges
                 let clip = textView.enclosingScrollView?.contentView
                 let origin = clip == nil ? nil : textView.visibleRect.origin
+                let line = clip == nil ? nil : ViewportLine(of: textView)
                 MarkdownTextStyler.apply(plan, range: chunk, to: textView)
                 textView.selectedRanges = selection
-                if let origin {
+                if var origin {
                     // The first asynchronous font reflow can grow a previously
                     // short text view with a negative frame origin. Keep the
-                    // document top-aligned, preserving document coordinates,
-                    // otherwise the gutter/scroll probes look below the text.
+                    // document top-aligned, otherwise the gutter/scroll probes
+                    // look below the text.
                     textView.setFrameOrigin(.zero)
+                    // Keep the viewport on the same line, not at the same
+                    // offset: the first styling of a new text view changes
+                    // every line's height, and the old offset would show other
+                    // text than the line a mode switch or a jump put there.
+                    if let y = line?.scrollOffset(in: textView) { origin.y = y }
                     clip?.scroll(to: origin)
                     if let scrollView = textView.enclosingScrollView {
                         scrollView.reflectScrolledClipView(scrollView.contentView)
