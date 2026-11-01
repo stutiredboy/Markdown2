@@ -896,7 +896,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
     /// into an offscreen web view and drive the real implementation.
     ///
     /// Numbers come from the `data-md2-source-line` metadata every top-level block
-    /// already carries. This script is injected only into the preview web view,
+    /// already carries, and every list item of a top-level list that spans more
+    /// than one source line. This script is injected only into the preview web view,
     /// never into the shared rendered HTML, so exported PDFs, prints, and exported
     /// HTML are unaffected — the same contract the broken-image and front-matter
     /// rules rely on.
@@ -996,29 +997,48 @@ struct MarkdownPreviewView: NSViewRepresentable {
 
                 var blocks = gutterBlocks(main);
                 var mainTop = main.getBoundingClientRect().top;
-                var count = 0;
-                for (var i = 0; i < blocks.length; i++) {
-                    var block = blocks[i];
-                    var rect = block.getBoundingClientRect();
+                var numbers = [];
+                var numberedLines = {};
+                function addNumber(element) {
+                    var rect = element.getBoundingClientRect();
                     // A hidden block reports a zero rect — the front-matter block is
                     // display:none when metadata is hidden, and numbering it would
                     // pin a garbage number at the top of the document.
-                    if (rect.width === 0 && rect.height === 0) { continue; }
-                    var sourceLine = block.getAttribute('data-md2-source-line');
-                    if (!sourceLine) { continue; }
-
-                    var span = document.createElement('span');
-                    span.setAttribute('data-md2-gutter', sourceLine);
+                    if (rect.width === 0 && rect.height === 0) { return; }
+                    var sourceLine = element.getAttribute('data-md2-source-line');
+                    if (!sourceLine || numberedLines[sourceLine]) { return; }
+                    numberedLines[sourceLine] = true;
                     // The layer is positioned against <main>'s padding box, so a
                     // viewport-relative difference is scroll-independent: numbers
                     // move with their content without a scroll listener.
-                    span.style.top = (rect.top - mainTop) + 'px';
+                    numbers.push({ line: sourceLine, top: rect.top - mainTop });
+                }
+                for (var i = 0; i < blocks.length; i++) { addNumber(blocks[i]); }
+                // A list item in a top-level list is numbered too when it spans
+                // several source lines; one-line items would turn a long list
+                // into a column of digits. Its first line is skipped when a block
+                // number already shows it (a list's first item). Lists inside
+                // quotes, alerts and footnotes stay unnumbered, like the other
+                // blocks they hold, also when the quote or alert sits inside an
+                // item.
+                var items = main.querySelectorAll(
+                    ':scope > ul li[data-md2-source-end-line], :scope > ol li[data-md2-source-end-line]'
+                );
+                for (var j = 0; j < items.length; j++) {
+                    if (items[j].closest('blockquote, .markdown-alert')) { continue; }
+                    addNumber(items[j]);
+                }
+                numbers.sort(function (a, b) { return a.top - b.top; });
+
+                for (var k = 0; k < numbers.length; k++) {
+                    var span = document.createElement('span');
+                    span.setAttribute('data-md2-gutter', numbers[k].line);
+                    span.style.top = numbers[k].top + 'px';
                     layer.appendChild(span);
-                    count += 1;
                 }
 
                 observeGutterBlocks(blocks);
-                return count;
+                return numbers.length;
             };
 
             window.__md2SetLineNumbersVisible = function (visible) {

@@ -197,6 +197,65 @@ final class ReadingImprovementsGUITests: XCTestCase {
         XCTAssertLessThan(jumpDifference, 2)
     }
 
+    /// A list item at the top of the preview is the anchor for a switch to the
+    /// editor, so the editor opens on that item's line. While only the list
+    /// carried a source span, the switch interpolated across the whole list,
+    /// and a long item above the viewport pulled the editor several lines past
+    /// the item the reader was on.
+    ///
+    /// The document opens in Write mode so the editor's text view exists and
+    /// is styled before the round trip: this pins the preview's anchor, not
+    /// the first mount of the editor.
+    @MainActor func testReadToWriteLandsOnTheListItemAtTheTop() throws {
+        let long = String(repeating: "A list item long enough to wrap across many rows of the preview. ", count: 60)
+        let items = (1...150).map { "- item \($0)" }.joined(separator: "\n")
+        // Line 3 is the long item, so `item k` is on line 3 + k.
+        let markdown = "# List\n\n- \(long)\n\(items)\n"
+        let targetLine = 63
+        let host = ReadingWindow(markdown, mode: .write)
+        defer { host.close() }
+        host.spin(until: {
+            guard let storage = host.store.editorSession.textView?.textStorage, storage.length > 0 else { return false }
+            return storage.attribute(.paragraphStyle, at: storage.length - 1, effectiveRange: nil) != nil
+        })
+        host.store.requestMode(.read)
+        let webView = try renderedPreview(host)
+        _ = try evaluate("window.requestAnimationFrame = function (callback) { return setTimeout(callback, 16); }; void 0;", in: webView)
+
+        // Put `item 60` across the anchor band, the strip below the viewport
+        // top that the preview anchors on, with the next item below it.
+        let placed = try XCTUnwrap(evaluate("""
+        (function () {
+          var item = document.querySelectorAll('main > ul > li')[60];
+          var band = Math.min(64, window.innerHeight * 0.25);
+          window.scrollTo(0, item.getBoundingClientRect().top + window.scrollY - band + 4);
+          return item.textContent;
+        })()
+        """, in: webView) as? String)
+        XCTAssertEqual(placed, "item 60")
+        host.spin(0.3)
+        let anchor = try XCTUnwrap(evaluate("JSON.stringify(window.__md2CaptureAnchor())", in: webView) as? String)
+        XCTAssertTrue(anchor.contains("\"line\":\(targetLine),\"endLine\":\(targetLine)"), anchor)
+
+        // The editor puts its target line one container inset below the top of
+        // the viewport, the margin it keeps above a jump target.
+        host.store.requestMode(.write)
+        let target = (markdown as NSString).range(of: "- item 60\n").location
+        func placement() -> (offset: CGFloat, inset: CGFloat, lineHeight: CGFloat)? {
+            guard let editor = host.store.editorSession.textView, editor.window != nil,
+                  let layoutManager = editor.layoutManager else { return nil }
+            var line = layoutManager.lineFragmentRect(forGlyphAt: layoutManager.glyphIndexForCharacter(at: target), effectiveRange: nil)
+            line.origin.y += editor.textContainerOrigin.y
+            return (line.minY - editor.visibleRect.minY, editor.textContainerOrigin.y, line.height)
+        }
+        func landed() -> Bool {
+            guard let placed = placement() else { return false }
+            return abs(placed.offset - placed.inset) < placed.lineHeight / 2
+        }
+        host.spin(until: landed)
+        XCTAssertTrue(landed(), "the editor must open on line \(targetLine), the list item at the top of the preview (anchor \(anchor), placement \(String(describing: placement())))")
+    }
+
     /// A preview gutter number selects its line in the editor. Read mode opens
     /// the editor on it; Side by Side selects it in place and keeps the preview.
     @MainActor func testPreviewGutterNumberSelectsItsLineInTheEditor() throws {
