@@ -85,25 +85,37 @@ struct InlineRenderingPerformanceTests {
         #expect(body.contains("Figure 2: good"))
     }
 
-    // MARK: - D4 token-compatibility boundary
+    // MARK: - Typed placeholder spellings
 
-    /// Approved D4 behavior: a token formed only *after* an escaped hyphen is
-    /// restored stays literal; the one-pass resolver does not re-read its output.
-    /// The pre-fix descending replacement expands it into a second `<code>x</code>`.
+    /// A spelling that only becomes canonical once an escaped hyphen is
+    /// restored stays literal: the one-pass resolver does not re-read its
+    /// output, and a typed spelling never carries the protector's nonce.
     @Test func tokenConstructedAfterEscapedHyphenStaysLiteral() {
         let body = renderer.render("`x` \(sentinel)MD2\\-0\(sentinel)").body
         #expect(body.contains("<code>x</code> \(sentinel)MD2-0\(sentinel)"))
     }
 
-    /// Approved D4 behavior: when two token spellings share a sentinel, the
-    /// leftmost well-formed token wins. The pre-fix highest-index replacement
-    /// consumes the shared sentinel from the right instead.
-    @Test func sharedSentinelResolvesLeftmostToken() {
-        let input = String(repeating: "&nbsp; ", count: 10)
-            + "`x` \(sentinel)MD2-1\(sentinel)MD2-10\(sentinel)"
+    /// Value: protects=a typed placeholder spelling never stands for a renderer fragment, even a canonical, in-range one or two that share a sentinel; fails_when=tokens lose their per-protector nonce and the resolver accepts a typed `\u{E000}MD2-<n>\u{E000}` again, re-inserting whatever fragment it names; why_new=the earlier D4 tests pinned typed tokens resolving; seam=none; no_claim=green proves these spellings, not every private-use sequence.
+    @Test func typedTokenSpellingsStayLiteral() {
+        let typed = "\(sentinel)MD2-1\(sentinel)MD2-10\(sentinel) \(sentinel)MD2-0\(sentinel)"
+        let body = renderer.render(String(repeating: "&nbsp; ", count: 10) + "`x` " + typed).body
+        #expect(body.contains("<code>x</code> \(typed)</p>"))
+        #expect(body.components(separatedBy: "<code>x</code>").count == 2)
+    }
+
+    /// Value: protects=typed placeholder spellings cannot multiply the output; fails_when=a typed token resolves again, so each copy re-inserts the fragment it names and a few kilobytes of input render megabytes; why_new=the amplification TODO had no regression test; seam=none; no_claim=green proves one large code span named many times, not a bound on every input.
+    @Test func typedTokensCannotAmplifyTheOutput() {
+        let fragment = "`" + String(repeating: "x", count: 10_000) + "`"
+        let input = fragment + " " + String(repeating: "\(sentinel)MD2-0\(sentinel)", count: 1_000)
         let body = renderer.render(input).body
-        #expect(body.contains("&nbsp;MD2-10\(sentinel)"))
-        #expect(!body.contains("\(sentinel)MD2-1&nbsp;"))
+        #expect(body.utf8.count < input.utf8.count * 2, "\(body.utf8.count) bytes from \(input.utf8.count)")
+    }
+
+    /// Value: protects=a typed spelling cannot repeat a link next to arbitrary text; fails_when=a typed token names the bare-URL anchor protected later in the same pass, so a second `https://a.comm` anchor reads as `https://a.commx.trusted.com`; why_new=found by the bare-URL differential and recorded in the amplification TODO; seam=none; no_claim=green proves this arrangement.
+    @Test func typedTokenCannotRepeatALink() {
+        let body = renderer.render("https://a.comm\u{00A0}\(sentinel)MD2-0\(sentinel)x.trusted.com").body
+        #expect(body.components(separatedBy: "<a ").count == 2, "\(body)")
+        #expect(body.contains("\(sentinel)MD2-0\(sentinel)x.trusted.com"))
     }
 
     @Test func malformedAndOutOfRangeTokensStayLiteral() {
@@ -139,14 +151,12 @@ struct InlineRenderingPerformanceTests {
         #expect(host.contains(" https://a.com\(sentinel)MD2-00\(sentinel) end"))
     }
 
-    /// Value: protects=a structural token after a shared sentinel still ends a bare URL; fails_when=a malformed spelling consumes the sentinel it shares with the next token, so the code span's source joins the link and the code span disappears; why_new=the shared-sentinel test covered resolution only, not the cut; seam=none; no_claim=green proves only these four malformed spellings before one code-span token.
-    @Test(arguments: ["\u{0661}", "\u{FF11}", String(repeating: "9", count: 25), "00"])
-    func structuralTokenAfterSharedSentinelEndsBareURL(_ digits: String) {
-        let body = renderer.render(
-            "`x` https://a.com/p\(sentinel)MD2-\(digits)\(sentinel)MD2-0\(sentinel) end"
-        ).body
-        #expect(body.contains(#"<a href="https://a.com/p\#(sentinel)MD2-\#(digits)">"#))
-        #expect(body.contains("</a><code>x</code> end</p>"))
+    /// Value: protects=a typed spelling right before a structural token stays URL text, and the real token still ends the bare URL; fails_when=the cut reads the typed spelling as a token (cutting too early) or a typed closing sentinel hides the real token's opening one (the code span's source joins the link); why_new=the earlier test relied on a typed token resolving to the code span; seam=none; no_claim=green proves these spellings before one code-span token.
+    @Test(arguments: ["0", "\u{0661}", "\u{FF11}", String(repeating: "9", count: 25), "00"])
+    func structuralTokenAfterTypedSpellingEndsBareURL(_ digits: String) {
+        let body = renderer.render("https://a.com/p\(sentinel)MD2-\(digits)\(sentinel)`x` end").body
+        #expect(body.contains(#"<a href="https://a.com/p\#(sentinel)MD2-\#(digits)\#(sentinel)">"#), "\(body)")
+        #expect(body.contains("</a><code>x</code> end</p>"), "\(body)")
         #expect(!body.contains("`"))
     }
 
@@ -322,7 +332,7 @@ struct InlineRenderingPerformanceTests {
     @Test func combiningMarkAfterSentinelDoesNotHideToken() {
         let body = renderer.render("`x`\u{0301}").body
         #expect(body.contains("<code>x</code>\u{0301}"))
-        #expect(!body.contains("MD2-"))
+        #expect(!body.contains("\u{E000}"))
     }
 
     /// A prepended concatenation mark (U+0600) joins the token's opening
@@ -409,7 +419,6 @@ struct InlineRenderingPerformanceTests {
         let body = renderer.render(large).body
         #expect(workload.matches(body, count: 1_000), "\(workload.testDescription): rendered output is incomplete")
         #expect(!body.contains(sentinel), "\(workload.testDescription): a placeholder token leaked into the body")
-        #expect(!body.contains("MD2-"), "\(workload.testDescription): an MD2- marker leaked into the body")
     }
 
     @Test func oneURLPerLineParagraphScalesLinearly() throws {
@@ -524,7 +533,6 @@ struct InlineRenderingPerformanceTests {
         let body = renderer.render(large).body
         #expect(workload.matches(body, count: 2_000), "\(workload.testDescription) one-per-line: rendered output is incomplete")
         #expect(!body.contains(sentinel))
-        #expect(!body.contains("MD2-"))
     }
 
     /// Regression: the paren-math pass previously used the backward
