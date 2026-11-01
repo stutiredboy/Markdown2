@@ -1,9 +1,7 @@
 ## Purpose
 
 Define how the viewport position is captured and restored across presentation-mode switches so the user stays on the same content.
-
 ## Requirements
-
 ### Requirement: Long documents scroll to the anchored position
 The system SHALL scroll the destination to the captured viewport-context anchor
 when its content is taller than the viewport. The system SHALL prefer a
@@ -48,17 +46,27 @@ destination with an empty or invalid visible range after settling.
 - **AND** the destination still reports a non-empty visible range once layout has
   settled
 
-
 ### Requirement: Preview blocks expose source-line anchors
 The rendered preview SHALL expose stable source-line metadata on block-level
 elements that can be used for mode-switch anchoring. The metadata SHALL identify
 the first source line that produced the rendered block and SHOULD identify the
-last source line when the renderer can determine the span.
+last source line when the renderer can determine the span. The metadata SHALL be
+placed on the block's own opening tag, never on a closing tag or a descendant
+element. That SHALL hold when the block's content starts with a scalar that joins
+the opening tag's `>` into one grapheme cluster: a combining mark, a zero-width
+joiner, a variation selector, or a spacing mark.
 
 #### Scenario: Paragraphs and lists carry source metadata
 - **WHEN** a Markdown document renders paragraphs and list blocks
 - **THEN** the corresponding preview block elements include source-line metadata
   suitable for mapping the preview viewport back to editor lines
+
+#### Scenario: Content that starts with a joining scalar
+- **WHEN** a paragraph, a multi-line paragraph, a paragraph inside a blockquote,
+  or a heading has content that starts with U+0301, U+200D, U+FE0F or U+093F
+- **THEN** the source-line metadata is on that block's opening tag
+- **AND** no closing tag carries an attribute
+- **AND** the preview gutter numbers the block
 
 #### Scenario: Code fences do not create false heading anchors
 - **WHEN** a fenced code block contains lines beginning with `#`
@@ -97,3 +105,4 @@ editor or preview when that live anchor is available.
 - **THEN** anchor reporting caused by that programmatic scroll is suppressed
   until the destination has reached the requested position
 - **AND** the final settled position is reported as the next cached anchor
+
