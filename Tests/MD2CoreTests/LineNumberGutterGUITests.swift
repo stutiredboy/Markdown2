@@ -380,6 +380,97 @@ final class LineNumberGutterGUITests: XCTestCase {
         XCTAssertTrue(boolValue(result["signatureStableAcrossToggle"]), "toggling must not change the rendered content")
     }
 
+    /// With nothing changing, the gutter is left alone. Every render used to
+    /// observe the blocks afresh, and observing delivers a first notification
+    /// that scheduled the next render, so the numbers were rebuilt every frame:
+    /// a click whose press and release landed on two rebuilds of a number never
+    /// reached it.
+    @MainActor
+    func testIdleGutterIsNotRebuilt() throws {
+        try skipUnlessGUITestsEnabled()
+
+        let page = try loadPage(html: renderGutterPage(), timerFrames: true)
+        defer { page.close() }
+        // The load's first observation schedules one more render; let it run.
+        spin(until: { false }, timeout: 0.5)
+        _ = try page.evaluate("""
+        (function () {
+          var render = window.__md2RenderLineNumbers;
+          window.__md2Renders = 0;
+          window.__md2RenderLineNumbers = function () {
+            window.__md2Renders++;
+            return render.apply(this, arguments);
+          };
+          // A render of unchanged content, as a content update makes.
+          window.__md2RenderLineNumbers();
+          window.__md2Kept = document.querySelector('.md2-line-gutter span');
+          window.__md2Renders = 0;
+          return true;
+        })()
+        """)
+        spin(until: { false }, timeout: 2)
+
+        let result = try XCTUnwrap(page.evaluate("""
+        ({ renders: window.__md2Renders,
+           kept: window.__md2Kept === document.querySelector('.md2-line-gutter span') })
+        """) as? [String: Any])
+        XCTAssertEqual(result["renders"] as? Int, 0, "an idle gutter must not render again")
+        XCTAssertTrue(boolValue(result["kept"]), "an idle gutter must keep its number elements")
+    }
+
+    /// A block that changes height moves the numbers below it, as math and
+    /// diagrams do when they settle, also for the blocks of swapped content.
+    @MainActor
+    func testGrowingABlockMovesTheNumbersBelowIt() throws {
+        try skipUnlessGUITestsEnabled()
+
+        let page = try loadPage(html: renderGutterPage(), timerFrames: true)
+        defer { page.close() }
+        func top(of line: Int) throws -> Double {
+            doubleValue(try page.evaluate("""
+            (function () {
+              var span = document.querySelector('.md2-line-gutter span[data-md2-gutter="\(line)"]');
+              return span ? parseFloat(span.style.top) : -1;
+            })()
+            """))
+        }
+        func grow(_ selector: String) throws {
+            _ = try page.evaluate("""
+            (function () {
+              var block = document.querySelector('\(selector)');
+              block.style.minHeight = (block.getBoundingClientRect().height + 200) + 'px';
+              return true;
+            })()
+            """)
+        }
+
+        // The intro paragraph (line 6) grows; the closing one (line 17) moves.
+        let closing = try top(of: 17)
+        XCTAssertGreaterThan(closing, 0)
+        try grow("main > p[data-md2-source-line=\"6\"]")
+        spin(until: { ((try? top(of: 17)) ?? closing) > closing + 100 })
+        XCTAssertEqual(try top(of: 17) - closing, 200, accuracy: 1, "a grown block must move the numbers below it")
+
+        // Swapped content brings new blocks, which are watched in turn.
+        _ = try page.evaluate("""
+        (function () {
+          document.querySelector('main').innerHTML =
+            '<p data-md2-source-line="1">First</p><p data-md2-source-line="3">Second</p>';
+          window.__md2RenderLineNumbers();
+          return true;
+        })()
+        """)
+        // The old blocks leave the page with the swap, and that change is
+        // reported too; its render must be over before the growth, or it
+        // would move the number in place of the new blocks' own report.
+        spin(until: { false }, timeout: 0.5)
+        let second = try top(of: 3)
+        XCTAssertGreaterThan(second, 0)
+        try grow("main > p[data-md2-source-line=\"1\"]")
+        spin(until: { ((try? top(of: 3)) ?? second) > second + 100 })
+        XCTAssertEqual(try top(of: 3) - second, 200, accuracy: 1, "a grown block of swapped content must move the numbers below it")
+    }
+
     // MARK: - Find and selection must not see the digits
 
     @MainActor
@@ -678,17 +769,31 @@ final class LineNumberGutterGUITests: XCTestCase {
     /// Loads `html` as `loadAndProbe` does and keeps the page open. With a
     /// `bridge`, the page also gets the preview's isolated-world interaction
     /// bridge, as `MarkdownPreviewView` installs it.
+    ///
+    /// The page counts as hidden (its window is off screen, and a test window
+    /// on screen sits behind the active app's), and WebKit runs no animation
+    /// frames for a hidden page, while resize notifications still arrive. With
+    /// `timerFrames`, animation frames run on a timer from the page's first
+    /// line, so the gutter's scheduled renders run as in a visible window.
     @MainActor
     private func loadPage(
         html: String,
         frameWidth: CGFloat = 900,
         gutterEnabled: Bool = true,
-        bridge: WKScriptMessageHandler? = nil
+        bridge: WKScriptMessageHandler? = nil,
+        timerFrames: Bool = false
     ) throws -> GutterPage {
         _ = NSApplication.shared
 
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        if timerFrames {
+            configuration.userContentController.addUserScript(WKUserScript(
+                source: "window.requestAnimationFrame = function (callback) { return setTimeout(function () { callback(performance.now()); }, 16); };",
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            ))
+        }
         // The preview script owns the front-matter hide rule too, and applies it
         // *before* the gutter renders (same order as the production script), so
         // the hidden front-matter block is skipped as a zero-rect block. The

@@ -931,6 +931,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             document.head.appendChild(style);
 
             var lineNumberObserver = null;
+            var observedGutterBlocks = [];
             var lineNumberRenderScheduled = false;
 
             function scheduleLineNumberRender() {
@@ -966,19 +967,34 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 return blocks;
             }
 
+            function sameBlocks(a, b) {
+                if (a.length !== b.length) { return false; }
+                for (var i = 0; i < a.length; i++) {
+                    if (a[i] !== b[i]) { return false; }
+                }
+                return true;
+            }
+
             // Watch the blocks the numbers are positioned against, not just <main>:
             // math and diagrams settle asynchronously, and one block can grow while
             // another shrinks by the same amount, leaving <main>'s own box unchanged
             // while every number below the pair goes stale.
+            //
+            // Only a changed set of blocks is observed again. Observing delivers
+            // a first notification, which schedules a render that lands back
+            // here, so observing the same blocks on every render rebuilt the
+            // gutter every frame.
             function observeGutterBlocks(blocks) {
                 if (typeof ResizeObserver === 'undefined') { return; }
                 if (!lineNumberObserver) {
                     lineNumberObserver = new ResizeObserver(scheduleLineNumberRender);
                 }
+                if (sameBlocks(observedGutterBlocks, blocks)) { return; }
                 lineNumberObserver.disconnect();
                 for (var i = 0; i < blocks.length; i++) {
                     lineNumberObserver.observe(blocks[i]);
                 }
+                observedGutterBlocks = blocks;
             }
 
             window.__md2RenderLineNumbers = function () {
