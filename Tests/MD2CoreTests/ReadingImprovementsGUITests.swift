@@ -87,7 +87,7 @@ final class ReadingImprovementsGUITests: XCTestCase {
         let markdown = "# First\n\n\(paragraph)\n\n# Second\n\n\(paragraph)\n\n# Third\n\n\(paragraph)"
         let host = ReadingWindow(markdown, mode: .read)
         defer { host.close() }
-        let webView = try host.preview()
+        let webView = try renderedPreview(host)
         let headings = host.store.rendered.outline
         XCTAssertEqual(headings.count, 3)
         let list = try XCTUnwrap(host.find(NSTableView.self))
@@ -136,7 +136,7 @@ final class ReadingImprovementsGUITests: XCTestCase {
         }
         let host = ReadingWindow(markdown, mode: .read)
         defer { host.close() }
-        let webView = try host.preview()
+        let webView = try renderedPreview(host)
         let headings = host.store.rendered.outline
         let parent = try XCTUnwrap(headings.first { $0.title.contains("3.1　") })
         let child = try XCTUnwrap(headings.first { $0.title.contains("3.1.1　") })
@@ -167,7 +167,7 @@ final class ReadingImprovementsGUITests: XCTestCase {
         let markdown = (1...55).map { "# Section \($0)\n\n\(paragraph)" }.joined(separator: "\n\n")
         let host = ReadingWindow(markdown, mode: .read)
         defer { host.close() }
-        let webView = try host.preview()
+        let webView = try renderedPreview(host)
         let list = try XCTUnwrap(host.find(NSTableView.self))
         XCTAssertEqual(list.numberOfRows, 55)
 
@@ -195,6 +195,18 @@ final class ReadingImprovementsGUITests: XCTestCase {
         let clickedID = host.store.rendered.outline[clickedRow].id
         let jumpDifference = try XCTUnwrap(evaluate("Math.abs(window.scrollY - document.getElementById('\(clickedID)').offsetTop)", in: webView) as? Double)
         XCTAssertLessThan(jumpDifference, 2)
+    }
+
+    /// The preview once every outline heading is in the page. The render worker
+    /// can deliver the document after the first page load on a slow runner, so
+    /// a web view that has stopped loading may still show an earlier render, and
+    /// looking a heading up by its id would find nothing.
+    @MainActor private func renderedPreview(_ host: ReadingWindow) throws -> WKWebView {
+        let webView = try host.preview()
+        let ids = String(decoding: try JSONSerialization.data(withJSONObject: host.store.rendered.outline.map(\.id)), as: UTF8.self)
+        let allPresent = "\(ids).every(id => document.getElementById(id) !== null)"
+        host.spin(until: { (try? evaluate(allPresent, in: webView)) as? Bool == true })
+        return webView
     }
 
     @MainActor private func evaluate(_ script: String, in webView: WKWebView) throws -> Any? {
