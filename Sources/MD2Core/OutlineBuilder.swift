@@ -43,7 +43,7 @@ public struct OutlineBuilder: Sendable {
             if index + 1 < lines.count,
                let level = MarkdownLine.setextHeadingLevel(in: lines[index + 1]),
                !line.trimmedMarkdownLine.isEmpty,
-               !line.trimmedMarkdownLine.hasPrefix(">"),
+               !MarkdownLine.isBlockquote(line.trimmedMarkdownLine),
                MarkdownLine.fenceMarker(in: line) == nil,
                !MarkdownLine.isHorizontalRule(line) {
                 appendHeading(

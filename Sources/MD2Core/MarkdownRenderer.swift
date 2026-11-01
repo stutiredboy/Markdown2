@@ -125,7 +125,7 @@ public struct MarkdownRenderer: Sendable {
             // block. This matters for quotes nested under a list item, which are
             // indented four spaces and would otherwise render as `<pre>` showing
             // the literal `>` with a horizontal scrollbar.
-            if trimmed.hasPrefix(">") {
+            if MarkdownLine.isBlockquote(trimmed) {
                 let blockquote = blockquoteBlock(
                     from: lines,
                     startIndex: index,
@@ -283,13 +283,13 @@ public struct MarkdownRenderer: Sendable {
 
         let opening = lines[startIndex].trimmedMarkdownLine
         let language = opening
-            .dropFirst(marker.count)
+            .droppingScalars(marker.unicodeScalars.count)
             .trimmingCharacters(in: .whitespaces)
         var code: [String] = []
         var index = startIndex + 1
 
         while index < lines.count {
-            if lines[index].trimmedMarkdownLine.hasPrefix(marker) {
+            if lines[index].trimmedMarkdownLine.hasScalarPrefix(marker) {
                 return (fencedBlockHTML(language: language, code: code), index + 1)
             }
 
@@ -360,15 +360,15 @@ public struct MarkdownRenderer: Sendable {
     private func mathBlockContent(from lines: [String], startIndex: Int) -> (tex: String, nextIndex: Int)? {
         let trimmed = lines[startIndex].trimmedMarkdownLine
         let delimiters: (open: String, close: String)
-        if trimmed.hasPrefix("$$") {
+        if trimmed.hasScalarPrefix("$$") {
             delimiters = ("$$", "$$")
-        } else if trimmed.hasPrefix(#"\["#) {
+        } else if trimmed.hasScalarPrefix(#"\["#) {
             delimiters = (#"\["#, #"\]"#)
         } else {
             return mathEnvironmentContent(from: lines, startIndex: startIndex)
         }
 
-        let afterOpen = String(trimmed.dropFirst(delimiters.open.count))
+        let afterOpen = trimmed.droppingScalars(delimiters.open.unicodeScalars.count)
 
         // Single-line block: `$$ ... $$` or `\[ ... \]`.
         if afterOpen.hasSuffix(delimiters.close), afterOpen.count >= delimiters.close.count {
@@ -592,7 +592,7 @@ public struct MarkdownRenderer: Sendable {
               MarkdownLine.fenceMarker(in: lines[startIndex]) == nil,
               !MarkdownLine.isHorizontalRule(lines[startIndex]),
               parseListItem(lines[startIndex]) == nil,
-              !lines[startIndex].trimmedMarkdownLine.hasPrefix(">") else {
+              !MarkdownLine.isBlockquote(lines[startIndex].trimmedMarkdownLine) else {
             return nil
         }
 
@@ -665,11 +665,9 @@ public struct MarkdownRenderer: Sendable {
 
         while index < lines.count {
             let trimmed = lines[index].trimmedMarkdownLine
-            guard trimmed.hasPrefix(">") else { break }
+            guard MarkdownLine.isBlockquote(trimmed) else { break }
 
-            var content = trimmed.dropFirst()
-            if content.first == " " || content.first == "\t" { content = content.dropFirst() }
-            quoteLines.append(String(content))
+            quoteLines.append(MarkdownLine.blockquoteContent(trimmed))
             index += 1
         }
 
@@ -820,7 +818,7 @@ public struct MarkdownRenderer: Sendable {
                     let fenceLine = lines[index]
                     continuation.append(fenceLine)
                     index += 1
-                    if fenceLine.trimmedMarkdownLine.hasPrefix(marker) {
+                    if fenceLine.trimmedMarkdownLine.hasScalarPrefix(marker) {
                         break
                     }
                 }
@@ -851,7 +849,7 @@ public struct MarkdownRenderer: Sendable {
     /// counts as four columns). Stops at the first non-whitespace character.
     private func dropIndentColumns(_ line: String, _ columns: Int) -> String {
         var remaining = columns
-        var rest = Substring(line)
+        var rest = Substring(line).unicodeScalars
 
         while remaining > 0, let first = rest.first {
             if first == " " {
@@ -996,7 +994,7 @@ public struct MarkdownRenderer: Sendable {
                 MarkdownLine.isHorizontalRule(line) ||
                 (index + 1 < lines.count && MarkdownLine.setextHeadingLevel(in: lines[index + 1]) != nil) ||
                 trimmed == "[TOC]" ||
-                trimmed.hasPrefix(">") ||
+                MarkdownLine.isBlockquote(trimmed) ||
                 isFootnoteDefinitionLine(line) ||
                 parseListItem(line) != nil ||
                 mathBlock(from: lines, startIndex: index) != nil ||
@@ -1052,12 +1050,10 @@ public struct MarkdownRenderer: Sendable {
             if let block = fencedCodeBlock(from: lines, startIndex: index) {
                 index = block.nextIndex; continue
             }
-            if trimmed.hasPrefix(">") {
+            if MarkdownLine.isBlockquote(trimmed) {
                 var nested: [String] = []
-                while index < lines.count, lines[index].trimmedMarkdownLine.hasPrefix(">") {
-                    var content = lines[index].trimmedMarkdownLine.dropFirst()
-                    if content.first == " " || content.first == "\t" { content = content.dropFirst() }
-                    nested.append(String(content)); index += 1
+                while index < lines.count, MarkdownLine.isBlockquote(lines[index].trimmedMarkdownLine) {
+                    nested.append(MarkdownLine.blockquoteContent(lines[index].trimmedMarkdownLine)); index += 1
                 }
                 // An alert marker is a block header, not the first paragraph.
                 if let first = nested.first, ["NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION"].contains(where: { first == "[!\($0)]" }) {
@@ -1187,7 +1183,7 @@ public struct MarkdownRenderer: Sendable {
     }
 
     private func isIndentedContinuation(_ line: String) -> Bool {
-        let prefix = line.prefix { $0 == " " || $0 == "\t" }
+        let prefix = line.unicodeScalars.prefix { $0 == " " || $0 == "\t" }
         return prefix.contains("\t") || prefix.filter { $0 == " " }.count >= 2
     }
 
@@ -1252,16 +1248,16 @@ public struct MarkdownRenderer: Sendable {
         let trimmed = line.trimmedMarkdownLine
         let indent = leadingIndentWidth(line)
 
-        if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") || trimmed.hasPrefix("+ ") {
-            var text = String(trimmed.dropFirst(2))
+        if trimmed.hasScalarPrefix("- ") || trimmed.hasScalarPrefix("* ") || trimmed.hasScalarPrefix("+ ") {
+            var text = trimmed.droppingScalars(2)
             var checked: Bool?
 
-            if text.lowercased().hasPrefix("[x] ") {
+            if text.hasScalarPrefix("[x] ") || text.hasScalarPrefix("[X] ") {
                 checked = true
-                text = String(text.dropFirst(4))
-            } else if text.hasPrefix("[ ] ") {
+                text = text.droppingScalars(4)
+            } else if text.hasScalarPrefix("[ ] ") {
                 checked = false
-                text = String(text.dropFirst(4))
+                text = text.droppingScalars(4)
             }
 
             return ListItem(
@@ -1286,7 +1282,7 @@ public struct MarkdownRenderer: Sendable {
             checked: nil,
             text: String(trimmed[textRange]),
             indent: indent,
-            contentIndent: listContentIndent(after: line, markerIndent: indent, delimiterWidth: trimmed[markerRange].count),
+            contentIndent: listContentIndent(after: line, markerIndent: indent, delimiterWidth: trimmed[markerRange].unicodeScalars.count),
             line: sourceLine,
             lineIndex: lineIndex
         )
@@ -1302,8 +1298,8 @@ public struct MarkdownRenderer: Sendable {
     /// is clamped to 1…4 — five or more spaces start an indented code block inside
     /// the item rather than widening the content column (CommonMark §5.2).
     private func listContentIndent(after line: String, markerIndent: Int, delimiterWidth: Int) -> Int {
-        let rest = Substring(line.trimmingCharacters(in: .whitespaces)).dropFirst(delimiterWidth)
-        return MarkdownIndentation.contentColumn(markerIndent: markerIndent, delimiterWidth: delimiterWidth, gap: String(rest))
+        let rest = line.trimmingCharacters(in: .whitespaces).droppingScalars(delimiterWidth)
+        return MarkdownIndentation.contentColumn(markerIndent: markerIndent, delimiterWidth: delimiterWidth, gap: rest)
     }
 
     /// Counts the leading whitespace of a line in columns, treating a tab as 4
@@ -1989,28 +1985,31 @@ public struct MarkdownRenderer: Sendable {
     private func renderReferenceLinks(_ text: String, context: InlineContext?, protector: InlineProtector) -> String {
         guard let context, !context.references.isEmpty else { return text }
         // Pair brackets once, including nested link text, instead of repeatedly
-        // rescanning an unfinished run of opening brackets.
+        // rescanning an unfinished run of opening brackets. Brackets are read
+        // as scalars: a combining mark after `[`, or a prepended mark before
+        // it, joins it into a larger grapheme.
+        let scalars = text.unicodeScalars
         var stack: [String.Index] = []
         var closes: [String.Index: String.Index] = [:]
-        for index in text.indices {
-            if text[index] == "[" { stack.append(index) }
-            if text[index] == "]", let start = stack.popLast() { closes[start] = index }
+        for index in scalars.indices {
+            if scalars[index] == "[" { stack.append(index) }
+            if scalars[index] == "]", let start = stack.popLast() { closes[start] = index }
         }
         var result = ""
-        var cursor = text.startIndex
-        while cursor < text.endIndex {
-            let image = text[cursor] == "!" && text.index(after: cursor) < text.endIndex && text[text.index(after: cursor)] == "["
-            let opening = image ? text.index(after: cursor) : cursor
-            guard text[opening] == "[", let close = closes[opening] else {
-                result.append(text[cursor]); cursor = text.index(after: cursor); continue
+        var cursor = scalars.startIndex
+        while cursor < scalars.endIndex {
+            let image = scalars[cursor] == "!" && scalars.index(after: cursor) < scalars.endIndex && scalars[scalars.index(after: cursor)] == "["
+            let opening = image ? scalars.index(after: cursor) : cursor
+            guard scalars[opening] == "[", let close = closes[opening] else {
+                result.unicodeScalars.append(scalars[cursor]); cursor = scalars.index(after: cursor); continue
             }
-            let label = String(text[text.index(after: opening)..<close])
+            let label = String(scalars[scalars.index(after: opening)..<close])
             var key = label
-            var end = text.index(after: close)
-            if end < text.endIndex, text[end] == "[", let keyEnd = closes[end] {
-                let explicit = String(text[text.index(after: end)..<keyEnd])
+            var end = scalars.index(after: close)
+            if end < scalars.endIndex, scalars[end] == "[", let keyEnd = closes[end] {
+                let explicit = String(scalars[scalars.index(after: end)..<keyEnd])
                 key = explicit.isEmpty ? label : explicit
-                end = text.index(after: keyEnd)
+                end = scalars.index(after: keyEnd)
             }
             let originalKey = protector.source(in: key)
             let originalLabel = protector.source(in: label)
@@ -2021,11 +2020,11 @@ public struct MarkdownRenderer: Sendable {
                   HTMLSafety.decodeEntities(originalKey).unicodeScalars.count <= 999,
                   let reference = context.references[LinkReference.normalize(originalKey)],
                   !protector.restore(in: label).contains("<a ") else {
-                result.append(text[cursor]); cursor = text.index(after: cursor); continue
+                result.unicodeScalars.append(scalars[cursor]); cursor = scalars.index(after: cursor); continue
             }
             let title = reference.title.map { " title=\"\(escapeAttribute($0))\"" } ?? ""
             let content = renderEmphasis(renderOptionalInline(label, features: context.config.inlineFeatures))
-            let authored = String(text[cursor..<end])
+            let authored = String(scalars[cursor..<end])
             // Restore the definition destination before the safety check: an
             // authored token in the definition must not reach href/src as
             // renderer markup.
