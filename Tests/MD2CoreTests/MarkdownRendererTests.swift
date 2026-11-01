@@ -186,10 +186,10 @@ struct MarkdownRendererTests {
         let document = MarkdownRenderer().render(markdown)
 
         // 空调 owns a nested child list with its three sub-items.
-        #expect(document.html.contains("<li>空调\n<ul>\n<li>内外机</li>"))
-        #expect(document.html.contains("<li>人工</li>\n</ul></li>"))
+        #expect(document.html.withoutSourceLineMetadata.contains("<li>空调\n<ul>\n<li>内外机</li>"))
+        #expect(document.html.withoutSourceLineMetadata.contains("<li>人工</li>\n</ul></li>"))
         // 电缆 and 配电箱 are siblings of 空调, after the nested list closes.
-        #expect(document.html.contains("</ul></li>\n<li>电缆</li>\n<li>配电箱</li>"))
+        #expect(document.html.withoutSourceLineMetadata.contains("</ul></li>\n<li>电缆</li>\n<li>配电箱</li>"))
     }
 
     @Test func nestsMultipleLevelsOfLists() {
@@ -201,7 +201,7 @@ struct MarkdownRendererTests {
 
         let document = MarkdownRenderer().render(markdown)
 
-        #expect(document.html.contains("<li>a\n<ul>\n<li>b\n<ul>\n<li>c</li>\n</ul></li>\n</ul></li>"))
+        #expect(document.html.withoutSourceLineMetadata.contains("<li>a\n<ul>\n<li>b\n<ul>\n<li>c</li>\n</ul></li>\n</ul></li>"))
     }
 
     @Test func tabIndentedListItemNestsOneLevel() {
@@ -209,7 +209,7 @@ struct MarkdownRendererTests {
 
         let document = MarkdownRenderer().render(markdown)
 
-        #expect(document.html.contains("<li>parent\n<ul>\n<li>child</li>\n</ul></li>"))
+        #expect(document.html.withoutSourceLineMetadata.contains("<li>parent\n<ul>\n<li>child</li>\n</ul></li>"))
     }
 
     @Test func twoSpaceIndentedUnorderedListItemNestsUnderParent() {
@@ -220,7 +220,7 @@ struct MarkdownRendererTests {
 
         let document = MarkdownRenderer().render(markdown)
 
-        #expect(document.html.contains("<li>parent\n<ul>\n<li>child</li>\n</ul></li>"))
+        #expect(document.html.withoutSourceLineMetadata.contains("<li>parent\n<ul>\n<li>child</li>\n</ul></li>"))
     }
 
     @Test func monthlyReportTwoSpaceNestedBulletsStayUnderBoldParents() {
@@ -262,7 +262,7 @@ struct MarkdownRendererTests {
 
         let document = MarkdownRenderer().render(markdown)
 
-        #expect(document.html.contains("<li>a\n<ul>\n<li>b</li>\n</ul></li>\n<li>d</li>"))
+        #expect(document.html.withoutSourceLineMetadata.contains("<li>a\n<ul>\n<li>b</li>\n</ul></li>\n<li>d</li>"))
     }
 
     @Test func nestedTaskListItemsKeepCheckboxes() {
@@ -287,7 +287,7 @@ struct MarkdownRendererTests {
 
         let document = MarkdownRenderer().render(markdown)
 
-        #expect(document.html.contains("<li>parent\n<ol>\n<li>step one</li>\n<li>step two</li>\n</ol></li>"))
+        #expect(document.html.withoutSourceLineMetadata.contains("<li>parent\n<ol>\n<li>step one</li>\n<li>step two</li>\n</ol></li>"))
     }
 
     @Test func blankLineSeparatedOrderedListKeepsContinuousNumbering() {
@@ -437,7 +437,7 @@ struct MarkdownRendererTests {
 
         #expect(document.html.contains("<pre"))
         #expect(document.html.contains("- not a list"))
-        #expect(!document.html.contains("<li>not a list</li>"))
+        #expect(!document.body.contains("<li"))
     }
 
     @Test func softLineBreaksInParagraphRenderAsBr() {

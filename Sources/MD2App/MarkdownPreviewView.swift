@@ -1019,11 +1019,15 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 // into a column of digits. Its first line is skipped when a block
                 // number already shows it (a list's first item). Lists inside
                 // quotes, alerts and footnotes stay unnumbered, like the other
-                // blocks they hold.
+                // blocks they hold, also when the quote or alert sits inside an
+                // item.
                 var items = main.querySelectorAll(
                     ':scope > ul li[data-md2-source-end-line], :scope > ol li[data-md2-source-end-line]'
                 );
-                for (var j = 0; j < items.length; j++) { addNumber(items[j]); }
+                for (var j = 0; j < items.length; j++) {
+                    if (items[j].closest('blockquote, .markdown-alert')) { continue; }
+                    addNumber(items[j]);
+                }
                 numbers.sort(function (a, b) { return a.top - b.top; });
 
                 for (var k = 0; k < numbers.length; k++) {

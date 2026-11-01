@@ -213,6 +213,16 @@ final class LineNumberGutterGUITests: XCTestCase {
         - first
           more
         - second
+
+        Break.
+
+        - outer
+          > - quoted inside
+          >   an item
+
+          > [!NOTE]
+          > - in an alert
+          >   too
         """
         let result = try loadAndProbe(html: MarkdownRenderer().render(markdown).html, probe: """
         (function () {
@@ -236,8 +246,9 @@ final class LineNumberGutterGUITests: XCTestCase {
 
         XCTAssertEqual(
             result["numbers"] as? [String],
-            ["1", "3", "4", "6", "7", "12", "15"],
-            "the heading, the list, its multi-line items (nested too), the quote, and the second list once"
+            ["1", "3", "4", "6", "7", "12", "15", "19", "21"],
+            "the heading, the list, its multi-line items (nested too), the quote, the second list once, "
+                + "and no item inside a quote or an alert, even one inside an item"
         )
         for offset in result["offsets"] as? [Double] ?? [] {
             XCTAssertEqual(offset, 0, accuracy: 0.5, "an item's number must sit at the item's top")
@@ -268,6 +279,24 @@ final class LineNumberGutterGUITests: XCTestCase {
         try page.click(third)
         spin(until: { !requested.isEmpty })
         XCTAssertEqual(requested, [5], "the number's own line must reach native")
+    }
+
+    /// A list item's number is a number like any other: a click sends the
+    /// item's first line.
+    @MainActor
+    func testClickingAListItemNumberRequestsItsLine() throws {
+        try skipUnlessGUITestsEnabled()
+
+        let coordinator = MarkdownPreviewView.Coordinator()
+        var requested: [Int] = []
+        coordinator.onRevealSourceLine = { requested.append($0) }
+        // The list is numbered 1; `two` spans lines 2-3 and is numbered 2.
+        let page = try loadPage(html: MarkdownRenderer().render("- one\n- two\n  continued").html, bridge: coordinator)
+        defer { page.close() }
+
+        try page.click(".md2-line-gutter span[data-md2-gutter=\"2\"]")
+        spin(until: { !requested.isEmpty })
+        XCTAssertEqual(requested, [2], "the item's first line must reach native")
     }
 
     // MARK: - Live re-render and toggling

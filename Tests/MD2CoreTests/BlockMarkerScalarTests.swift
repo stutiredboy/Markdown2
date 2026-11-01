@@ -70,7 +70,7 @@ struct BlockMarkerScalarTests {
     @Test func droppingAMarkerKeepsTheJoinerAfterIt() {
         let mark = "\u{0301}"
         #expect(renderer.render("# \(mark)word").body.contains(">\(mark)word</h1>"))
-        #expect(renderer.render("- \(mark)word").body.contains("<li>\(mark)word</li>"))
+        #expect(renderer.render("- \(mark)word").body.contains("<li data-md2-source-line=\"1\">\(mark)word</li>"))
         #expect(renderer.render(">\(mark)word").body.contains(">\(mark)word</p>"))
         #expect(renderer.render("- [ ] \(mark)word").body.contains("data-md2-task-line=\"1\"> \(mark)word</li>"))
         #expect(renderer.render("    \(mark)code").body.contains("<code>\(mark)code</code>"))
