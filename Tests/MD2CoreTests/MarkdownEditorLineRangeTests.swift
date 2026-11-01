@@ -185,3 +185,55 @@ struct MarkdownEditorGutterRowTests {
         }
     }
 }
+
+/// A gutter click selects the source line its number labels, with the line
+/// break, so these ranges number lines exactly as the gutter does: LF, CRLF and
+/// a bare CR each end a line, and nothing else does.
+struct MarkdownEditorSourceLineRangeTests {
+    private func range(line: Int, _ text: String) -> NSRange? {
+        MarkdownEditorView.Coordinator.sourceLineRange(forLine: line, in: text as NSString)
+    }
+
+    private func range(containing index: Int, _ text: String) -> NSRange {
+        MarkdownEditorView.Coordinator.sourceLineRange(containing: index, in: text as NSString)
+    }
+
+    @Test func eachLineIncludesItsLineBreak() {
+        let text = "a\nbb\nccc"
+        #expect(range(line: 1, text) == NSRange(location: 0, length: 2))
+        #expect(range(line: 2, text) == NSRange(location: 2, length: 3))
+        #expect(range(line: 3, text) == NSRange(location: 5, length: 3))
+    }
+
+    @Test func linesOutsideTheDocumentHaveNoRange() {
+        #expect(range(line: 0, "a\nb") == nil)
+        #expect(range(line: 3, "a\nb") == nil)
+        #expect(range(line: 3, "one\n") == nil)
+    }
+
+    @Test func trailingNewlineEndsWithAnEmptyLine() {
+        #expect(range(line: 2, "one\n") == NSRange(location: 4, length: 0))
+        #expect(range(line: 1, "") == NSRange(location: 0, length: 0))
+    }
+
+    @Test func crlfAndBareCRBreakLinesLikeTheGutter() {
+        #expect(range(line: 1, "a\r\nb\r\nc") == NSRange(location: 0, length: 3))
+        #expect(range(line: 2, "a\r\nb\r\nc") == NSRange(location: 3, length: 3))
+        #expect(range(line: 3, "a\r\nb\r\nc") == NSRange(location: 6, length: 1))
+        #expect(range(line: 2, "a\rb") == NSRange(location: 2, length: 1))
+    }
+
+    @Test func otherSeparatorsStayInsideTheLine() {
+        // `NSString.lineRange` would end the line at U+2028; the gutter does not.
+        #expect(range(line: 1, "a\u{2028}b\nc") == NSRange(location: 0, length: 4))
+    }
+
+    @Test func anyIndexInALineSelectsTheWholeLine() {
+        let text = "a\nbb\nccc"
+        #expect(range(containing: 3, text) == NSRange(location: 2, length: 3))
+        #expect(range(containing: 8, text) == NSRange(location: 5, length: 3))
+        #expect(range(containing: 4, "one\n") == NSRange(location: 4, length: 0))
+        // Between the CR and the LF of a pair: the line the pair ends.
+        #expect(range(containing: 2, "a\r\nb") == NSRange(location: 0, length: 3))
+    }
+}

@@ -29,6 +29,7 @@ final class PreviewSecurityGUITests: XCTestCase {
         XCTAssertEqual(try evaluate("typeof window.pwned", in: webView) as? String, "undefined")
         XCTAssertEqual(try evaluate("typeof window.webkit?.messageHandlers?.toggleTask", in: webView) as? String, "undefined")
         XCTAssertEqual(try evaluate("typeof window.webkit?.messageHandlers?.enterEdit", in: webView) as? String, "undefined")
+        XCTAssertEqual(try evaluate("typeof window.webkit?.messageHandlers?.revealSourceLine", in: webView) as? String, "undefined")
         _ = try evaluate("document.querySelector('input').click(); document.dispatchEvent(new MouseEvent('dblclick', {bubbles:true, metaKey:true})); true", in: webView)
         XCTAssertEqual(toggles, 0)
         XCTAssertEqual(modeChanges, 0)
