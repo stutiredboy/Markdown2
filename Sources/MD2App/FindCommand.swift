@@ -73,3 +73,15 @@ extension FindCommand.Action {
         }
     }
 }
+
+/// A request to select one 1-based source line in the editor, sent when a
+/// preview gutter number is clicked. The `token` makes a second click on the
+/// same line a new request, so it reselects the line after the caret moved.
+struct LineSelectionRequest: Equatable {
+    let line: Int
+    let token = UUID()
+
+    init(line: Int) {
+        self.line = line
+    }
+}

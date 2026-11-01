@@ -80,6 +80,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
     /// Called when a task checkbox is clicked, carrying the 1-based source
     /// line to rewrite and the absolute state the checkbox now shows.
     var onToggleTask: (_ line: Int, _ checked: Bool) -> Void = { _, _ in }
+    /// Called when a gutter number is clicked, carrying the 1-based source
+    /// line it shows, for the editor to select.
+    var onRevealSourceLine: (_ line: Int) -> Void = { _ in }
     /// Called when the user clicks a link to a local Markdown file, so the app
     /// can open it in a document window (the preview itself never navigates).
     var onOpenMarkdownLink: (_ url: URL) -> Void = { _ in }
@@ -139,12 +142,14 @@ struct MarkdownPreviewView: NSViewRepresentable {
     private static let enterEditMessageName = "enterEdit"
     private static let anchorMessageName = "anchorChange"
     private static let toggleTaskMessageName = "toggleTask"
+    private static let revealSourceLineMessageName = "revealSourceLine"
 
     /// Page scripts (including diagram engines) cannot see native mutation
     /// handlers. Only trusted DOM input in the isolated world is forwarded.
     static func installInteractionBridge(on controller: WKUserContentController, handler: WKScriptMessageHandler) {
         controller.add(handler, contentWorld: .defaultClient, name: enterEditMessageName)
         controller.add(handler, contentWorld: .defaultClient, name: toggleTaskMessageName)
+        controller.add(handler, contentWorld: .defaultClient, name: revealSourceLineMessageName)
         controller.addUserScript(WKUserScript(source: interactionScript,
             injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: .defaultClient))
     }
@@ -168,6 +173,19 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 line: line,
                 checked: !!box.checked
             });
+        });
+        // A gutter number asks native to select the line it shows in the
+        // editor. Only the gutter layer's own spans count, and the second click
+        // of a double click is not a second request.
+        document.addEventListener('click', function (event) {
+            if (!event.isTrusted || event.button !== 0 || event.detail > 1) { return; }
+            var target = event.target;
+            var span = target && target.closest ? target.closest('main > .md2-line-gutter > span[data-md2-gutter]') : null;
+            if (!span) { return; }
+            var line = parseInt(span.getAttribute('data-md2-gutter'), 10);
+            if (isNaN(line) || line < 1) { return; }
+            event.preventDefault();
+            window.webkit.messageHandlers.\(Self.revealSourceLineMessageName).postMessage({ line: line });
         });
     """
 
@@ -703,6 +721,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         }
         context.coordinator.onEnterEdit = onEnterEdit
         context.coordinator.onToggleTask = onToggleTask
+        context.coordinator.onRevealSourceLine = onRevealSourceLine
         context.coordinator.onOpenMarkdownLink = onOpenMarkdownLink
         context.coordinator.onAnchorChange = onAnchorChange
         context.coordinator.onFindShortcut = onFindShortcut
@@ -899,6 +918,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 'font-size:0.78rem;line-height:1.25;color:var(--muted);' +
                 'font-variant-numeric:tabular-nums;}' +
                 '.md2-line-gutter span::before{content:attr(data-md2-gutter);}' +
+                // The layer passes clicks through; its numbers take them, to
+                // select their line in the editor (the isolated-world bridge).
+                '.md2-line-gutter span{pointer-events:auto;cursor:pointer;}' +
                 // Reserve the gutter by raising the column's own padding, so no
                 // horizontal scrolling can appear. Gated on the switch class, so
                 // with numbers off the base rules apply byte-identically. The media
@@ -1041,6 +1063,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         coordinator.onSelectionChange = onSelectionChange
         coordinator.onEnterEdit = onEnterEdit
         coordinator.onToggleTask = onToggleTask
+        coordinator.onRevealSourceLine = onRevealSourceLine
         coordinator.onOpenMarkdownLink = onOpenMarkdownLink
         return coordinator
     }
@@ -1074,6 +1097,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         var lastBaseURL: URL?
         var onEnterEdit: () -> Void = {}
         var onToggleTask: (_ line: Int, _ checked: Bool) -> Void = { _, _ in }
+        var onRevealSourceLine: (_ line: Int) -> Void = { _ in }
         var onOpenMarkdownLink: (_ url: URL) -> Void = { _ in }
         var onAnchorChange: (_ anchor: ViewportAnchor, _ isUserInitiated: Bool) -> Void = { _, _ in }
         var onFindShortcut: (_ action: FindCommand.Action) -> Void = { _ in }
@@ -1352,6 +1376,11 @@ struct MarkdownPreviewView: NSViewRepresentable {
                       let line = (body["line"] as? NSNumber)?.intValue,
                       let checked = (body["checked"] as? NSNumber)?.boolValue else { return }
                 onToggleTask(line, checked)
+            case MarkdownPreviewView.revealSourceLineMessageName:
+                guard message.world == .defaultClient else { return }
+                guard let body = message.body as? [String: Any],
+                      let line = (body["line"] as? NSNumber)?.intValue, line >= 1 else { return }
+                onRevealSourceLine(line)
             case MarkdownPreviewView.anchorMessageName:
                 guard let body = message.body as? [String: Any] else { return }
                 if ignoreNextAnchorMessage {

@@ -65,7 +65,8 @@ final class AppSettings: ObservableObject {
     }
 
     /// Whether the editor draws a source line-number gutter in its left inset.
-    /// Display-only: it never changes the text, selection, or any geometry.
+    /// Toggling it never changes the text, selection, or any geometry; while it
+    /// is on, clicking a number selects that line.
     @Published var showsLineNumbersInEditor: Bool {
         didSet {
             defaults.set(showsLineNumbersInEditor, forKey: Keys.showsLineNumbersInEditor)

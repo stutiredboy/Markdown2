@@ -197,6 +197,82 @@ final class ReadingImprovementsGUITests: XCTestCase {
         XCTAssertLessThan(jumpDifference, 2)
     }
 
+    /// A preview gutter number selects its line in the editor. Read mode opens
+    /// the editor on it; Side by Side selects it in place and keeps the preview.
+    @MainActor func testPreviewGutterNumberSelectsItsLineInTheEditor() throws {
+        let paragraph = String(repeating: "Reading text that wraps across the preview. ", count: 12)
+        let markdown = "# Top\n\n\(paragraph)\n\nTarget paragraph.\n\n\(paragraph)"
+        let target = (markdown as NSString).range(of: "Target paragraph.\n")
+        let number = ".md2-line-gutter span[data-md2-gutter=\"5\"]"
+        for mode in [EditorMode.read, .split] {
+            let host = ReadingWindow(markdown, mode: mode)
+            defer { host.close() }
+            host.settings.showsLineNumbersInPreview = true
+            let webView = try renderedPreview(host)
+            host.spin(until: { (try? evaluate("!!document.querySelector('\(number)')", in: webView)) as? Bool == true })
+
+            try click(number, in: webView, window: host.window)
+            // Read mode creates the editor's text view when the editor mounts.
+            host.spin(until: {
+                guard let editor = host.store.editorSession.textView else { return false }
+                return editor.window != nil && editor.selectedRange() == target
+            })
+            let editor = try XCTUnwrap(
+                host.store.editorSession.textView,
+                "\(mode): the editor must open; the number is at \(String(describing: try? rect(of: number, in: webView)))"
+            )
+
+            XCTAssertEqual(editor.selectedRange(), target, "\(mode): the clicked line must be selected")
+            XCTAssertTrue(editor.window?.firstResponder === editor, "\(mode): the editor must take focus")
+            let layoutManager = try XCTUnwrap(editor.layoutManager)
+            var lineRect = layoutManager.lineFragmentRect(forGlyphAt: layoutManager.glyphIndexForCharacter(at: target.location), effectiveRange: nil)
+            lineRect.origin.y += editor.textContainerOrigin.y
+            XCTAssertTrue(editor.visibleRect.intersects(lineRect), "\(mode): the selected line must be on screen")
+            if mode == .split {
+                XCTAssertNotNil(host.find(WKWebView.self), "Side by Side keeps the preview")
+            }
+        }
+    }
+
+    /// Clicks the center of `selector` in `webView` with real mouse events, so
+    /// the page sees a trusted click. It waits until the element stops moving:
+    /// the sidebar and the window settle after the page loads, and a reflow
+    /// between measuring and clicking would miss a small target. The events go
+    /// to the web view itself: the test process cannot make its window key,
+    /// and a window that is not key would spend the first click on activating
+    /// itself.
+    @MainActor private func click(_ selector: String, in webView: WKWebView, window: NSWindow) throws {
+        var box = try rect(of: selector, in: webView)
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            let settle = expectation(description: "layout settles")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { settle.fulfill() }
+            wait(for: [settle], timeout: 1)
+            let next = try rect(of: selector, in: webView)
+            if next == box { break }
+            box = next
+        }
+        let center = [box[0] + box[2] / 2, box[1] + box[3] / 2]
+        let y = webView.isFlipped ? center[1] : Double(webView.bounds.height) - center[1]
+        let location = webView.convert(NSPoint(x: center[0], y: y), to: nil)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(
+                with: type, location: location, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0
+            ))
+            if type == .leftMouseDown { webView.mouseDown(with: event) } else { webView.mouseUp(with: event) }
+        }
+    }
+
+    /// The viewport rect of `selector` as `[left, top, width, height]`.
+    @MainActor private func rect(of selector: String, in webView: WKWebView) throws -> [Double] {
+        try XCTUnwrap(
+            evaluate("(function () { var r = document.querySelector('\(selector)').getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; })()", in: webView) as? [Double],
+            "no element matches \(selector)"
+        )
+    }
+
     /// The preview once every outline heading is in the page. The render worker
     /// can deliver the document after the first page load on a slow runner, so
     /// a web view that has stopped loading may still show an earlier render, and

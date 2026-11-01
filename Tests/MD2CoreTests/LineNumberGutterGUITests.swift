@@ -188,6 +188,32 @@ final class LineNumberGutterGUITests: XCTestCase {
         XCTAssertEqual(result["numbers"] as? [String], ["1", "3"], "both paragraphs should be numbered")
     }
 
+    // MARK: - Clicking a number
+
+    /// A trusted click on a number reaches native, through the isolated-world
+    /// bridge, as the source line the number shows. A page script's synthetic
+    /// click and a click on the text beside it send nothing.
+    @MainActor
+    func testClickingANumberRequestsItsSourceLine() throws {
+        try skipUnlessGUITestsEnabled()
+
+        let coordinator = MarkdownPreviewView.Coordinator()
+        var requested: [Int] = []
+        coordinator.onRevealSourceLine = { requested.append($0) }
+        let page = try loadPage(html: MarkdownRenderer().render("first\n\nsecond\n\nthird").html, bridge: coordinator)
+        defer { page.close() }
+        let third = ".md2-line-gutter span[data-md2-gutter=\"5\"]"
+
+        _ = try page.evaluate("document.querySelector('\(third)').click(); true")
+        try page.click("main > p")
+        spin(until: { !requested.isEmpty }, timeout: 0.5)
+        XCTAssertEqual(requested, [], "only a trusted click on a number may send a line")
+
+        try page.click(third)
+        spin(until: { !requested.isEmpty })
+        XCTAssertEqual(requested, [5], "the number's own line must reach native")
+    }
+
     // MARK: - Live re-render and toggling
 
     @MainActor
@@ -559,6 +585,21 @@ final class LineNumberGutterGUITests: XCTestCase {
         gutterEnabled: Bool = true,
         probe: String
     ) throws -> [String: Any] {
+        let page = try loadPage(html: html, frameWidth: frameWidth, gutterEnabled: gutterEnabled)
+        defer { page.close() }
+        return try page.evaluate(probe) as? [String: Any] ?? [:]
+    }
+
+    /// Loads `html` as `loadAndProbe` does and keeps the page open. With a
+    /// `bridge`, the page also gets the preview's isolated-world interaction
+    /// bridge, as `MarkdownPreviewView` installs it.
+    @MainActor
+    private func loadPage(
+        html: String,
+        frameWidth: CGFloat = 900,
+        gutterEnabled: Bool = true,
+        bridge: WKScriptMessageHandler? = nil
+    ) throws -> GutterPage {
         _ = NSApplication.shared
 
         let configuration = WKWebViewConfiguration()
@@ -584,6 +625,9 @@ final class LineNumberGutterGUITests: XCTestCase {
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: true
         ))
+        if let bridge {
+            MarkdownPreviewView.installInteractionBridge(on: configuration.userContentController, handler: bridge)
+        }
 
         let frame = NSRect(x: 0, y: 0, width: frameWidth, height: 800)
         let webView = WKWebView(frame: frame, configuration: configuration)
@@ -598,7 +642,6 @@ final class LineNumberGutterGUITests: XCTestCase {
         window.contentView = webView
         window.setFrameOrigin(NSPoint(x: -30_000, y: -30_000))
         window.orderFrontRegardless()
-        defer { window.orderOut(nil) }
 
         let delegate = GutterNavigationDelegate()
         webView.navigationDelegate = delegate
@@ -612,14 +655,14 @@ final class LineNumberGutterGUITests: XCTestCase {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { rendered.fulfill() }
         wait(for: [rendered], timeout: 5)
 
-        let probed = expectation(description: "probe evaluated")
-        var output: [String: Any] = [:]
-        webView.evaluateJavaScript(probe) { value, _ in
-            output = (value as? [String: Any]) ?? [:]
-            probed.fulfill()
+        return GutterPage(test: self, webView: webView, window: window, delegate: delegate)
+    }
+
+    private func spin(until condition: () -> Bool, timeout: TimeInterval = 5) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
         }
-        wait(for: [probed], timeout: 5)
-        return output
     }
 
     private func boolValue(_ value: Any?) -> Bool {
@@ -663,6 +706,59 @@ final class LineNumberGutterGUITests: XCTestCase {
     private func pixelValue(_ value: Any?) -> Double {
         guard let text = value as? String else { return -1 }
         return Double(text.replacingOccurrences(of: "px", with: "")) ?? -1
+    }
+}
+
+/// An open gutter test page. `close()` takes its window off screen.
+@MainActor private struct GutterPage {
+    let test: XCTestCase
+    let webView: WKWebView
+    let window: NSWindow
+    let delegate: GutterNavigationDelegate
+
+    func evaluate(_ script: String) throws -> Any? {
+        let probed = test.expectation(description: "probe evaluated")
+        var output: Any?
+        var failure: Error?
+        webView.evaluateJavaScript(script) { value, error in
+            output = value
+            failure = error
+            probed.fulfill()
+        }
+        test.wait(for: [probed], timeout: 5)
+        if let failure { throw failure }
+        return output
+    }
+
+    /// Clicks the center of the element `selector` names with real mouse events,
+    /// so the page sees a trusted click. They go to the web view itself: the
+    /// test process cannot make a window key, and a window that is not key may
+    /// spend the first click on activating itself.
+    func click(_ selector: String) throws {
+        let box = try XCTUnwrap(
+            evaluate("(function () { var r = document.querySelector('\(selector)').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()") as? [Double],
+            "no element matches \(selector)"
+        )
+        let y = webView.isFlipped ? box[1] : Double(webView.bounds.height) - box[1]
+        let location = webView.convert(NSPoint(x: box[0], y: y), to: nil)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(
+                with: type,
+                location: location,
+                modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber,
+                context: nil,
+                eventNumber: 0,
+                clickCount: 1,
+                pressure: type == .leftMouseDown ? 1 : 0
+            ))
+            if type == .leftMouseDown { webView.mouseDown(with: event) } else { webView.mouseUp(with: event) }
+        }
+    }
+
+    func close() {
+        window.orderOut(nil)
     }
 }
 

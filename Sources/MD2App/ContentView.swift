@@ -605,6 +605,26 @@ struct ContentView: View {
         }
     }
 
+    /// A preview gutter number was clicked: select its source line in the
+    /// editor. Side by Side selects it in place and moves focus to the editor,
+    /// leaving the preview where the user clicked. Read mode opens the editor
+    /// with the line at the top, as an outline jump places a heading, then
+    /// selects it.
+    private func revealSourceLineInEditor(_ line: Int, inSplit: Bool) {
+        if inSplit {
+            focusedPane = .editor
+        } else {
+            guard mode == .read else { return }
+            Task { await document.flushPendingRender() }
+            deliver(anchor: ViewportAnchor(
+                sourceLine: line,
+                scrollFraction: fraction(forLine: line, totalLines: totalLineCount),
+                fallbackHeadingID: document.rendered.outline.heading(atOrAbove: line)?.id
+            ), to: .write)
+        }
+        document.editorLineSelection = LineSelectionRequest(line: line)
+    }
+
     /// Entering Side by Side rebuilds the preview web view; its reload can land
     /// the page at the top before the handed-off `previewJumpAnchor` settles
     /// (notably Preview→Split, where the binding is consumed by the outgoing web
@@ -721,6 +741,7 @@ struct ContentView: View {
                 findReplacement: $editorFindReplacement,
                 replaceCommand: $editorReplaceCommand,
                 focusToken: editorSurfaceFocusToken,
+                lineSelection: $document.editorLineSelection,
                 focusOnProgrammaticScroll: !inSplit,
                 onFindShortcut: { action in
                     if inSplit { focusedPane = .editor }
@@ -802,6 +823,7 @@ struct ContentView: View {
                         document.previewJumpAnchor = fresh ?? previewAnchor
                     }
                 },
+                onRevealSourceLine: { line in revealSourceLineInEditor(line, inSplit: inSplit) },
                 onOpenMarkdownLink: onOpenMarkdownLink,
                 findQuery: $previewFindQuery,
                 findNavigation: $previewFindNavigation,

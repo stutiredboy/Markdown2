@@ -149,6 +149,116 @@ final class EditorLineNumberGutterGUITests: XCTestCase {
         )
     }
 
+    // MARK: - Clicking a number
+
+    /// A click on the gutter selects the source line beside it with its line
+    /// break, including a click beside a wrapped row; Shift extends the
+    /// selection to another line, and a drag extends it line by line.
+    @MainActor
+    func testClickingTheGutterSelectsSourceLines() throws {
+        try skipUnlessGUITestsEnabled()
+
+        let context = try host(document: wrappedDocument, showsLineNumbers: true, height: 500)
+        defer { context.close() }
+        let textView = try XCTUnwrap(context.textView)
+        let text = textView.string as NSString
+        let heading = text.range(of: "# Heading\n")
+        let paragraphStart = text.range(of: "A paragraph").location
+        let paragraph = NSRange(location: paragraphStart, length: text.range(of: "row.\n").upperBound - paragraphStart)
+        let short = text.range(of: "Short line.")
+
+        click(textView, at: gutterPoint(forCharacter: heading.location, in: textView))
+        XCTAssertEqual(textView.selectedRange(), heading, "a number selects its line with the line break")
+
+        // A row the paragraph wrapped onto carries no number, but it is still
+        // the paragraph's line.
+        let wrappedRow = try XCTUnwrap(secondRowStart(ofCharacter: paragraphStart, in: textView))
+        click(textView, at: gutterPoint(forCharacter: wrappedRow, in: textView))
+        XCTAssertEqual(textView.selectedRange(), paragraph, "a wrapped row selects its whole source line")
+
+        click(textView, at: gutterPoint(forCharacter: short.location, in: textView), modifiers: .shift)
+        XCTAssertEqual(
+            textView.selectedRange(),
+            NSRange(location: paragraph.location, length: short.upperBound - paragraph.location),
+            "Shift extends the selection to the clicked line"
+        )
+
+        click(
+            textView,
+            at: gutterPoint(forCharacter: heading.location, in: textView),
+            dragTo: gutterPoint(forCharacter: paragraphStart, in: textView)
+        )
+        XCTAssertEqual(
+            textView.selectedRange(),
+            NSRange(location: 0, length: paragraph.upperBound),
+            "a drag extends the selection line by line"
+        )
+    }
+
+    /// With numbers hidden the inset is ordinary margin: a click there places
+    /// the caret as a text view does and selects nothing.
+    @MainActor
+    func testGutterClickSelectsNothingWhenNumbersAreHidden() throws {
+        try skipUnlessGUITestsEnabled()
+
+        let context = try host(document: wrappedDocument, showsLineNumbers: false, height: 500)
+        defer { context.close() }
+        let textView = try XCTUnwrap(context.textView)
+        let short = (textView.string as NSString).range(of: "Short line.")
+
+        click(textView, at: gutterPoint(forCharacter: short.location, in: textView))
+        XCTAssertEqual(textView.selectedRange().length, 0, "a hidden gutter must not select a line")
+    }
+
+    /// A point in the gutter strip beside the row holding `index`, in the text
+    /// view's coordinates.
+    @MainActor
+    private func gutterPoint(forCharacter index: Int, in textView: NSTextView) -> NSPoint {
+        guard let layoutManager = textView.layoutManager else { return .zero }
+        let glyph = layoutManager.glyphIndexForCharacter(at: index)
+        let row = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        return NSPoint(x: 12, y: row.midY + textView.textContainerOrigin.y)
+    }
+
+    /// The first character of the second visual row of the line holding `index`.
+    @MainActor
+    private func secondRowStart(ofCharacter index: Int, in textView: NSTextView) -> Int? {
+        guard let layoutManager = textView.layoutManager else { return nil }
+        var firstRow = NSRange()
+        layoutManager.lineFragmentRect(forGlyphAt: layoutManager.glyphIndexForCharacter(at: index), effectiveRange: &firstRow)
+        guard firstRow.upperBound < layoutManager.numberOfGlyphs else { return nil }
+        return layoutManager.characterIndexForGlyph(at: firstRow.upperBound)
+    }
+
+    /// Sends a left click at `point` (text-view coordinates). The drag and the
+    /// mouse-up are queued first, because the view's tracking loop reads them
+    /// from the window's event queue.
+    @MainActor
+    private func click(
+        _ textView: NSTextView,
+        at point: NSPoint,
+        modifiers: NSEvent.ModifierFlags = [],
+        dragTo end: NSPoint? = nil
+    ) {
+        guard let window = textView.window else { return }
+        func event(_ type: NSEvent.EventType, _ point: NSPoint) -> NSEvent? {
+            NSEvent.mouseEvent(
+                with: type,
+                location: textView.convert(point, to: nil),
+                modifierFlags: modifiers,
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber,
+                context: nil,
+                eventNumber: 0,
+                clickCount: 1,
+                pressure: type == .leftMouseUp ? 0 : 1
+            )
+        }
+        if let end, let drag = event(.leftMouseDragged, end) { window.postEvent(drag, atStart: false) }
+        if let up = event(.leftMouseUp, end ?? point) { window.postEvent(up, atStart: false) }
+        if let down = event(.leftMouseDown, point) { textView.mouseDown(with: down) }
+    }
+
     // MARK: - Harness
 
     private func skipUnlessGUITestsEnabled() throws {
@@ -199,6 +309,7 @@ final class EditorLineNumberGutterGUITests: XCTestCase {
                 findReplacement: .constant(""),
                 replaceCommand: .constant(nil),
                 focusToken: UUID(),
+                lineSelection: .constant(nil),
                 showsLineNumbers: showsLineNumbers
             )
         )

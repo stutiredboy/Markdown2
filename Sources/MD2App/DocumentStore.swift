@@ -69,6 +69,9 @@ final class DocumentStore: ObservableObject {
     /// above and are consumed once applied.
     @Published var editorJumpAnchor: ViewportAnchor?
     @Published var previewJumpAnchor: ViewportAnchor?
+    /// A source line for the editor to select, sent by a preview gutter click;
+    /// the editor clears it once applied.
+    @Published var editorLineSelection: LineSelectionRequest?
     @Published private(set) var documentIdentity = UUID()
     /// True while the backing file has changed on disk under unsaved edits and
     /// the user has not chosen a side yet. While set, autosave is suspended and

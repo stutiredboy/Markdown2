@@ -69,6 +69,10 @@ struct MarkdownEditorView: NSViewRepresentable {
     @Binding var replaceCommand: FindReplaceCommand?
     /// Changes whenever the editor surface should become first responder.
     let focusToken: UUID
+    /// A source line to select and reveal (a preview gutter click); applied
+    /// once per token, after any mode-switch anchor has settled, then cleared
+    /// so an editor mounted later does not replay it.
+    @Binding var lineSelection: LineSelectionRequest?
     /// Programmatic line/anchor jumps usually focus the editor in single-pane
     /// mode. In Side by Side, the editor can be only the scroll follower, so it
     /// must not steal focus from the preview pane.
@@ -85,8 +89,8 @@ struct MarkdownEditorView: NSViewRepresentable {
     /// edit path so dirty marking, styling, autosave, selection, and undo apply.
     var onInsertImageAttachments: (_ sources: [ImageAttachmentSource]) -> String? = { _ in nil }
     /// Whether the source line-number gutter is drawn in the text view's left
-    /// inset. Display-only: it changes no text, selection, or geometry, so
-    /// toggling it cannot re-wrap the document.
+    /// inset. Toggling it changes no text, selection, or geometry, so it cannot
+    /// re-wrap the document; while it is on, clicking a number selects its line.
     var showsLineNumbers: Bool = false
     /// The document's editor text system. Every editor the document mounts
     /// re-hosts its one text view, so the undo history — whose actions target
@@ -281,6 +285,14 @@ struct MarkdownEditorView: NSViewRepresentable {
                 }
             }
         }
+
+        // After the jump handling, so an anchor this pass started is already
+        // settling and the selection waits for it.
+        if let lineSelection, context.coordinator.lastLineSelectionToken != lineSelection.token {
+            context.coordinator.lastLineSelectionToken = lineSelection.token
+            context.coordinator.selectSourceLine(lineSelection.line, in: textView)
+            DispatchQueue.main.async { self.lineSelection = nil }
+        }
     }
 
     /// Applies a mode-switch viewport anchor: a source-line anchor resolves to
@@ -455,6 +467,11 @@ struct MarkdownEditorView: NSViewRepresentable {
         /// command value is still held by the binding. See the consumption site.
         var lastFindNavigationToken: UUID?
         var lastReplaceCommandToken: UUID?
+        var lastLineSelectionToken: UUID?
+        /// A line selection that arrived while an anchor was settling; the
+        /// settle's final pass applies it, once the freshly mounted editor is
+        /// in place and the anchor has placed its own caret.
+        private var pendingLineSelection: (line: Int, textView: NSTextView)?
         private weak var scrollView: NSScrollView?
         /// True while a programmatic scroll (mode-switch jump, outline jump,
         /// find reveal) is in flight, so its transient positions are never
@@ -977,6 +994,10 @@ struct MarkdownEditorView: NSViewRepresentable {
                         // the two panes open in alignment in Side by Side.
                         self.onAnchorLineChange(line, true)
                     }
+                    if let pending = self.pendingLineSelection {
+                        self.pendingLineSelection = nil
+                        self.selectSourceLine(pending.line, in: pending.textView)
+                    }
                 } else {
                     DispatchQueue.main.async(execute: step)
                 }
@@ -1249,6 +1270,76 @@ struct MarkdownEditorView: NSViewRepresentable {
             }
 
             return rows
+        }
+
+        /// Selects 1-based source `line` with its line break, focuses the
+        /// editor, and scrolls the line's start into view if it is off screen.
+        /// While a mode-switch anchor is settling, the selection waits for it.
+        /// A line past the end of the document (a stale preview) is ignored.
+        @MainActor func selectSourceLine(_ line: Int, in textView: NSTextView) {
+            if settlingAnchor != nil {
+                pendingLineSelection = (line, textView)
+                return
+            }
+            guard let range = Self.sourceLineRange(forLine: line, in: textView.string as NSString) else { return }
+            textView.window?.makeFirstResponder(textView)
+            textView.setSelectedRange(range)
+            if let scrollView {
+                _ = performProgrammaticScroll(in: scrollView) {
+                    textView.scrollRangeToVisible(NSRange(location: range.location, length: 0))
+                    return true
+                }
+            } else {
+                textView.scrollRangeToVisible(NSRange(location: range.location, length: 0))
+            }
+        }
+
+        /// The range of 1-based source `line`, with its line break, numbered as
+        /// the gutter numbers lines (LF, CRLF and a bare CR each end a line), so
+        /// it is exactly the line a gutter number labels. Nil past the last line.
+        static func sourceLineRange(forLine line: Int, in string: NSString) -> NSRange? {
+            guard line >= 1 else { return nil }
+            var current = 1
+            var location = 0
+            while current < line {
+                guard let next = lineBreakEnd(from: location, in: string) else { return nil }
+                location = next
+                current += 1
+            }
+            return NSRange(location: location, length: (lineBreakEnd(from: location, in: string) ?? string.length) - location)
+        }
+
+        /// The source line containing the character at `index`, numbered as
+        /// `sourceLineRange(forLine:in:)` numbers it. An index between the CR
+        /// and LF of a pair belongs to the line the pair ends.
+        static func sourceLineRange(containing index: Int, in string: NSString) -> NSRange {
+            var start = max(0, min(index, string.length))
+            if start > 0, start < string.length,
+               string.character(at: start - 1) == 0x0D, string.character(at: start) == 0x0A {
+                start -= 1
+            }
+            while start > 0 {
+                let previous = string.character(at: start - 1)
+                if previous == 0x0A || previous == 0x0D { break }
+                start -= 1
+            }
+            return NSRange(location: start, length: (lineBreakEnd(from: start, in: string) ?? string.length) - start)
+        }
+
+        /// The index just past the first line break at or after `location`, or
+        /// nil when the rest of the string has none.
+        private static func lineBreakEnd(from location: Int, in string: NSString) -> Int? {
+            var index = location
+            while index < string.length {
+                let character = string.character(at: index)
+                if character == 0x0A { return index + 1 }
+                if character == 0x0D {
+                    let isCRLF = index + 1 < string.length && string.character(at: index + 1) == 0x0A
+                    return index + (isCRLF ? 2 : 1)
+                }
+                index += 1
+            }
+            return nil
         }
 
         deinit {
@@ -1600,6 +1691,52 @@ final class MarkdownSourceTextView: NSTextView {
             let y = rect.minY + max(0, (rect.height - size.height) / 2)
             label.draw(at: NSPoint(x: max(0, x), y: y), withAttributes: attributes)
         }
+    }
+
+    // MARK: - Gutter clicks
+
+    /// A click on the line-number gutter selects the source line beside it, with
+    /// its line break. Shift extends the current selection to that line, and a
+    /// drag extends the selection line by line, as other editors' gutters do.
+    /// With numbers hidden, or while an input method holds marked text, the
+    /// inset is ordinary text-view margin.
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard showsLineNumbers, !hasMarkedText(), point.x < textContainerOrigin.x,
+              let clicked = gutterLineRange(atY: point.y) else {
+            super.mouseDown(with: event)
+            return
+        }
+        window?.makeFirstResponder(self)
+        let anchor = event.modifierFlags.contains(.shift) ? selectedRange() : clicked
+        setSelectedRange(NSUnionRange(anchor, clicked))
+        while let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]),
+              next.type == .leftMouseDragged {
+            autoscroll(with: next)
+            if let line = gutterLineRange(atY: convert(next.locationInWindow, from: nil).y) {
+                setSelectedRange(NSUnionRange(anchor, line))
+            }
+        }
+    }
+
+    /// The source line whose rows include `y` (view coordinates), with its line
+    /// break, numbered as the gutter numbers it. Above the text this is the
+    /// first line; below it, the last.
+    func gutterLineRange(atY y: CGFloat) -> NSRange? {
+        guard let layoutManager, let textContainer else { return nil }
+        let string = self.string as NSString
+        let containerY = y - textContainerOrigin.y
+        layoutManager.ensureLayout(for: textContainer)
+        // A document ending in a line break has an empty last line with no
+        // glyphs, laid out as the extra line fragment.
+        if layoutManager.extraLineFragmentTextContainer != nil,
+           containerY >= layoutManager.extraLineFragmentRect.minY {
+            return MarkdownEditorView.Coordinator.sourceLineRange(containing: string.length, in: string)
+        }
+        guard layoutManager.numberOfGlyphs > 0 else { return NSRange(location: 0, length: 0) }
+        let glyph = layoutManager.glyphIndex(for: NSPoint(x: 0, y: containerY), in: textContainer)
+        let character = layoutManager.characterIndexForGlyph(at: glyph)
+        return MarkdownEditorView.Coordinator.sourceLineRange(containing: character, in: string)
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
