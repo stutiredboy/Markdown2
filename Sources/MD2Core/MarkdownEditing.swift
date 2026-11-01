@@ -556,8 +556,10 @@ public enum MarkdownEditing {
 /// Shared with the renderer: tabs occupy four columns; marker gaps of five or
 /// more spaces start code rather than pushing the list content column out.
 enum MarkdownIndentation {
+    /// Leading-whitespace width in columns (a tab counts as four), read as
+    /// scalars so a joining scalar after the last space does not hide it.
     static func width(_ string: String) -> Int {
-        string.prefix { $0 == " " || $0 == "\t" }.reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
+        string.unicodeScalars.prefix { $0 == " " || $0 == "\t" }.reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
     }
 
     static func contentColumn(markerIndent: Int, delimiterWidth: Int, gap: String) -> Int {

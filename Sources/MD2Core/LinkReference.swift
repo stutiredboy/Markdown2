@@ -35,10 +35,10 @@ struct LinkReference {
             guard label.unicodeScalars.count < 999, char != "[" else { return nil }
             if char == "\n", cursor.nextLineIsBlank { return nil }
             if char == "\\" {
-                label.append(char); cursor.advance()
-                if let escaped = cursor.peek { label.append(escaped); cursor.advance() }
+                label.unicodeScalars.append(char); cursor.advance()
+                if let escaped = cursor.peek { label.unicodeScalars.append(escaped); cursor.advance() }
             } else {
-                label.append(char); cursor.advance()
+                label.unicodeScalars.append(char); cursor.advance()
             }
         }
         guard cursor.take("]"), cursor.take(":"), !normalize(label).isEmpty,
@@ -50,27 +50,27 @@ struct LinkReference {
         if cursor.take("<") {
             while let char = cursor.peek, char != ">" {
                 guard char != "\n", char != "<" else { return nil }
-                destination.append(char); cursor.advance()
+                destination.unicodeScalars.append(char); cursor.advance()
                 if char == "\\", let next = cursor.peek, next != "\n" {
-                    destination.append(next); cursor.advance()
+                    destination.unicodeScalars.append(next); cursor.advance()
                 }
             }
             guard cursor.take(">") else { return nil }
         } else {
             var depth = 0
-            while let char = cursor.peek, !char.isWhitespace {
-                guard char != "<", !char.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) else { return nil }
+            while let char = cursor.peek, !char.properties.isWhitespace {
+                guard char != "<", char.value >= 32, char.value != 127 else { return nil }
                 if char == "(" { depth += 1 }
                 if char == ")" { depth -= 1; if depth < 0 { return nil } }
-                destination.append(char); cursor.advance()
+                destination.unicodeScalars.append(char); cursor.advance()
                 if char == "\\", let next = cursor.peek, next != "\n" {
-                    destination.append(next); cursor.advance()
+                    destination.unicodeScalars.append(next); cursor.advance()
                 }
             }
             guard !destination.isEmpty, depth == 0 else { return nil }
         }
         let destinationEndLine = cursor.line
-        let separated = cursor.peek?.isWhitespace == true
+        let separated = cursor.peek?.properties.isWhitespace == true
         cursor.spaces()
         let titleOnNextLine = cursor.peek == "\n"
         if titleOnNextLine { cursor.advance(); cursor.spaces() }
@@ -79,14 +79,14 @@ struct LinkReference {
             return titleOnNextLine || cursor.peek == nil ? withoutTitle : nil
         }
         cursor.advance()
-        let closer: Character = opener == "(" ? ")" : opener
+        let closer: Unicode.Scalar = opener == "(" ? ")" : opener
         var title = ""
         while let char = cursor.peek, char != closer {
             if char == "\n", cursor.nextLineIsBlank { return titleOnNextLine ? withoutTitle : nil }
             if opener == "(", char == "(" { return titleOnNextLine ? withoutTitle : nil }
-            title.append(char); cursor.advance()
+            title.unicodeScalars.append(char); cursor.advance()
             if char == "\\", let next = cursor.peek {
-                title.append(next); cursor.advance()
+                title.unicodeScalars.append(next); cursor.advance()
             }
         }
         guard cursor.take(closer) else { return titleOnNextLine ? withoutTitle : nil }
@@ -98,6 +98,8 @@ struct LinkReference {
 
 /// Advances through source lines without joining the entire remaining document
 /// for each definition (which would make a long definition list quadratic).
+/// It steps by Unicode scalar: the syntax is ASCII, and a combining mark after
+/// `[` or `(` would otherwise join the delimiter into a larger grapheme.
 private struct ReferenceCursor {
     let lines: [String]
     var line: Int
@@ -109,9 +111,9 @@ private struct ReferenceCursor {
         column = lines[line].startIndex
     }
 
-    var peek: Character? {
+    var peek: Unicode.Scalar? {
         guard line < lines.count else { return nil }
-        if column < lines[line].endIndex { return lines[line][column] }
+        if column < lines[line].endIndex { return lines[line].unicodeScalars[column] }
         return line + 1 < lines.count ? "\n" : nil
     }
 
@@ -121,11 +123,11 @@ private struct ReferenceCursor {
 
     mutating func advance() {
         guard line < lines.count else { return }
-        if column < lines[line].endIndex { column = lines[line].index(after: column) }
+        if column < lines[line].endIndex { column = lines[line].unicodeScalars.index(after: column) }
         else { line += 1; if line < lines.count { column = lines[line].startIndex } }
     }
 
-    mutating func take(_ char: Character) -> Bool {
+    mutating func take(_ char: Unicode.Scalar) -> Bool {
         guard peek == char else { return false }
         advance()
         return true
