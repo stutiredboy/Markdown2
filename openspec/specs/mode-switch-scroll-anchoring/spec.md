@@ -10,7 +10,11 @@ viewport, including an intra-block position when available. The system SHALL use
 the section heading or proportional fallback only when a block/source-line anchor
 cannot be resolved. The resulting offset MUST be clamped so it never exceeds
 `contentHeight - viewportHeight`, is never negative, and never leaves the
-destination with an empty or invalid visible range after settling.
+destination with an empty or invalid visible range after settling. The
+destination SHALL still show the anchored content after its own asynchronous
+layout work, including the editor's first styling of a text view it has not
+shown before: a restyle that changes line heights SHALL keep the editor on the
+line the anchor placed, not at the same scroll offset.
 
 #### Scenario: Switch a long document from editor body text to preview
 - **WHEN** a multi-page document is scrolled in Write mode so body text inside a
@@ -45,6 +49,14 @@ destination with an empty or invalid visible range after settling.
   (`contentHeight - viewportHeight`) rather than past the end
 - **AND** the destination still reports a non-empty visible range once layout has
   settled
+
+#### Scenario: The first switch to the editor survives its styling
+- **WHEN** a long document is opened in Read mode and scrolled so a heading
+  inside a long section is near the top of the preview
+- **AND** the user switches to Write mode, which shows the editor for the first
+  time in that window
+- **THEN** once the editor has styled its text, the heading's source line is at
+  the top of the editor, below the editor's top margin
 
 ### Requirement: Preview blocks expose source-line anchors
 The rendered preview SHALL expose stable source-line metadata on block-level

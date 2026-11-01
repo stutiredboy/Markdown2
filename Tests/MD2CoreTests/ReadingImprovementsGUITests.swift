@@ -256,6 +256,106 @@ final class ReadingImprovementsGUITests: XCTestCase {
         XCTAssertTrue(landed(), "the editor must open on line \(targetLine), the list item at the top of the preview (anchor \(anchor), placement \(String(describing: placement())))")
     }
 
+    /// The first switch to the editor lands on the anchored line once the
+    /// editor's text is styled. The text view starts as plain text, the anchor
+    /// settles against that layout, and styling then changes every line's
+    /// height; keeping the scroll offset in points put the editor on line 12
+    /// of a document anchored at line 63.
+    @MainActor func testFirstSwitchToWriteLandsOnTheAnchoredLineAfterStyling() throws {
+        let paragraph = String(repeating: "Section text long enough to wrap across several rows of the editor. ", count: 8)
+        let markdown = "# Title\n\n" + (1...40).map { "## Section \($0)\n\n\(paragraph)" }.joined(separator: "\n\n") + "\n"
+        let heading = "## Section 20\n"
+        let target = (markdown as NSString).range(of: heading).location
+        let targetLine = markdown.prefix(upTo: markdown.range(of: heading)!.lowerBound).filter { $0 == "\n" }.count + 1
+        let host = ReadingWindow(markdown, mode: .read)
+        defer { host.close() }
+        XCTAssertNil(host.store.editorSession.textView, "the editor must not have been shown yet")
+        let webView = try renderedPreview(host)
+        _ = try evaluate("window.requestAnimationFrame = function (callback) { return setTimeout(callback, 16); }; void 0;", in: webView)
+
+        // Put the heading across the anchor band, with the paragraph after it
+        // below the band.
+        let id = try XCTUnwrap(host.store.rendered.outline.first { $0.title == "Section 20" }?.id)
+        _ = try evaluate("""
+        (function () {
+          var heading = document.getElementById('\(id)');
+          var band = Math.min(64, window.innerHeight * 0.25);
+          window.scrollTo(0, heading.getBoundingClientRect().top + window.scrollY - band + 4);
+        })()
+        """, in: webView)
+        host.spin(0.3)
+        let anchor = try XCTUnwrap(evaluate("JSON.stringify(window.__md2CaptureAnchor())", in: webView) as? String)
+        XCTAssertTrue(anchor.contains("\"line\":\(targetLine),"), anchor)
+
+        host.store.requestMode(.write)
+        // Styled text carries a paragraph style; the plain text a new text
+        // view starts with does not.
+        host.spin(until: {
+            guard let storage = host.store.editorSession.textView?.textStorage, storage.length > 0 else { return false }
+            return storage.attribute(.paragraphStyle, at: storage.length - 1, effectiveRange: nil) != nil
+        })
+        host.spin(0.5)
+        let editor = try XCTUnwrap(host.store.editorSession.textView)
+        let scrollView = try XCTUnwrap(editor.enclosingScrollView)
+        let layoutManager = try XCTUnwrap(editor.layoutManager)
+        var line = layoutManager.lineFragmentRect(forGlyphAt: layoutManager.glyphIndexForCharacter(at: target), effectiveRange: nil)
+        line.origin.y += editor.textContainerOrigin.y
+        // The editor keeps one container inset above a jump target.
+        let offset = line.minY - editor.visibleRect.minY
+        XCTAssertEqual(
+            offset, editor.textContainerOrigin.y, accuracy: line.height / 2,
+            "the editor must open on line \(targetLine) (anchor \(anchor)); top visible line is \(String(describing: MarkdownEditorView.Coordinator.topVisibleLine(in: scrollView)))"
+        )
+    }
+
+    /// A number low in the preview opens an editor shown for the first time
+    /// with the number's line selected at the top, also once the editor's text
+    /// is styled, which makes every line above it taller. Before, the clicked
+    /// line ended up far below the viewport.
+    @MainActor func testPreviewNumberLowInReadModeOpensItsLineAtTheTop() throws {
+        let paragraph = String(repeating: "Section text long enough to wrap across several rows of the editor. ", count: 8)
+        let markdown = "# Title\n\n" + (1...40).map { "## Section \($0)\n\n\(paragraph)" }.joined(separator: "\n\n") + "\n"
+        let host = ReadingWindow(markdown, mode: .read)
+        defer { host.close() }
+        host.settings.showsLineNumbersInPreview = true
+        let webView = try renderedPreview(host)
+        host.spin(until: { (try? evaluate("!!document.querySelector('.md2-line-gutter span')", in: webView)) as? Bool == true })
+        _ = try evaluate("window.scrollTo(0, document.getElementById('section-10').offsetTop)", in: webView)
+        host.spin(0.3)
+        // The lowest number in the bottom third of the viewport.
+        let picked = try XCTUnwrap(evaluate("""
+        (function () {
+          var spans = document.querySelectorAll('.md2-line-gutter span');
+          var line = null;
+          for (var i = 0; i < spans.length; i++) {
+            var top = spans[i].getBoundingClientRect().top;
+            if (top > window.innerHeight * 0.66 && top < window.innerHeight - 40) { line = spans[i].getAttribute('data-md2-gutter'); }
+          }
+          return line;
+        })()
+        """, in: webView) as? String)
+        let line = try XCTUnwrap(Int(picked))
+        let target = try XCTUnwrap(MarkdownEditorView.Coordinator.sourceLineRange(forLine: line, in: markdown as NSString))
+
+        try click(".md2-line-gutter span[data-md2-gutter=\"\(line)\"]", in: webView, window: host.window)
+        host.spin(until: {
+            guard let editor = host.store.editorSession.textView, let storage = editor.textStorage,
+                  editor.window != nil, editor.selectedRange() == target else { return false }
+            return storage.attribute(.paragraphStyle, at: storage.length - 1, effectiveRange: nil) != nil
+        })
+        host.spin(0.5)
+        let editor = try XCTUnwrap(host.store.editorSession.textView)
+        XCTAssertEqual(editor.selectedRange(), target, "line \(line) must be selected")
+        let layoutManager = try XCTUnwrap(editor.layoutManager)
+        var lineRect = layoutManager.lineFragmentRect(forGlyphAt: layoutManager.glyphIndexForCharacter(at: target.location), effectiveRange: nil)
+        lineRect.origin.y += editor.textContainerOrigin.y
+        // The editor keeps one container inset above a jump target.
+        XCTAssertEqual(
+            lineRect.minY - editor.visibleRect.minY, editor.textContainerOrigin.y, accuracy: lineRect.height / 2,
+            "line \(line) must be at the top once styled: \(lineRect) in \(editor.visibleRect)"
+        )
+    }
+
     /// A preview gutter number selects its line in the editor. Read mode opens
     /// the editor on it; Side by Side selects it in place and keeps the preview.
     @MainActor func testPreviewGutterNumberSelectsItsLineInTheEditor() throws {

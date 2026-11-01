@@ -201,6 +201,7 @@ Only a trusted click on the gutter's own numbers SHALL send a line to the app, t
 #### Scenario: A preview number opens the editor from Read mode
 - **WHEN** the user clicks a block's number in Read mode
 - **THEN** the app switches to Write mode with the block's first source line selected and visible
+- **AND** the line is at the top of the editor once the editor has styled its text, also when the editor is shown for the first time
 
 #### Scenario: Only real clicks on numbers count
 - **WHEN** a page script dispatches a synthetic click on a number, or the user clicks the text beside it
