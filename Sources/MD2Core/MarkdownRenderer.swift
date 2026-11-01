@@ -240,9 +240,12 @@ public struct MarkdownRenderer: Sendable {
     /// Inserts the source-line span attributes into a block's first opening
     /// tag. All block HTML starts with its element tag and every attribute
     /// value is HTML-escaped, so the first `>` always terminates that tag.
-    /// The end-line attribute is emitted only for multi-line spans.
+    /// The search reads UTF-8: content that starts with a combining mark
+    /// joins that `>` into one grapheme, and a `Character` search would skip
+    /// to a later tag. The end-line attribute is emitted only for multi-line
+    /// spans.
     private func taggedWithSourceLines(_ html: String, startLine: Int, endLine: Int) -> String {
-        guard let tagEnd = html.firstIndex(of: ">") else { return html }
+        guard let tagEnd = html.utf8.firstIndex(of: UInt8(ascii: ">")) else { return html }
 
         var attributes = " data-md2-source-line=\"\(startLine)\""
         if endLine > startLine {

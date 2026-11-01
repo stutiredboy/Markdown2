@@ -64,17 +64,19 @@ An authored token can also name a fragment protected later in the same pass, suc
 
 **Start here:** copy the local config, add the `!.gstack/pregate.json` exception, and run `gstack-pregate validate` before committing.
 
-## Source-line attribute lands on the closing tag after a leading combining mark
+## Block markers and link brackets are read as graphemes
 
-**What:** A paragraph whose text starts with a combining mark gets its `data-md2-source-line` attribute on the closing tag: U+0301 + `para` renders `<p>…para</p data-md2-source-line="1">`.
+**What:** Read Markdown block markers and inline link brackets as Unicode scalars.
+- **Block markers:** a joining scalar (combining mark, ZWJ, variation selector, spacing mark) right after the space that ends a marker hides the marker. `# ` + U+0301 + `x` renders the paragraph `# ́x` instead of a heading. `- ` + U+0301 + `x` renders a paragraph instead of a list item. `- [ ] ` + U+0301 + `task` renders a list item without a checkbox. CommonMark reads markers by code point, so all three should parse.
+- **Link brackets:** a prepend character (U+0600) before `[` hides the bracket from the link scanner. `[` + U+0600 + `[x](/y)][r]` links `؀[x` to `/y` instead of linking `x`.
 
-**Why:** The HTML is invalid, and the block loses its line mapping, which the preview gutter and mode-switch anchoring read. Found by the `unify-token-grammar` differential run (2026-10-31); reproduces on `main`.
+**Why:** Found while fixing the source-line stamp (2026-11-01); reproduces on `main`. It is the same class as the bare-URL scheme check and the source-line stamp: a `Character` comparison where a neighbouring scalar joins the grapheme.
 
-**Current state:** `taggedWithSourceLines` finds the end of the opening tag with `html.firstIndex(of: ">")`, a `Character` search. A combining mark at the start of the content fuses with the opening tag's `>` into one grapheme, so the search lands on the closing tag.
+**Current state:** The block parser's marker checks and the inline link scanner compare `Character`s. With two spaces (`#  ́x`), the heading parses because the second space carries the mark. A list item written that way keeps a leading space (`<li> ́x</li>`).
 
-**Pros:** A one-line fix (search the UTF-8 or scalar view).
-**Cons / cost:** It touches how every block is stamped, so `MetadataInvariantTests`, the conformance suite and the GUI gutter suites must stay green. (human: ~1h / CC: ~15-30min)
+**Pros:** Scripts and emoji sequences at the start of a block parse as CommonMark specifies; removes a class of silent misparses.
+**Cons / cost:** The block parser and link scanner are wide surfaces. Each marker check needs a scalar version, tests and a differential run. (human: ~1 day / CC: ~2-3h)
 
 **Depends on:** nothing.
 
-**Start here:** search `html.utf8` for `>` in `taggedWithSourceLines` and add a paragraph test that starts with U+0301.
+**Start here:** probe each block marker with U+0301 after its delimiter space against the CommonMark reference (`MarkdownLine` helpers, `trimmedMarkdownLine`), then the link-bracket scanner with U+0600 before `[`; reuse the `swiftc -O` differential probe.

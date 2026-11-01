@@ -77,6 +77,28 @@ struct MetadataInvariantTests {
         #expect(body.contains("<table"))
     }
 
+    /// Content that starts with a joining scalar (a combining mark, ZWJ, a
+    /// variation selector, or a spacing mark) fuses with the opening tag's `>`
+    /// into one grapheme. The block must still carry its source lines on that
+    /// tag, never on a closing tag or a later `<br>`. The checks read the
+    /// output as text and UTF-16 regex, not with `scanTags`, whose `Character`
+    /// search shares the blind spot.
+    @Test(arguments: ["\u{0301}", "\u{200D}", "\u{FE0F}", "\u{093F}"])
+    func blockStartingWithJoiningScalarKeepsSourceLineOnItsTag(scalar: String) {
+        let renderer = MarkdownRenderer()
+        let cases = [
+            ("\(scalar)para", "<p data-md2-source-line=\"1\">\(scalar)para</p>"),
+            ("\(scalar)a\nb", "<p data-md2-source-line=\"1\" data-md2-source-end-line=\"2\">\(scalar)a<br>b</p>"),
+            ("> \(scalar)x", "<p data-md2-source-line=\"1\">\(scalar)x</p>"),
+            ("#  \(scalar)x", " data-md2-source-line=\"1\">\(scalar)x</h1>")
+        ]
+        for (markdown, expected) in cases {
+            let body = renderer.render(markdown).body
+            #expect(body.contains(expected), "\(body)")
+            #expect(body.range(of: #"</[A-Za-z][A-Za-z0-9]*\s"#, options: .regularExpression) == nil, "attribute on a closing tag: \(body)")
+        }
+    }
+
     @Test func bibliographySectionIsExemptLikeFootnotes() {
         let bib = BibTeXParser.parse("@book{k, author = {A Author}, title = {T}, year = {2020} }")
         let config = RenderConfig(bibliography: bib)

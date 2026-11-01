@@ -168,6 +168,26 @@ final class LineNumberGutterGUITests: XCTestCase {
         XCTAssertTrue(boolValue(result["layerIsLastChild"]), "the layer must sit after the content")
     }
 
+    /// A paragraph whose text starts with a combining mark is numbered too. The
+    /// mark fuses with the opening tag's `>`, and a `Character` search once put
+    /// the source-line attribute on `</p>`, which the HTML parser drops.
+    @MainActor
+    func testParagraphStartingWithCombiningMarkIsNumbered() throws {
+        try skipUnlessGUITestsEnabled()
+
+        let html = MarkdownRenderer().render("\u{0301}first\n\nsecond").html
+        let result = try loadAndProbe(html: html, probe: """
+        (function () {
+          var spans = document.querySelectorAll('.md2-line-gutter span');
+          var numbers = [];
+          for (var i = 0; i < spans.length; i++) { numbers.push(spans[i].getAttribute('data-md2-gutter')); }
+          return { numbers: numbers };
+        })()
+        """)
+
+        XCTAssertEqual(result["numbers"] as? [String], ["1", "3"], "both paragraphs should be numbered")
+    }
+
     // MARK: - Live re-render and toggling
 
     @MainActor
