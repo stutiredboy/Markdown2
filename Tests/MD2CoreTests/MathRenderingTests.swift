@@ -138,14 +138,14 @@ struct MathRenderingTests {
         // Markdown backslash escape.
         #expect(document.html.contains(#"<span class="math math-inline">h = I \cdot C_\text{eff} = 0.25\,C_\text{eff}</span>"#))
         // The internal protection placeholder never leaks into the DOM.
-        #expect(!document.html.contains("MD2-"))
+        #expect(!document.html.contains("\u{E000}"))
     }
 
     @Test func escapedPercentSurvivesInsideInlineMath() {
         let document = MarkdownRenderer().render(#"服务水平 $z_{98\%}=2.05$ 对应的安全系数。"#)
 
         #expect(document.html.contains(#"<span class="math math-inline">z_{98\%}=2.05</span>"#))
-        #expect(!document.html.contains("MD2-"))
+        #expect(!document.html.contains("\u{E000}"))
     }
 
     @Test func escapedDollarInsideInlineMathDoesNotCloseSpan() {
@@ -154,7 +154,7 @@ struct MathRenderingTests {
         // The interior `\$` is TeX source, not a closing delimiter: one span
         // spanning to the final unescaped `$`.
         #expect(document.html.contains(#"<span class="math math-inline">\text{Inv\$} = AIL \cdot C_\text{eff}</span>"#))
-        #expect(!document.html.contains("MD2-"))
+        #expect(!document.html.contains("\u{E000}"))
     }
 
     @Test func escapedDollarsDoNotPairIntoMath() {
@@ -274,7 +274,7 @@ struct MathRenderingTests {
 
         // `\(` is not eaten as a Markdown escape, and `\,` reaches KaTeX verbatim.
         #expect(document.html.contains(#"<span class="math math-inline">0.25\,C_\text{eff}</span>"#))
-        #expect(!document.html.contains("MD2-"))
+        #expect(!document.html.contains("\u{E000}"))
     }
 
     @Test func unterminatedParenDelimiterIsNotMath() {
