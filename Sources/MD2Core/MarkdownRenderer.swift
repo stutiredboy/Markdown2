@@ -2409,6 +2409,79 @@ public struct MarkdownRenderer: Sendable {
         return VisibleContinuation(scalars: result, exhausted: false)
     }
 
+    /// The HTML for `trailing`, the authored text cut from the end of `prefix`
+    /// (escaped text with literal tokens): the candidate's own text, so it
+    /// renders as it would outside a URL. Escaping the authored spelling
+    /// instead would show `&amp;` as the text `&amp;`. The walk steps back
+    /// over the units `decodeEntities(source(in:))` maps to authored text: a
+    /// token stands for its source, an escape the renderer added for one
+    /// scalar, and anything else for itself. An entity name HTML does not
+    /// define stays text, as GFM renders it (`&amp;hl;`). Nil when the cut
+    /// falls inside a unit (`\&amp;`, whose `&` is escaped) or the units it
+    /// covers do not read back as `trailing`.
+    private static func cutTailHTML(in prefix: String, trailing: String, protector: InlineProtector) -> String? {
+        let scalars = prefix.unicodeScalars
+        // Tokens come from the one forward scan; a backward read could pair
+        // a shared sentinel differently.
+        var tokens: [Range<String.Index>] = []
+        var cursor = scalars.startIndex
+        while let token = InlineProtector.firstToken(in: prefix, from: cursor) {
+            tokens.append(token.range)
+            cursor = token.range.upperBound
+        }
+        var remaining = trailing.unicodeScalars.count
+        var start = scalars.endIndex
+        var cutTokens: [Range<String.Index>] = []
+        while remaining > 0, start > scalars.startIndex {
+            if let token = tokens.last, token.upperBound == start {
+                tokens.removeLast()
+                cutTokens.append(token)
+                remaining -= HTMLSafety.decodeEntities(protector.source(in: String(prefix[token]))).unicodeScalars.count
+                start = token.lowerBound
+                continue
+            }
+            var unitStart = scalars.index(before: start)
+            // Every `&` in escaped text starts one of these escapes, and none
+            // is a prefix of another, so reading them backward agrees with
+            // reading them forward.
+            if scalars[unitStart] == ";" {
+                for escape in rendererEscapes {
+                    if let from = scalars.index(start, offsetBy: -escape.unicodeScalars.count, limitedBy: scalars.startIndex),
+                       scalars[from..<start].elementsEqual(escape.unicodeScalars) {
+                        unitStart = from
+                        break
+                    }
+                }
+            }
+            start = unitStart
+            remaining -= 1
+        }
+        guard remaining == 0,
+              HTMLSafety.decodeEntities(protector.source(in: String(prefix[start...])))
+                .unicodeScalars.elementsEqual(trailing.unicodeScalars) else { return nil }
+        var html = ""
+        cursor = start
+        for token in cutTokens.reversed() {
+            html += prefix[cursor..<token.lowerBound]
+            let text = String(prefix[token])
+            let fragment = protector.restore(in: text)
+            html += isUndefinedNamedReference(fragment) ? HTMLEscaping.escape(fragment) : text
+            cursor = token.upperBound
+        }
+        return html + prefix[cursor...]
+    }
+
+    /// The escapes `escapeHTML` writes into text, each one authored scalar.
+    private static let rendererEscapes = ["&amp;", "&lt;", "&gt;", "&quot;"]
+
+    /// Whether `fragment` is exactly a named reference that HTML does not
+    /// define, which a browser shows as typed.
+    private static func isUndefinedNamedReference(_ fragment: String) -> Bool {
+        let whole = NSRange(fragment.startIndex..., in: fragment)
+        return namedEntitySpelling.firstMatch(in: fragment, range: whole)?.range == whole
+            && HTMLSafety.decodeAllEntities(fragment) == fragment
+    }
+
     /// Runs after explicit links/images and protected code/math. Tokens for
     /// escaped punctuation/entities can be part of a URL; structural tokens
     /// terminate it so links never consume neighbouring code or another link.
@@ -2436,9 +2509,13 @@ public struct MarkdownRenderer: Sendable {
             // rule; decodeEntities removes the renderer's outer escaping only.
             var url = HTMLSafety.decodeEntities(protector.source(in: prefix))
             var trailing = ""
-            let isURL = url.hasPrefix("http://") || url.hasPrefix("https://") || url.hasPrefix("www.")
+            // Scalar comparisons: a combining mark fused into the scheme's last
+            // character, or after `<`, must not change how the candidate reads.
+            let isURL = url.unicodeScalars.starts(with: "http://".unicodeScalars)
+                || url.unicodeScalars.starts(with: "https://".unicodeScalars)
+                || url.unicodeScalars.starts(with: "www.".unicodeScalars)
             if isURL {
-                if let angle = url.firstIndex(of: "<") {
+                if let angle = url.unicodeScalars.firstIndex(of: "<") {
                     trailing = String(url[angle...])
                     url = String(url[..<angle])
                 }
@@ -2480,8 +2557,15 @@ public struct MarkdownRenderer: Sendable {
                     if tail.exhausted { return candidate }
                     var visible: [Unicode.Scalar] = []
                     // Punctuation stripped from the URL tail is still visible
-                    // before the token (`https://evil.com.`x``).
-                    if Self.appendVisibleContinuation(trailing, to: &visible) {
+                    // before the token (`https://evil.com.`x``). A trailing
+                    // entity shows the character it names (`&period;` is a
+                    // dot), so read it decoded; without the entity table that
+                    // is unknown, so fail closed.
+                    if !HTMLSafety.hasNamedEntityTable,
+                       Self.namedEntitySpelling.firstMatch(in: trailing, range: NSRange(trailing.startIndex..., in: trailing)) != nil {
+                        return candidate
+                    }
+                    if Self.appendVisibleContinuation(HTMLSafety.decodeAllEntities(trailing), to: &visible) {
                         visible.append(contentsOf: tail.scalars)
                     }
                     let visibleText = String(String.UnicodeScalarView(visible))
@@ -2554,11 +2638,17 @@ public struct MarkdownRenderer: Sendable {
                 )
                 if tail.exhausted || Self.continuationExtendsEmailDomain(tail.text) { return candidate }
             }
-            let destination = isURL ? (url.hasPrefix("www.") ? "http://" + url : url) : "mailto:" + url
+            let destination = isURL
+                ? (url.unicodeScalars.starts(with: "www.".unicodeScalars) ? "http://" + url : url)
+                : "mailto:" + url
+            // A cut inside a token keeps the authored spelling as text.
+            let trailingHTML = trailing.isEmpty
+                ? ""
+                : Self.cutTailHTML(in: prefix, trailing: trailing, protector: protector) ?? escapeHTML(trailing)
             return protector.protect(
                 "<a href=\"\(escapeAttribute(HTMLSafety.decodeEntities(destination)))\">\(escapeHTML(HTMLSafety.decodeEntities(url)))</a>",
                 source: escapeHTML(url)
-            ) + escapeHTML(trailing) + suffix
+            ) + trailingHTML + suffix
         }
     }
 
