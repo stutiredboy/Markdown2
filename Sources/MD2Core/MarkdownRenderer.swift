@@ -973,7 +973,15 @@ public struct MarkdownRenderer: Sendable {
                 index = child.next
             }
 
-            listItems.append("<li>\(content)</li>")
+            // The item spans its own line through the last line of the last
+            // item it consumed (its deepest, latest descendant) and that item's
+            // continuation, so mode-switch anchoring can land inside a long
+            // item and the preview gutter can number a multi-line one.
+            let last = items[index - 1]
+            let endLine = last.line + last.continuation.count
+            var span = " data-md2-source-line=\"\(item.line)\""
+            if endLine > item.line { span += " data-md2-source-end-line=\"\(endLine)\"" }
+            listItems.append("<li\(span)>\(content)</li>")
         }
 
         let className = hasTask ? " class=\"task-list\"" : ""

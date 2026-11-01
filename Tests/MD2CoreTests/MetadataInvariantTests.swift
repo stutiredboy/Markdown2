@@ -54,6 +54,47 @@ struct MetadataInvariantTests {
         #expect(offenders.isEmpty, "task checkboxes missing data-md2-task-line:\n\(report)")
     }
 
+    /// Every list item carries its own source span: mode-switch anchoring can
+    /// land inside a long item, and the preview gutter numbers the multi-line
+    /// ones. Bibliography entries come from a `.bib`, not document lines.
+    @Test func everyListItemInTheCorpusCarriesSourceLine() throws {
+        let renderer = MarkdownRenderer()
+        var offenders: [String] = []
+
+        for entry in try ConformanceCorpus.load() {
+            let body = renderer.render(entry.example.markdown).body
+            for tag in allOpeningTags(in: body) where tag.hasPrefix("<li") && !tag.contains("id=\"bib-") {
+                if !tag.contains("data-md2-source-line=") {
+                    offenders.append("\(entry.id): \(tag)")
+                }
+            }
+        }
+
+        let report = offenders.prefix(20).joined(separator: "\n")
+        #expect(offenders.isEmpty, "list items missing data-md2-source-line:\n\(report)")
+    }
+
+    /// A list item spans its own line through its continuation and nested
+    /// items; the end line is emitted only for a multi-line item.
+    @Test func listItemsCarryTheirSourceSpan() {
+        let body = MarkdownRenderer().render("""
+        - one
+        - two
+          continued
+        - three
+          - nested
+            more
+          - single
+        - four
+        """).body
+        #expect(body.contains(#"<li data-md2-source-line="1">one</li>"#))
+        #expect(body.contains(#"<li data-md2-source-line="2" data-md2-source-end-line="3">two"#))
+        #expect(body.contains(#"<li data-md2-source-line="4" data-md2-source-end-line="7">three"#))
+        #expect(body.contains(#"<li data-md2-source-line="5" data-md2-source-end-line="6">nested"#))
+        #expect(body.contains(#"<li data-md2-source-line="7">single</li>"#))
+        #expect(body.contains(#"<li data-md2-source-line="8">four</li>"#))
+    }
+
     /// Task 14.9: figure and captioned-table blocks are emitted through the normal
     /// block walk, so they carry `data-md2-source-line` like any other content
     /// block; the trailing bibliography section is exempt (its entries come from a

@@ -188,6 +188,62 @@ final class LineNumberGutterGUITests: XCTestCase {
         XCTAssertEqual(result["numbers"] as? [String], ["1", "3"], "both paragraphs should be numbered")
     }
 
+    /// A list item in a top-level list gets its own number when it spans more
+    /// than one source line; one-line items do not, a list's first item does
+    /// not repeat the list's number, and lists inside a quote stay unnumbered.
+    @MainActor
+    func testMultiLineListItemsAreNumbered() throws {
+        try skipUnlessGUITestsEnabled()
+
+        let markdown = """
+        # Title
+
+        - one
+        - two
+          continued
+        - three
+          - nested
+            more
+          - single
+        - four
+
+        > - quoted
+        >   item
+
+        - first
+          more
+        - second
+        """
+        let result = try loadAndProbe(html: MarkdownRenderer().render(markdown).html, probe: """
+        (function () {
+          var main = document.querySelector('main');
+          var mainTop = main.getBoundingClientRect().top;
+          var spans = document.querySelectorAll('.md2-line-gutter span');
+          var numbers = [];
+          var tops = {};
+          for (var i = 0; i < spans.length; i++) {
+            var line = spans[i].getAttribute('data-md2-gutter');
+            numbers.push(line);
+            tops[line] = parseFloat(spans[i].style.top);
+          }
+          function itemTop(line) {
+            var item = main.querySelector('li[data-md2-source-line="' + line + '"]');
+            return item.getBoundingClientRect().top - mainTop;
+          }
+          return { numbers: numbers, offsets: [tops['4'] - itemTop(4), tops['7'] - itemTop(7)] };
+        })()
+        """)
+
+        XCTAssertEqual(
+            result["numbers"] as? [String],
+            ["1", "3", "4", "6", "7", "12", "15"],
+            "the heading, the list, its multi-line items (nested too), the quote, and the second list once"
+        )
+        for offset in result["offsets"] as? [Double] ?? [] {
+            XCTAssertEqual(offset, 0, accuracy: 0.5, "an item's number must sit at the item's top")
+        }
+    }
+
     // MARK: - Clicking a number
 
     /// A trusted click on a number reaches native, through the isolated-world
