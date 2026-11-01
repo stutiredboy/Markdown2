@@ -167,7 +167,10 @@ final class MarkdownEditingGUITests: XCTestCase {
         harness.spin(for: 0.5)
         harness.store.requestFormat(.italic)
         XCTAssertEqual(harness.store.formatCommand?.action, .italic)
-        harness.spin(for: 0.5)
+        // The switch back first asks the preview for its anchor, which can take
+        // a while on a loaded machine. Moving focus to the field below before
+        // the editor is back would make the editor drop the pending format.
+        harness.spin(until: { editor.window != nil && harness.store.text == "***text***" })
         XCTAssertEqual(harness.store.text, "***text***")
         XCTAssertTrue(harness.store.editorSession.textView === editor)
         let field = NSTextField(frame: NSRect(x: 10, y: 10, width: 100, height: 24))
@@ -306,6 +309,13 @@ private final class EditingWindow: NSObject, NSWindowDelegate {
     func spin(for duration: TimeInterval = 0.15) {
         let deadline = Date().addingTimeInterval(duration)
         while Date() < deadline {
+            autoreleasepool { _ = RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01)) }
+        }
+    }
+
+    func spin(until condition: () -> Bool, timeout: TimeInterval = 5) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
             autoreleasepool { _ = RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01)) }
         }
     }
