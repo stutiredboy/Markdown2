@@ -1437,8 +1437,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
         }
 
         /// The `options` argument of `__md2ApplyContent`, as a JavaScript
-        /// object literal.
-        static func liveContentOptions(mathMacros: [String: String], loadedBody: String?) -> String {
+        /// object literal. Pure, so it needs no actor.
+        nonisolated static func liveContentOptions(mathMacros: [String: String], loadedBody: String?) -> String {
             var options: [String: Any] = ["macros": mathMacros]
             if let loadedBody { options["loaded"] = loadedBody }
             guard let data = try? JSONSerialization.data(withJSONObject: options, options: [.sortedKeys]),
