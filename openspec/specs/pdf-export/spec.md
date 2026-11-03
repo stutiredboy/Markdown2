@@ -111,6 +111,12 @@ order. Each outline entry SHALL link to the page on which its heading appears, s
 selecting it in a PDF reader navigates to that heading. A document that contains no
 headings SHALL produce a valid PDF with no outline (and SHALL NOT fail the export).
 
+The outline SHALL be present in the saved file, as a PDF reader reads it back from
+disk, on every supported macOS version; an outline that exists only in memory before
+the file is written does not satisfy this requirement. If the outline of a document
+with headings cannot be written, the export SHALL fail rather than write a PDF
+without bookmarks.
+
 #### Scenario: Headings produce a bookmark tree
 
 - **WHEN** a document containing multiple headings is exported
@@ -127,6 +133,16 @@ headings SHALL produce a valid PDF with no outline (and SHALL NOT fail the expor
 
 - **WHEN** a multi-page document is exported and an outline entry is selected in a PDF reader
 - **THEN** the reader navigates to the page on which that heading is rendered
+
+#### Scenario: Outline survives saving
+
+- **WHEN** a document with headings is exported and the saved file is opened again
+- **THEN** the reopened PDF has the full outline, with the same titles and nesting
+
+#### Scenario: An outline that cannot be written fails the export
+
+- **WHEN** a document has headings and the composed PDF comes out without an outline
+- **THEN** the export fails and no PDF without bookmarks is written
 
 #### Scenario: Document without headings still exports
 
