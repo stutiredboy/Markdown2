@@ -214,6 +214,39 @@ struct DocumentUndoHistoryTests {
         #expect(!store.undoManager.canUndo)
     }
 
+    @Test func formatWithNoEditorMountedEditsTheKeptSelectionAndUndoes() throws {
+        let store = DocumentStore()
+        store.undoManager.groupsByEvent = false
+        store.text = "some text"
+        let textView = store.editorSession.loadTextView(text: store.text)
+        textView.setSelectedRange(NSRange(location: 5, length: 4))
+
+        MarkdownEditorSessionTests.step(store.undoManager) {
+            store.requestFormat(.bold)
+        }
+        #expect(store.text == "some **text**", "applied at once, not left for an editor that mounts later")
+        #expect(store.formatCommand == nil)
+        #expect(store.modeCommand?.mode == .write)
+
+        store.undoManager.undo()
+        #expect(store.text == "some text")
+    }
+
+    @Test func formatWithNoEditorMountedFollowsADocumentChangedWithoutTheTextView() throws {
+        // Default event grouping: bringing the text view up to date clears the
+        // history, and with it any group a test opened by hand.
+        let store = DocumentStore()
+        store.text = "text"
+        let textView = store.editorSession.loadTextView(text: store.text)
+        textView.setSelectedRange(NSRange(location: 0, length: 4))
+        // A change that bypassed the text view, as a task toggle it refused does.
+        store.text = "more text"
+
+        store.requestFormat(.bold)
+        // Formatting the stale "text" would write it back over "more text".
+        #expect(store.text == "more **text**")
+    }
+
     @Test func externalReloadClearsTheHistory() async throws {
         let watcher = ManualFileWatcher()
         let store = DocumentStore(fileWatcherFactory: { watcher })

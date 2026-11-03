@@ -165,13 +165,15 @@ final class MarkdownEditingGUITests: XCTestCase {
         XCTAssertEqual(harness.store.text, "**text**")
         harness.store.requestMode(.read)
         harness.spin(for: 0.5)
+        XCTAssertNil(editor.window)
         harness.store.requestFormat(.italic)
-        XCTAssertEqual(harness.store.formatCommand?.action, .italic)
-        // The switch back first asks the preview for its anchor, which can take
-        // a while on a loaded machine. Moving focus to the field below before
-        // the editor is back would make the editor drop the pending format.
-        harness.spin(until: { editor.window != nil && harness.store.text == "***text***" })
+        // Applied before the editor is back: it must not wait for the editor's
+        // window or focus, which arrive turns later on a loaded machine.
         XCTAssertEqual(harness.store.text, "***text***")
+        harness.spin(until: { editor.window != nil })
+        harness.spin()
+        XCTAssertNotNil(editor.window)
+        XCTAssertEqual(harness.store.text, "***text***", "the mounted editor must not apply it again")
         XCTAssertTrue(harness.store.editorSession.textView === editor)
         let field = NSTextField(frame: NSRect(x: 10, y: 10, width: 100, height: 24))
         harness.window.contentView?.addSubview(field)
@@ -179,6 +181,36 @@ final class MarkdownEditingGUITests: XCTestCase {
         harness.store.requestFormat(.italic)
         harness.spin()
         XCTAssertEqual(harness.store.text, "***text***")
+    }
+
+    @MainActor
+    func testFormattingFromReadModeSurvivesAnEditorFocusedAfterItMounts() throws {
+        let harness = try EditingWindow("text")
+        defer { harness.close() }
+        let editor = harness.editor
+        editor.setSelectedRange(NSRange(location: 0, length: 4))
+        harness.store.requestMode(.read)
+        harness.spin(until: { editor.window == nil })
+        // Keep the keyboard from the editor through the switch back, so it is
+        // mounted, in its window, and only then focused: the order a loaded CI
+        // runner produced, which dropped a format left for the editor to apply
+        // once it had focus.
+        let holder = KeyboardHolder(frame: NSRect(x: 10, y: 10, width: 20, height: 20))
+        defer { holder.holdsKeyboard = false }
+        harness.window.contentView?.addSubview(holder)
+        XCTAssertTrue(harness.window.makeFirstResponder(holder))
+        harness.store.requestFormat(.bold)
+        harness.spin(until: { editor.window != nil })
+        harness.spin()
+        XCTAssertFalse(harness.window.firstResponder === editor)
+        holder.holdsKeyboard = false
+        XCTAssertTrue(harness.window.makeFirstResponder(editor))
+        harness.spin()
+        XCTAssertEqual(harness.store.text, "**text**")
+        // The format went through the editor's editing path, so it undoes.
+        harness.store.undoManager.undo()
+        harness.spin()
+        XCTAssertEqual(harness.store.text, "text")
     }
 
     @MainActor
@@ -262,6 +294,13 @@ final class MarkdownEditingGUITests: XCTestCase {
         harness.spin()
         XCTAssertEqual(harness.store.text, "- wubi\n- ")
     }
+}
+
+/// Keeps first responder until told to let go.
+private final class KeyboardHolder: NSView {
+    var holdsKeyboard = true
+    override var acceptsFirstResponder: Bool { true }
+    override func resignFirstResponder() -> Bool { !holdsKeyboard }
 }
 
 @MainActor

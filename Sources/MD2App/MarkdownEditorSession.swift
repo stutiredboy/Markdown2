@@ -1,4 +1,5 @@
 import AppKit
+import MD2Core
 
 /// A document's editor text system — the TextKit 1 stack and the source text
 /// view — created once and kept alive across mode switches.
@@ -147,6 +148,20 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
         textView.didChangeText()
         textView.breakUndoCoalescing()
         return true
+    }
+
+    /// Applies a formatting command sent while no editor is mounted (Read mode)
+    /// through the text view's own editing path, so it formats the selection the
+    /// text view kept and lands on the undo stack; the session hands the new
+    /// text to the document. Builds the text view if the editor was never shown,
+    /// and first brings it to `documentText` when the document changed without
+    /// it, as mounting an editor would.
+    func applyFormatWhileUnmounted(_ action: MarkdownEditing.Action, documentText: String) {
+        let textView = loadTextView(text: documentText)
+        if !(textView.string as NSString).isEqual(to: documentText) {
+            guard resetText(to: documentText) else { return }
+        }
+        (textView as? MarkdownSourceTextView)?.performMarkdownAction(action)
     }
 
     /// Mirrors a change the undo history cannot describe — opening a file, a
