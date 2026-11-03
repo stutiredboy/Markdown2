@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import UniformTypeIdentifiers
 import WebKit
@@ -93,7 +94,7 @@ struct LocalImageHTMLRewriter {
                     fromHTMLSource: sourceHTML.substring(with: sourceRange),
                     baseURL: baseURL
                   ) {
-                let token = UUID().uuidString
+                let token = token(for: imageURL)
                 allowedImages[token] = imageURL
                 rewritten.append("\(LocalImageSchemeHandler.scheme)://image/\(token)")
             } else {
@@ -104,6 +105,17 @@ struct LocalImageHTMLRewriter {
         rewritten.append(sourceHTML.substring(from: cursor))
 
         return (rewritten, allowedImages)
+    }
+
+    private static let tokenSecret = SymmetricKey(size: .bits256)
+
+    /// The same file gets the same token in every rewrite, so a live preview
+    /// update leaves an unchanged image's URL — and its block — as it was. Keyed
+    /// by a per-process secret, the token still does not reveal the path, and
+    /// the handler still serves only the files of the current rewrite.
+    static func token(for imageURL: URL) -> String {
+        let code = HMAC<SHA256>.authenticationCode(for: Data(imageURL.path.utf8), using: tokenSecret)
+        return code.prefix(16).map { String(format: "%02x", $0) }.joined()
     }
 
     private static func localImageURL(fromHTMLSource source: String, baseURL: URL?) -> URL? {

@@ -235,7 +235,10 @@ struct MathRenderingTests {
         let html = MarkdownRenderer().render("$x$").html
 
         #expect(html.contains("globalGroup: true"))
-        #expect(html.contains("macros: window.__md2MathMacros"))
+        // A whole-document pass renders with the shared object; a live update
+        // of inserted formulas renders with a fresh copy of the same map.
+        #expect(html.contains("render(formulas(root), window.__md2MathMacros);"))
+        #expect(html.contains("macros: macros"))
     }
 
     @Test func frontMatterMacrosAreSerializedIntoKaTeXConfig() {

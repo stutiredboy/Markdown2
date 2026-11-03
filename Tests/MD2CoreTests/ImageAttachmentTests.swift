@@ -129,6 +129,31 @@ struct ImageAttachmentTests {
         #expect(rewritten.allowedImages.values.contains(imageURL.standardizedFileURL))
     }
 
+    /// A live preview update keeps a block whose HTML did not change, so an
+    /// image must get the same URL from every rewrite of the same body.
+    @Test func localImageTokensAreStablePerFileAndHideThePath() throws {
+        let directory = makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = directory.appendingPathComponent("first.png")
+        let second = directory.appendingPathComponent("second.png")
+        try Self.makeTIFFData().write(to: first)
+        try Self.makeTIFFData().write(to: second)
+        let html = #"<p><img src="first.png"><img src="second.png"><img src="first.png"></p>"#
+
+        let once = LocalImageHTMLRewriter.rewrite(html, baseURL: directory)
+        let again = LocalImageHTMLRewriter.rewrite(html, baseURL: directory)
+
+        #expect(once.html == again.html)
+        #expect(once.allowedImages == again.allowedImages)
+        #expect(Set(once.allowedImages.values) == [first.standardizedFileURL, second.standardizedFileURL])
+        let firstToken = LocalImageHTMLRewriter.token(for: first.standardizedFileURL)
+        let secondToken = LocalImageHTMLRewriter.token(for: second.standardizedFileURL)
+        #expect(firstToken != secondToken)
+        #expect(once.html.components(separatedBy: "md2-local-image://image/\(firstToken)").count == 3)
+        #expect(!once.html.contains("first.png"))
+        #expect(!once.html.contains(directory.lastPathComponent))
+    }
+
     @Test func localImageRewriterIgnoresMissingAndNonImageAbsoluteSources() throws {
         let directory = makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

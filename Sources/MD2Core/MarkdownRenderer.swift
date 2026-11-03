@@ -69,7 +69,8 @@ public struct MarkdownRenderer: Sendable {
             body: body,
             outline: outline,
             stats: DocumentStats(plainText: RenderedPlainText.extract(from: body),
-                                 sourceLines: markdown.isEmpty ? 0 : lines.count)
+                                 sourceLines: markdown.isEmpty ? 0 : lines.count),
+            mathMacros: config.mathMacros
         )
     }
 
@@ -3120,35 +3121,102 @@ public struct MarkdownRenderer: Sendable {
         // enabled, newcommand/def declared in one block persist into later blocks.
         window.__md2InitialMacros = \(serializeMathMacros(config.mathMacros));
         window.__md2MathMacros = JSON.parse(JSON.stringify(window.__md2InitialMacros));
-        // Exposed as a re-runnable function (scoped to a root element) so the
-        // live-preview content swap can re-render math over freshly injected
-        // content without reloading the page. Called once over the whole
-        // document at load.
-        window.__md2RenderMath = function (root) {
-            if (typeof katex === "undefined") { return; }
-            root = root || document;
-            // Re-seed from the front-matter macros so each whole-document render
-            // (initial load or live content swap) starts fresh — globalGroup state
-            // accumulated from a prior edit's blocks must not linger.
-            window.__md2MathMacros = JSON.parse(JSON.stringify(window.__md2InitialMacros));
-            var nodes = root.querySelectorAll(".\(PreviewClass.mathInline), .\(PreviewClass.mathDisplay)");
-            for (var i = 0; i < nodes.length; i++) {
-                var el = nodes[i];
-                var tex = el.textContent;
-                var display = el.classList.contains("\(PreviewClass.mathDisplay)");
-                try {
-                    katex.render(tex, el, {
-                        displayMode: display,
-                        throwOnError: false,
-                        globalGroup: true,
-                        macros: window.__md2MathMacros
-                    });
-                } catch (err) {
-                    el.classList.add("\(PreviewClass.mathError)");
-                    el.textContent = tex;
+        (function () {
+            var selector = ".\(PreviewClass.mathInline), .\(PreviewClass.mathDisplay)";
+
+            // The formulas under `roots` (an element, the document, or an array
+            // of elements), a root that is itself a formula included.
+            function formulas(roots) {
+                var list = Array.isArray(roots) ? roots : [roots || document];
+                var found = [];
+                for (var i = 0; i < list.length; i++) {
+                    var root = list[i];
+                    if (root.nodeType === 1 && root.matches(selector)) { found.push(root); }
+                    if (!root.querySelectorAll) { continue; }
+                    var inner = root.querySelectorAll(selector);
+                    for (var j = 0; j < inner.length; j++) { found.push(inner[j]); }
+                }
+                return found;
+            }
+
+            // Compared by keys and values: the order of a map's JSON keys is not
+            // guaranteed to match between two renders.
+            function sameMacros(a, b) {
+                var keys = Object.keys(a);
+                if (keys.length !== Object.keys(b).length) { return false; }
+                for (var i = 0; i < keys.length; i++) {
+                    if (!Object.prototype.hasOwnProperty.call(b, keys[i]) || a[keys[i]] !== b[keys[i]]) { return false; }
+                }
+                return true;
+            }
+
+            function freshMacros() {
+                return JSON.parse(JSON.stringify(window.__md2InitialMacros));
+            }
+
+            // Each formula keeps its TeX on its element, because KaTeX replaces
+            // the text: a later pass can then render a formula that stayed in
+            // the page, with the macros as they are now.
+            function render(nodes, macros) {
+                for (var i = 0; i < nodes.length; i++) {
+                    var el = nodes[i];
+                    var tex = typeof el.__md2Tex === "string" ? el.__md2Tex : el.textContent;
+                    el.__md2Tex = tex;
+                    el.classList.remove("\(PreviewClass.mathError)");
+                    var display = el.classList.contains("\(PreviewClass.mathDisplay)");
+                    try {
+                        katex.render(tex, el, {
+                            displayMode: display,
+                            throwOnError: false,
+                            globalGroup: true,
+                            macros: macros
+                        });
+                    } catch (err) {
+                        el.classList.add("\(PreviewClass.mathError)");
+                        el.textContent = tex;
+                    }
                 }
             }
-        };
+
+            // Renders every formula under `root` in document order. Called once
+            // over the whole document at load, and by the live preview whenever
+            // only a whole-document pass is correct. Re-seeds from the
+            // front-matter macros so a pass starts fresh — globalGroup state
+            // accumulated from a prior edit's blocks must not linger — and
+            // records whether the formulas define macros of their own, so the
+            // live preview knows a later formula may depend on an earlier one.
+            window.__md2RenderMath = function (root) {
+                if (typeof katex === "undefined") { return; }
+                window.__md2MathMacros = freshMacros();
+                render(formulas(root), window.__md2MathMacros);
+                window.__md2MathDefines = !sameMacros(window.__md2MathMacros, window.__md2InitialMacros);
+            };
+
+            // Renders the formulas under `roots`, the nodes a live update
+            // inserted, without touching the formulas that stayed. That is
+            // enough only while no formula defines a macro: otherwise, or when
+            // an inserted formula starts defining one, every formula under
+            // `whole` renders again in document order.
+            window.__md2RenderMathIn = function (roots, whole) {
+                if (typeof katex === "undefined") { return; }
+                if (window.__md2MathDefines !== false) {
+                    window.__md2RenderMath(whole);
+                    return;
+                }
+                var macros = freshMacros();
+                render(formulas(roots), macros);
+                if (!sameMacros(macros, window.__md2InitialMacros)) { window.__md2RenderMath(whole); }
+            };
+
+            // Replaces the front-matter macros a live update renders with.
+            // Returns whether they changed, in which case every formula must
+            // render again.
+            window.__md2SetMathMacros = function (macros) {
+                if (sameMacros(macros, window.__md2InitialMacros)) { return false; }
+                window.__md2InitialMacros = macros;
+                return true;
+            };
+        })();
         window.__md2RenderMath(document);
         </script>
         \(diagramScripts(for: body, assetMode: assetMode))
@@ -3258,8 +3326,24 @@ public struct MarkdownRenderer: Sendable {
         return s;
     }
 
+    // The elements matching `selector` under `roots` (an element, the document,
+    // or an array of elements), a root that itself matches included: a live
+    // update renders the top-level blocks it inserted, and a diagram can be
+    // one of them.
+    function diagramElements(roots, selector) {
+        var list = Array.isArray(roots) ? roots : [roots || document];
+        var found = [];
+        for (var i = 0; i < list.length; i++) {
+            var root = list[i];
+            if (root.nodeType === 1 && root.matches(selector)) { found.push(root); }
+            if (!root.querySelectorAll) { continue; }
+            var inner = root.querySelectorAll(selector);
+            for (var j = 0; j < inner.length; j++) { found.push(inner[j]); }
+        }
+        return found;
+    }
+
     window.__md2RenderDiagrams = function (root) {
-        root = root || document;
         window.__md2MermaidSeq = window.__md2MermaidSeq || 0;
         // Offscreen PDF export/print snapshots this page and must wait for
         // asynchronous diagram rendering (Mermaid) to finish first; otherwise the
@@ -3275,6 +3359,9 @@ public struct MarkdownRenderer: Sendable {
         }
         var dark = window.matchMedia
             && window.matchMedia("(prefers-color-scheme: dark)").matches;
+        // The live preview keeps diagrams that did not change, so it must know
+        // which appearance they were drawn for.
+        window.__md2DiagramDark = !!dark;
 
         // Drop the source-hiding pending state and fade the diagram in. Called
         // once an engine has populated the element, on the error/fallback path,
@@ -3291,7 +3378,7 @@ public struct MarkdownRenderer: Sendable {
         }
 
         // flowchart.js — depends on the global `flowchart` (+ Raphael).
-        var flows = root.querySelectorAll(".\(PreviewClass.diagramFlow)");
+        var flows = diagramElements(root, ".\(PreviewClass.diagramFlow)");
         for (var i = 0; i < flows.length; i++) {
             var el = flows[i];
             var source = el.textContent;
@@ -3306,7 +3393,7 @@ public struct MarkdownRenderer: Sendable {
         }
 
         // js-sequence-diagrams — depends on the global `Diagram` (+ Underscore, Raphael).
-        var seqs = root.querySelectorAll(".\(PreviewClass.diagramSequence)");
+        var seqs = diagramElements(root, ".\(PreviewClass.diagramSequence)");
         for (var j = 0; j < seqs.length; j++) {
             var sel = seqs[j];
             var ssource = sel.textContent;
@@ -3321,7 +3408,7 @@ public struct MarkdownRenderer: Sendable {
         }
 
         // Mermaid — self-contained; render explicitly (startOnLoad disabled).
-        var mers = root.querySelectorAll(".\(PreviewClass.diagramMermaid)");
+        var mers = diagramElements(root, ".\(PreviewClass.diagramMermaid)");
         if (typeof mermaid === "undefined") {
             for (var u = 0; u < mers.length; u++) { reveal(mers[u]); }
         } else if (mers.length) {

@@ -795,6 +795,7 @@ struct ContentView: View {
             MarkdownPreviewView(
                 html: document.rendered.html,
                 bodyHTML: document.rendered.body,
+                mathMacros: document.rendered.mathMacros,
                 baseURL: document.baseURL,
                 liveUpdate: inSplit,
                 showsFrontMatter: showsFrontMatterInPreview,

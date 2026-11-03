@@ -91,6 +91,30 @@ struct WebDocumentLoaderTests {
         }
     }
 
+    /// The live preview replaces only the body, so the macros the page renders
+    /// with must come with the rendered document (F04 in the 2026-10-15 review).
+    @Test func backgroundRenderCarriesFrontMatterMacros() async {
+        let text = "---\nmath-macros: {\"\\\\audit\": \"A\"}\n---\n\n$\\audit$"
+        let snapshot = DocumentRenderSnapshot(text: text, baseURL: nil, citationStyle: .authorYear, numberAllEquations: false)
+        let rendered = await DocumentRenderWorker().render(snapshot)
+        #expect(rendered.mathMacros == ["\\audit": "A"])
+        #expect(MarkdownRenderer().render("$x$").mathMacros.isEmpty)
+    }
+
+    @Test func liveContentOptionsCarryMacrosAndTheLoadedBody() throws {
+        func decode(_ options: String) throws -> [String: Any] {
+            try #require(JSONSerialization.jsonObject(with: Data(options.utf8)) as? [String: Any])
+        }
+        let first = try decode(MarkdownPreviewView.Coordinator.liveContentOptions(
+            mathMacros: ["\\R": "\\mathbb{R}"], loadedBody: "<p data-md2-source-line=\"1\">\u{2028}</p>"))
+        #expect(first["macros"] as? [String: String] == ["\\R": "\\mathbb{R}"])
+        #expect(first["loaded"] as? String == "<p data-md2-source-line=\"1\">\u{2028}</p>")
+
+        let later = try decode(MarkdownPreviewView.Coordinator.liveContentOptions(mathMacros: [:], loadedBody: nil))
+        #expect(later["macros"] as? [String: String] == [:])
+        #expect(later["loaded"] == nil)
+    }
+
     @Test func backgroundRenderUsesSharedAssetsByDefault() async {
         let snapshot = DocumentRenderSnapshot(text: "# Test", baseURL: nil, citationStyle: .authorYear, numberAllEquations: false)
         let worker = DocumentRenderWorker()
