@@ -47,6 +47,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
     /// The rendered content inside `<main>`, used for the in-place live update
     /// path so edits do not reload the whole page (see `liveUpdate`).
     var bodyHTML: String = ""
+    /// The `math-macros:` map `html` was built with. A live update replaces
+    /// only the body, so it hands these to the page with each update.
+    var mathMacros: [String: String] = [:]
     let baseURL: URL?
     /// When true (Side by Side mode), content-only changes are applied in place
     /// via `__md2ApplyContent` — preserving scroll position and avoiding the
@@ -487,26 +490,249 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 window.scrollTo(0, Math.min(Math.max(0, desired), Math.max(0, maxY)));
             };
 
-            // Live preview content swap: replaces the rendered content inside
-            // <main> in place (without reloading the page), then re-runs the
-            // math and diagram bootstraps over the new subtree. Because the
-            // page shell and scroll node are never torn down, the viewport's
-            // scroll position is preserved across edits. The native side only
-            // routes an update through here when no new diagram engine is
-            // required (otherwise it does a full reload that rebuilds <head>),
-            // so the render hooks below exist whenever there is content to
-            // render.
-            window.__md2ApplyContent = function (bodyHTML) {
+            // --- Live content update ---------------------------------------
+            // Source-line metadata: inserting a line above a block changes
+            // these values and nothing else in the block.
+            var lineAttributes = ['data-md2-source-line', 'data-md2-source-end-line', 'data-md2-task-line'];
+            var lineSelector = '[data-md2-source-line],[data-md2-source-end-line],[data-md2-task-line]';
+
+            function isGutterLayer(node) {
+                return node.nodeType === 1 && node.classList.contains('md2-line-gutter');
+            }
+
+            function isBlankText(node) {
+                return node.nodeType === 3 && node.data.trim() === '';
+            }
+
+            // <main>'s rendered nodes, without the gutter layer.
+            function contentNodes(main) {
+                var nodes = [];
+                for (var i = 0; i < main.childNodes.length; i++) {
+                    if (!isGutterLayer(main.childNodes[i])) { nodes.push(main.childNodes[i]); }
+                }
+                return nodes;
+            }
+
+            function lineElements(node) {
+                var elements = [];
+                if (node.nodeType !== 1) { return elements; }
+                if (node.matches(lineSelector)) { elements.push(node); }
+                var inner = node.querySelectorAll(lineSelector);
+                for (var i = 0; i < inner.length; i++) { elements.push(inner[i]); }
+                return elements;
+            }
+
+            // A node's identity apart from where it sits in the source. An
+            // element's line attributes are taken out of the DOM while it is
+            // serialized, not cut from the string, so text that spells one of
+            // them still counts.
+            function contentKey(node) {
+                if (node.nodeType === 3) { return '#text ' + node.data; }
+                if (node.nodeType === 8) { return '#comment ' + node.data; }
+                if (node.nodeType !== 1) { return '#node ' + node.nodeName; }
+                var elements = lineElements(node);
+                var saved = [];
+                for (var i = 0; i < elements.length; i++) {
+                    var values = [];
+                    for (var a = 0; a < lineAttributes.length; a++) {
+                        values.push(elements[i].getAttribute(lineAttributes[a]));
+                        elements[i].removeAttribute(lineAttributes[a]);
+                    }
+                    saved.push(values);
+                }
+                var key = node.outerHTML;
+                for (var j = 0; j < elements.length; j++) {
+                    for (var b = 0; b < lineAttributes.length; b++) {
+                        if (saved[j][b] !== null) { elements[j].setAttribute(lineAttributes[b], saved[j][b]); }
+                    }
+                }
+                return key;
+            }
+
+            function parseContent(html) {
+                var template = document.createElement('template');
+                template.innerHTML = html;
+                var nodes = Array.prototype.slice.call(template.content.childNodes);
+                return nodes.map(function (node) { return { node: node, key: contentKey(node) }; });
+            }
+
+            // Rendering replaces what a formula or diagram node held when it
+            // arrived, so an element's key is stored when it is inserted. Text
+            // and comment nodes are never rendered and key themselves.
+            function storedKey(node) {
+                return node.nodeType === 1 ? node.__md2Key : contentKey(node);
+            }
+
+            // Gives a kept node the line attributes of its new copy, so the
+            // gutter, anchors and task toggles follow the lines it moved to.
+            // Rendering adds no element that carries them, so the elements pair
+            // up in document order; when they do not, the node is replaced.
+            function adoptLines(kept, fresh) {
+                var to = lineElements(kept);
+                var from = lineElements(fresh);
+                if (to.length !== from.length) { return false; }
+                for (var i = 0; i < to.length; i++) {
+                    for (var a = 0; a < lineAttributes.length; a++) {
+                        var value = from[i].getAttribute(lineAttributes[a]);
+                        if (value === null) {
+                            to[i].removeAttribute(lineAttributes[a]);
+                        } else if (to[i].getAttribute(lineAttributes[a]) !== value) {
+                            to[i].setAttribute(lineAttributes[a], value);
+                        }
+                    }
+                }
+                return true;
+            }
+
+            // A full page load rendered its formulas and diagrams before any
+            // key could be stored, so the first update keys those nodes from
+            // the body the page was loaded with. <main>'s own markup adds a line
+            // break before and after the body; anything else that does not pair
+            // up leaves the nodes unkeyed, and the update replaces them all.
+            function keyLoadedContent(main, loadedHTML) {
+                var nodes = contentNodes(main);
+                // Keys from a body that is no longer on the page would match
+                // stale nodes.
+                for (var s = 0; s < nodes.length; s++) {
+                    if (nodes[s].nodeType === 1 && nodes[s].__md2Key !== undefined) { return; }
+                }
+                while (nodes.length && isBlankText(nodes[0])) { main.removeChild(nodes.shift()); }
+                while (nodes.length && isBlankText(nodes[nodes.length - 1])) { main.removeChild(nodes.pop()); }
+                var loaded = parseContent(loadedHTML);
+                if (loaded.length !== nodes.length) { return; }
+                for (var i = 0; i < nodes.length; i++) {
+                    var node = nodes[i], copy = loaded[i].node;
+                    if (node.nodeType !== copy.nodeType || node.nodeName !== copy.nodeName) { return; }
+                    if (node.nodeType !== 1 && contentKey(node) !== loaded[i].key) { return; }
+                }
+                for (var j = 0; j < nodes.length; j++) {
+                    if (nodes[j].nodeType === 1) { nodes[j].__md2Key = loaded[j].key; }
+                }
+            }
+
+            // Puts `incoming` into <main>, keeping every node whose key is
+            // unchanged: the common prefix and suffix stay where they are, and
+            // in the range between them an old node is reused for the first new
+            // node with its key. Returns the elements inserted, which are the
+            // only ones that still need rendering.
+            function updateContent(main, incoming, replaceAll) {
+                var old = contentNodes(main);
+                var oldKeys = [];
+                for (var i = 0; i < old.length && !replaceAll; i++) {
+                    oldKeys.push(storedKey(old[i]));
+                    if (oldKeys[i] === undefined) { replaceAll = true; }
+                }
+                var gutter = null;
+                for (var g = 0; g < main.childNodes.length; g++) {
+                    if (isGutterLayer(main.childNodes[g])) { gutter = main.childNodes[g]; }
+                }
+                var inserted = [];
+                function fresh(item) {
+                    if (item.node.nodeType === 1) {
+                        item.node.__md2Key = item.key;
+                        inserted.push(item.node);
+                    }
+                    return item.node;
+                }
+
+                if (replaceAll) {
+                    for (var r = 0; r < old.length; r++) { main.removeChild(old[r]); }
+                    for (var n = 0; n < incoming.length; n++) { main.insertBefore(fresh(incoming[n]), gutter); }
+                    return { inserted: inserted, kept: 0, replacedAll: true };
+                }
+
+                var start = 0;
+                while (start < old.length && start < incoming.length
+                       && oldKeys[start] === incoming[start].key
+                       && adoptLines(old[start], incoming[start].node)) {
+                    start++;
+                }
+                var oldEnd = old.length, newEnd = incoming.length;
+                while (oldEnd > start && newEnd > start
+                       && oldKeys[oldEnd - 1] === incoming[newEnd - 1].key
+                       && adoptLines(old[oldEnd - 1], incoming[newEnd - 1].node)) {
+                    oldEnd--;
+                    newEnd--;
+                }
+
+                var pool = new Map();
+                for (var p = start; p < oldEnd; p++) {
+                    if (!pool.has(oldKeys[p])) { pool.set(oldKeys[p], []); }
+                    pool.get(oldKeys[p]).push(old[p]);
+                }
+                var placed = [];
+                for (var m = start; m < newEnd; m++) {
+                    var candidates = pool.get(incoming[m].key);
+                    var node = null;
+                    while (!node && candidates && candidates.length) {
+                        var candidate = candidates.shift();
+                        if (adoptLines(candidate, incoming[m].node)) { node = candidate; }
+                    }
+                    placed.push(node || fresh(incoming[m]));
+                }
+                var used = new Set(placed);
+                var removed = 0;
+                for (var d = start; d < oldEnd; d++) {
+                    if (!used.has(old[d])) {
+                        main.removeChild(old[d]);
+                        removed++;
+                    }
+                }
+                // Only a node that is out of place moves, so kept nodes keep
+                // their rendered content and their own scroll positions.
+                var previous = start > 0 ? old[start - 1] : null;
+                for (var k = 0; k < placed.length; k++) {
+                    var expected = previous ? previous.nextSibling : main.firstChild;
+                    if (placed[k] !== expected) { main.insertBefore(placed[k], expected); }
+                    previous = placed[k];
+                }
+                return { inserted: inserted, kept: old.length - removed, replacedAll: false };
+            }
+
+            // Live preview content update, in place (without reloading the
+            // page). Because the page shell and scroll node are never torn
+            // down, the viewport's scroll position is preserved across edits.
+            // Blocks that did not change stay in the page with their rendered
+            // math, diagrams and images; only inserted blocks are rendered.
+            // The native side only routes an update through here when no new
+            // diagram engine is required (otherwise it does a full reload that
+            // rebuilds <head>), so the render hooks below exist whenever there
+            // is content to render.
+            //
+            // `options.macros` is the document's math-macros map;
+            // `options.loaded` is the body the page was loaded with, sent with
+            // the first update after a load. Returns what changed, for tests.
+            window.__md2ApplyContent = function (bodyHTML, options) {
                 var main = document.querySelector('main');
-                if (!main) { return; }
+                if (!main) { return null; }
+                options = options || {};
                 if (window.__md2FindClear) { window.__md2FindClear(); }
-                main.innerHTML = bodyHTML;
-                if (window.__md2RenderMath) { window.__md2RenderMath(main); }
-                if (window.__md2RenderDiagrams) { window.__md2RenderDiagrams(main); }
-                // The swap above destroys the gutter layer along with the old
-                // content, so rebuild it. Math and diagrams settle later; the
-                // gutter's ResizeObserver picks up the resulting height changes.
+                var macrosChanged = !!(options.macros && window.__md2SetMathMacros
+                    && window.__md2SetMathMacros(options.macros));
+                if (typeof options.loaded === 'string') { keyLoadedContent(main, options.loaded); }
+                // Kept diagrams were drawn for the appearance of their render.
+                var dark = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+                var appearanceChanged = typeof window.__md2DiagramDark === 'boolean'
+                    && window.__md2DiagramDark !== dark;
+
+                var result = updateContent(main, parseContent(bodyHTML), appearanceChanged);
+                if (window.__md2RenderMath) {
+                    if (macrosChanged || result.replacedAll) {
+                        window.__md2RenderMath(main);
+                    } else {
+                        window.__md2RenderMathIn(result.inserted, main);
+                    }
+                }
+                if (window.__md2RenderDiagrams) { window.__md2RenderDiagrams(result.inserted); }
+                // Math and diagrams settle later; the gutter's ResizeObserver
+                // picks up the resulting height changes.
                 if (window.__md2RenderLineNumbers) { window.__md2RenderLineNumbers(); }
+                return {
+                    inserted: result.inserted.length,
+                    kept: result.kept,
+                    replacedAll: result.replacedAll,
+                    macrosChanged: macrosChanged
+                };
             };
 
             // --- Find (preview, read-only) --------------------------------
@@ -618,9 +844,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
             // This script is injected only into the preview web view, never into
             // the shared rendered HTML, so exported PDFs/prints are unaffected.
             // A single capture-phase listener catches <img> load failures even
-            // after a live innerHTML content swap, because error events do not
-            // bubble (capture is required) and a delegated listener outlives the
-            // per-keystroke <main> rebuild that replaces individual <img> nodes.
+            // after a live content update, because error events do not bubble
+            // (capture is required) and a delegated listener outlives the
+            // updates that replace individual <img> nodes.
             (function () {
                 var style = document.createElement('style');
                 style.textContent =
@@ -783,12 +1009,13 @@ struct MarkdownPreviewView: NSViewRepresentable {
             context.coordinator.lastFindQuery = nil
 
             if canLiveUpdate {
-                context.coordinator.applyLiveContent(bodyHTML, in: webView)
+                context.coordinator.applyLiveContent(bodyHTML, mathMacros: mathMacros, in: webView)
             } else {
                 if isLoadedContentUpdate {
                     context.coordinator.suppressNextAnchorMessage()
                 }
                 context.coordinator.beginLoading()
+                context.coordinator.loadedBody = bodyHTML
                 // Load with the pending heading as a URL fragment so WebKit scrolls
                 // to it natively during parsing. This is the only thing that can
                 // position the page before the external diagram/math engine scripts
@@ -1160,9 +1387,16 @@ struct MarkdownPreviewView: NSViewRepresentable {
         private var pendingFindQuery: String?
         private var ignoreNextAnchorMessage = false
 
+        /// The body the current page was loaded with, until a live update has
+        /// keyed the page's nodes. The page rendered them before any key could
+        /// be stored, so the first update sends this along to key them from.
+        /// Set by each full load; cleared once an update is sent to the page.
+        var loadedBody: String?
+
         /// Coalesces rapid live content swaps (one per keystroke) into a single
         /// JS push, keeping typing smooth. The latest body wins.
         private var pendingLiveBody: String?
+        private var pendingLiveOptions = ""
         private var pendingLiveImages: [String: URL] = [:]
         private var liveUpdateWorkItem: DispatchWorkItem?
         private var liveUpdateGeneration = 0
@@ -1181,20 +1415,37 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// Replaces the rendered content in place (debounced), preserving the
         /// preview's current source anchor. Called only when the page is loaded
         /// and no new diagram engine is required (the caller guarantees this).
-        func applyLiveContent(_ bodyHTML: String, in webView: WKWebView) {
+        func applyLiveContent(_ bodyHTML: String, mathMacros: [String: String], in webView: WKWebView) {
             liveUpdateGeneration += 1
             let generation = liveUpdateGeneration
             liveUpdateWorkItem?.cancel()
             let baseURL = lastBaseURL
+            let loadedBody = self.loadedBody
             Task { [weak self, weak webView] in
-                let prepared = await Task.detached(priority: .userInitiated) {
-                    WebDocumentLoader.rewriteContent(bodyHTML, baseURL: baseURL)
+                // The loaded body is rewritten like the page was, so its image
+                // URLs match the page's (image tokens are stable per file).
+                let (prepared, loaded) = await Task.detached(priority: .userInitiated) {
+                    (WebDocumentLoader.rewriteContent(bodyHTML, baseURL: baseURL),
+                     loadedBody.map { WebDocumentLoader.rewriteContent($0, baseURL: baseURL).html })
                 }.value
                 guard let self, let webView, generation == self.liveUpdateGeneration else { return }
                 self.pendingLiveBody = prepared.html
+                self.pendingLiveOptions = Self.liveContentOptions(mathMacros: mathMacros, loadedBody: loaded)
                 self.pendingLiveImages = prepared.allowedImages
                 self.schedulePreparedLiveContent(in: webView, generation: generation)
             }
+        }
+
+        /// The `options` argument of `__md2ApplyContent`, as a JavaScript
+        /// object literal. Pure, so it needs no actor.
+        nonisolated static func liveContentOptions(mathMacros: [String: String], loadedBody: String?) -> String {
+            var options: [String: Any] = ["macros": mathMacros]
+            if let loadedBody { options["loaded"] = loadedBody }
+            guard let data = try? JSONSerialization.data(withJSONObject: options, options: [.sortedKeys]),
+                  let json = String(data: data, encoding: .utf8) else {
+                return "{}"
+            }
+            return json
         }
 
         private func schedulePreparedLiveContent(in webView: WKWebView, generation: Int) {
@@ -1202,6 +1453,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 guard let self, let webView, let body = self.pendingLiveBody else { return }
                 guard generation == self.liveUpdateGeneration else { return }
                 self.pendingLiveBody = nil
+                let options = self.pendingLiveOptions
                 self.documentLoader.installImages(self.pendingLiveImages)
                 self.pendingLiveImages = [:]
 
@@ -1213,8 +1465,11 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 // edit burst (e.g. a multi-key delete) can pin a drifted position,
                 // and the editor is never driven.
                 if let followLine = self.editFollowLine, Date() < self.editFollowDeadline {
-                    let script = "window.__md2ApplyContent(\(Self.jsStringLiteral(body)));"
+                    let script = "window.__md2ApplyContent(\(Self.jsStringLiteral(body)), \(options));"
                         + "window.__md2FollowEditLine ? window.__md2FollowEditLine(\(followLine)) : null;"
+                    // This update keys the page's nodes, so later ones need no
+                    // loaded body (the page ignores one sent after that anyway).
+                    self.loadedBody = nil
                     webView.evaluateJavaScript(script) { [weak self, weak webView] _, _ in
                         guard let self, let webView else { return }
                         if let query = self.lastFindQuery, !query.isEmpty {
@@ -1230,7 +1485,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 ) { [weak self, weak webView] result, _ in
                     guard let self, let webView, generation == self.liveUpdateGeneration else { return }
                     let anchor = (result as? [String: Any]).map(Self.viewportAnchor(fromMessage:))
-                    let script = Self.liveContentScript(bodyHTML: body, anchor: anchor)
+                    let script = Self.liveContentScript(bodyHTML: body, options: options, anchor: anchor)
+                    self.loadedBody = nil
                     webView.evaluateJavaScript(script) { [weak self, weak webView] _, _ in
                         guard let self, let webView else { return }
                         if let query = self.lastFindQuery, !query.isEmpty {
@@ -1243,8 +1499,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.liveUpdateDebounce, execute: work)
         }
 
-        private static func liveContentScript(bodyHTML: String, anchor: ViewportAnchor?) -> String {
-            var script = "window.__md2ApplyContent(\(jsStringLiteral(bodyHTML)));"
+        private static func liveContentScript(bodyHTML: String, options: String, anchor: ViewportAnchor?) -> String {
+            var script = "window.__md2ApplyContent(\(jsStringLiteral(bodyHTML)), \(options));"
             if let anchor {
                 // `true` = silent: re-affirm the preview's own position as async
                 // math/diagrams reflow, but do NOT report an anchor — an edit
