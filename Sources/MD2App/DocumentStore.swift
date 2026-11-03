@@ -102,9 +102,12 @@ final class DocumentStore: ObservableObject {
             formatCommand = MarkdownFormatCommand(action: action)
             return
         }
-        // In Read mode the source editor is unmounted. Switch to it and let
-        // its first update consume the pending format request.
-        formatCommand = MarkdownFormatCommand(action: action)
+        // In Read mode the source editor is unmounted. Format its kept text view
+        // now, at the selection it kept, and then switch to it. Leaving the
+        // request to the mounted editor made it depend on when that editor got
+        // its window and focus, which can be several run-loop turns later on a
+        // loaded machine.
+        editorSession.applyFormatWhileUnmounted(action, documentText: text)
         requestMode(.write)
     }
 
