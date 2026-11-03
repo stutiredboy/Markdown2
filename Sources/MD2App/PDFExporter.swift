@@ -3,7 +3,6 @@ import CoreGraphics
 import CoreText
 import Foundation
 import MD2Core
-import PDFKit
 import WebKit
 
 /// Renders a document's preview HTML into a paginated PDF using a dedicated
@@ -298,24 +297,34 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
     ) {
         guard !hasFinished else { return }
         guard index < bands.count else {
-            guard let paginated = composePDF(from: pages) else {
-                finish(.failure(ExportError.renderFailed))
-                return
-            }
-            // Attach the heading outline (bookmarks) when the document has
-            // headings. A failure to build/serialize the outline surfaces as an
-            // export failure rather than silently writing a PDF without it.
-            let finalData: Data
+            // Resolve the heading outline (bookmarks) before composing, so it is
+            // written together with the pages. A failure to build or write the
+            // outline surfaces as an export failure rather than silently writing a
+            // PDF without it.
+            let outlineTree: [PDFPaginator.OutlineNode]
             if outline.isEmpty {
-                finalData = paginated
-            } else if let withOutline = applyOutline(to: paginated, bands: bands) {
-                finalData = withOutline
+                outlineTree = []
+            } else if let entries = PDFPaginator.outlineEntries(
+                for: outline,
+                headingOffsets: headingOffsets,
+                bands: bands
+            ) {
+                outlineTree = PDFPaginator.outlineTree(from: entries)
             } else {
                 finish(.failure(ExportError.writeFailed))
                 return
             }
+            guard let paginated = composePDF(from: pages, outline: outlineTree) else {
+                finish(.failure(ExportError.renderFailed))
+                return
+            }
+            // `CGPDFContextSetOutline` reports no errors, so read the outline back.
+            guard outlineTree.isEmpty || Self.containsOutline(paginated) else {
+                finish(.failure(ExportError.writeFailed))
+                return
+            }
             do {
-                try finalData.write(to: destinationURL, options: .atomic)
+                try paginated.write(to: destinationURL, options: .atomic)
                 finish(.success(()))
             } catch {
                 finish(.failure(ExportError.writeFailed))
@@ -345,7 +354,15 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
         }
     }
 
-    private func composePDF(from pages: [Data]) -> Data? {
+    /// Draws each captured band onto a fixed-size page and, when `outline` is
+    /// non-empty, writes it as the PDF's bookmark tree.
+    ///
+    /// The outline goes through `CGPDFContextSetOutline` rather than PDFKit: on
+    /// macOS 27, a `PDFDocument` loaded from existing data ignores any change to
+    /// `outlineRoot` when it is saved (`dataRepresentation()` and `write(to:)`
+    /// alike), so reloading the composed PDF to attach a `PDFOutline` wrote a file
+    /// without bookmarks.
+    private func composePDF(from pages: [Data], outline: [PDFPaginator.OutlineNode]) -> Data? {
         let output = NSMutableData()
         guard let consumer = CGDataConsumer(data: output as CFMutableData) else { return nil }
         var mediaBox = CGRect(origin: .zero, size: pageSize)
@@ -390,8 +407,28 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
             context.endPDFPage()
         }
 
+        if !outline.isEmpty {
+            // A heading sits `offsetInPage` below the top of the content area, which
+            // begins at `pageSize.height - contentTopInset` (the top margin plus any
+            // reserved header band).
+            CGPDFContextSetOutline(context, PDFPaginator.outlineDictionary(
+                for: outline,
+                pageCount: pages.count,
+                pageHeight: pageSize.height,
+                contentTop: pageSize.height - contentTopInset,
+                left: margins.left
+            ))
+        }
+
         context.closePDF()
         return output as Data
+    }
+
+    /// Whether the PDF in `data` has an outline, as read by CoreGraphics.
+    private static func containsOutline(_ data: Data) -> Bool {
+        guard let provider = CGDataProvider(data: data as CFData),
+              let document = CGPDFDocument(provider) else { return false }
+        return document.outline != nil
     }
 
     /// Locale-aware date for the `{date}` running-text token.
@@ -538,51 +575,6 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
             offsets[id] = CGFloat(top)
         }
         return offsets
-    }
-
-    /// Builds a hierarchical PDF outline (bookmarks) from the document headings and
-    /// writes it into the composed `data`. Each heading is mapped to the page band
-    /// it falls in (via its probed document-Y offset) and nested by heading level.
-    /// Returns the re-serialized PDF data, or `nil` if PDFKit cannot load/serialize
-    /// the document. A non-empty `outline` must resolve every heading to a probed
-    /// DOM offset; otherwise the export fails instead of silently omitting
-    /// bookmarks.
-    private func applyOutline(to data: Data, bands: [(top: CGFloat, height: CGFloat)]) -> Data? {
-        guard let document = PDFDocument(data: data), document.pageCount > 0 else { return nil }
-        guard let entries = PDFPaginator.outlineEntries(
-            for: outline,
-            headingOffsets: headingOffsets,
-            bands: bands
-        ) else { return nil }
-        guard !entries.isEmpty else { return data }
-
-        let root = PDFOutline()
-        attach(nodes: PDFPaginator.outlineTree(from: entries), to: root, in: document)
-        document.outlineRoot = root
-        return document.dataRepresentation()
-    }
-
-    /// Recursively attaches outline `nodes` as children of `parent`, each with a
-    /// destination at its mapped page and a best-effort top-of-heading point.
-    private func attach(
-        nodes: [PDFPaginator.OutlineNode],
-        to parent: PDFOutline,
-        in document: PDFDocument
-    ) {
-        for node in nodes {
-            let item = PDFOutline()
-            item.label = node.title
-            let pageIndex = min(max(node.pageIndex, 0), document.pageCount - 1)
-            if let page = document.page(at: pageIndex) {
-                // PDF origin is bottom-left; the heading sits `offsetInPage` below the
-                // top of the content area, which begins at `pageSize.height -
-                // contentTopInset` (the top margin plus any reserved header band).
-                let y = min(max(pageSize.height - contentTopInset - node.offsetInPage, 0), pageSize.height)
-                item.destination = PDFDestination(page: page, at: CGPoint(x: margins.left, y: y))
-            }
-            parent.insertChild(item, at: parent.numberOfChildren)
-            attach(nodes: node.children, to: item, in: document)
-        }
     }
 
     private func logPaginationDiagnostics(

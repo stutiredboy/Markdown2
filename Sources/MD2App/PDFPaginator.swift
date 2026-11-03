@@ -191,4 +191,37 @@ enum PDFPaginator {
         }
         return roots
     }
+
+    /// The outline tree in the form `CGPDFContextSetOutline` writes: a root holding
+    /// only `kCGPDFOutlineChildren`, and per node its title, its one-indexed
+    /// destination page, and a zero-size destination rect at the heading's
+    /// top-left, which CoreGraphics writes as an `/XYZ left top` destination (jump
+    /// to the heading, keep the zoom). `contentTop` is the page-space Y
+    /// (bottom-left origin) where the content area begins, so a heading lands at
+    /// `contentTop - offsetInPage`, clamped onto the page; its page index is
+    /// clamped into `0..<pageCount`.
+    static func outlineDictionary(
+        for nodes: [OutlineNode],
+        pageCount: Int,
+        pageHeight: CGFloat,
+        contentTop: CGFloat,
+        left: CGFloat
+    ) -> CFDictionary {
+        func items(_ nodes: [OutlineNode]) -> [CFDictionary] {
+            nodes.map { node in
+                let pageIndex = min(max(node.pageIndex, 0), max(pageCount - 1, 0))
+                let y = min(max(contentTop - node.offsetInPage, 0), pageHeight)
+                var item: [CFString: Any] = [
+                    kCGPDFOutlineTitle: node.title,
+                    kCGPDFOutlineDestination: pageIndex + 1,
+                    kCGPDFOutlineDestinationRect: CGRect(x: left, y: y, width: 0, height: 0).dictionaryRepresentation,
+                ]
+                if !node.children.isEmpty {
+                    item[kCGPDFOutlineChildren] = items(node.children)
+                }
+                return item as CFDictionary
+            }
+        }
+        return [kCGPDFOutlineChildren: items(nodes)] as CFDictionary
+    }
 }

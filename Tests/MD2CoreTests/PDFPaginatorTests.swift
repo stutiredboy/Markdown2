@@ -1,5 +1,6 @@
 import CoreGraphics
 import MD2Core
+import PDFKit
 import XCTest
 @testable import MD2App
 
@@ -305,5 +306,57 @@ final class PDFPaginatorTests: XCTestCase {
         // shallower ancestor, so it is a root; the level-1 is a separate root.
         let tree = PDFPaginator.outlineTree(from: [entry(2, "deep"), entry(1, "top")])
         XCTAssertEqual(tree.map(\.title), ["deep", "top"])
+    }
+
+    // MARK: - Outline written into a PDF
+
+    func testOutlineDictionaryWritesNestedBookmarksIntoAPDF() throws {
+        let tree = PDFPaginator.outlineTree(from: [
+            entry(1, "A", page: 0, offsetInPage: 0),
+            entry(2, "标题 B", page: 1, offsetInPage: 100),
+            entry(3, "C (c)", page: 1, offsetInPage: 900),
+            entry(1, "D", page: 7, offsetInPage: 50),
+        ])
+        let outline = PDFPaginator.outlineDictionary(
+            for: tree,
+            pageCount: 3,
+            pageHeight: 842,
+            contentTop: 806,
+            left: 36
+        )
+
+        let output = NSMutableData()
+        let consumer = try XCTUnwrap(CGDataConsumer(data: output as CFMutableData))
+        var mediaBox = CGRect(x: 0, y: 0, width: 595, height: 842)
+        let context = try XCTUnwrap(CGContext(consumer: consumer, mediaBox: &mediaBox, nil))
+        for _ in 0..<3 {
+            context.beginPDFPage(nil)
+            context.endPDFPage()
+        }
+        CGPDFContextSetOutline(context, outline)
+        context.closePDF()
+
+        let document = try XCTUnwrap(PDFDocument(data: output as Data))
+        let root = try XCTUnwrap(document.outlineRoot, "PDF has no outline")
+        func bookmark(_ path: Int...) -> (label: String?, page: Int, point: CGPoint)? {
+            var node: PDFOutline? = root
+            for index in path { node = node?.child(at: index) }
+            guard let node, let destination = node.destination, let page = destination.page else { return nil }
+            return (node.label, document.index(for: page), destination.point)
+        }
+
+        XCTAssertEqual(root.numberOfChildren, 2)
+        XCTAssertEqual(bookmark(0)?.label, "A")
+        XCTAssertEqual(bookmark(0)?.page, 0)
+        XCTAssertEqual(bookmark(0)?.point, CGPoint(x: 36, y: 806))
+        XCTAssertEqual(bookmark(0, 0)?.label, "标题 B")
+        XCTAssertEqual(bookmark(0, 0)?.page, 1)
+        XCTAssertEqual(bookmark(0, 0)?.point, CGPoint(x: 36, y: 706))
+        // An offset past the content top clamps to the page bottom.
+        XCTAssertEqual(bookmark(0, 0, 0)?.label, "C (c)")
+        XCTAssertEqual(bookmark(0, 0, 0)?.point, CGPoint(x: 36, y: 0))
+        // A page index past the last page clamps to the last page.
+        XCTAssertEqual(bookmark(1)?.label, "D")
+        XCTAssertEqual(bookmark(1)?.page, 2)
     }
 }
