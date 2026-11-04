@@ -10,6 +10,7 @@ enum FrontMatterMetadataVisibility {
 }
 
 enum DocumentLayoutMetrics {
+    static let defaultWindowWidth: CGFloat = 980
     static let splitEditorMinWidth: CGFloat = 360
     static let splitPreviewMinWidth: CGFloat = 420
     static let outlineSidebarWidth: CGFloat = 230
@@ -24,6 +25,49 @@ enum DocumentLayoutMetrics {
                 + splitChromeReserveWidth
         }
         return nonSplitMinWidth
+    }
+}
+
+/// How much text the document toolbar shows at a window width. It depends on
+/// the width alone, so switching mode never reflows the labels. The widths are
+/// measured for English, the wider language, with the metadata button showing.
+enum DocumentToolbarDensity: Equatable {
+    /// Every control shows its text.
+    case full
+    /// Line Numbers and the metadata button drop to their icons.
+    case reduced
+    /// The mode picker drops to icons as well.
+    case compact
+
+    static let fullMinWidth: CGFloat = 1160
+    static let reducedMinWidth: CGFloat = 960
+
+    init(windowWidth: CGFloat) {
+        if windowWidth >= Self.fullMinWidth {
+            self = .full
+        } else if windowWidth >= Self.reducedMinWidth {
+            self = .reduced
+        } else {
+            self = .compact
+        }
+    }
+
+    var showsSecondaryText: Bool { self == .full }
+    var showsModeText: Bool { self != .compact }
+}
+
+/// Toolbars only honor the built-in label styles, so a label that collapses
+/// with the window has to switch between them rather than use a custom style.
+struct CollapsibleToolbarLabel<Expanded: LabelStyle>: ViewModifier {
+    let showsTitle: Bool
+    let expanded: Expanded
+
+    func body(content: Content) -> some View {
+        if showsTitle {
+            content.labelStyle(expanded)
+        } else {
+            content.labelStyle(.iconOnly)
+        }
     }
 }
 
@@ -90,6 +134,7 @@ struct ContentView: View {
     @State private var mode: EditorMode
     @State private var showsOutline: Bool
     @State private var showsFrontMatterMetadata = false
+    @State private var toolbarDensity = DocumentToolbarDensity(windowWidth: DocumentLayoutMetrics.defaultWindowWidth)
     /// Latest top-visible source line reported by the editor — the cached
     /// fallback when a live capture is unavailable at switch time.
     @State private var editorAnchorLine = 1
@@ -197,6 +242,11 @@ struct ContentView: View {
             StatusBar(stats: document.rendered.stats, selectionStats: selectionStats, url: document.fileURL, format: document.fileFormat, settings: settings)
         }
         .frame(minWidth: minimumWindowWidth, minHeight: 540)
+        .onGeometryChange(for: DocumentToolbarDensity.self) { geometry in
+            DocumentToolbarDensity(windowWidth: geometry.size.width)
+        } action: { density in
+            toolbarDensity = density
+        }
         .navigationTitle(document.displayTitle)
         .task(id: selectedContent) {
             selectionStats = nil
@@ -286,12 +336,50 @@ struct ContentView: View {
                 } label: {
                     Label(settings.text(.lineNumbers), systemImage: "list.number")
                 }
-                .labelStyle(.titleAndIcon)
+                .modifier(CollapsibleToolbarLabel(showsTitle: toolbarDensity.showsSecondaryText, expanded: .titleAndIcon))
                 .accessibilityLabel(settings.text(.lineNumbers))
                 .help(settings.text(.lineNumbersHelp))
             }
 
+            // The toolbar overflows from its trailing end, so the mode picker
+            // sits left of Open and Save to be the last of them to go. The
+            // metadata button is on the group's leading end because the group
+            // is anchored to the trailing edge: it comes and goes with the mode,
+            // and anywhere else it would slide the picker out from under the
+            // pointer that just switched mode.
             ToolbarItemGroup(placement: .primaryAction) {
+                if mode != .write, hasDisplayableFrontMatter {
+                    Button {
+                        showsFrontMatterMetadata.toggle()
+                    } label: {
+                        Label(
+                            showsFrontMatterMetadata ? settings.text(.hideMetadata) : settings.text(.showMetadata),
+                            systemImage: "info.circle"
+                        )
+                    }
+                    .modifier(CollapsibleToolbarLabel(showsTitle: toolbarDensity.showsSecondaryText, expanded: .titleAndIcon))
+                    .accessibilityLabel(
+                        showsFrontMatterMetadata ? settings.text(.hideMetadata) : settings.text(.showMetadata)
+                    )
+                    .help(showsFrontMatterMetadata ? settings.text(.hideMetadata) : settings.text(.showMetadata))
+                }
+
+                Picker(
+                    settings.text(.mode),
+                    selection: Binding(get: { mode }, set: { requestMode($0) })
+                ) {
+                    modeSegment(settings.text(.write), systemImage: "pencil")
+                        .tag(EditorMode.write)
+                    modeSegment(settings.text(.sideBySide), systemImage: "rectangle.split.2x1")
+                        .tag(EditorMode.split)
+                    modeSegment(settings.text(.read), systemImage: "doc.richtext")
+                        .tag(EditorMode.read)
+                }
+                .pickerStyle(.segmented)
+                .modifier(CollapsibleToolbarLabel(showsTitle: toolbarDensity.showsModeText, expanded: .titleOnly))
+                .accessibilityLabel(settings.text(.mode))
+                .help(settings.text(.writeReadOrSplit))
+
                 Button {
                     onOpen()
                 } label: {
@@ -309,44 +397,6 @@ struct ContentView: View {
                 .labelStyle(.titleAndIcon)
                 .accessibilityLabel(settings.text(.save))
                 .help(settings.text(.save))
-
-                if mode != .write, hasDisplayableFrontMatter {
-                    Button {
-                        showsFrontMatterMetadata.toggle()
-                    } label: {
-                        Label(
-                            showsFrontMatterMetadata ? settings.text(.hideMetadata) : settings.text(.showMetadata),
-                            systemImage: "info.circle"
-                        )
-                    }
-                    .labelStyle(.titleAndIcon)
-                    .accessibilityLabel(
-                        showsFrontMatterMetadata ? settings.text(.hideMetadata) : settings.text(.showMetadata)
-                    )
-                    .help(showsFrontMatterMetadata ? settings.text(.hideMetadata) : settings.text(.showMetadata))
-                }
-
-                Picker(
-                    settings.text(.mode),
-                    selection: Binding(get: { mode }, set: { requestMode($0) })
-                ) {
-                    Label(settings.text(.write), systemImage: "pencil")
-                        .accessibilityLabel(settings.text(.write))
-                        .help(settings.text(.write))
-                        .tag(EditorMode.write)
-                    Label(settings.text(.sideBySide), systemImage: "rectangle.split.2x1")
-                        .accessibilityLabel(settings.text(.sideBySide))
-                        .help(settings.text(.sideBySide))
-                        .tag(EditorMode.split)
-                    Label(settings.text(.read), systemImage: "doc.richtext")
-                        .accessibilityLabel(settings.text(.read))
-                        .help(settings.text(.read))
-                        .tag(EditorMode.read)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 280)
-                .accessibilityLabel(settings.text(.mode))
-                .help(settings.text(.writeReadOrSplit))
             }
         }
         .alert(item: $document.alert) { alert in
@@ -355,6 +405,17 @@ struct ContentView: View {
                 message: Text(alert.detail),
                 dismissButton: .default(Text(settings.text(.ok)))
             )
+        }
+    }
+
+    /// A segment ignores `accessibilityLabel` and is announced by its image's
+    /// description. A plain symbol would describe itself, in the system language
+    /// rather than the app's, so the image carries the mode's name.
+    private func modeSegment(_ title: String, systemImage: String) -> some View {
+        Label {
+            Text(title)
+        } icon: {
+            Image(nsImage: NSImage(systemSymbolName: systemImage, accessibilityDescription: title) ?? NSImage())
         }
     }
 

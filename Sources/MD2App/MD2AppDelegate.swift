@@ -416,7 +416,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
         )
 
         let window = ModeShortcutWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 980, height: 680),
+            contentRect: NSRect(x: 0, y: 0, width: DocumentLayoutMetrics.defaultWindowWidth, height: 680),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
