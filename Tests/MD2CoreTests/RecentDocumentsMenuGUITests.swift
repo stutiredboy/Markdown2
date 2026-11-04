@@ -6,10 +6,9 @@ import XCTest
 
 /// Guards File ▸ Open Recent against going stale within a session.
 ///
-/// The app's only SwiftUI scene is Settings, so with Settings closed nothing
-/// that the App body reads is ever read again. The submenu stays live only
-/// because `RecentDocumentsMenu` observes the model itself; pass the entries in
-/// from the App body and it silently freezes at the launch list, which throws
+/// The command tree is re-evaluated only when a setting changes, so the submenu
+/// stays live only because `RecentDocumentsMenu` observes the model itself; pass
+/// the entries in from the tree and it silently goes stale, which throws
 /// nothing. Plain `swift test` skips this suite and CI's `gui-tests` job runs
 /// it; run it locally with
 /// `MD2_RUN_GUI_TESTS=1 swift test --filter RecentDocumentsMenuGUITests`.
@@ -212,11 +211,10 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
 
     // MARK: - Language
 
-    /// Two update paths meet in one view: the titles come from the App body, like
+    /// Two update paths meet in one view: the titles come from `AppCommands`, like
     /// every other command's, and the list from the view's own observation. So a
-    /// language change must leave the list live, and the titles in step with the
-    /// other commands. In step rather than translated: on macOS 27.2 no command
-    /// re-titles before a relaunch, Open Recent included.
+    /// language change must re-title the submenu along with the other commands
+    /// and leave the list live.
     func testLanguageChangeLeavesTheSubmenuLiveAndInStepWithOtherCommands() throws {
         let seeded = try makeDocument("notes/Seeded.md")
         let opened = try makeDocument("notes/Opened.md")
@@ -234,10 +232,10 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             "zhHans",
             "without a real language change this case says nothing"
         )
-        let newIsTranslated = Self.title(of: try menuItem(commandCharacter: "N", pid: pid)) == "新建"
+        XCTAssertEqual(Self.title(of: try menuItem(commandCharacter: "N", pid: pid)), "新建")
         let titles = try readTitles(pid: pid)
-        XCTAssertEqual(titles.openRecent == "打开最近使用的", newIsTranslated, "Open Recent left the other commands behind")
-        XCTAssertEqual(titles.clearMenu == "清除菜单", newIsTranslated, "Clear Menu left the other commands behind")
+        XCTAssertEqual(titles.openRecent, "打开最近使用的", "Open Recent left the other commands behind")
+        XCTAssertEqual(titles.clearMenu, "清除菜单", "Clear Menu left the other commands behind")
 
         try open(opened)
 

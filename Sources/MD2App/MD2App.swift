@@ -1,10 +1,10 @@
 import MD2AppSupport
 import SwiftUI
 
-/// File ▸ Open Recent. This view must observe `recents` itself: while Settings
-/// is closed the App body is never re-evaluated, so entries passed in from there
-/// would stay at the launch list, but a command view's own dependency still
-/// updates it. Guarded by RecentDocumentsMenuGUITests.
+/// File ▸ Open Recent. This view must observe `recents` itself: `AppCommands`
+/// re-evaluates only when a setting changes, so entries passed in from there
+/// would go stale, but a command view's own dependency still updates it. Guarded
+/// by RecentDocumentsMenuGUITests.
 private struct RecentDocumentsMenu: View {
     let title: String
     let clearTitle: String
@@ -64,129 +64,145 @@ struct MD2Application: App {
         // Guarded by SettingsWindowPresentationGUITests.
         .defaultLaunchBehavior(.suppressed)
         .commands {
-            CommandGroup(replacing: .newItem) {
-                Button(appDelegate.settings.text(.new)) {
-                    appDelegate.newDocument()
-                }
-                .keyboardShortcut("n")
+            AppCommands(settings: appDelegate.settings, appDelegate: appDelegate)
+        }
+    }
+}
 
-                Button(appDelegate.settings.text(.open)) {
-                    appDelegate.openDocument()
-                }
-                .keyboardShortcut("o")
+/// The app's own menu commands. This must stay a `Commands` type that observes
+/// `settings` itself: the App body and its `.commands` closure run once, at
+/// launch, so anything read there keeps its launch value, and a view inside a menu
+/// could not reach the titles of the Format, Paragraph and Mode menus. Standard
+/// AppKit items (the File and Edit menus' own titles, Undo, Copy, …) are built from
+/// the process localization and still need the relaunch that Settings offers.
+/// Guarded by MenuLanguageGUITests.
+private struct AppCommands: Commands {
+    @ObservedObject var settings: AppSettings
+    let appDelegate: MD2AppDelegate
 
-                RecentDocumentsMenu(
-                    title: appDelegate.settings.text(.openRecent),
-                    clearTitle: appDelegate.settings.text(.clearMenu),
-                    recents: appDelegate.recentDocuments,
-                    onOpen: { appDelegate.openRecentDocument($0) },
-                    onClear: { appDelegate.clearRecentDocuments() }
-                )
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button(settings.text(.new)) {
+                appDelegate.newDocument()
             }
+            .keyboardShortcut("n")
 
-            CommandGroup(replacing: .saveItem) {
-                Button(appDelegate.settings.text(.save)) {
-                    appDelegate.currentDocumentStore?.save()
-                }
-                .keyboardShortcut("s")
-
-                Menu(appDelegate.settings.text(.exportTo)) {
-                    Button("PDF") {
-                        Task { await appDelegate.currentDocumentStore?.exportPDF() }
-                    }
-                    Button("HTML") {
-                        Task { await appDelegate.currentDocumentStore?.exportHTML() }
-                    }
-                }
-
-                Divider()
-
-                Button(appDelegate.settings.text(.close)) {
-                    appDelegate.closeCurrentDocument()
-                }
-                .keyboardShortcut("w")
+            Button(settings.text(.open)) {
+                appDelegate.openDocument()
             }
+            .keyboardShortcut("o")
 
-            CommandGroup(replacing: .printItem) {
-                Button(appDelegate.settings.text(.print)) {
-                    Task { await appDelegate.currentDocumentStore?.print() }
-                }
-                .keyboardShortcut("p")
+            RecentDocumentsMenu(
+                title: settings.text(.openRecent),
+                clearTitle: settings.text(.clearMenu),
+                recents: appDelegate.recentDocuments,
+                onOpen: { appDelegate.openRecentDocument($0) },
+                onClear: { appDelegate.clearRecentDocuments() }
+            )
+        }
+
+        CommandGroup(replacing: .saveItem) {
+            Button(settings.text(.save)) {
+                appDelegate.currentDocumentStore?.save()
             }
+            .keyboardShortcut("s")
 
-            CommandMenu(appDelegate.settings.text(.formatMenu)) {
-                ForEach(MarkdownFormatCommand.formatItems, id: \.title) { item in
-                    Button(appDelegate.settings.text(item.title)) {
-                        appDelegate.currentDocumentStore?.requestFormat(item.action)
-                    }
-                    .keyboardShortcut(item.shortcut.keyEquivalent, modifiers: item.shortcut.modifiers.eventModifiers)
+            Menu(settings.text(.exportTo)) {
+                Button("PDF") {
+                    Task { await appDelegate.currentDocumentStore?.exportPDF() }
+                }
+                Button("HTML") {
+                    Task { await appDelegate.currentDocumentStore?.exportHTML() }
                 }
             }
 
-            CommandMenu(appDelegate.settings.text(.paragraphMenu)) {
-                ForEach(MarkdownFormatCommand.paragraphItems, id: \.title) { item in
-                    Button(appDelegate.settings.text(item.title)) {
-                        appDelegate.currentDocumentStore?.requestFormat(item.action)
-                    }
-                    .keyboardShortcut(item.shortcut.keyEquivalent, modifiers: item.shortcut.modifiers.eventModifiers)
-                }
+            Divider()
+
+            Button(settings.text(.close)) {
+                appDelegate.closeCurrentDocument()
             }
+            .keyboardShortcut("w")
+        }
 
-            CommandGroup(after: .toolbar) {
-                Button(appDelegate.settings.text(.zoomIn), action: appDelegate.settings.zoomIn)
-                    .keyboardShortcut("+", modifiers: .command)
-                // Also accept the unshifted = key on keyboards where + is Shift-=.
-                Button(appDelegate.settings.text(.zoomIn), action: appDelegate.settings.zoomIn)
-                    .keyboardShortcut("=", modifiers: .command)
-                    .hidden()
-                Button(appDelegate.settings.text(.zoomOut), action: appDelegate.settings.zoomOut)
-                    .keyboardShortcut("-", modifiers: .command)
-                Button(appDelegate.settings.text(.resetZoom), action: appDelegate.settings.resetZoom)
-                    .keyboardShortcut("0", modifiers: [.command, .option])
+        CommandGroup(replacing: .printItem) {
+            Button(settings.text(.print)) {
+                Task { await appDelegate.currentDocumentStore?.print() }
             }
+            .keyboardShortcut("p")
+        }
 
-            CommandMenu(appDelegate.settings.text(.mode)) {
-                let editShortcut = appDelegate.settings.modeShortcuts[.write]
-                Button(appDelegate.settings.text(.write)) {
-                    appDelegate.currentDocumentStore?.requestMode(.write)
+        CommandMenu(settings.text(.formatMenu)) {
+            ForEach(MarkdownFormatCommand.formatItems, id: \.title) { item in
+                Button(settings.text(item.title)) {
+                    appDelegate.currentDocumentStore?.requestFormat(item.action)
                 }
-                .keyboardShortcut(editShortcut.keyEquivalent, modifiers: editShortcut.modifiers.eventModifiers)
-
-                let previewShortcut = appDelegate.settings.modeShortcuts[.read]
-                Button(appDelegate.settings.text(.read)) {
-                    appDelegate.currentDocumentStore?.requestMode(.read)
-                }
-                .keyboardShortcut(previewShortcut.keyEquivalent, modifiers: previewShortcut.modifiers.eventModifiers)
-
-                let splitShortcut = appDelegate.settings.modeShortcuts[.split]
-                Button(appDelegate.settings.text(.sideBySide)) {
-                    appDelegate.currentDocumentStore?.requestMode(.split)
-                }
-                .keyboardShortcut(splitShortcut.keyEquivalent, modifiers: splitShortcut.modifiers.eventModifiers)
+                .keyboardShortcut(item.shortcut.keyEquivalent, modifiers: item.shortcut.modifiers.eventModifiers)
             }
+        }
 
-            CommandGroup(after: .textEditing) {
-                Divider()
-                Button(appDelegate.settings.text(.find)) {
-                    appDelegate.currentDocumentStore?.requestFind(.show)
+        CommandMenu(settings.text(.paragraphMenu)) {
+            ForEach(MarkdownFormatCommand.paragraphItems, id: \.title) { item in
+                Button(settings.text(item.title)) {
+                    appDelegate.currentDocumentStore?.requestFormat(item.action)
                 }
-                .keyboardShortcut("f")
-
-                Button(appDelegate.settings.text(.findReplace)) {
-                    appDelegate.currentDocumentStore?.requestFind(.showReplace)
-                }
-                .keyboardShortcut("f", modifiers: [.command, .option])
-
-                Button(appDelegate.settings.text(.findNext)) {
-                    appDelegate.currentDocumentStore?.requestFind(.next)
-                }
-                .keyboardShortcut("g")
-
-                Button(appDelegate.settings.text(.findPrevious)) {
-                    appDelegate.currentDocumentStore?.requestFind(.previous)
-                }
-                .keyboardShortcut("g", modifiers: [.command, .shift])
+                .keyboardShortcut(item.shortcut.keyEquivalent, modifiers: item.shortcut.modifiers.eventModifiers)
             }
+        }
+
+        CommandGroup(after: .toolbar) {
+            Button(settings.text(.zoomIn), action: settings.zoomIn)
+                .keyboardShortcut("+", modifiers: .command)
+            // Also accept the unshifted = key on keyboards where + is Shift-=.
+            Button(settings.text(.zoomIn), action: settings.zoomIn)
+                .keyboardShortcut("=", modifiers: .command)
+                .hidden()
+            Button(settings.text(.zoomOut), action: settings.zoomOut)
+                .keyboardShortcut("-", modifiers: .command)
+            Button(settings.text(.resetZoom), action: settings.resetZoom)
+                .keyboardShortcut("0", modifiers: [.command, .option])
+        }
+
+        CommandMenu(settings.text(.mode)) {
+            let editShortcut = settings.modeShortcuts[.write]
+            Button(settings.text(.write)) {
+                appDelegate.currentDocumentStore?.requestMode(.write)
+            }
+            .keyboardShortcut(editShortcut.keyEquivalent, modifiers: editShortcut.modifiers.eventModifiers)
+
+            let previewShortcut = settings.modeShortcuts[.read]
+            Button(settings.text(.read)) {
+                appDelegate.currentDocumentStore?.requestMode(.read)
+            }
+            .keyboardShortcut(previewShortcut.keyEquivalent, modifiers: previewShortcut.modifiers.eventModifiers)
+
+            let splitShortcut = settings.modeShortcuts[.split]
+            Button(settings.text(.sideBySide)) {
+                appDelegate.currentDocumentStore?.requestMode(.split)
+            }
+            .keyboardShortcut(splitShortcut.keyEquivalent, modifiers: splitShortcut.modifiers.eventModifiers)
+        }
+
+        CommandGroup(after: .textEditing) {
+            Divider()
+            Button(settings.text(.find)) {
+                appDelegate.currentDocumentStore?.requestFind(.show)
+            }
+            .keyboardShortcut("f")
+
+            Button(settings.text(.findReplace)) {
+                appDelegate.currentDocumentStore?.requestFind(.showReplace)
+            }
+            .keyboardShortcut("f", modifiers: [.command, .option])
+
+            Button(settings.text(.findNext)) {
+                appDelegate.currentDocumentStore?.requestFind(.next)
+            }
+            .keyboardShortcut("g")
+
+            Button(settings.text(.findPrevious)) {
+                appDelegate.currentDocumentStore?.requestFind(.previous)
+            }
+            .keyboardShortcut("g", modifiers: [.command, .shift])
         }
     }
 }

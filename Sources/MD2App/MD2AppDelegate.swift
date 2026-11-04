@@ -4,7 +4,7 @@ import MD2AppSupport
 import SwiftUI
 
 @MainActor
-final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, ObservableObject {
+final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let settings = AppSettings()
 
     /// Recent-documents list (persists across launches). Noted on every
@@ -21,17 +21,13 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
     /// `applicationWillTerminate` to arm the relaunch only once termination is
     /// actually committed (a cancelled unsaved-changes prompt clears it).
     private var pendingLanguageRelaunch = false
-    /// Republishes `settings` changes as our own, so SwiftUI — which observes
-    /// this delegate via `@NSApplicationDelegateAdaptor` — re-evaluates the
-    /// `.commands` menu when the language changes. This keeps the app's own menu
-    /// items (New, Open, Save, Print, …) localized immediately; only the standard
-    /// AppKit menu bar still needs a restart.
+    /// Re-renders open documents when a setting changes. The menu commands need
+    /// no help from here: `AppCommands` observes `settings` itself.
     private var settingsObservation: AnyCancellable?
     private var modeShortcutObservation: AnyCancellable?
     /// Shortcuts that have been registered as mode shortcuts during this run.
-    /// SwiftUI command menus can keep a previous key equivalent alive after a
-    /// Settings edit; consuming stale entries here prevents old bindings from
-    /// firing after the user customizes them.
+    /// Consuming stale entries here keeps an old binding from doing anything
+    /// after the user customizes it.
     private var knownModeShortcuts = Set<ModeKeyboardShortcut>()
 
     override init() {
@@ -51,13 +47,9 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
         }
         settingsObservation = settings.objectWillChange.sink { [weak self] _ in
             guard let self else { return }
-            self.objectWillChange.send()
             // `objectWillChange` fires before the new value commits, so re-render
-            // on the next runloop tick to pick up committed settings. The second
-            // delegate publish also lets SwiftUI rebuild command shortcuts after
-            // users change mode bindings in Settings.
+            // on the next runloop tick to pick up committed settings.
             DispatchQueue.main.async {
-                self.objectWillChange.send()
                 for documentWindow in self.documentWindows {
                     documentWindow.store.reRenderForSettingsChange()
                 }
