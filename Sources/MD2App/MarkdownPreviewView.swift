@@ -1664,6 +1664,31 @@ struct MarkdownPreviewView: NSViewRepresentable {
             ignoreNextAnchorMessage = true
         }
 
+        /// Answers a Reload with a load of the latest HTML. WebKit would bring
+        /// back the memory page, which has none of the live updates since the
+        /// last load, and its navigation would be no load's, so its page would
+        /// go unlabelled. WebKit also restores the reader's place, which a load
+        /// does not, so that goes along. A page still loading has none to keep.
+        private func reloadLatestContent(in webView: WKWebView) {
+            captureAnchor(in: webView) { [weak self, weak webView] anchor in
+                guard let self, let webView else { return }
+                let place = self.isLoaded ? anchor : nil
+                if let place {
+                    self.pendingScroll = .viewport(place)
+                    self.suppressNextAnchorMessage()
+                }
+                self.beginLoading()
+                self.loadedBody = self.lastBody
+                // The marks go with the page, and the find bar still counts them.
+                if let query = self.lastFindQuery, !query.isEmpty {
+                    self.runFindWhenReady(query, in: webView)
+                }
+                self.documentLoader.load(
+                    self.lastHTML, baseURL: self.lastBaseURL, fragment: place?.fallbackHeadingID, in: webView
+                )
+            }
+        }
+
         /// Runs a preview search immediately when the page is ready, otherwise
         /// remembers the latest query and applies it after `didFinish`.
         func runFindWhenReady(_ query: String, in webView: WKWebView) {
@@ -1778,7 +1803,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// new-window requests, which carry no target frame) is handed off to
         /// the matching external handler, while a script- or meta-driven
         /// redirect is cancelled outright so a document can never auto-open
-        /// anything.
+        /// anything. WebKit's own Reload becomes a load of the latest HTML.
         func webView(
             _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction,
@@ -1787,6 +1812,15 @@ struct MarkdownPreviewView: NSViewRepresentable {
             // Subframe navigations stay inside the page.
             if let targetFrame = navigationAction.targetFrame, !targetFrame.isMainFrame {
                 decisionHandler(.allow)
+                return
+            }
+
+            // Ahead of the router, which would cancel a Reload of a page that a
+            // load is replacing. That load may be gone by now: a Reload can stop
+            // one still at its policy decision.
+            if navigationAction.navigationType == .reload {
+                decisionHandler(.cancel)
+                reloadLatestContent(in: webView)
                 return
             }
 
@@ -1857,9 +1891,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             // Taken for loaded, a page on its way out would receive an edit that
-            // the load then overwrites with older text. Comparing navigations
-            // would not do: the Reload in the web view's own context menu is no
-            // load's navigation, and its page must finish like any other.
+            // the load then overwrites with older text.
             guard !isAwaitingCommit else { return }
             isLoaded = true
             applyTypography(in: webView)
