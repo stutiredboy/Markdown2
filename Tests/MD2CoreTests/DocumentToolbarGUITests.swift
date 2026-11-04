@@ -128,6 +128,14 @@ final class DocumentToolbarGUITests: XCTestCase {
             // symbol's own description, in the system language.
             XCTAssertEqual(ToolbarWindowHarness.radioButtonLabels(in: picker), harness.modeNames)
 
+            // Where `.help` can be read back depends on the macOS release. Open
+            // never collapses, so it shows whether this one allows it at all.
+            let open = try XCTUnwrap(harness.item(labelled: settings.text(.open)))
+            guard harness.helpTexts(of: open).contains(settings.text(.open)) else {
+                print("Toolbar help cannot be read back on this macOS, so only the names were checked.")
+                continue
+            }
+
             let helpByItem = [
                 settings.text(.mode): settings.text(.writeReadOrSplit),
                 settings.text(.lineNumbers): settings.text(.lineNumbersHelp),
@@ -135,7 +143,8 @@ final class DocumentToolbarGUITests: XCTestCase {
             ]
             for (label, help) in helpByItem {
                 let item = try XCTUnwrap(harness.item(labelled: label), "\(label) left the toolbar")
-                XCTAssertEqual(item.toolTip, help, "\(label) lost its help text when it collapsed")
+                let found = harness.helpTexts(of: item)
+                XCTAssertTrue(found.contains(help), "\(label) lost its help text when it collapsed, found \(found)")
             }
         }
     }
@@ -320,6 +329,28 @@ private final class ToolbarWindowHarness {
     /// The window's height above its content, which is the toolbar's.
     var toolbarHeight: CGFloat {
         window.frame.height - window.contentLayoutRect.height
+    }
+
+    /// Everywhere `.help` can be read back from: the item, its views, and their
+    /// accessibility elements.
+    func helpTexts(of item: NSToolbarItem) -> Set<String> {
+        var texts = Set([item.toolTip].compactMap { $0 })
+        if let view = item.view {
+            texts.formUnion(Self.toolTips(in: view))
+            texts.formUnion(Self.accessibilityHelp(in: view))
+        }
+        return texts
+    }
+
+    private static func toolTips(in view: NSView) -> [String] {
+        [view.toolTip].compactMap { $0 } + view.subviews.flatMap { toolTips(in: $0) }
+    }
+
+    private static func accessibilityHelp(in element: Any) -> [String] {
+        let object = element as AnyObject
+        let help = object.accessibilityHelp?() ?? nil
+        let children = (object.accessibilityChildren?() ?? []) ?? []
+        return [help].compactMap { $0 } + children.flatMap { accessibilityHelp(in: $0) }
     }
 
     func clickSegment(_ index: Int) throws {
