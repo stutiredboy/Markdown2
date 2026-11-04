@@ -36,7 +36,7 @@ final class PreviewTaskToggleGUITests: XCTestCase {
 
         // Once the page has caught up, the same task takes a click.
         try preview.catchUp()
-        XCTAssertTrue(try preview.waitForPageRevision(preview.store.sourceLineRevision))
+        XCTAssertTrue(try preview.page.waitForRevision(preview.store.sourceLineRevision))
         try preview.page.click(secondBox)
         XCTAssertTrue(preview.waitForClicks(2))
         XCTAssertEqual(preview.store.text, "- [ ] N\n- [x] A\n- [ ] B")
@@ -125,7 +125,7 @@ final class PreviewTaskToggleGUITests: XCTestCase {
         preview.store.text = "- [ ] A\n- [ ] B\n"
         try preview.catchUp()
         XCTAssertEqual(preview.store.rendered.html, page, "precondition: the new text renders to the same page")
-        XCTAssertTrue(try preview.waitForPageRevision(preview.store.sourceLineRevision))
+        XCTAssertTrue(try preview.page.waitForRevision(preview.store.sourceLineRevision))
 
         try preview.page.click(firstBox)
         XCTAssertTrue(preview.waitForClicks(1))
@@ -142,7 +142,7 @@ final class PreviewTaskToggleGUITests: XCTestCase {
         preview.viewport.setPendingEditFollow(1)
         preview.store.text = "Intro, edited.\n\n- [ ] A"
         try preview.catchUp()
-        XCTAssertTrue(try preview.waitForPageRevision(preview.store.sourceLineRevision))
+        XCTAssertTrue(try preview.page.waitForRevision(preview.store.sourceLineRevision))
     }
 
     @MainActor
@@ -192,7 +192,7 @@ final class PreviewTaskToggleGUITests: XCTestCase {
         let preview = try HeldPreview(test: self, text: "Intro.\n\n- [ ] A")
         defer { preview.close() }
         let shown = preview.store.sourceLineRevision
-        XCTAssertTrue(try preview.waitForPageRevision(shown))
+        XCTAssertTrue(try preview.page.waitForRevision(shown))
         _ = try preview.page.evaluate("window.__md2ApplyContent = function () { window.__threw = true; throw new Error('failed'); }; true")
 
         preview.store.text = "Intro, edited.\n\n- [ ] A"
@@ -248,7 +248,7 @@ final class PreviewTaskToggleGUITests: XCTestCase {
         try skipUnlessGUITestsEnabled()
         let preview = try HeldPreview(test: self, text: "- [ ] A")
         defer { preview.close() }
-        XCTAssertTrue(try preview.waitForPageRevision(preview.store.sourceLineRevision))
+        XCTAssertTrue(try preview.page.waitForRevision(preview.store.sourceLineRevision))
 
         XCTAssertEqual(try preview.page.evaluate("typeof window.__md2SourceLineRevision") as? String, "undefined")
         XCTAssertEqual(try preview.page.evaluate("""
@@ -372,6 +372,17 @@ final class PreviewTaskToggleGUITests: XCTestCase {
         return try outcome?.get()
     }
 
+    /// Waits for the page's label to read `revision`. Native sets it only once
+    /// that revision's content is in the page.
+    func waitForRevision(_ revision: Int) throws -> Bool {
+        let deadline = Date().addingTimeInterval(15)
+        while Date() < deadline {
+            if try isolated("String(window.__md2SourceLineRevision)") as? String == String(revision) { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        }
+        return false
+    }
+
     /// Records the state a click gave its box in `__clickedTo`: a box that went
     /// back looks exactly like a box that was never clicked.
     func watchClicks() throws {
@@ -486,15 +497,6 @@ final class PreviewTaskToggleGUITests: XCTestCase {
         Self.spin { self.clicks >= count }
     }
 
-    func waitForPageRevision(_ revision: Int) throws -> Bool {
-        let deadline = Date().addingTimeInterval(15)
-        while Date() < deadline {
-            if try page.isolated("String(window.__md2SourceLineRevision)") as? String == String(revision) { return true }
-            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
-        }
-        return false
-    }
-
     func releaseRefusals() {
         heldRefusals.forEach { $0() }
         heldRefusals = []
@@ -577,6 +579,10 @@ final class PreviewTaskToggleGUITests: XCTestCase {
         spin(until: { self.webView() != nil }, timeout: 10)
         let webView = try XCTUnwrap(self.webView(), "the preview never mounted")
         page = PreviewPage(test: test, webView: webView)
+        // The window can open on the starter document, which has boxes of its
+        // own, and the document's page then replaces it, taking along anything
+        // a test put on the first page. Only the label says which page this is.
+        XCTAssertTrue(try page.waitForRevision(store.sourceLineRevision), "the document's page never arrived")
         XCTAssertTrue(try page.waitFor("!!document.querySelector('input[data-md2-task-line]')"))
         // Layout settles after the first page, and a click must not miss a box
         // that moved between measuring and clicking.
