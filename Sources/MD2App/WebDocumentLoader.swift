@@ -12,6 +12,9 @@ final class WebDocumentLoader {
     private let assets = AppAssetSchemeHandler()
     private let images = LocalImageSchemeHandler()
     private(set) var documentPageURL: URL?
+    /// The navigation of the latest `load`, `nil` while that load is still being
+    /// prepared. Any other navigation's page is about to be replaced.
+    private(set) var currentNavigation: WKNavigation?
     private var loadGeneration = 0
 
     func install(on configuration: WKWebViewConfiguration) {
@@ -37,6 +40,7 @@ final class WebDocumentLoader {
 
     func load(_ html: String, baseURL: URL?, fragment: String? = nil, in webView: WKWebView) {
         loadGeneration += 1
+        currentNavigation = nil
         let generation = loadGeneration
         Task { [weak self, weak webView] in
             let content = await Task.detached(priority: .userInitiated) {
@@ -56,7 +60,7 @@ final class WebDocumentLoader {
         documentPageURL = page
         var components = URLComponents(url: page, resolvingAgainstBaseURL: false)!
         components.fragment = fragment
-        webView.load(URLRequest(url: components.url!, cachePolicy: .reloadIgnoringLocalCacheData))
+        currentNavigation = webView.load(URLRequest(url: components.url!, cachePolicy: .reloadIgnoringLocalCacheData))
     }
 }
 

@@ -12,7 +12,7 @@ final class PreviewSecurityGUITests: XCTestCase {
         let coordinator = MarkdownPreviewView.Coordinator()
         var toggles = 0
         var modeChanges = 0
-        coordinator.onToggleTask = { _, _ in toggles += 1 }
+        coordinator.onToggleTask = { _, _, _, _ in toggles += 1 }
         coordinator.onEnterEdit = { modeChanges += 1 }
         MarkdownPreviewView.installInteractionBridge(on: controller, handler: coordinator)
         let configuration = WKWebViewConfiguration()
@@ -42,7 +42,7 @@ final class PreviewSecurityGUITests: XCTestCase {
 
         // The native-owned isolated world still reaches the actual coordinator.
         let forwarded = expectation(description: "isolated native bridge")
-        webView.evaluateJavaScript("window.webkit.messageHandlers.toggleTask.postMessage({line:1,checked:true}); true", in: nil, in: .defaultClient) { result in
+        webView.evaluateJavaScript("window.webkit.messageHandlers.toggleTask.postMessage({line:1,checked:true,revision:0}); true", in: nil, in: .defaultClient) { result in
             if case .failure(let error) = result { XCTFail(error.localizedDescription) }
             forwarded.fulfill()
         }

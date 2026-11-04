@@ -103,6 +103,18 @@ toolbars honor only the built-in label styles, which is why
 `accessibilityLabel` never reaches a segment, which is why `modeSegment` puts the
 mode's name on the image.
 
+Open Recent guards: `RecentDocumentsMenu` in `Sources/MD2App/MD2App.swift` must
+observe `RecentDocumentsModel` itself. While Settings is closed the App body is
+never re-evaluated, so a list passed in from there silently freezes at the launch
+list, but a command view's own dependency still updates. File ▸ Open Recent and
+the Dock menu both read `RecentDocumentsModel.entries`, and every list change must
+go through the model. After changing that view, the model, or how the command
+tree is built, run
+`MD2_RUN_GUI_TESTS=1 swift test --filter RecentDocumentsMenuGUITests` locally
+before landing. It needs Accessibility trust and an unlocked screen: under lock
+Accessibility still answers, but no menu is drawn and windows report the wrong
+role, so check `CGSSessionScreenIsLocked` before trusting any local GUI run.
+
 ## Skill routing
 
 When the user's request matches an available skill, invoke it via the Skill tool. When in doubt, invoke the skill.
