@@ -80,11 +80,12 @@ The task allowed for amending this rule, on the expectation that it might not fi
   - Using a plain `Image(systemName:)` in the segments fails only `testCollapsedControlsKeepLocalizedNamesAndHelp`.
   - Removing `.help` from Line Numbers fails the same test, in both languages.
 - **macOS 15, CI's first run:** 6 of the 7 GUI tests passed, including the whole width matrix, so the mode control stays in the toolbar there too. The seventh failed only on reading `NSToolbarItem.toolTip`, which was `nil` for every control it checked. `testCollapsedControlsKeepLocalizedNamesAndHelp` now reads the item, its views and their accessibility elements, and uses Open as a control, because Open never collapses and has no `CollapsibleToolbarLabel`. If Open's help reads back and a collapsed control's does not, the test fails. If Open's does not read back either, that macOS gives the test nothing to compare, so it checks the names only and says so in the log.
+- **macOS 15, CI's second run:** all 7 pass. Open's help does not read back there from the item, its views or their accessibility elements. Open has no `CollapsibleToolbarLabel`, so the `nil` comes from the release, not from that modifier. On macOS 15 the test therefore checks the names only.
 - **The density boundaries,** in both languages, in Side by Side and Read, with front matter: nothing is hidden at 959, 960, 1159 or 1160 pt, so each density fits from the width that selects it. At 780 pt, Read in English hides Save only, and at 784 pt nothing is hidden.
 - **Suites:** the three non-GUI CI steps pass. The whole GUI lane passes with 147 tests, 0 failures and 2 skips, both in `.github/gui-expected-skips.txt`, and `Scripts/check_test_skips.py` accepts it.
 - **Rendering:** checked in windows captured through the window server, in English and zh-Hans, in light and dark. Rendering the window's views in process with `cacheDisplay` is not evidence for this control: it drew the selected segment blank and the picker's glass as an empty circle, and neither appears in a composited window.
 - **Not verified locally:**
-  - macOS 15. Only CI's `gui-tests` job covers it. If help cannot be read back there, the collapsed controls' tooltips on that release are untested, and rest on `.help` being applied to them as it is to Open.
+  - Tooltips on macOS 15. No test can read `.help` back there, so the collapsed controls' tooltips on that release rest on `.help` being applied to them as it is to Open.
   - The selected segment in an active window. The captures come from a test process that is not frontmost, so they show the inactive palette.
   - VoiceOver's speech. The tests read the accessibility labels it would use, not its output.
 
