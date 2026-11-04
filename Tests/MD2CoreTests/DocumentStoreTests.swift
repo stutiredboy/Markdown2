@@ -215,6 +215,115 @@ struct DocumentStoreTests {
 
         #expect(store.text == "# Title\n\n> note\n> - [x] quoted\n\n- [x] plain")
     }
+
+    /// F05 in the 2026-10-15 review: the preview still shows A on line 1 when
+    /// N lands above it, and a click on A must not check N.
+    @Test func clickFromAPreviewBehindTheTextChangesNothing() {
+        let store = DocumentStore()
+        store.text = "- [ ] A\n- [ ] B"
+        let clicked = store.sourceLineRevision
+        store.text = "- [ ] N\n- [ ] A\n- [ ] B"
+
+        #expect(!store.toggleTask(atLine: 1, to: true, renderedAt: clicked))
+        #expect(store.text == "- [ ] N\n- [ ] A\n- [ ] B")
+    }
+
+    /// Comparing the line's text could not tell these apart: line 1 reads the
+    /// same before and after, but it is not the task that was clicked.
+    @Test func clickFromAStalePreviewIsRefusedOnAnIdenticalLine() {
+        let store = DocumentStore()
+        store.text = "- [ ] repeat"
+        let clicked = store.sourceLineRevision
+        store.text = "- [ ] repeat\n- [ ] repeat"
+
+        #expect(!store.toggleTask(atLine: 1, to: true, renderedAt: clicked))
+        #expect(store.text == "- [ ] repeat\n- [ ] repeat")
+    }
+
+    @Test func clickFromAPreviewOfDeletedOrMovedTasksChangesNothing() {
+        let store = DocumentStore()
+        store.text = "- [ ] A\n- [ ] B\n- [ ] C"
+        let clicked = store.sourceLineRevision
+
+        store.text = "- [ ] B\n- [ ] C"
+        #expect(!store.toggleTask(atLine: 1, to: true, renderedAt: clicked))
+        store.text = "- [ ] C\n- [ ] A\n- [ ] B"
+        #expect(!store.toggleTask(atLine: 2, to: true, renderedAt: clicked))
+
+        #expect(store.text == "- [ ] C\n- [ ] A\n- [ ] B")
+    }
+
+    @Test func clickFromThePageOfAReplacedDocumentChangesNothing() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("md2-toggle-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("other.md")
+        try "- [ ] From disk".write(to: url, atomically: true, encoding: .utf8)
+
+        let store = DocumentStore()
+        store.text = "- [ ] Before"
+        let clicked = store.sourceLineRevision
+        store.open(url)
+
+        #expect(!store.toggleTask(atLine: 1, to: true, renderedAt: clicked))
+        #expect(store.text == "- [ ] From disk")
+    }
+
+    /// A toggle moves no line, so ticking down a list faster than the preview
+    /// re-renders keeps working: every click is still addressed correctly.
+    @Test func secondClickBeforeTheRerenderLandsIsNotStale() {
+        let store = DocumentStore()
+        store.text = "- [ ] A\n- [ ] B"
+        let clicked = store.sourceLineRevision
+
+        #expect(store.toggleTask(atLine: 1, to: true, renderedAt: clicked))
+        #expect(store.toggleTask(atLine: 2, to: true, renderedAt: clicked))
+
+        #expect(store.text == "- [x] A\n- [x] B")
+    }
+
+    @Test func duplicateClickIsIdempotentAndStaysAccepted() {
+        let store = DocumentStore()
+        store.text = "- [ ] once"
+        let clicked = store.sourceLineRevision
+
+        #expect(store.toggleTask(atLine: 1, to: true, renderedAt: clicked))
+        #expect(store.toggleTask(atLine: 1, to: true, renderedAt: clicked))
+
+        #expect(store.text == "- [x] once")
+    }
+
+    /// Undo goes through the text view like typing, so it is not a toggle, even
+    /// when what it takes back was one.
+    @Test func undoingAToggleMakesEarlierClicksStale() {
+        let store = DocumentStore()
+        store.text = "- [ ] A\n- [ ] B"
+        let clicked = store.sourceLineRevision
+        #expect(store.toggleTask(atLine: 1, to: true, renderedAt: clicked))
+
+        store.undoManager.undo()
+
+        #expect(store.text == "- [ ] A\n- [ ] B")
+        #expect(!store.toggleTask(atLine: 2, to: true, renderedAt: clicked))
+    }
+
+    /// The preview labels its page with this revision, so it must describe the
+    /// text `rendered` was built from and not whatever the text is by then.
+    @Test func renderedRevisionTrailsTheTextUntilTheRenderLands() async {
+        let store = DocumentStore()
+        store.text = "- [ ] A"
+        await store.flushPendingRender()
+        #expect(store.renderedSourceLineRevision == store.sourceLineRevision)
+        let rendered = store.renderedSourceLineRevision
+
+        store.text = "- [ ] N\n- [ ] A"
+        #expect(store.renderedSourceLineRevision == rendered)
+        #expect(store.sourceLineRevision != rendered)
+
+        await store.flushPendingRender()
+        #expect(store.renderedSourceLineRevision == store.sourceLineRevision)
+        #expect(store.rendered.html.contains(#"data-md2-task-line="2""#))
+    }
 }
 
 @MainActor

@@ -63,6 +63,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
     /// the PDF exporter and the HTML builder never receive, so exported output is
     /// unaffected. Independent of the editor's own line-number preference.
     var showsLineNumbers: Bool = false
+    /// The document's source-line revision that `html` was rendered from, which
+    /// the page hands back with each checkbox click (see `labelPage`).
+    var sourceLineRevision: Int = 0
     @Binding var jumpHeadingID: String?
     /// Fraction (0...1) to scroll to after load when no heading anchor applies.
     @Binding var jumpFraction: Double?
@@ -81,8 +84,13 @@ struct MarkdownPreviewView: NSViewRepresentable {
     /// Esc stays available to the responder chain and the system.
     var onEscape: () -> Bool = { false }
     /// Called when a task checkbox is clicked, carrying the 1-based source
-    /// line to rewrite and the absolute state the checkbox now shows.
-    var onToggleTask: (_ line: Int, _ checked: Bool) -> Void = { _, _ in }
+    /// line to rewrite, the absolute state the checkbox now shows and the
+    /// source-line revision of the page that was clicked. A click the document
+    /// refuses must call `restoreBoxes`: the page changed the box itself, and
+    /// without an edit no re-render puts it back.
+    var onToggleTask: (
+        _ line: Int, _ checked: Bool, _ revision: Int, _ restoreBoxes: @escaping () -> Void
+    ) -> Void = { _, _, _, _ in }
     /// Called when a gutter number is clicked, carrying the 1-based source
     /// line it shows, for the editor to select.
     var onRevealSourceLine: (_ line: Int) -> Void = { _ in }
@@ -165,7 +173,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
         });
         // Task checkboxes are the preview's one interactive element: the click
         // toggles the box optimistically, and native rewrites the source line
-        // (the re-render that follows is the authoritative state).
+        // (the re-render that follows is the authoritative state). The line only
+        // means something in the source this page was rendered from, so the
+        // revision native labelled the page with goes along.
         document.addEventListener('click', function (event) {
             if (!event.isTrusted) { return; }
             var box = event.target;
@@ -174,7 +184,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
             if (isNaN(line)) { return; }
             window.webkit.messageHandlers.\(Self.toggleTaskMessageName).postMessage({
                 line: line,
-                checked: !!box.checked
+                checked: !!box.checked,
+                revision: window.\(Self.sourceLineRevisionVariable)
             });
         });
         // A gutter number asks native to select the line it shows in the
@@ -190,6 +201,22 @@ struct MarkdownPreviewView: NSViewRepresentable {
             event.preventDefault();
             window.webkit.messageHandlers.\(Self.revealSourceLineMessageName).postMessage({ line: line });
         });
+    """
+
+    /// The isolated world's name for the page's source-line revision. A global
+    /// there is out of reach of page script, unlike anything in the DOM.
+    private static let sourceLineRevisionVariable = "__md2SourceLineRevision"
+
+    /// Puts every task box back to the state its page was rendered with, which
+    /// the `checked` attribute keeps. All of them, because a refused click's
+    /// line may by now name another box, and because any box the source
+    /// disagrees with has a re-render on the way. A live update will not do it:
+    /// a kept block keeps its box, flipped.
+    private static let restoreTaskBoxesScript = """
+        document.querySelectorAll('input[data-md2-task-line]').forEach(function (box) {
+            box.checked = box.defaultChecked;
+        });
+        true;
     """
 
     func makeNSView(context: Context) -> WKWebView {
@@ -954,6 +981,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         context.coordinator.onFindResult = onFindResult
         context.coordinator.showsFrontMatter = showsFrontMatter
         context.coordinator.showsLineNumbers = showsLineNumbers
+        context.coordinator.sourceLineRevision = sourceLineRevision
 
         if let previewWebView = webView as? PreviewWebView {
             previewWebView.onFindAction = { action in
@@ -1031,6 +1059,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
                     coordinator: context.coordinator
                 )
             }
+        } else {
+            // Text that renders to the same page is still a new revision.
+            context.coordinator.labelPage(in: webView)
         }
 
         // Anchor/heading/fraction targets are also applied once the page has
@@ -1359,7 +1390,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
         var lastBody = ""
         var lastBaseURL: URL?
         var onEnterEdit: () -> Void = {}
-        var onToggleTask: (_ line: Int, _ checked: Bool) -> Void = { _, _ in }
+        var onToggleTask: (
+            _ line: Int, _ checked: Bool, _ revision: Int, _ restoreBoxes: @escaping () -> Void
+        ) -> Void = { _, _, _, _ in }
         var onRevealSourceLine: (_ line: Int) -> Void = { _ in }
         var onOpenMarkdownLink: (_ url: URL) -> Void = { _ in }
         var onAnchorChange: (_ anchor: ViewportAnchor, _ isUserInitiated: Bool) -> Void = { _, _ in }
@@ -1368,6 +1401,13 @@ struct MarkdownPreviewView: NSViewRepresentable {
         let documentLoader = WebDocumentLoader()
         var showsFrontMatter = true
         var showsLineNumbers = false
+        /// The source-line revision of the content last handed to this view.
+        var sourceLineRevision = 0
+        /// The revision the page is labelled with; `nil` on a new page.
+        private var pageRevision: Int?
+        /// True from handing content over until it is in the page, while the
+        /// page keeps the label of what it still shows.
+        private var hasContentInFlight = false
         var lastFindQuery: String?
         var lastFocusToken: UUID?
         /// Token of the most recently consumed find-navigation command, so it runs
@@ -1418,6 +1458,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         func applyLiveContent(_ bodyHTML: String, mathMacros: [String: String], in webView: WKWebView) {
             liveUpdateGeneration += 1
             let generation = liveUpdateGeneration
+            hasContentInFlight = true
             liveUpdateWorkItem?.cancel()
             let baseURL = lastBaseURL
             let loadedBody = self.loadedBody
@@ -1467,14 +1508,13 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 if let followLine = self.editFollowLine, Date() < self.editFollowDeadline {
                     let script = "window.__md2ApplyContent(\(Self.jsStringLiteral(body)), \(options));"
                         + "window.__md2FollowEditLine ? window.__md2FollowEditLine(\(followLine)) : null;"
+                        + "true;"
                     // This update keys the page's nodes, so later ones need no
                     // loaded body (the page ignores one sent after that anyway).
                     self.loadedBody = nil
-                    webView.evaluateJavaScript(script) { [weak self, weak webView] _, _ in
+                    webView.evaluateJavaScript(script) { [weak self, weak webView] _, error in
                         guard let self, let webView else { return }
-                        if let query = self.lastFindQuery, !query.isEmpty {
-                            self.runFindWhenReady(query, in: webView)
-                        }
+                        self.finishLiveContent(generation: generation, error: error, in: webView)
                     }
                     return
                 }
@@ -1487,16 +1527,43 @@ struct MarkdownPreviewView: NSViewRepresentable {
                     let anchor = (result as? [String: Any]).map(Self.viewportAnchor(fromMessage:))
                     let script = Self.liveContentScript(bodyHTML: body, options: options, anchor: anchor)
                     self.loadedBody = nil
-                    webView.evaluateJavaScript(script) { [weak self, weak webView] _, _ in
+                    webView.evaluateJavaScript(script) { [weak self, weak webView] _, error in
                         guard let self, let webView else { return }
-                        if let query = self.lastFindQuery, !query.isEmpty {
-                            self.runFindWhenReady(query, in: webView)
-                        }
+                        self.finishLiveContent(generation: generation, error: error, in: webView)
                     }
                 }
             }
             liveUpdateWorkItem = work
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.liveUpdateDebounce, execute: work)
+        }
+
+        /// Both update scripts end in a value WebKit can return, so an `error`
+        /// means the update threw and the page may still show the old content.
+        private func finishLiveContent(generation: Int, error: Error?, in webView: WKWebView) {
+            if error == nil, generation == liveUpdateGeneration {
+                hasContentInFlight = false
+                labelPage(in: webView)
+            }
+            if let query = lastFindQuery, !query.isEmpty {
+                runFindWhenReady(query, in: webView)
+            }
+        }
+
+        /// Tells the page which source-line revision it shows, for it to send
+        /// back with a checkbox click. The label follows its content and never
+        /// leads it: a page labelled behind what it shows only gets a click
+        /// refused, but one labelled ahead would pass a stale click as current.
+        func labelPage(in webView: WKWebView) {
+            guard !hasContentInFlight, pageRevision != sourceLineRevision else { return }
+            pageRevision = sourceLineRevision
+            webView.evaluateJavaScript(
+                "window.\(MarkdownPreviewView.sourceLineRevisionVariable) = \(sourceLineRevision); true;",
+                in: nil, in: .defaultClient
+            )
+        }
+
+        private func restoreTaskBoxes(in webView: WKWebView?) {
+            webView?.evaluateJavaScript(MarkdownPreviewView.restoreTaskBoxesScript, in: nil, in: .defaultClient)
         }
 
         private static func liveContentScript(bodyHTML: String, options: String, anchor: ViewportAnchor?) -> String {
@@ -1507,7 +1574,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 // must never drive the editor pane (it would jump to the bottom).
                 script += "window.__md2ScrollToViewportAnchor(\(viewportAnchorJS(anchor)), true);"
             }
-            return script
+            return script + "true;"
         }
 
         /// Encodes a string as a JavaScript string literal (quotes included) so
@@ -1579,6 +1646,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// a same-query search from running against the previous document body.
         func beginLoading() {
             isLoaded = false
+            hasContentInFlight = true
             liveUpdateGeneration += 1
             liveUpdateWorkItem?.cancel()
             pendingLiveBody = nil
@@ -1664,10 +1732,18 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 onEnterEdit()
             case MarkdownPreviewView.toggleTaskMessageName:
                 guard message.world == .defaultClient else { return }
+                // A page not labelled yet sends no revision, and nothing can
+                // say what its line means.
                 guard let body = message.body as? [String: Any],
                       let line = (body["line"] as? NSNumber)?.intValue,
-                      let checked = (body["checked"] as? NSNumber)?.boolValue else { return }
-                onToggleTask(line, checked)
+                      let checked = (body["checked"] as? NSNumber)?.boolValue,
+                      let revision = (body["revision"] as? NSNumber)?.intValue else {
+                    restoreTaskBoxes(in: message.webView)
+                    return
+                }
+                onToggleTask(line, checked, revision) { [weak self, weak webView = message.webView] in
+                    self?.restoreTaskBoxes(in: webView)
+                }
             case MarkdownPreviewView.revealSourceLineMessageName:
                 guard message.world == .defaultClient else { return }
                 guard let body = message.body as? [String: Any],
@@ -1787,6 +1863,13 @@ struct MarkdownPreviewView: NSViewRepresentable {
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
             // A new document started loading; hold scrolling until it finishes.
             isLoaded = false
+            // Label it now: `didFinish` waits for every image, and the boxes work
+            // from the end of parsing. A page some newer load will replace stays
+            // unlabelled, so its clicks are refused.
+            guard navigation === documentLoader.currentNavigation else { return }
+            hasContentInFlight = false
+            pageRevision = nil
+            labelPage(in: webView)
         }
 
         private func applyPendingScroll(in webView: WKWebView, consume: Bool = true) {

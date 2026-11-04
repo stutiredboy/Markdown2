@@ -800,6 +800,7 @@ struct ContentView: View {
                 liveUpdate: inSplit,
                 showsFrontMatter: showsFrontMatterInPreview,
                 showsLineNumbers: settings.showsLineNumbersInPreview,
+                sourceLineRevision: document.renderedSourceLineRevision,
                 jumpHeadingID: $document.jumpHeadingID,
                 jumpFraction: $document.jumpFraction,
                 jumpAnchor: $document.previewJumpAnchor,
@@ -815,12 +816,15 @@ struct ContentView: View {
                 },
                 onEnterEdit: { if !inSplit { requestMode(.write) } },
                 onEscape: { handlePreviewEscape() },
-                onToggleTask: { line, checked in
+                onToggleTask: { line, checked, revision, restoreBoxes in
                     if inSplit { focusedPane = .preview }
                     // Capture the live viewport first so the re-render the
                     // toggle triggers can land back where the user was.
                     previewViewport.currentAnchor { fresh in
-                        guard document.toggleTask(atLine: line, to: checked) else { return }
+                        guard document.toggleTask(atLine: line, to: checked, renderedAt: revision) else {
+                            restoreBoxes()
+                            return
+                        }
                         document.previewJumpAnchor = fresh ?? previewAnchor
                     }
                 },

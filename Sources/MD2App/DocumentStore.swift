@@ -32,6 +32,7 @@ final class DocumentStore: ObservableObject {
     @Published var text: String {
         didSet {
             guard text != oldValue else { return }
+            sourceLineRevision &+= 1
             // The expensive full-document render that feeds the preview/stats is
             // coalesced off the keystroke path (see `scheduleRender`) so sustained
             // typing is never blocked by a whole-document re-render on every
@@ -206,6 +207,13 @@ final class DocumentStore: ObservableObject {
     private var renderGeneration = 0
     private var hasPendingRender = false
     private let renderDebounce: Duration = .milliseconds(120)
+    /// Counts the text changes that can move a task to another line, which is
+    /// every change but `toggleTask`'s. A preview's line numbers mean something
+    /// only in the revision it was rendered from.
+    private(set) var sourceLineRevision = 0
+    /// The `sourceLineRevision` of the text `rendered` was built from. Always
+    /// set together with `rendered`, whose publication carries it to the preview.
+    private(set) var renderedSourceLineRevision = 0
 
     var baseURL: URL? {
         fileURL?.deletingLastPathComponent()
@@ -615,18 +623,22 @@ final class DocumentStore: ObservableObject {
     }
 
     /// Sets the task-list marker on the 1-based source `line` to `checked`,
-    /// in response to a checkbox click in the preview. The request is
-    /// validated before anything is written — the line must exist and must
-    /// be a task item — so a stale or malformed preview message can never
-    /// corrupt unrelated text. Applying an absolute state (instead of
-    /// flipping) keeps duplicate messages idempotent; re-render, dirty
-    /// marking, and autosave ride the normal `text` pipeline. The change goes
-    /// through the editor's text view, so it is one undoable step ordered with
-    /// the user's typing. Returns whether the line was a valid task item (so a
-    /// caller can skip reload-related work for ignored requests).
+    /// in response to a checkbox click in the preview. `revision` is the
+    /// `sourceLineRevision` the clicked page was rendered from: the line is that
+    /// page's number, so a request from any other revision is refused rather
+    /// than applied to whatever task sits on that line now. The request is
+    /// also validated before anything is written — the line must exist and must
+    /// be a task item — so a malformed preview message can never corrupt
+    /// unrelated text. Applying an absolute state (instead of flipping) keeps
+    /// duplicate messages idempotent; re-render, dirty marking, and autosave
+    /// ride the normal `text` pipeline. The change goes through the editor's
+    /// text view, so it is one undoable step ordered with the user's typing.
+    /// Returns whether the request was accepted; a caller must put a refused
+    /// click's checkbox back, since no re-render follows it.
     @discardableResult
-    func toggleTask(atLine line: Int, to checked: Bool) -> Bool {
-        guard let lineRange = Self.rangeOfLine(line, in: text),
+    func toggleTask(atLine line: Int, to checked: Bool, renderedAt revision: Int) -> Bool {
+        guard revision == sourceLineRevision,
+              let lineRange = Self.rangeOfLine(line, in: text),
               let updated = Self.settingTaskMarker(in: String(text[lineRange]), to: checked) else {
             return false
         }
@@ -637,6 +649,9 @@ final class DocumentStore: ObservableObject {
         if !editorSession.applyUndoableEdit(changing: text, to: toggled) {
             text = toggled
         }
+        // A marker moves no line, so the page still addresses this text: a
+        // second box clicked before the re-render lands is not a stale click.
+        sourceLineRevision = revision
         // A checkbox click is a discrete action, not sustained typing: render
         // immediately so the preview reflects the toggle without debounce lag.
         renderImmediately()
@@ -886,6 +901,7 @@ final class DocumentStore: ObservableObject {
     private func startRenderIfNeeded() {
         guard renderTask == nil, hasPendingRender else { return }
         let generation = renderGeneration
+        let revision = sourceLineRevision
         let snapshot = makeRenderSnapshot()
         let worker = renderWorker
         renderTask = Task { [weak self] in
@@ -893,6 +909,7 @@ final class DocumentStore: ObservableObject {
             guard let self else { return }
             self.renderTask = nil
             if self.renderGeneration == generation {
+                self.renderedSourceLineRevision = revision
                 self.rendered = result
                 self.hasPendingRender = false
             } else if !self.isDebouncingRender {
