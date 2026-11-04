@@ -201,6 +201,15 @@ struct DiagramRenderingTests {
 
     // MARK: Legibility override is scoped away from Mermaid
 
+    @Test func mermaidRunsAtTheStrictSecurityLevel() {
+        // `.appScheme` keeps the engine's own text, which names every level, out
+        // of the page. The behavior is pinned by `MermaidLabelSecurityGUITests`.
+        let html = MarkdownRenderer().render("```mermaid\ngraph TD; A-->B;\n```", assetMode: .appScheme).html
+
+        #expect(html.contains(#"securityLevel: "strict""#))
+        #expect(!html.contains(#"securityLevel: "loose""#))
+    }
+
     @Test func legibilityOverrideExcludesMermaidAndDropsRevert() {
         // Mermaid manages its own theme — and colors some geometry (e.g.
         // xychart-beta plot lines) via SVG presentation attributes. The preview's

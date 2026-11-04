@@ -41,6 +41,7 @@ swift test
 MD2_RUN_GUI_TESTS=1 swift test \
   --filter WebDocumentLoaderGUITests \
   --filter MermaidOffscreenRenderingTests \
+  --filter MermaidLabelSecurityGUITests \
   --filter PDFExportEndToEndVerification \
   --filter PreviewSecurityGUITests \
   --filter LineNumberGutterGUITests \

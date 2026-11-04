@@ -3412,11 +3412,15 @@ public struct MarkdownRenderer: Sendable {
         if (typeof mermaid === "undefined") {
             for (var u = 0; u < mers.length; u++) { reveal(mers[u]); }
         } else if (mers.length) {
+            // Diagram source is author data, like raw HTML. "strict" also runs
+            // the finished SVG through the engine's sanitizer and turns off
+            // `click` callbacks and `javascript:` links; "loose" skips all three.
+            // A diagram cannot lower this: `securityLevel` is a `secure` key.
             try {
                 mermaid.initialize({
                     startOnLoad: false,
                     theme: dark ? "dark" : "default",
-                    securityLevel: "loose"
+                    securityLevel: "strict"
                 });
             } catch (err) {}
             for (var k = 0; k < mers.length; k++) {

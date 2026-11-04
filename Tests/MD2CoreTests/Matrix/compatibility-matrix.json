@@ -363,7 +363,7 @@
       "tier": "Supported",
       "baselineRelationship": "not-in-corpus",
       "declaredBehavior": "`mermaid`, `flow`, and `sequence` fenced blocks render offline with bundled engines in the Read-mode preview.",
-      "boundary": "Invalid diagram source falls back to showing its raw text instead of blanking the preview.",
+      "boundary": "Invalid diagram source falls back to showing its raw text instead of blanking the preview. Mermaid runs at its `strict` security level, so script in diagram source does not run and a sequence actor's link menu does not open. A remote image or CSS `url()` in diagram source loads when the diagram is shown.",
       "docLabel": "Supported",
       "localTests": ["DiagramRenderingTests", "MermaidOffscreenRenderingTests"]
     },
