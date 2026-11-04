@@ -55,6 +55,45 @@ struct RecentDocumentEntry: Equatable {
     let url: URL
 }
 
+/// The live recent-documents list. File ▸ Open Recent and the Dock menu both
+/// read `entries`, so they cannot disagree, and every change goes through here
+/// so that the published list always matches the recorder.
+@MainActor
+final class RecentDocumentsModel: ObservableObject {
+    @Published private(set) var entries: [RecentDocumentEntry]
+    private let recorder: RecentDocumentsRecording
+
+    init(recorder: RecentDocumentsRecording) {
+        self.recorder = recorder
+        entries = RecentDocumentsList.menuEntries(for: recorder.recentDocumentURLs)
+    }
+
+    /// Most recent first.
+    var urls: [URL] { recorder.recentDocumentURLs }
+
+    /// Adds `url` to the list (or moves it to the front).
+    func note(_ url: URL) {
+        recorder.note(url)
+        reload()
+    }
+
+    /// Drops `url`, keeping the order of the remaining entries.
+    func remove(_ url: URL) {
+        RecentDocumentsList.removeEntry(url, from: recorder)
+        reload()
+    }
+
+    /// Empties the list.
+    func clear() {
+        recorder.clear()
+        reload()
+    }
+
+    private func reload() {
+        entries = RecentDocumentsList.menuEntries(for: recorder.recentDocumentURLs)
+    }
+}
+
 enum RecentDocumentsList {
     /// The Open Recent menu model for a recorder's URL list: deduplicated by
     /// standardized path (most recent occurrence wins), titled by file display

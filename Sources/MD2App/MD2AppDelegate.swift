@@ -7,10 +7,9 @@ import SwiftUI
 final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, ObservableObject {
     let settings = AppSettings()
 
-    /// Recent-documents list (persists across launches; also noted with the
-    /// system so the system-level recents work where code signing allows).
-    /// Noted on every successful open and first save.
-    private let recentDocuments: RecentDocumentsRecording = SystemRecentDocumentsRecorder()
+    /// Recent-documents list (persists across launches). Noted on every
+    /// successful open and first save.
+    let recentDocuments = RecentDocumentsModel(recorder: SystemRecentDocumentsRecorder())
     private var documentWindows: [DocumentWindow] = []
     private let recoveryRepository = DocumentRecoveryRepository.applicationRepository()
     private var isTerminating = false
@@ -97,7 +96,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let recentDirectories = Set(recentDocuments.recentDocumentURLs.map { $0.deletingLastPathComponent() })
+        let recentDirectories = Set(recentDocuments.urls.map { $0.deletingLastPathComponent() })
         Task.detached(priority: .background) {
             for directory in recentDirectories { LegacyPreviewCleaner.clean(in: directory) }
         }
@@ -133,11 +132,9 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
     }
 
     /// The Dock icon's context menu: live recent documents, rebuilt by AppKit
-    /// on every right-click. This surface is fully app-owned, so it stays
-    /// current within the session — unlike the File menu, whose SwiftUI
-    /// command tree is frozen while the Settings scene is closed.
+    /// on every right-click from the same entries as File ▸ Open Recent.
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
-        let entries = recentDocumentEntries
+        let entries = recentDocuments.entries
         guard !entries.isEmpty else { return nil }
         let menu = NSMenu()
         menu.autoenablesItems = false
@@ -184,10 +181,11 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
 
     // MARK: - Document actions
 
-    /// Opens a fresh, empty document in its own window.
+    /// Opens a fresh, empty document in its own window. `store` is injected so
+    /// tests can supply a save location without the modal `NSSavePanel`.
     @discardableResult
-    func newDocument() -> NSWindow {
-        let window = makeDocumentWindow(store: makeDocumentStore()).window
+    func newDocument(store: DocumentStore? = nil) -> NSWindow {
+        let window = makeDocumentWindow(store: store ?? makeDocumentStore()).window
         window.makeKeyAndOrderFront(nil)
         return window
     }
@@ -369,13 +367,6 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
 
     // MARK: - Recent documents
 
-    /// The Open Recent menu model (deduplicated, disambiguated, most recent
-    /// first). The `.commands` tree re-reads this whenever the delegate
-    /// republishes.
-    var recentDocumentEntries: [RecentDocumentEntry] {
-        RecentDocumentsList.menuEntries(for: recentDocuments.recentDocumentURLs)
-    }
-
     /// Opens a document chosen from the Open Recent menu. A file that no
     /// longer exists shows the localized open-failure notice and is pruned
     /// from the list, leaving the remaining entries intact.
@@ -387,7 +378,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
             alert.informativeText = settings.text(.recentDocumentMissingDetail)
             alert.addButton(withTitle: settings.text(.ok))
             alert.runModal()
-            RecentDocumentsList.removeEntry(url, from: recentDocuments)
+            recentDocuments.remove(url)
             return
         }
         openInNewWindow(url)
@@ -397,8 +388,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, O
         recentDocuments.clear()
     }
 
-    /// Records `url` as a recent document. The submenu pulls the live list on
-    /// every open, so recording needs no UI notification.
+    /// Records `url` as a recent document.
     private func noteRecentDocument(_ url: URL) {
         recentDocuments.note(url)
     }

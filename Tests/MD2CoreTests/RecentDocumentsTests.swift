@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 import Testing
 @testable import MD2App
@@ -72,6 +73,65 @@ struct RecentDocumentsTests {
         recorder.note(a)
         RecentDocumentsList.removeEntry(URL(fileURLWithPath: "/tmp/notes/x/../alpha.md"), from: recorder)
         #expect(recorder.recentDocumentURLs == [b])
+    }
+}
+
+/// File ▸ Open Recent and the Dock menu both read `entries`, so a change that
+/// reaches the recorder but not `entries` is a stale menu.
+@MainActor
+struct RecentDocumentsModelTests {
+    private let a = URL(fileURLWithPath: "/tmp/notes/alpha.md")
+    private let b = URL(fileURLWithPath: "/tmp/notes/beta.md")
+    private let c = URL(fileURLWithPath: "/tmp/other/alpha.md")
+
+    private func makeModel(_ urls: URL...) -> (RecentDocumentsModel, FakeRecentRecorder) {
+        let recorder = FakeRecentRecorder()
+        for url in urls.reversed() { recorder.note(url) }
+        return (RecentDocumentsModel(recorder: recorder), recorder)
+    }
+
+    @Test func startsFromTheRecordedList() {
+        let (model, _) = makeModel(a, b)
+        #expect(model.entries.map(\.url) == [a, b])
+    }
+
+    @Test func notingUpdatesEntriesAndTheRecorder() {
+        let (model, recorder) = makeModel(b)
+        model.note(a)
+        #expect(model.entries.map(\.url) == [a, b])
+        #expect(recorder.recentDocumentURLs == [a, b])
+    }
+
+    @Test func noteRetitlesEntriesWhoseNamesNowCollide() {
+        let (model, _) = makeModel(a)
+        model.note(c)
+        #expect(model.entries.map(\.title) == ["alpha.md — other", "alpha.md — notes"])
+    }
+
+    @Test func removeKeepsTheOrderOfTheRest() {
+        let (model, recorder) = makeModel(a, b, c)
+        model.remove(b)
+        #expect(model.entries.map(\.url) == [a, c])
+        #expect(recorder.recentDocumentURLs == [a, c])
+    }
+
+    @Test func clearEmptiesEntriesAndTheRecorder() {
+        let (model, recorder) = makeModel(a, b)
+        model.clear()
+        #expect(model.entries.isEmpty)
+        #expect(recorder.recentDocumentURLs.isEmpty)
+    }
+
+    /// `objectWillChange` is what the menu's view subscribes to.
+    @Test func everyChangePublishes() {
+        let (model, _) = makeModel(a)
+        var publishes = 0
+        let subscription = model.objectWillChange.sink { publishes += 1 }
+        model.note(b)
+        model.remove(a)
+        model.clear()
+        subscription.cancel()
+        #expect(publishes == 3)
     }
 }
 
