@@ -1,26 +1,27 @@
 import MD2AppSupport
 import SwiftUI
 
-/// File ▸ Open Recent, built from the persisted list at app launch. Selection
-/// and Clear run live; only the displayed list is a launch-time snapshot (see
-/// the call site).
+/// File ▸ Open Recent. This view must observe `recents` itself: while Settings
+/// is closed the App body is never re-evaluated, so entries passed in from there
+/// would stay at the launch list, but a command view's own dependency still
+/// updates it. Guarded by RecentDocumentsMenuGUITests.
 private struct RecentDocumentsMenu: View {
     let title: String
     let clearTitle: String
-    let entries: [RecentDocumentEntry]
+    @ObservedObject var recents: RecentDocumentsModel
     let onOpen: (URL) -> Void
     let onClear: () -> Void
 
     var body: some View {
         Menu(title) {
-            ForEach(entries, id: \.url) { entry in
+            ForEach(recents.entries, id: \.url) { entry in
                 Button(entry.title) { onOpen(entry.url) }
             }
-            if !entries.isEmpty {
+            if !recents.entries.isEmpty {
                 Divider()
             }
             Button(clearTitle, action: onClear)
-                .disabled(entries.isEmpty)
+                .disabled(recents.entries.isEmpty)
         }
     }
 }
@@ -74,15 +75,10 @@ struct MD2Application: App {
                 }
                 .keyboardShortcut("o")
 
-                // Launch-snapshot list: with Settings closed this command tree
-                // is never re-evaluated, so the entries shown are the persisted
-                // list as of app launch (the primary recents use case — reopen
-                // last session's files). The Dock icon menu serves the live
-                // list; owning the menu bar in AppKit would lift this limit.
                 RecentDocumentsMenu(
                     title: appDelegate.settings.text(.openRecent),
                     clearTitle: appDelegate.settings.text(.clearMenu),
-                    entries: appDelegate.recentDocumentEntries,
+                    recents: appDelegate.recentDocuments,
                     onOpen: { appDelegate.openRecentDocument($0) },
                     onClear: { appDelegate.clearRecentDocuments() }
                 )
