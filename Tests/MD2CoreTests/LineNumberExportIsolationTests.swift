@@ -41,7 +41,7 @@ struct LineNumberExportIsolationTests {
 
     @Test func exportedHTMLCarriesNoGutterMarkup() {
         let rendered = MarkdownRenderer().render(markdown)
-        let exported = SelfContainedHTMLBuilder.build(html: rendered.html, baseURL: nil)
+        let exported = SelfContainedHTMLBuilder.build(html: rendered.html, baseURL: nil).html
 
         for marker in leakMarkers {
             #expect(!exported.contains(marker), "exported HTML must not contain \(marker)")

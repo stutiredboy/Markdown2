@@ -452,7 +452,8 @@ final class DocumentStore: ObservableObject {
 
     /// Exports the rendered preview as a single self-contained HTML file chosen by
     /// the user, with local images inlined so the file is portable and opens
-    /// offline. Like PDF export and Print this is a derived artifact: it does NOT
+    /// offline. Images that stay outside the file are named in a notice once it is
+    /// written. Like PDF export and Print this is a derived artifact: it does NOT
     /// change `fileURL`, `isDirty`, or autosave. A snapshot is rendered in the
     /// background before writing. Mutually exclusive with the
     /// other export/print jobs (it no-ops while one is in flight).
@@ -471,15 +472,45 @@ final class DocumentStore: ObservableObject {
 
         // Untitled documents have no `baseURL`, so relative image paths cannot be
         // resolved; the builder leaves those references as-is rather than failing.
-        let html = SelfContainedHTMLBuilder.build(html: rendered.html, baseURL: baseURL)
+        let export = SelfContainedHTMLBuilder.build(html: rendered.html, baseURL: baseURL)
         do {
-            try html.write(to: url, atomically: true, encoding: .utf8)
+            try export.html.write(to: url, atomically: true, encoding: .utf8)
         } catch {
             alert = DocumentAlert(
                 message: alertText(.alertCouldNotExport, url.lastPathComponent),
                 detail: error.localizedDescription
             )
+            return
         }
+        if let notice = htmlExportNotice(for: export, fileName: url.lastPathComponent) {
+            alert = notice
+        }
+    }
+
+    /// How many image names each group of the HTML export notice lists.
+    private static let maximumListedImages = 5
+
+    /// The notice for an exported file that still depends on images outside it, or
+    /// nil when everything is embedded. Each group lists a capped number of names,
+    /// so a long run of remote images cannot hide a missing local one.
+    private func htmlExportNotice(for export: SelfContainedHTMLBuilder.Output, fileName: String) -> DocumentAlert? {
+        let groups = [
+            (heading: alertText(.alertHTMLExportRemoteImages), names: export.remoteImages),
+            (heading: alertText(.alertHTMLExportLocalImages), names: export.unembeddedLocalImages)
+        ].filter { !$0.names.isEmpty }
+        guard !groups.isEmpty else { return nil }
+
+        let sections = groups.map { group in
+            var lines = [group.heading] + group.names.prefix(Self.maximumListedImages)
+            if group.names.count > Self.maximumListedImages {
+                lines.append(alertText(.alertHTMLExportMoreImages, String(group.names.count - Self.maximumListedImages)))
+            }
+            return lines.joined(separator: "\n")
+        }
+        return DocumentAlert(
+            message: alertText(.alertHTMLExportIncomplete, fileName),
+            detail: sections.joined(separator: "\n\n")
+        )
     }
 
     /// Exports the document to DOCX via an external Pandoc binary. No-op when Pandoc

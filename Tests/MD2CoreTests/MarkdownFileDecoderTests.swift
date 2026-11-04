@@ -68,7 +68,8 @@ struct DocumentAlertLocalizationTests {
     @Test func parameterizedAlertStringsFormatInBothLanguages() {
         let keys: [L10nKey] = [
             .alertCouldNotOpen, .alertUndecodableFile, .alertCouldNotSave,
-            .alertCouldNotExport, .alertPandocRequired
+            .alertCouldNotExport, .alertPandocRequired,
+            .alertHTMLExportIncomplete, .alertHTMLExportMoreImages
         ]
         for key in keys {
             for language in [AppLanguage.english, .zhHans] {

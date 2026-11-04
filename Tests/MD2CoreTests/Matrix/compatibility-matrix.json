@@ -220,7 +220,7 @@
       "tier": "Supported",
       "baselineRelationship": "known-incomplete",
       "declaredBehavior": "Inline and reference images become `<img src alt title>`; inline images additionally support Pandoc size attributes.",
-      "boundary": "Some nested alt-text and inline destination edges remain incomplete; reference images do not consume size attributes.",
+      "boundary": "Some nested alt-text and inline destination edges remain incomplete; reference images do not consume size attributes. HTML export embeds local image files; remote `http`/`https` images stay URLs, and the app lists any Markdown or HTML image it did not embed. Images loaded by diagram source are neither embedded nor listed.",
       "docLabel": "Supported"
     },
     {
