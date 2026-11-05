@@ -150,8 +150,8 @@ struct SettingsView: View {
     }
 
     /// Asks whether to restart now so the menu bar picks up the new language.
-    /// The custom command items already updated live; only the standard AppKit
-    /// menus need the relaunch.
+    /// `AppCommands` has already re-titled the app's own commands; only the
+    /// standard AppKit menus need the relaunch.
     private func presentLanguageRestartPrompt() {
         let alert = NSAlert()
         alert.messageText = settings.text(.languageChangedTitle)
