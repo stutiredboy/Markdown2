@@ -20,6 +20,15 @@ struct PreviewLinkRouterTests {
         #expect(PreviewLinkRouter.route(for: target, documentPageURL: nil) == .openExternal(target))
     }
 
+    /// A `flow` link that asks for a new window reaches the router before the
+    /// page's policy can refuse it, so the router must not pass it on.
+    @Test(arguments: ["javascript:window.pwned=1", "JavaScript:window.pwned=1"])
+    func scriptURLIsIgnored(source: String) {
+        let target = URL(string: source)!
+        #expect(PreviewLinkRouter.route(for: target, documentPageURL: pageURL) == .ignore)
+        #expect(PreviewLinkRouter.route(for: target, documentPageURL: nil) == .ignore)
+    }
+
     @Test func samePageFragmentIsAllowedInPage() {
         let target = URL(string: "file:///tmp/docs/.md2-preview-ABC.html#heading-1")!
         #expect(PreviewLinkRouter.route(for: target, documentPageURL: pageURL) == .allowInPage)

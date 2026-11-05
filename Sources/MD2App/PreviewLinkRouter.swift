@@ -11,8 +11,8 @@ enum PreviewLinkRouter {
         /// same-page fragment jump. The web view may navigate.
         case allowInPage
         /// Nothing can meaningfully handle the target (unresolvable relative
-        /// link from an untitled document, app-internal schemes): cancel the
-        /// navigation and do nothing.
+        /// link from an untitled document, app-internal schemes, script URLs):
+        /// cancel the navigation and do nothing.
         case ignore
         /// A non-file link (https, mailto, …): open with the system handler.
         case openExternal(URL)
@@ -31,6 +31,12 @@ enum PreviewLinkRouter {
     /// such pages cannot resolve to a file, so they collapse to these schemes
     /// (or to no navigation at all) and must never leave the page.
     private static let inPageSchemes: Set<String> = ["about", "applewebdata"]
+
+    /// Nothing outside the page should run a script URL, and inside it the page's
+    /// policy refuses one. That policy does not help here: WebKit asks this
+    /// router about a new-window request before it applies the policy, and a
+    /// `flow` link can ask for a new window.
+    private static let scriptSchemes: Set<String> = ["javascript"]
 
     /// Routes `target` against the current memory page. Local hyperlinks have
     /// already been resolved to file URLs by the shared document loader.
@@ -69,7 +75,8 @@ enum PreviewLinkRouter {
             return .openWithSystem(target)
         }
 
-        if scheme == LocalImageSchemeHandler.scheme || scheme == BundledWebAsset.scheme {
+        if scheme == LocalImageSchemeHandler.scheme || scheme == BundledWebAsset.scheme
+            || scriptSchemes.contains(scheme) {
             return .ignore
         }
 

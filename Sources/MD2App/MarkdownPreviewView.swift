@@ -219,6 +219,49 @@ struct MarkdownPreviewView: NSViewRepresentable {
         true;
     """
 
+    /// Replaces an `<img>` that failed to load with a placeholder naming it. Only
+    /// the preview gets this, never the shared rendered HTML, so exported PDFs
+    /// and prints are unaffected.
+    ///
+    /// One capture-phase listener serves the whole page, because error events do
+    /// not bubble and a delegated listener outlives the live updates that replace
+    /// individual `<img>` nodes. It has to be in place at document start: the
+    /// page's policy refuses a missing local image during parsing, and even a
+    /// failure from a scheme handler usually lands while the engine scripts
+    /// still hold up document end.
+    private var brokenImageScript: String {
+        """
+        window.addEventListener('error', function (event) {
+            var img = event.target;
+            if (!img || img.tagName !== 'IMG') { return; }
+            if (img.getAttribute('data-md2-broken') === '1') { return; }
+            var src = img.getAttribute('src') || '';
+            var lower = src.trim().toLowerCase();
+            var labelText = '\(Self.escapeForJS(genericImageLoadFailedLabel))';
+            if (/^https?:/.test(lower)) {
+                labelText = '\(Self.escapeForJS(remoteImageUnavailableLabel))';
+            } else if (/^(file|md2-local-image):/.test(lower) || !/^[a-z][a-z0-9+.-]*:/.test(lower)) {
+                labelText = '\(Self.escapeForJS(localImageMissingLabel))';
+            }
+            var placeholder = document.createElement('span');
+            placeholder.className = 'md2-broken-image';
+            placeholder.setAttribute('data-md2-broken', '1');
+            var label = document.createElement('span');
+            label.textContent = labelText;
+            var path = document.createElement('span');
+            path.className = 'md2-broken-image-path';
+            // textContent (never innerHTML) so a hostile/odd path is inert.
+            path.textContent = src;
+            placeholder.appendChild(label);
+            placeholder.appendChild(document.createTextNode(' '));
+            placeholder.appendChild(path);
+            if (img.parentNode) {
+                img.parentNode.replaceChild(placeholder, img);
+            }
+        }, true);
+        """
+    }
+
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
@@ -868,12 +911,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             };
 
             // --- Broken image diagnostics (preview only) ------------------
-            // This script is injected only into the preview web view, never into
-            // the shared rendered HTML, so exported PDFs/prints are unaffected.
-            // A single capture-phase listener catches <img> load failures even
-            // after a live content update, because error events do not bubble
-            // (capture is required) and a delegated listener outlives the
-            // updates that replace individual <img> nodes.
+            // The placeholder's look; `brokenImageScript` puts it in the page.
             (function () {
                 var style = document.createElement('style');
                 style.textContent =
@@ -885,35 +923,6 @@ struct MarkdownPreviewView: NSViewRepresentable {
                     '.md2-broken-image .md2-broken-image-path{font-family:ui-monospace,' +
                     'SFMono-Regular,Menlo,monospace;word-break:break-all;color:var(--text,#1f2328);}';
                 document.head.appendChild(style);
-
-                window.addEventListener('error', function (event) {
-                    var img = event.target;
-                    if (!img || img.tagName !== 'IMG') { return; }
-                    if (img.getAttribute('data-md2-broken') === '1') { return; }
-                    var src = img.getAttribute('src') || '';
-                    var lower = src.trim().toLowerCase();
-                    var labelText = '\(Self.escapeForJS(genericImageLoadFailedLabel))';
-                    if (/^https?:/.test(lower)) {
-                        labelText = '\(Self.escapeForJS(remoteImageUnavailableLabel))';
-                    } else if (/^(file|md2-local-image):/.test(lower) || !/^[a-z][a-z0-9+.-]*:/.test(lower)) {
-                        labelText = '\(Self.escapeForJS(localImageMissingLabel))';
-                    }
-                    var placeholder = document.createElement('span');
-                    placeholder.className = 'md2-broken-image';
-                    placeholder.setAttribute('data-md2-broken', '1');
-                    var label = document.createElement('span');
-                    label.textContent = labelText;
-                    var path = document.createElement('span');
-                    path.className = 'md2-broken-image-path';
-                    // textContent (never innerHTML) so a hostile/odd path is inert.
-                    path.textContent = src;
-                    placeholder.appendChild(label);
-                    placeholder.appendChild(document.createTextNode(' '));
-                    placeholder.appendChild(path);
-                    if (img.parentNode) {
-                        img.parentNode.replaceChild(placeholder, img);
-                    }
-                }, true);
             })();
         })();
         """
@@ -923,6 +932,11 @@ struct MarkdownPreviewView: NSViewRepresentable {
             forMainFrameOnly: true
         )
         configuration.userContentController.addUserScript(userScript)
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: brokenImageScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        ))
         Self.installInteractionBridge(on: configuration.userContentController, handler: context.coordinator)
         configuration.userContentController.add(context.coordinator, name: Self.anchorMessageName)
         configuration.userContentController.add(context.coordinator, contentWorld: .defaultClient, name: Self.selectionMessageName)

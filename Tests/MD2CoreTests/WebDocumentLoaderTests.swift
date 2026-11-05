@@ -32,10 +32,12 @@ struct WebDocumentLoaderTests {
     @Test func enginesAreIncludedInDependencyOrderAndOnlyWhenNeeded() throws {
         let html = MarkdownRenderer().render("```flow\na=>start: A\n```\n\n```sequence\nA->B: Hi\n```", assetMode: .appScheme).html
         let assets: [BundledWebAsset] = [.katex, .mhchem, .underscore, .raphael, .flowchart, .sequence]
-        let positions = try assets.map { try #require(html.range(of: $0.url.absoluteString)?.lowerBound) }
+        // The page's policy names these URLs too, so look for the tags themselves.
+        func tag(_ asset: BundledWebAsset) -> String { #"<script src="\#(asset.url.absoluteString)""# }
+        let positions = try assets.map { try #require(html.range(of: tag($0))?.lowerBound) }
         #expect(positions == positions.sorted())
         #expect(!html.contains("mermaid.min.js"))
-        #expect(html.components(separatedBy: BundledWebAsset.raphael.url.absoluteString).count == 2)
+        #expect(html.components(separatedBy: tag(.raphael)).count == 2)
         #expect(!MarkdownRenderer().render("plain", assetMode: .appScheme).html.contains("/diagrams/"))
     }
 

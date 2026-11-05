@@ -2,6 +2,8 @@
 
 **结论：** F01 的边界在 Mermaid 图表里有缺口。修复前，文档里的图表源码能运行脚本，读取并发出文档内容。本次把 Mermaid 升级到 10.9.8，并改用 `securityLevel: "strict"`，Mermaid 路径上的脚本执行已全部关闭。标签和图表 CSS 仍能加载远程资源，这与 Markdown 图片能力相同，保留为明确写出的限制。
 
+> 2026-11-05 后续更新：下文“后续建议”第 2 条已完成。渲染页面现在都带 Content-Security-Policy，`flow` 的 `javascript:` 链接在预览、PDF 页面和导出文件里都不再执行，真实鼠标点击也测过，导出的页面在 Chromium 上结果相同。标签里的 `<video>`、`<audio>` 不再加载，标签和图表 CSS 里的远程图片不变。见 `WebDocumentLoading.md` 的“Page policy”。
+
 已发布版本（最新为 `v0.7.1`）都带 10.9.1 和 `loose`，发布新版之前用户仍受影响。
 
 ## 脚本能否执行

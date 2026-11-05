@@ -4,6 +4,8 @@ import WebKit
 import XCTest
 @testable import MD2App
 
+/// `HTMLSafety`'s own boundary, on pages with their policy removed:
+/// `ContentSecurityPolicyGUITests` covers the layer under it.
 final class PreviewSecurityGUITests: XCTestCase {
     @MainActor func testAuthorHTMLAndPageScriptsCannotMutateSource() throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1", "Requires WebKit GUI session")
@@ -23,7 +25,7 @@ final class PreviewSecurityGUITests: XCTestCase {
         let delegate = SecurityNavigationDelegate { loaded.fulfill() }
         webView.navigationDelegate = delegate
         let rendered = MarkdownRenderer().render(#"<img src="missing.png" onerror="window.pwned=1;window.webkit.messageHandlers.toggleTask.postMessage({line:1,checked:true})"><details open ontoggle="window.pwned=2"><summary>Details</summary></details>"# + "\n\n- [ ] task", assetMode: .appScheme)
-        coordinator.documentLoader.load(rendered.html, baseURL: nil, in: webView)
+        coordinator.documentLoader.load(RenderedPageEdit.removingPolicy(rendered.html), baseURL: nil, in: webView)
         wait(for: [loaded], timeout: 15)
 
         XCTAssertEqual(try evaluate("typeof window.pwned", in: webView) as? String, "undefined")
@@ -75,7 +77,7 @@ final class PreviewSecurityGUITests: XCTestCase {
         [l](https://e.example "t"\(mark)/onmouseover=window.pwned=4//")
         """
         let rendered = MarkdownRenderer().render(markdown, assetMode: .appScheme)
-        coordinator.documentLoader.load(rendered.html, baseURL: nil, in: webView)
+        coordinator.documentLoader.load(RenderedPageEdit.removingPolicy(rendered.html), baseURL: nil, in: webView)
         wait(for: [loaded], timeout: 15)
 
         // Positive control: the payloads rendered as the elements under test.

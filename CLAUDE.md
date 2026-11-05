@@ -57,6 +57,27 @@ links. The failure is silent: a script in a document runs as soon as the preview
 shows it. `strict` does not stop a label or diagram CSS loading a remote URL; that
 is a stated limit, not a gap in these tests.
 
+Page policy guards: every page `MarkdownRenderer` produces carries a
+Content-Security-Policy `<meta>` (`Sources/MD2Core/PageContentSecurityPolicy.swift`).
+It is the layer under `HTMLSafety` and each engine's sanitizing, and the only thing
+that stops a `flow` block's `javascript:` link. After changing the page template, an
+inline bootstrap, a bundled engine, `RenderAssetMode`, or what the app injects into
+pages, run
+`MD2_RUN_GUI_TESTS=1 swift test --filter ContentSecurityPolicyGUITests --filter MermaidLabelSecurityGUITests --filter PreviewSecurityGUITests`
+locally before landing. The failure is silent both ways: a script whose text no
+longer matches its hash simply does not run, leaving a page with no math or
+diagrams, and a policy that is too loose changes nothing you can see. Constraints
+those tests pin down: inline scripts go through `InlineScript`, because a hash
+covers every byte between the tags; `script-src` takes no `'unsafe-inline'` or
+`'unsafe-eval'`, and no engine needs them; `style-src` does need `'unsafe-inline'`,
+for Mermaid's `<style>` and the app's own; `img-src` stays open because Markdown
+images use it; WebKit asks about a new-window `javascript:` request before it applies
+the policy, so `PreviewLinkRouter` must ignore it itself; and whatever has to hear
+about a refused load must be in place at document start, because the policy refuses
+during parsing. `MermaidLabelSecurityGUITests` and `PreviewSecurityGUITests` remove
+the policy on purpose: with it in the page, `window.pwned` stays unset whether or
+not a sanitizer works.
+
 Settings-window launch guard: `Sources/MD2App/MD2App.swift` declares `Settings`
 as the app's only SwiftUI scene (document windows are AppKit-managed), and
 SwiftUI presents an app's only scene at launch when the binary is linked below

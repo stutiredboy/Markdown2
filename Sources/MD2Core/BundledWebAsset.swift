@@ -19,6 +19,8 @@ public enum BundledWebAsset: String, CaseIterable, Sendable {
     public var data: Data { resource.data }
     public var url: URL { resource.url }
     public var text: String { String(decoding: data, as: UTF8.self) }
+    /// The policy source that lets this asset's text run as an inline `<script>`.
+    var inlineScriptSource: String { resource.inlineScriptSource }
     public var mimeType: String { self == .katexCSS ? "text/css" : "text/javascript" }
 
     public init?(url: URL) {
@@ -31,6 +33,7 @@ public enum BundledWebAsset: String, CaseIterable, Sendable {
     private struct Resource: Sendable {
         let data: Data
         let url: URL
+        let inlineScriptSource: String
 
         init(_ asset: BundledWebAsset) {
             let path = asset.rawValue as NSString
@@ -42,6 +45,7 @@ public enum BundledWebAsset: String, CaseIterable, Sendable {
             data = file.flatMap { try? Data(contentsOf: $0) } ?? Data()
             let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
             url = URL(string: "\(BundledWebAsset.scheme)://assets/\(digest)/\(asset.rawValue)")!
+            inlineScriptSource = InlineScript.hashSource(String(decoding: data, as: UTF8.self))
         }
     }
 
@@ -75,10 +79,38 @@ public enum RenderAssetMode: Sendable {
     case inline
     case appScheme
 
+    /// Serves a document's local images in app pages.
+    public static let localImageScheme = "md2-local-image"
+
     func script(_ asset: BundledWebAsset) -> String {
         switch self {
-        case .inline: "<script>\n\(asset.text)\n</script>"
+        case .inline: InlineScript.element(asset.text)
         case .appScheme: "<script src=\"\(asset.url.absoluteString)\"></script>"
+        }
+    }
+
+    /// What a page's policy must name for `script(asset)` to run.
+    func scriptSource(_ asset: BundledWebAsset) -> String {
+        switch self {
+        case .inline: asset.inlineScriptSource
+        case .appScheme: asset.url.absoluteString
+        }
+    }
+
+    /// What a page's policy must name for `mathStylesheet` to load, if anything.
+    var stylesheetSource: String? {
+        switch self {
+        case .inline: nil
+        case .appScheme: BundledWebAsset.katexCSS.url.absoluteString
+        }
+    }
+
+    /// Where a local image comes from. An exported file keeps a reference it
+    /// could not embed as written, and that still resolves beside the file.
+    var localImageSource: String {
+        switch self {
+        case .inline: "file:"
+        case .appScheme: "\(Self.localImageScheme):"
         }
     }
 

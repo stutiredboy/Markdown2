@@ -40,6 +40,54 @@ final class IncrementalPreviewGUITests: XCTestCase {
     Closing paragraph.
     """
 
+    // MARK: - Page policy
+
+    /// A live update adds content to a page without loading it again, so it gets
+    /// no new policy: what it inserts has to work under the one already there.
+    /// Adding an engine is a full load, and that page's policy names the engine.
+    @MainActor
+    func testLiveUpdatesWorkUnderThePagePolicy() throws {
+        try skipUnlessGUITestsEnabled()
+        let preview = try LivePreview(test: self, text: diagramDocument, edit: RenderedPageEdit.recordingViolations)
+        defer { preview.close() }
+        XCTAssertTrue(try preview.waitFor("window.__md2DiagramsSettled === true && document.querySelectorAll('.diagram svg').length === 3"))
+
+        let edited = diagramDocument + """
+
+
+        Now $y^2$ too.
+
+        ```mermaid
+        graph LR; C-->D;
+        ```
+
+        ```flow
+        st=>start: Again
+        e=>end: End
+        st->e
+        ```
+
+        ```sequence
+        C->D: Again
+        ```
+        """
+        _ = try preview.evaluate("window.__sameWindow = true")
+        preview.show(edited)
+        XCTAssertTrue(try preview.waitFor("window.__md2DiagramsSettled === true && document.querySelectorAll('.diagram svg').length === 6"),
+                      "a live update rendered no new diagrams")
+        XCTAssertTrue(try preview.waitFor("document.querySelectorAll('.katex').length === 2"), "a live update rendered no new math")
+        XCTAssertEqual(try preview.evaluate("window.__sameWindow") as? Bool, true, "this was a full load, not a live update")
+        XCTAssertEqual(try preview.evaluate("document.querySelectorAll('.diagram-error').length") as? Int, 0)
+        XCTAssertEqual(try preview.evaluate("window.__md2Violations") as? [String], [])
+
+        preview.show("Plain.")
+        XCTAssertTrue(try preview.waitFor("document.querySelectorAll('.diagram').length === 0"))
+        preview.show("Plain.\n\n```mermaid\ngraph TD; X-->Y;\n```\n")
+        XCTAssertTrue(try preview.waitFor("window.__md2DiagramsSettled === true && document.querySelectorAll('.diagram svg').length === 1"),
+                      "the engine a full load adds did not run")
+        XCTAssertEqual(try preview.evaluate("window.__md2Violations") as? [String], [])
+    }
+
     // MARK: - Unchanged blocks stay
 
     /// The first edit after a load has to key the nodes the load rendered,
@@ -247,17 +295,22 @@ private final class LivePreview {
     private let test: XCTestCase
     private let baseURL: URL?
     private let showsLineNumbers: Bool
+    private let edit: (String) -> String
     private let focusToken = UUID()
     private let hosting: NSHostingView<MarkdownPreviewView>
     private let window: NSWindow
     let webView: WKWebView
 
-    init(test: XCTestCase, text: String, baseURL: URL? = nil, showsLineNumbers: Bool = false) throws {
+    init(
+        test: XCTestCase, text: String, baseURL: URL? = nil, showsLineNumbers: Bool = false,
+        edit: @escaping (String) -> String = { $0 }
+    ) throws {
         _ = NSApplication.shared
         self.test = test
         self.baseURL = baseURL
         self.showsLineNumbers = showsLineNumbers
-        let hosting = NSHostingView(rootView: Self.preview(text, baseURL: baseURL, showsLineNumbers: showsLineNumbers, focusToken: focusToken))
+        self.edit = edit
+        let hosting = NSHostingView(rootView: Self.preview(text, baseURL: baseURL, showsLineNumbers: showsLineNumbers, focusToken: focusToken, edit: edit))
         let window = NSWindow(contentRect: NSRect(x: -30_000, y: -30_000, width: 700, height: 900),
                               styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -272,7 +325,7 @@ private final class LivePreview {
     }
 
     func show(_ text: String) {
-        hosting.rootView = Self.preview(text, baseURL: baseURL, showsLineNumbers: showsLineNumbers, focusToken: focusToken)
+        hosting.rootView = Self.preview(text, baseURL: baseURL, showsLineNumbers: showsLineNumbers, focusToken: focusToken, edit: edit)
     }
 
     func close() {
@@ -282,11 +335,13 @@ private final class LivePreview {
 
     /// Renders like `DocumentRenderWorker`, which reads `math-macros:` from the
     /// front matter.
-    private static func preview(_ text: String, baseURL: URL?, showsLineNumbers: Bool, focusToken: UUID) -> MarkdownPreviewView {
+    private static func preview(
+        _ text: String, baseURL: URL?, showsLineNumbers: Bool, focusToken: UUID, edit: (String) -> String
+    ) -> MarkdownPreviewView {
         let macros = FrontMatterReader.parseMathMacros(FrontMatterReader.fields(in: text)["math-macros"])
         let rendered = MarkdownRenderer().render(text, config: RenderConfig(mathMacros: macros), assetMode: .appScheme)
         return MarkdownPreviewView(
-            html: rendered.html, bodyHTML: rendered.body, mathMacros: rendered.mathMacros, baseURL: baseURL,
+            html: edit(rendered.html), bodyHTML: rendered.body, mathMacros: rendered.mathMacros, baseURL: baseURL,
             liveUpdate: true, showsLineNumbers: showsLineNumbers,
             jumpHeadingID: .constant(nil), jumpFraction: .constant(nil), jumpAnchor: .constant(nil),
             findQuery: .constant(""), findNavigation: .constant(nil), focusToken: focusToken

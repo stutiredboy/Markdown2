@@ -9,22 +9,14 @@ import XCTest
 /// Mermaid 10.9.1 at `securityLevel: "loose"` broke this without a click: a
 /// `$$…$$` sequence label and a state `classDef` both ran an event handler as soon
 /// as the page was displayed, in the preview, in the page PDF export renders, and
-/// in an exported HTML file. Each payload here runs on all three.
+/// in an exported HTML file. Each payload here runs on all three, on a page with
+/// its Content-Security-Policy removed: this suite is about Mermaid's own boundary,
+/// and `ContentSecurityPolicyGUITests` covers the layer under it.
 ///
 /// Requires a GUI session (WebKit), so opt-in to stay CI-safe:
 /// `MD2_RUN_GUI_TESTS=1 swift test --filter MermaidLabelSecurityGUITests`.
-final class MermaidLabelSecurityGUITests: XCTestCase {
+final class MermaidLabelSecurityGUITests: XCTestCase, RenderedPageTesting {
     private static let handler = "<img src=x onerror=window.pwned=1>"
-
-    private enum Surface: CaseIterable {
-        /// The real `MarkdownPreviewView`, with its bridges and user scripts.
-        case preview
-        /// The window-hosted web view and print overrides PDF export uses.
-        case offscreen
-        /// A `file:` page holding the inlined engines. Export's builder only
-        /// embeds images, so this is the script environment an exported file has.
-        case exportedFile
-    }
 
     override func setUpWithError() throws {
         try XCTSkipUnless(
@@ -36,7 +28,7 @@ final class MermaidLabelSecurityGUITests: XCTestCase {
     /// The other tests here assert that nothing ran. This shows each surface
     /// would have noticed if it had.
     @MainActor func testEachSurfaceDetectsARunningHandler() throws {
-        for surface in Surface.allCases {
+        for surface in RenderedPageSurface.allCases {
             try withPage("```mermaid\ngraph TD; A-->B;\n```", on: surface) { webView in
                 _ = try evaluate("document.body.insertAdjacentHTML('beforeend', '\(Self.handler)'); true", in: webView)
                 XCTAssertTrue(spin(5) { (try? self.evaluate("window.pwned === 1", in: webView)) as? Bool == true },
@@ -61,7 +53,7 @@ final class MermaidLabelSecurityGUITests: XCTestCase {
             "gantt task": "gantt\n section S\n \(x) :a1, 2024-01-01, 1d"
         ]
         for (name, source) in payloads.sorted(by: { $0.key < $1.key }) {
-            for surface in Surface.allCases {
+            for surface in RenderedPageSurface.allCases {
                 try withPage("```mermaid\n\(source)\n```", on: surface) { webView in
                     try assertNothingRan(in: webView, "\(name) on \(surface)")
                 }
@@ -82,7 +74,7 @@ final class MermaidLabelSecurityGUITests: XCTestCase {
             "front matter lowers level": "---\nconfig:\n  securityLevel: loose\n---\ngraph TD\n A\n click A href \"javascript:window.pwned=1\""
         ]
         for (name, source) in payloads.sorted(by: { $0.key < $1.key }) {
-            for surface in Surface.allCases {
+            for surface in RenderedPageSurface.allCases {
                 try withPage("```mermaid\n\(source)\n```", on: surface) { webView in
                     let scriptLinks = try evaluate(
                         "[...document.querySelectorAll('.diagram-mermaid a')].filter(a => /^\\s*javascript:/i.test(a.getAttribute('href') || a.getAttribute('xlink:href') || '')).length",
@@ -159,89 +151,11 @@ final class MermaidLabelSecurityGUITests: XCTestCase {
         XCTAssertEqual(handlers, "", "\(context): an event handler reached the page")
     }
 
-    // MARK: - Surfaces
-
-    @MainActor private func withPage(_ markdown: String, on surface: Surface, _ body: (WKWebView) throws -> Void) throws {
-        _ = NSApplication.shared
-        let window = NSWindow(contentRect: NSRect(x: -30_000, y: -30_000, width: 800, height: 600),
-                              styleMask: [.borderless], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.orderFrontRegardless()
-        defer { window.orderOut(nil); window.contentView = nil }
-
-        // Declared here so each outlives the page it serves: the web view holds
-        // its navigation delegate weakly.
-        let loader = WebDocumentLoader()
-        let delegate = LabelSecurityNavigationDelegate()
-        let webView: WKWebView
-        switch surface {
-        case .preview:
-            let rendered = MarkdownRenderer().render(markdown, assetMode: .appScheme)
-            let hosting = NSHostingView(rootView: MarkdownPreviewView(
-                html: rendered.html, bodyHTML: rendered.body, baseURL: nil,
-                jumpHeadingID: .constant(nil), jumpFraction: .constant(nil), jumpAnchor: .constant(nil),
-                findQuery: .constant(""), findNavigation: .constant(nil), focusToken: UUID()
-            ))
-            window.contentView = hosting
-            XCTAssertTrue(spin(15) { self.webView(in: hosting) != nil }, "the preview built no web view")
-            webView = try XCTUnwrap(self.webView(in: hosting))
-        case .offscreen:
-            let configuration = WKWebViewConfiguration()
-            loader.install(on: configuration)
-            configuration.userContentController.addUserScript(WKUserScript(
-                source: PDFExporter.printStyleScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true
-            ))
-            webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 800, height: 600), configuration: configuration)
-            webView.navigationDelegate = delegate
-            window.contentView = webView
-            loader.load(MarkdownRenderer().render(markdown, assetMode: .appScheme).html, baseURL: nil, in: webView)
-        case .exportedFile:
-            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("md2-label-\(UUID())")
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            defer { try? FileManager.default.removeItem(at: directory) }
-            let file = directory.appendingPathComponent("export.html")
-            try MarkdownRenderer().render(markdown, assetMode: .inline).html.write(to: file, atomically: true, encoding: .utf8)
-            webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 800, height: 600), configuration: WKWebViewConfiguration())
-            webView.navigationDelegate = delegate
-            window.contentView = webView
-            webView.loadFileURL(file, allowingReadAccessTo: directory)
-            XCTAssertTrue(spin(15) { delegate.finished }, "the exported file did not load")
-        }
-        XCTAssertTrue(spin(15) { (try? self.evaluate("window.__md2DiagramsSettled === true", in: webView)) as? Bool == true },
-                      "\(surface): the diagrams never settled")
-        try body(webView)
+    /// The page without its policy: what stands between this source and script
+    /// here is the engine alone, and a policy would hide it if that gave way.
+    @MainActor private func withPage(
+        _ markdown: String, on surface: RenderedPageSurface, _ body: (WKWebView) throws -> Void
+    ) throws {
+        try withPage(markdown, on: surface, edit: RenderedPageEdit.removingPolicy, body)
     }
-
-    @MainActor private func webView(in view: NSView) -> WKWebView? {
-        if let web = view as? WKWebView { return web }
-        return view.subviews.lazy.compactMap { self.webView(in: $0) }.first
-    }
-
-    @MainActor private func spin(_ seconds: TimeInterval, _ predicate: () -> Bool) -> Bool {
-        let deadline = Date().addingTimeInterval(seconds)
-        while Date() < deadline {
-            if predicate() { return true }
-            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
-        }
-        return predicate()
-    }
-
-    @MainActor private func evaluate(_ script: String, in webView: WKWebView) throws -> Any? {
-        var value: Any?
-        var failure: Error?
-        var done = false
-        webView.evaluateJavaScript(script) { result, error in
-            value = result
-            failure = error
-            done = true
-        }
-        XCTAssertTrue(spin(5) { done }, "a script did not return")
-        if let failure { throw failure }
-        return value
-    }
-}
-
-@MainActor private final class LabelSecurityNavigationDelegate: NSObject, WKNavigationDelegate {
-    private(set) var finished = false
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { finished = true }
 }

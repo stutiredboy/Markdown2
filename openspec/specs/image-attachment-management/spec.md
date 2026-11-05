@@ -142,12 +142,16 @@ The system SHALL render numeric image size attributes attached to Markdown image
 - **AND** the invalid size attribute does not produce unsafe HTML attributes
 
 ### Requirement: Show missing image diagnostics in preview
-The system SHALL show a visible broken-image placeholder when an image fails to load in the preview. The placeholder SHALL include the image source path or URL, remain legible in light and dark appearances, and SHALL NOT rewrite the Markdown source. The placeholder SHALL insert the failed path or URL as text rather than markup. Local image failures SHALL communicate that a local image file could not be found or loaded. Remote `http` and `https` image failures SHALL communicate that a remote image could not be loaded, rather than implying that a local file is missing. The placeholder SHALL appear only in the live preview; exported PDFs and prints SHALL NOT render it.
+The system SHALL show a visible broken-image placeholder when an image fails to load in the preview. The placeholder SHALL include the image source path or URL, remain legible in light and dark appearances, and SHALL NOT rewrite the Markdown source. The placeholder SHALL insert the failed path or URL as text rather than markup. Local image failures SHALL communicate that a local image file could not be found or loaded. Remote `http` and `https` image failures SHALL communicate that a remote image could not be loaded, rather than implying that a local file is missing. The placeholder SHALL appear for a failure at any time, including one during the page's first load. The placeholder SHALL appear only in the live preview; exported PDFs and prints SHALL NOT render it.
 
 #### Scenario: Missing local image
 - **WHEN** the Markdown contains an image reference to a missing local file
 - **THEN** the preview shows a visible placeholder indicating that the local image could not be found or loaded
 - **AND** the placeholder includes the missing image path
+
+#### Scenario: Missing image on the first load
+- **WHEN** a document that references a missing local image is first shown in the preview
+- **THEN** the preview shows the placeholder without waiting for an edit or a reload
 
 #### Scenario: Remote image unavailable
 - **WHEN** the Markdown contains an image reference to an `http` or `https` URL
