@@ -307,11 +307,12 @@ final class PreviewTaskToggleGUITests: XCTestCase {
         XCTAssertTrue(try preview.page.waitFor("\(typography) && \(found) && window.scrollY > 0"))
     }
 
-    /// The web view's own context menu has a Reload. No load started that
-    /// navigation and none will replace its page, so it has to count as
-    /// finished, or the page stays unloaded.
+    // MARK: - Reload
+
+    /// The web view's own context menu has a Reload, and its page has to count
+    /// as finished, or the preview stays unloaded.
     @MainActor
-    func testAReloadNoLoadStartedStillFinishes() throws {
+    func testAReloadFinishesLikeAnyLoad() throws {
         try skipUnlessGUITestsEnabled()
         let preview = try HeldPreview(test: self, text: "- [ ] A")
         defer { preview.close() }
@@ -322,6 +323,139 @@ final class PreviewTaskToggleGUITests: XCTestCase {
 
         XCTAssertTrue(try preview.page.waitFor("\(typography) !== null"))
         XCTAssertTrue(preview.coordinator.isLoaded)
+    }
+
+    /// A live update goes into the page, not into the page WebKit would reload,
+    /// which is still the last full load's.
+    @MainActor
+    func testReloadAfterALiveEditShowsTheNewestTextAndItsBoxesWork() throws {
+        try skipUnlessGUITestsEnabled()
+        let preview = try HeldPreview(test: self, text: "Intro.\n\n- [ ] A")
+        defer { preview.close() }
+
+        preview.store.text = "Edited.\n\n- [ ] A"
+        try preview.catchUp()
+        XCTAssertTrue(try preview.page.waitForRevision(preview.store.sourceLineRevision))
+        XCTAssertEqual(try preview.page.evaluate("document.body.textContent.includes('Edited.')") as? Bool, true,
+                       "precondition: the edit went in place")
+
+        try preview.reload()
+
+        XCTAssertEqual(try preview.page.isolated("""
+            String(window.__md2SourceLineRevision) + ' ' + document.body.textContent.includes('Edited.')
+            """) as? String, "\(preview.store.sourceLineRevision) true")
+        try preview.page.click(firstBox)
+        XCTAssertTrue(preview.waitForClicks(1))
+        XCTAssertEqual(preview.store.text, "Edited.\n\n- [x] A")
+    }
+
+    /// A page that had no edit is a new page after a Reload all the same, and
+    /// its revision is the one the old page already carried.
+    @MainActor
+    func testReloadWithNoEditKeepsTheBoxesWorking() throws {
+        try skipUnlessGUITestsEnabled()
+        let preview = try HeldPreview(test: self, text: "- [ ] A", liveUpdate: false)
+        defer { preview.close() }
+
+        try preview.reload()
+
+        XCTAssertTrue(try preview.page.waitForRevision(preview.store.sourceLineRevision))
+        try preview.page.click(firstBox)
+        XCTAssertTrue(preview.waitForClicks(1))
+        XCTAssertEqual(preview.store.text, "- [x] A")
+    }
+
+    /// WebKit restores the place of a page the user scrolled, so a load in its
+    /// place has to as well. The new page starts at the top on its way there,
+    /// and reporting that would take the outline with it.
+    @MainActor
+    func testReloadKeepsTheReadersPlace() throws {
+        try skipUnlessGUITestsEnabled()
+        let text = (1...200).map { "Paragraph \($0)." }.joined(separator: "\n\n")
+        let preview = try HeldPreview(test: self, text: text)
+        defer { preview.close() }
+        // The page scrolls to its place on animation frames, which a window off
+        // the screen never gets. A user script, since the page will be new.
+        preview.page.webView.configuration.userContentController.addUserScript(WKUserScript(
+            source: "window.requestAnimationFrame = function (callback) { return setTimeout(callback, 16); };",
+            injectionTime: .atDocumentStart, forMainFrameOnly: true
+        ))
+        _ = try preview.page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight / 2); true")
+        // The report of this scroll comes first, or it would use up the one
+        // report a Reload has suppressed.
+        XCTAssertTrue(preview.waitForAnchor { $0.scrollFraction > 0 })
+        let place = try XCTUnwrap(preview.page.evaluate("window.scrollY") as? Double)
+        preview.anchors = []
+
+        try preview.reload()
+
+        XCTAssertTrue(try preview.page.waitFor("Math.abs(window.scrollY - \(place)) < 40"),
+                      "the page must come back near \(place)")
+        XCTAssertEqual(preview.anchors.filter { $0.scrollFraction == 0 }.count, 0,
+                       "the top of the page is no place the reader went")
+    }
+
+    /// The new page's blocks have no keys yet, so its first live update has to
+    /// send the body to key them from, or it replaces every block.
+    @MainActor
+    func testEditAfterAReloadKeepsTheBlocksItDidNotChange() throws {
+        try skipUnlessGUITestsEnabled()
+        let preview = try HeldPreview(test: self, text: "Intro.\n\n- [ ] A")
+        defer { preview.close() }
+        preview.store.text = "Edited.\n\n- [ ] A"
+        try preview.catchUp()
+        XCTAssertTrue(try preview.page.waitForRevision(preview.store.sourceLineRevision))
+        try preview.reload()
+        _ = try preview.page.evaluate("window.__list = document.querySelector('main > ul'); true")
+
+        preview.store.text = "Newest.\n\n- [ ] A"
+        try preview.catchUp()
+
+        XCTAssertTrue(try preview.page.waitFor("document.body.textContent.includes('Newest.')"))
+        XCTAssertEqual(try preview.page.evaluate("document.querySelector('main > ul') === window.__list") as? Bool, true,
+                       "the list did not change, so it stays")
+    }
+
+    /// The marks are in the page, so a new page needs the search run again, or
+    /// the find bar counts matches nothing shows.
+    @MainActor
+    func testReloadRunsTheSearchAgain() throws {
+        try skipUnlessGUITestsEnabled()
+        let preview = try HeldPreview(test: self, text: "Needle.", findQuery: "Needle")
+        defer { preview.close() }
+        let found = "document.querySelector('mark.md2-find') !== null"
+        XCTAssertTrue(try preview.page.waitFor(found))
+
+        try preview.reload()
+
+        XCTAssertTrue(try preview.page.waitFor(found))
+    }
+
+    /// A Reload can stop a load that is still at its policy decision, and it
+    /// asks for the page that load is about to replace. The newest text has to
+    /// land anyway, or the preview is left on the older page for good.
+    @MainActor
+    func testReloadDuringALoadStillLandsTheNewestText() throws {
+        try skipUnlessGUITestsEnabled()
+        let preview = try HeldPreview(test: self, text: "Intro.\n\n- [ ] A")
+        defer { preview.close() }
+        let gate = NavigationGate(in: preview)
+        defer { gate.open() }
+        _ = try preview.page.evaluate("window.__olderPage = true; true")
+
+        // A new diagram engine takes a full load, which stops at the gate.
+        preview.store.text = "Newest.\n\n```mermaid\ngraph TD; A-->B;\n```"
+        try preview.catchUp()
+        XCTAssertTrue(gate.waitForHeld(1))
+        preview.page.webView.reload()
+        XCTAssertTrue(gate.waitForHeld(2))
+        gate.open()
+
+        XCTAssertTrue(try preview.page.waitFor("window.__olderPage !== true"))
+        XCTAssertTrue(preview.waitForLoad())
+        XCTAssertEqual(try preview.page.isolated("""
+            String(window.__md2SourceLineRevision) + ' ' + document.body.textContent.includes('Newest.')
+            """) as? String, "\(preview.store.sourceLineRevision) true")
     }
 
     /// The label lives in the isolated world. Page script must not be able to
@@ -530,6 +664,7 @@ final class PreviewTaskToggleGUITests: XCTestCase {
     let viewport = PreviewViewportReader()
     private let test: XCTestCase
     private let liveUpdate: Bool
+    private let findQuery: String
     private let focusToken = UUID()
     private var hosting: NSHostingView<MarkdownPreviewView>!
     private let window: NSWindow
@@ -537,14 +672,17 @@ final class PreviewTaskToggleGUITests: XCTestCase {
     private(set) var coordinator: MarkdownPreviewView.Coordinator!
     /// The clicks that reached the document.
     private(set) var clicks = 0
+    /// The places the page reported, latest last.
+    var anchors: [ViewportAnchor] = []
     /// Keeps refusals back until `releaseRefusals`, to order one after an update.
     var holdsRefusals = false
     private var heldRefusals: [() -> Void] = []
 
-    init(test: XCTestCase, text: String, liveUpdate: Bool = true) throws {
+    init(test: XCTestCase, text: String, liveUpdate: Bool = true, findQuery: String = "") throws {
         _ = NSApplication.shared
         self.test = test
         self.liveUpdate = liveUpdate
+        self.findQuery = findQuery
         window = NSWindow(contentRect: NSRect(x: -30_000, y: -30_000, width: 700, height: 900),
                           styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -571,6 +709,15 @@ final class PreviewTaskToggleGUITests: XCTestCase {
         Self.spin { self.coordinator.isLoaded }
     }
 
+    /// Reloads the way the web view's context menu does, and waits for the page
+    /// that brings. The mark is how a new page tells from the one it replaced.
+    func reload() throws {
+        _ = try page.evaluate("window.__beforeReload = true; true")
+        page.webView.reload()
+        XCTAssertTrue(try page.waitFor("window.__beforeReload !== true"), "the Reload never brought a new page")
+        XCTAssertTrue(waitForLoad())
+    }
+
     /// Waits for the view update that gives the coordinator the current render.
     func waitForHandOver() -> Bool {
         Self.spin { self.coordinator.lastHTML == self.store.rendered.html }
@@ -578,6 +725,10 @@ final class PreviewTaskToggleGUITests: XCTestCase {
 
     func waitForClicks(_ count: Int) -> Bool {
         Self.spin { self.clicks >= count }
+    }
+
+    func waitForAnchor(_ condition: (ViewportAnchor) -> Bool) -> Bool {
+        Self.spin { self.anchors.contains(where: condition) }
     }
 
     func releaseRefusals() {
@@ -605,6 +756,7 @@ final class PreviewTaskToggleGUITests: XCTestCase {
             baseURL: nil, liveUpdate: liveUpdate, sourceLineRevision: store.renderedSourceLineRevision,
             jumpHeadingID: .constant(nil), jumpFraction: .constant(nil), jumpAnchor: .constant(nil),
             viewportReader: viewport,
+            onAnchorChange: { [weak self] anchor, _ in self?.anchors.append(anchor) },
             onToggleTask: { [weak self] line, checked, revision, restoreBoxes in
                 guard let self else { return }
                 self.clicks += 1
@@ -615,7 +767,7 @@ final class PreviewTaskToggleGUITests: XCTestCase {
                     restoreBoxes()
                 }
             },
-            findQuery: .constant(""), findNavigation: .constant(nil), focusToken: focusToken
+            findQuery: .constant(findQuery), findNavigation: .constant(nil), focusToken: focusToken
         )
     }
 
