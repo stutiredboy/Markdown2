@@ -392,6 +392,246 @@ final class MermaidOffscreenRenderingTests: XCTestCase {
         )
     }
 
+    // `.invalid` so a value that reaches the SVG requests nothing real. Neither
+    // value holds a character that makes a label non-plain, which is what lets
+    // the wrap reach it at all: a `_` here would hide the bug.
+    private static let longAddress = "http://example.invalid/long/path/to/image.svg"
+    private static let longURL = "url(\(longAddress))"
+    private static let linkWithParens = "http://example.invalid/wiki/Mercury(the-planet-closest-to-the-sun)"
+
+    // Mermaid's flowchart grammar rejects `url()` in `style`, `classDef` and
+    // `linkStyle` at any length, wrapped or not, so those diagrams fall back to
+    // their source and only the text can be compared. The rendering checks use
+    // the diagram types that accept the value, which is where the wrap lost it.
+
+    @MainActor
+    func testWrapLeavesLongURLInStyleUntouched() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed test."
+        )
+
+        try assertRendersUnwrapped("block-beta\n    A\n    style A fill:\(Self.longURL)", holding: Self.longAddress)
+        try assertRendersUnwrapped("classDiagram\n    class A\n    style A fill:\(Self.longURL)", holding: Self.longAddress)
+        let flowchart = "graph TD\n    A[short]\n    style A fill:\(Self.longURL)"
+        XCTAssertEqual(try wrapResult(of: flowchart), flowchart)
+    }
+
+    @MainActor
+    func testWrapLeavesLongURLInClassDefUntouched() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed test."
+        )
+
+        try assertRendersUnwrapped("""
+        stateDiagram-v2
+            [*] --> A
+            classDef hot fill:\(Self.longURL)
+            class A hot
+        """, holding: Self.longAddress)
+        let flowchart = "graph TD\n    A[short]:::hot\n    classDef hot fill:\(Self.longURL)"
+        XCTAssertEqual(try wrapResult(of: flowchart), flowchart)
+    }
+
+    @MainActor
+    func testWrapLeavesLongURLInInitDirectiveUntouched() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed test."
+        )
+
+        try assertRendersUnwrapped("""
+        %%{init: {"themeCSS": ".node rect { fill: \(Self.longURL); }"}}%%
+        graph TD
+            A[short]
+        """, holding: Self.longAddress)
+    }
+
+    @MainActor
+    func testWrapLeavesLongURLInMultilineInitDirectiveUntouched() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed test."
+        )
+
+        // Only the first line starts with `%%`, so a check of each line's start
+        // would leave the value on the next one exposed.
+        try assertRendersUnwrapped("""
+        %%{
+          init: {
+            "themeCSS": ".node rect { fill: \(Self.longURL); }"
+          }
+        }%%
+        graph TD
+            A[short]
+        """, holding: Self.longAddress)
+    }
+
+    @MainActor
+    func testWrapLeavesLongURLInFrontMatterUntouched() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed test."
+        )
+
+        try assertRendersUnwrapped("""
+        ---
+        config:
+          themeCSS: ".node rect { fill: \(Self.longURL); }"
+        ---
+        graph TD
+            A[short]
+        """, holding: Self.longAddress)
+    }
+
+    @MainActor
+    func testWrapLeavesLinkInClickUntouched() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed test."
+        )
+
+        try assertRendersUnwrapped("""
+        graph TD
+            A[short]
+            click A href "\(Self.linkWithParens)"
+        """, holding: Self.linkWithParens)
+    }
+
+    @MainActor
+    func testWrapLeavesStatementAfterSemicolonUntouched() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed test."
+        )
+
+        // The statement does not start its line in these two.
+        try assertRendersUnwrapped(
+            "graph TD; A[short]; click A href \"\(Self.linkWithParens)\";",
+            holding: Self.linkWithParens
+        )
+        try assertRendersUnwrapped(
+            "stateDiagram-v2\n    [*] --> A; classDef hot fill:\(Self.longURL)",
+            holding: Self.longAddress
+        )
+        // A state diagram reads a statement to the end of its line, past any `;`.
+        try assertRendersUnwrapped(
+            "stateDiagram-v2\n    [*] --> A\n    classDef hot fill:red;,stroke:\(Self.longURL);\n    class A hot",
+            holding: Self.longAddress
+        )
+    }
+
+    @MainActor
+    func testWrapLeavesEveryDirectiveFormUntouched() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed test."
+        )
+
+        // Forms the rendering tests above do not reach, some because they draw
+        // nothing: the wrap has to return each of these exactly as written.
+        let sources = [
+            "graph TD\n    %% see \(Self.longURL)\n    A[short]",
+            "graph TD\n    A --> B\n    linkStyle 0 stroke:\(Self.longURL)",
+            "classDiagram\n    class A { +run(a very long parameter list that goes on) }",
+            "graph TD\n    A[short]\n\tstyle A fill:\(Self.longURL)",
+            "stateDiagram-v2\n    CLASSDEF hot fill:\(Self.longURL)",
+            "graph TD %%{init: {\"themeCSS\": \"\(Self.longURL)\"}}%%\n    A[short]",
+            "    %%{\n    init: {\"themeCSS\": \"\(Self.longURL)\"}\n    }%%\ngraph TD\n    A[short]"
+        ]
+        for source in sources {
+            XCTAssertEqual(try wrapResult(of: source), source)
+        }
+    }
+
+    @MainActor
+    func testWrapStillWrapsLabelsBesideDirectives() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed test."
+        )
+
+        // Skipping must end where each span ends, so every label here wraps. A
+        // node id that merely starts with a keyword is still a node, and a `---`
+        // line after the front matter does not open another.
+        let label = "This label is long enough to wrap"
+        let lines = "This label is <br/>long enough to <br/>wrap"
+        let source = """
+        ---
+        title: \(Self.longURL)
+        ---
+        %%{init: {"theme": "\(Self.longURL)"}}%%
+        graph TD
+            %% a comment with \(Self.longURL)
+            A[\(label)]
+            style A fill:\(Self.longURL)
+            style-guide[\(label)]
+            classDef hot fill:\(Self.longURL)
+            classes(\(label))
+            linkStyle 0 stroke:\(Self.longURL)
+            clicked{\(label)}
+            click A href "\(Self.linkWithParens)"
+        ---
+            B[\(label)]
+        ---
+            C[\(label)]
+        """
+        let expected = source
+            .replacingOccurrences(of: "[\(label)]", with: "[\(lines)]")
+            .replacingOccurrences(of: "(\(label))", with: "(\(lines))")
+            .replacingOccurrences(of: "{\(label)}", with: "{\(lines)}")
+
+        XCTAssertEqual(try wrapResult(of: source), expected)
+    }
+
+    /// Renders `source` and checks the wrap returned it exactly as written and
+    /// `value` reached the SVG. Compare the address rather than the `url(...)`
+    /// around it, because Mermaid's CSS step adds quotes inside the parentheses.
+    @MainActor
+    private func assertRendersUnwrapped(
+        _ source: String,
+        holding value: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let html = MarkdownRenderer().render("```mermaid\n\(source)\n```", assetMode: .appScheme).html
+        let probe = """
+        (function () {
+          var el = document.querySelector('.diagram-mermaid');
+          var svg = el && el.querySelector('svg');
+          return {
+            wrapped: wrapLongLabels(\(try jsonLiteral(source))),
+            svg: !!svg,
+            error: !!(el && el.classList.contains('diagram-error')),
+            markup: svg ? svg.outerHTML : ''
+          };
+        })()
+        """
+        let result = try loadAndProbe(html: html, probe: probe)
+        XCTAssertEqual(result["wrapped"] as? String, source, file: file, line: line)
+        XCTAssertTrue(boolValue(result["svg"]), "diagram must render to an <svg>", file: file, line: line)
+        XCTAssertFalse(boolValue(result["error"]), "wrap broke the diagram", file: file, line: line)
+        XCTAssertTrue(
+            ((result["markup"] as? String) ?? "").contains(value),
+            "the value must reach the SVG intact",
+            file: file,
+            line: line
+        )
+    }
+
+    /// What the page's `wrapLongLabels` makes of `source`.
+    @MainActor
+    private func wrapResult(of source: String) throws -> String? {
+        let html = MarkdownRenderer().render("```mermaid\ngraph TD\n    A[short]\n```", assetMode: .appScheme).html
+        let probe = "({ wrapped: wrapLongLabels(\(try jsonLiteral(source))) })"
+        return try loadAndProbe(html: html, probe: probe)["wrapped"] as? String
+    }
+
+    private func jsonLiteral(_ text: String) throws -> String {
+        String(decoding: try JSONEncoder().encode(text), as: UTF8.self)
+    }
+
     /// Loads `html` into an off-screen, window-hosted `WKWebView` (mirroring the
     /// exporter so WebKit lays out and runs the engines), polls the settle signal,
     /// then evaluates `probe` and returns its result dictionary.
