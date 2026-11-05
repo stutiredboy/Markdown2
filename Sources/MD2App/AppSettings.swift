@@ -432,6 +432,7 @@ enum L10nKey: String, CaseIterable {
     case encodingConversionTitle, encodingConversionMessage, convertToUTF8
     case mixedLineEndings
     case alertCouldNotExport
+    case alertHTMLExportIncomplete, alertHTMLExportRemoteImages, alertHTMLExportLocalImages, alertHTMLExportMoreImages
     case alertCouldNotPrint
     case alertPandocRequired
     case alertPandocRequiredDetail
@@ -602,6 +603,10 @@ enum L10n {
         .mixedLineEndings: "Mixed line endings",
 
         .alertCouldNotExport: "Could not export %@.",
+        .alertHTMLExportIncomplete: "%@ was exported, but some images are not embedded.",
+        .alertHTMLExportRemoteImages: "Remote images stay as links and need a network connection:",
+        .alertHTMLExportLocalImages: "These local images could not be embedded and may not display:",
+        .alertHTMLExportMoreImages: "…and %@ more",
         .alertCouldNotPrint: "Could not print the document.",
         .alertPandocRequired: "Pandoc is required to export %@.",
         .alertPandocRequiredDetail: "Install Pandoc to enable DOCX and EPUB export.",
@@ -765,6 +770,10 @@ enum L10n {
         .mixedLineEndings: "混合换行符",
 
         .alertCouldNotExport: "无法导出 %@。",
+        .alertHTMLExportIncomplete: "%@ 已导出，但部分图片未嵌入。",
+        .alertHTMLExportRemoteImages: "远程图片保留为链接，需要联网才能显示：",
+        .alertHTMLExportLocalImages: "以下本地图片无法嵌入，可能无法显示：",
+        .alertHTMLExportMoreImages: "另有 %@ 张未列出",
         .alertCouldNotPrint: "无法打印文档。",
         .alertPandocRequired: "导出 %@ 需要 Pandoc。",
         .alertPandocRequiredDetail: "安装 Pandoc 后即可启用 DOCX 和 EPUB 导出。",
