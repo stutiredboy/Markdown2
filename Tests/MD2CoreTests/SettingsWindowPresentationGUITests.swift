@@ -35,7 +35,7 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
     private var appURL: URL!
     private var healthURL: URL!
     private var fixtureURL: URL!
-    private var launchedApps: [NSRunningApplication] = []
+    private var launchedApps: [LaunchedApp] = []
 
     override func setUpWithError() throws {
         try XCTSkipUnless(
@@ -76,10 +76,9 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
         Self.removeGuardPreferences()
     }
 
-    /// `NSRunningApplication.isTerminated` does not flip for an app obtained
-    /// from a launch callback — it stays false after a real quit — so liveness
-    /// is decided by the process, which is what the assertions actually mean.
-    private static func isProcessAlive(_ app: NSRunningApplication) -> Bool {
+    /// Liveness is decided by the process, through the pid kept at launch, which
+    /// is what the assertions actually mean. `LaunchedApp` says why it is kept.
+    private static func isProcessAlive(_ app: LaunchedApp) -> Bool {
         kill(app.processIdentifier, 0) == 0
     }
 
@@ -397,7 +396,7 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
         let app = try launchApp(arguments: [])
         let first = try waitForRecord(stage: "didFinishLaunching")
         XCTAssertEqual(first.windows.filter { $0.isVisible && $0.title == "Untitled.md *" }.count, 1)
-        app.forceTerminate()
+        XCTAssertTrue(app.forceTerminate(), "the forced termination request must reach the app")
         let deadline = Date().addingTimeInterval(10)
         while Self.isProcessAlive(app), Date() < deadline { usleep(100_000) }
         XCTAssertFalse(Self.isProcessAlive(app))
@@ -467,14 +466,14 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
     private func launchApp(
         arguments: [String],
         createsNewInstance: Bool = true
-    ) throws -> NSRunningApplication {
+    ) throws -> LaunchedApp {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
         configuration.createsNewApplicationInstance = createsNewInstance
         configuration.arguments = arguments
         configuration.environment = Self.launchEnvironment(healthFile: healthURL)
 
-        let app = try open(configuration: configuration)
+        let app = try LaunchedApp(open(configuration: configuration))
         launchedApps.append(app)
         return app
     }
@@ -487,7 +486,7 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
         configuration.createsNewApplicationInstance = false
         configuration.environment = Self.launchEnvironment(healthFile: healthURL)
 
-        let app = try open(urls: urls, configuration: configuration)
+        let app = try LaunchedApp(open(urls: urls, configuration: configuration))
         if !launchedApps.contains(where: { $0.processIdentifier == app.processIdentifier }) {
             launchedApps.append(app)
         }
@@ -533,7 +532,7 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
         return try XCTUnwrap(result.app, "the open reported neither an app nor an error")
     }
 
-    private func terminate(_ app: NSRunningApplication) throws {
+    private func terminate(_ app: LaunchedApp) throws {
         app.terminate()
         let deadline = Date().addingTimeInterval(10)
         while Self.isProcessAlive(app), Date() < deadline { usleep(100_000) }
@@ -901,6 +900,34 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent(guardBundleIdentifier).appendingPathComponent("Document Recovery")
     }
+}
+
+/// A launched app and the pid it had at launch.
+///
+/// `NSRunningApplication` is a poor record of a process these tests end. Its
+/// properties persist until the next turn of the main run loop, which the tests
+/// block, so `isTerminated` stays false after a real quit. And it takes its pid
+/// on first read: first read after the process has gone, that pid is -1, and
+/// `kill(-1, 0)` succeeds whatever became of the app, so a dead app looks alive
+/// for good. The pid is therefore taken here, while the process is running.
+private struct LaunchedApp {
+    let processIdentifier: pid_t
+    private let runningApplication: NSRunningApplication
+
+    init(_ runningApplication: NSRunningApplication) throws {
+        let processIdentifier = runningApplication.processIdentifier
+        guard processIdentifier > 0 else {
+            throw GuardFailure("the launched app has no pid, so it exited before the test could record it")
+        }
+        self.processIdentifier = processIdentifier
+        self.runningApplication = runningApplication
+    }
+
+    @discardableResult
+    func terminate() -> Bool { runningApplication.terminate() }
+
+    @discardableResult
+    func forceTerminate() -> Bool { runningApplication.forceTerminate() }
 }
 
 private final class LaunchResult: @unchecked Sendable {
