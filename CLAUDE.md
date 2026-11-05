@@ -45,6 +45,18 @@ re-clip to the dirty rect or its painting in the container inset is discarded;
 and the clipboard/find paths must never see the digits, which is why they are CSS
 generated content rather than text nodes.
 
+Mermaid source guards: diagram source is author data that never passes through
+`HTMLSafety`, so Mermaid's own sanitizing is its only boundary. The bootstrap in
+`Sources/MD2Core/MarkdownRenderer.swift` runs Mermaid at `securityLevel: "strict"`,
+and `Sources/MD2Core/Resources/diagrams/mermaid.min.js` stays on the latest 10.9
+patch release. After changing either, run
+`MD2_RUN_GUI_TESTS=1 swift test --filter MermaidLabelSecurityGUITests` locally
+before landing. Neither half covers the other: `strict` on 10.9.1 still ran script
+from a `$$…$$` sequence label, and a patched engine at `loose` keeps `javascript:`
+links. The failure is silent: a script in a document runs as soon as the preview
+shows it. `strict` does not stop a label or diagram CSS loading a remote URL; that
+is a stated limit, not a gap in these tests.
+
 Settings-window launch guard: `Sources/MD2App/MD2App.swift` declares `Settings`
 as the app's only SwiftUI scene (document windows are AppKit-managed), and
 SwiftUI presents an app's only scene at launch when the binary is linked below
