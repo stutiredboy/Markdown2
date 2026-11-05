@@ -34,6 +34,36 @@ External resources remove engine/font bytes from every rendered page. They do
 not eliminate first-execution JavaScript cost; timing and WebKit's cache-hit
 behavior are not guaranteed by the loader.
 
+## Page policy
+
+Every page `MarkdownRenderer` produces carries a Content-Security-Policy `<meta>`,
+ahead of everything it governs. It is the layer under `HTMLSafety` and each diagram
+engine's own sanitizing: document content cannot run script on any engine, even
+when its markup reaches the page. It is a `<meta>` rather than a response header
+because an exported file has no response.
+
+| Directive | App pages | Exported file |
+| --- | --- | --- |
+| `default-src`, `base-uri`, `form-action` | `'none'` | `'none'` |
+| `script-src` | each served engine's exact URL, and a hash of each inline bootstrap | a hash of each inline script |
+| `style-src` | `'unsafe-inline'` and KaTeX's stylesheet URL | `'unsafe-inline'` |
+| `img-src` | `http:`, `https:`, `data:`, `md2-local-image:` | `http:`, `https:`, `data:`, `file:` |
+| `font-src` | `data:` | `data:` |
+
+- Scripts use hashes rather than a nonce because the renderer is pure, and the
+  preview compares HTML to decide whether a page changed.
+- No engine needs `'unsafe-eval'`. On a page with `eval` off, every engine and every
+  Mermaid diagram type renders with no policy violation.
+- `WKUserScript`s and `evaluateJavaScript` calls run under no page policy themselves,
+  but what they do in the page does: a `<style>` they add answers to `style-src`.
+- A live update keeps the page's policy. A body that needs a new engine is already a
+  full load, and that page's policy names the engine.
+- `img-src` is open on purpose. Remote Markdown images load, and so does an image a
+  diagram label or CSS names. Only script is shut out.
+- A plain click on a `javascript:` URL never reaches the navigation policy, and the
+  page policy stops it. A new-window request reaches the navigation policy first, so
+  `PreviewLinkRouter` ignores the scheme itself.
+
 ## Regression checks
 
 ```sh
@@ -41,6 +71,7 @@ swift test
 MD2_RUN_GUI_TESTS=1 swift test \
   --filter WebDocumentLoaderGUITests \
   --filter MermaidOffscreenRenderingTests \
+  --filter ContentSecurityPolicyGUITests \
   --filter MermaidLabelSecurityGUITests \
   --filter PDFExportEndToEndVerification \
   --filter PreviewSecurityGUITests \

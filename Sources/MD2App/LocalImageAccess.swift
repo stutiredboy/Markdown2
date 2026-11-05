@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import MD2Core
 import UniformTypeIdentifiers
 import WebKit
 
@@ -7,7 +8,7 @@ import WebKit
 /// references. This keeps absolute and document-relative image links working
 /// without granting a WKWebView read access to the whole filesystem.
 final class LocalImageSchemeHandler: NSObject, WKURLSchemeHandler {
-    nonisolated static let scheme = "md2-local-image"
+    nonisolated static let scheme = RenderAssetMode.localImageScheme
 
     private let lock = NSLock()
     private var imageURLsByToken: [String: URL] = [:]

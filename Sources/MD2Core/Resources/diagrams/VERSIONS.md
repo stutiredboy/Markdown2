@@ -18,6 +18,10 @@ Update versions deliberately and re-test the preview after any bump.
   fixes reach the 10.9 line as patch releases, so stay on its latest. 10.9.1 ran
   script from a `$$…$$` sequence label at every `securityLevel`
   (CVE-2025-54881). After a bump, run `MermaidLabelSecurityGUITests`.
+- **Every engine** runs under the page's Content-Security-Policy, with `eval` off.
+  None needs it today. After bumping any engine, run
+  `ContentSecurityPolicyGUITests`: an inlined bundle must also hold no CR and no
+  `</script`, or its hash stops matching what the parser hands over.
 - **flowchart.js** depends on **Raphael**; load `raphael.min.js` first.
 - **js-sequence-diagrams** (`sequence-diagram.min.js`) depends on **Underscore**
   and **Raphael** for its `simple` theme. (Its `hand` theme additionally needs

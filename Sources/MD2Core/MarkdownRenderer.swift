@@ -2699,12 +2699,20 @@ public struct MarkdownRenderer: Sendable {
     }
 
     private func htmlDocument(body: String, config: RenderConfig, assetMode: RenderAssetMode) -> String {
-        """
+        // Gathered first: they run after `<main>`, but the policy that names
+        // them must come before anything in the page.
+        var scripts = PageScripts(assetMode: assetMode)
+        scripts.add(.katex)
+        scripts.add(.mhchem)
+        scripts.addInline(mathBootstrap(macros: config.mathMacros))
+        addDiagramScripts(for: body, to: &scripts)
+        return """
         <!doctype html>
         <html>
         <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
+        \(PageContentSecurityPolicy.metaTag(scriptSources: scripts.sources, assetMode: assetMode))
         \(assetMode.mathStylesheet)
         <style>
         :root {
@@ -3113,13 +3121,19 @@ public struct MarkdownRenderer: Sendable {
         <main>
         \(body)
         </main>
-        \(assetMode.script(.katex))
-        \(assetMode.script(.mhchem))
-        <script>
+        \(scripts.elements.joined(separator: "\n"))
+        </body>
+        </html>
+        """
+    }
+
+    /// Runs after KaTeX, and renders the formulas already in the page.
+    private func mathBootstrap(macros: [String: String]) -> String {
+        """
         // Predefined macros from the math-macros front-matter field. The active
         // macro object is shared across render calls so that, with globalGroup
         // enabled, newcommand/def declared in one block persist into later blocks.
-        window.__md2InitialMacros = \(serializeMathMacros(config.mathMacros));
+        window.__md2InitialMacros = \(serializeMathMacros(macros));
         window.__md2MathMacros = JSON.parse(JSON.stringify(window.__md2InitialMacros));
         (function () {
             var selector = ".\(PreviewClass.mathInline), .\(PreviewClass.mathDisplay)";
@@ -3218,49 +3232,39 @@ public struct MarkdownRenderer: Sendable {
             };
         })();
         window.__md2RenderMath(document);
-        </script>
-        \(diagramScripts(for: body, assetMode: assetMode))
-        </body>
-        </html>
         """
     }
 
-    /// Builds the diagram engine `<script>` tags and render bootstrap, but only
-    /// for the diagram types the document actually uses. Documents without any
-    /// diagrams pay nothing — notably the large Mermaid bundle is never loaded
-    /// unless a `mermaid` block is present. Shared dependencies are emitted once,
-    /// in dependency order, before the engines that consume them.
-    private func diagramScripts(for body: String, assetMode: RenderAssetMode) -> String {
+    /// Adds the diagram engine scripts and render bootstrap, but only for the
+    /// diagram types the document actually uses. Documents without any diagrams
+    /// pay nothing — notably the large Mermaid bundle is never loaded unless a
+    /// `mermaid` block is present. Shared dependencies are added once, in
+    /// dependency order, before the engines that consume them.
+    private func addDiagramScripts(for body: String, to scripts: inout PageScripts) {
         let hasMermaid = body.contains(PreviewClass.diagramMermaid)
         let hasFlow = body.contains(PreviewClass.diagramFlow)
         let hasSequence = body.contains(PreviewClass.diagramSequence)
 
-        guard hasMermaid || hasFlow || hasSequence else { return "" }
+        guard hasMermaid || hasFlow || hasSequence else { return }
 
-        var scripts: [String] = []
-        func include(_ asset: BundledWebAsset) {
-            scripts.append(assetMode.script(asset))
-        }
-
-        // Underscore + Raphael are shared dependencies; emit each once, first.
+        // Underscore + Raphael are shared dependencies; add each once, first.
         if hasSequence {
-            include(.underscore)
+            scripts.add(.underscore)
         }
         if hasFlow || hasSequence {
-            include(.raphael)
+            scripts.add(.raphael)
         }
         if hasFlow {
-            include(.flowchart)
+            scripts.add(.flowchart)
         }
         if hasSequence {
-            include(.sequence)
+            scripts.add(.sequence)
         }
         if hasMermaid {
-            include(.mermaid)
+            scripts.add(.mermaid)
         }
 
-        scripts.append("<script>\n\(diagramBootstrap)\n</script>")
-        return scripts.joined(separator: "\n")
+        scripts.addInline(diagramBootstrap)
     }
 
     /// Client-side bootstrap that renders each diagram placeholder via its
@@ -3544,6 +3548,23 @@ public struct MarkdownRenderer: Sendable {
 
     private func escapeAttribute(_ source: String) -> String {
         HTMLEscaping.escapeAttribute(source)
+    }
+}
+
+/// A page's `<script>` elements in run order, with the policy source each needs.
+private struct PageScripts {
+    let assetMode: RenderAssetMode
+    private(set) var elements: [String] = []
+    private(set) var sources: [String] = []
+
+    mutating func add(_ asset: BundledWebAsset) {
+        elements.append(assetMode.script(asset))
+        sources.append(assetMode.scriptSource(asset))
+    }
+
+    mutating func addInline(_ code: String) {
+        elements.append(InlineScript.element(code))
+        sources.append(InlineScript.hashSource(code))
     }
 }
 

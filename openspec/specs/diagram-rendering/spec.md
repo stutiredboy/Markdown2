@@ -3,13 +3,13 @@
 Define offline rendering of mermaid, flow, and sequence code blocks into diagrams in the preview and exported output.
 ## Requirements
 ### Requirement: Offline rendering with graceful error handling
-The system SHALL render diagrams without any runtime network access, using engine assets bundled with the application. A diagram whose own source names a remote resource, such as an `<img>` in a Mermaid label or a CSS `url()`, SHALL load that resource when the diagram is shown, as a Markdown image does; the diagram itself SHALL still render without it. While an engine has not yet rendered a block, the system SHALL NOT display the block's raw source as visible text; the source SHALL remain available to the engine. When diagram source cannot be parsed by its engine, or no engine is available, the system SHALL surface the offending source or an inline error and SHALL continue to render the rest of the document.
+The system SHALL render diagrams without any runtime network access, using engine assets bundled with the application. A diagram whose own source names a remote image, such as an `<img>` in a Mermaid label or a CSS `url()`, SHALL load that image when the diagram is shown, as a Markdown image does; the diagram itself SHALL still render without it. A `<video>` or `<audio>` in diagram source SHALL NOT load. While an engine has not yet rendered a block, the system SHALL NOT display the block's raw source as visible text; the source SHALL remain available to the engine. When diagram source cannot be parsed by its engine, or no engine is available, the system SHALL surface the offending source or an inline error and SHALL continue to render the rest of the document.
 
 #### Scenario: Diagram renders without network
 - **WHEN** the preview is shown for a document containing a `mermaid` block while the machine is offline
 - **THEN** the diagram is fully rendered using bundled assets
 
-#### Scenario: Remote resource named in diagram source
+#### Scenario: Remote image named in diagram source
 - **WHEN** a Mermaid label contains an `<img>` with a remote URL
 - **THEN** the image element stays in the rendered diagram and the resource is requested when the diagram is shown
 - **AND** the diagram renders whether or not the request succeeds
@@ -75,7 +75,7 @@ The system SHALL wrap long plain-text node labels in Mermaid diagrams — includ
 
 ### Requirement: Mermaid source cannot run script
 
-The system SHALL treat Mermaid source as author data, as it treats raw HTML. Nothing in a diagram's source SHALL run script in the preview, in the page that PDF export and Print render, or in an exported HTML file, whether or not the reader clicks anything. The system SHALL render Mermaid at the engine's `strict` security level, and a diagram SHALL NOT be able to lower that level from its own source. This requirement covers Mermaid only; the `flow` and `sequence` engines have their own link and label handling.
+The system SHALL treat Mermaid source as author data, as it treats raw HTML. Nothing in a diagram's source SHALL run script in the preview, in the page that PDF export and Print render, or in an exported HTML file, whether or not the reader clicks anything. The system SHALL render Mermaid at the engine's `strict` security level, and a diagram SHALL NOT be able to lower that level from its own source. This requirement is Mermaid's own boundary and holds without the page's Content-Security-Policy; that policy covers every engine, and it is what stops a `flow` link.
 
 Labels SHALL keep their line breaks, inline formatting and `$$…$$` math, and an `http` or `https` link target SHALL stay a link. A sequence actor's `link` or `links` menu SHALL NOT open, because Mermaid opens it with an inline event handler.
 

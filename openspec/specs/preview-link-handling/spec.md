@@ -3,7 +3,6 @@
 ## Purpose
 
 Define how link activations inside the rendered preview are routed — in-page fragments scroll natively, external links open with the system handler, local Markdown files open in Markdown2, and other local files open with their default application — while the preview itself never navigates away from the document.
-
 ## Requirements
 ### Requirement: The preview never navigates away from the document
 The preview web view SHALL only ever display the rendered page of the current document. A link activation or new-web-view request targeting anything other than the current document's rendered page SHALL be cancelled in the web view and routed to an appropriate external handler; a script- or meta-initiated navigation to such a target SHALL be cancelled without invoking any handler, so a document can never auto-open anything without a user click. App-owned loads — the initial render load, reload-on-edit, document switches, and the `loadHTMLString` fallback for untitled documents — SHALL remain allowed. Back/forward navigation gestures SHALL be disabled on the preview.
@@ -66,4 +65,18 @@ A link resolving to a local non-Markdown file SHALL open with the system default
 #### Scenario: Unresolvable relative link is ignored
 - **WHEN** the user clicks a relative file link in an untitled (never-saved) document
 - **THEN** the preview neither navigates nor opens anything, and the app does not crash
+
+### Requirement: A script URL is never handed to a handler
+
+A `javascript:` URL SHALL NOT be opened, in the preview or by any external handler. A request for one SHALL be cancelled and SHALL do nothing, including a request for a new window, which reaches the link policy before the page's Content-Security-Policy applies.
+
+#### Scenario: New-window script link goes nowhere
+
+- **WHEN** the user clicks a link in the preview that requests a new window for a `javascript:` URL
+- **THEN** no web view is created, nothing runs, and no external handler receives the URL
+
+#### Scenario: Scheme case does not matter
+
+- **WHEN** a link's scheme is `JavaScript:` or any other case of `javascript:`
+- **THEN** it is treated the same way
 
