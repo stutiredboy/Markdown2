@@ -35,6 +35,8 @@ Markdown2 aims for a compact Typora-like writing and reading flow. It does not c
 - CJK text in headings, paragraphs, tables, and inline styles.
 - Footnotes: `[^id]` references and `[^id]: definition` blocks, with superscript links, numbered in order of first reference, and a trailing footnotes section with back-reference arrows.
 - Image attachments: pasting a screenshot saves it into a configurable, document-relative folder (default `assets/`); dragging or pasting image files links them in place at their existing location. Missing local images show an explicit broken-image placeholder in the preview.
+- Native editing: list and quote continuation, indentation, delimiter auto-pairing, skipping tracked closing delimiters, and paired Backspace. See [Markdown-aware editing](MarkdownEditing.md) for the supported contexts and input-method behavior.
+- PDF export and printing: paginated output with configurable paper, margins, running text and page numbers; exported PDFs include heading bookmarks.
 - HTML export: writes one `.html` file with styles, the math and diagram engines, and local images embedded. Remote `http`/`https` images stay as URLs and are not downloaded. A local image that cannot be embedded (a missing file, or a relative path in an unsaved document) stays as written. After writing the file, the app lists every Markdown or HTML image that is not embedded. An image loaded by a diagram's own source, such as an `<img>` in a Mermaid label, is neither embedded nor listed.
 
 Common syntax smoke test: open [`Examples/CommonSyntax.md`](../Examples/CommonSyntax.md), toggle the three optional styles, switch the app language, and export to PDF. Automated coverage lives in `CommonSyntaxTests`, `CommonSyntaxSettingsTests`, and `CommonSyntaxGUITests` (the last requires `MD2_RUN_GUI_TESTS=1`). Parsing rules are based on [CommonMark reference links](https://spec.commonmark.org/0.31.2/#link-reference-definitions), [GFM extended autolinks](https://github.github.com/gfm/#autolinks-extension-), and [Typora's optional inline syntax](https://support.typora.io/Markdown-Reference/).
@@ -42,7 +44,7 @@ Common syntax smoke test: open [`Examples/CommonSyntax.md`](../Examples/CommonSy
 ## Not Yet Supported
 
 - Semantic syntax analysis, compiler-aware highlighting, and language-server features.
-- Typora's remote image upload/hosting and the drag-handle image resize UI. (Markdown2 instead saves pasted/dropped images into a configurable document-relative folder and sizes them with `{width=…}` attributes.)
-- Import/export formats such as PDF, DOCX, LaTeX, Epub.
-- Focus mode, typewriter mode, auto-pairing, and custom theme management.
+- Typora's remote image upload/hosting and the drag-handle image resize UI. Markdown2 saves pasted screenshots into a configurable document-relative folder, links dragged or pasted image files at their existing location, and supports `{width=…}` sizing attributes.
+- Importing PDF, DOCX, LaTeX or EPUB as editable Markdown. PDF and HTML export and printing are supported; DOCX/EPUB conversion backends exist, but their commands are not exposed in the app menus.
+- Focus mode, typewriter mode, and custom theme management.
 - Full CommonMark conformance for every nested/container edge case.

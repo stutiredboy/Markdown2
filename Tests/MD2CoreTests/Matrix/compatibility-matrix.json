@@ -395,8 +395,8 @@
       "sections": [],
       "tier": "Supported",
       "baselineRelationship": "not-in-corpus",
-      "declaredBehavior": "Pasted/dropped images are saved into a configurable document-relative folder and linked in place.",
-      "boundary": "A missing local image shows an explicit broken-image placeholder rather than a blank.",
+      "declaredBehavior": "Pasted screenshots are saved into a configurable document-relative folder. Dragged or pasted image files are linked at their existing location without copying.",
+      "boundary": "Moving a linked file can break its reference. A missing local image shows an explicit broken-image placeholder rather than a blank.",
       "docLabel": "Supported",
       "localTests": ["ImageAttachmentTests", "DocumentStoreImageAttachmentTests"]
     },
