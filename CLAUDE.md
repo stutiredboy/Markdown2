@@ -152,16 +152,27 @@ toolbars honor only the built-in label styles, which is why
 mode's name on the image.
 
 Open Recent guards: `RecentDocumentsMenu` in `Sources/MD2App/MD2App.swift` must
-observe `RecentDocumentsModel` itself. While Settings is closed the App body is
-never re-evaluated, so a list passed in from there silently freezes at the launch
-list, but a command view's own dependency still updates. File ▸ Open Recent and
-the Dock menu both read `RecentDocumentsModel.entries`, and every list change must
-go through the model. After changing that view, the model, or how the command
-tree is built, run
+observe `RecentDocumentsModel` itself. `AppCommands` re-evaluates only when a
+setting changes, so a list passed in from there silently goes stale, but a command
+view's own dependency still updates. File ▸ Open Recent and the Dock menu both read
+`RecentDocumentsModel.entries`, and every list change must go through the model.
+After changing that view, the model, or how the command tree is built, run
 `MD2_RUN_GUI_TESTS=1 swift test --filter RecentDocumentsMenuGUITests` locally
 before landing. It needs Accessibility trust and an unlocked screen: under lock
 Accessibility still answers, but no menu is drawn and windows report the wrong
 role, so check `CGSSessionScreenIsLocked` before trusting any local GUI run.
+
+Menu language guards: `AppCommands` in `Sources/MD2App/MD2App.swift` must stay a
+`Commands` type that observes `AppSettings` itself. The App body and its
+`.commands` closure run once, at launch, whether or not Settings is open, and
+publishing from the app delegate does not run them again, so a title or shortcut
+read there silently keeps its launch value. A `View` inside a menu would update,
+but it could not reach the Format, Paragraph and Mode menu titles. Standard AppKit
+items (the File and Edit menus' own titles, Undo, Copy, …) still change only on a
+relaunch. After changing that struct or how the command tree is built, run
+`MD2_RUN_GUI_TESTS=1 swift test --filter MenuLanguageGUITests` locally before
+landing. It needs Accessibility trust and an unlocked screen, like the Open Recent
+suite.
 
 ## Skill routing
 
