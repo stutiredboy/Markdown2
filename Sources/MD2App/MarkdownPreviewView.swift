@@ -157,6 +157,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
     private static let anchorMessageName = "anchorChange"
     private static let toggleTaskMessageName = "toggleTask"
     private static let revealSourceLineMessageName = "revealSourceLine"
+    private static let openLocalLinkMessageName = "openLocalLink"
 
     /// Page scripts (including diagram engines) cannot see native mutation
     /// handlers. Only trusted DOM input in the isolated world is forwarded.
@@ -164,11 +165,30 @@ struct MarkdownPreviewView: NSViewRepresentable {
         controller.add(handler, contentWorld: .defaultClient, name: enterEditMessageName)
         controller.add(handler, contentWorld: .defaultClient, name: toggleTaskMessageName)
         controller.add(handler, contentWorld: .defaultClient, name: revealSourceLineMessageName)
+        controller.add(handler, contentWorld: .defaultClient, name: openLocalLinkMessageName)
         controller.addUserScript(WKUserScript(source: interactionScript,
             injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: .defaultClient))
     }
 
     static let interactionScript = """
+        // WebKit refuses file: navigation from our md2-doc: page before asking
+        // the navigation delegate. Forward a real click through the isolated
+        // bridge instead, leaving URL classification and existence checks to
+        // the same native router used by other links. Delegation also covers
+        // links inserted by live updates or drawn later by a diagram engine.
+        document.addEventListener('click', function (event) {
+            if (!event.isTrusted || event.defaultPrevented || event.button !== 0) { return; }
+            var target = event.target;
+            var link = target && target.closest ? target.closest('a') : null;
+            if (!link) { return; }
+            var href = link.getAttribute('href') || link.getAttributeNS('http://www.w3.org/1999/xlink', 'href');
+            if (!href) { return; }
+            var url;
+            try { url = new URL(href, document.baseURI); } catch (_) { return; }
+            if (url.protocol !== 'file:') { return; }
+            event.preventDefault();
+            window.webkit.messageHandlers.\(Self.openLocalLinkMessageName).postMessage(url.href);
+        }, true);
         document.addEventListener('dblclick', function(event) {
             if (event.isTrusted && event.metaKey) {
                 window.webkit.messageHandlers.\(Self.enterEditMessageName).postMessage(null);
@@ -1779,6 +1799,11 @@ struct MarkdownPreviewView: NSViewRepresentable {
             case MarkdownPreviewView.enterEditMessageName:
                 guard message.world == .defaultClient else { return }
                 onEnterEdit()
+            case MarkdownPreviewView.openLocalLinkMessageName:
+                guard message.world == .defaultClient,
+                      let href = message.body as? String,
+                      let url = URL(string: href), url.isFileURL else { return }
+                dispatch(PreviewLinkRouter.route(for: url, documentPageURL: documentLoader.documentPageURL))
             case MarkdownPreviewView.toggleTaskMessageName:
                 guard message.world == .defaultClient else { return }
                 // A page not labelled yet sends no revision, and nothing can
