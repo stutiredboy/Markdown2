@@ -87,6 +87,22 @@ SwiftUI keeps a dismantled editor's host alive, so the old crash does not
 reproduce there; the guard is the assertion that a mode round trip re-hosts the
 same text view.
 
+Toolbar guards: the document toolbar (the `.toolbar` block and
+`DocumentToolbarDensity` in `Sources/MD2App/ContentView.swift`) is covered by the
+GUI-gated `DocumentToolbarGUITests`, which `swift test` skips. After changing
+either, a toolbar label, or the window's default or minimum width, run
+`MD2_RUN_GUI_TESTS=1 swift test --filter DocumentToolbarGUITests` locally before
+landing. The failure is silent: `NSToolbar` moves what does not fit into its
+overflow menu, trailing end first, and nothing reports a mode control that has
+gone. Constraints those tests pin down: the picker sits left of Open and Save so
+that it overflows after them; the metadata button stays on the group's leading
+end, because the group is anchored to the trailing edge and the button comes and
+goes with the mode, so anywhere else it moves the picker from under the pointer;
+toolbars honor only the built-in label styles, which is why
+`CollapsibleToolbarLabel` is a modifier rather than a custom `LabelStyle`; and
+`accessibilityLabel` never reaches a segment, which is why `modeSegment` puts the
+mode's name on the image.
+
 Open Recent guards: `RecentDocumentsMenu` in `Sources/MD2App/MD2App.swift` must
 observe `RecentDocumentsModel` itself. While Settings is closed the App body is
 never re-evaluated, so a list passed in from there silently freezes at the launch

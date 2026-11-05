@@ -62,6 +62,24 @@ struct PreviewReaderUXTests {
         #expect(DocumentLayoutMetrics.minimumWindowWidth(mode: .split, showsOutline: true) == 1046)
     }
 
+    @Test func toolbarCollapsesSecondaryTextBeforeTheModeText() {
+        let full = DocumentToolbarDensity(windowWidth: DocumentToolbarDensity.fullMinWidth)
+        #expect(full == .full)
+        #expect(full.showsSecondaryText && full.showsModeText)
+
+        let reduced = DocumentToolbarDensity(windowWidth: DocumentToolbarDensity.fullMinWidth - 1)
+        #expect(reduced == .reduced)
+        #expect(!reduced.showsSecondaryText && reduced.showsModeText)
+
+        let compact = DocumentToolbarDensity(windowWidth: DocumentToolbarDensity.reducedMinWidth - 1)
+        #expect(compact == .compact)
+        #expect(!compact.showsSecondaryText && !compact.showsModeText)
+    }
+
+    @Test func defaultWindowShowsTheModeText() {
+        #expect(DocumentToolbarDensity(windowWidth: DocumentLayoutMetrics.defaultWindowWidth).showsModeText)
+    }
+
     @Test func splitEditSyncGateSuppressesPreviewDrivenEditorSyncDuringEditWindow() {
         let editAt = Date(timeIntervalSinceReferenceDate: 1_000)
         let deadline = SplitEditSyncGate.suppressionDeadline(afterEditAt: editAt)
