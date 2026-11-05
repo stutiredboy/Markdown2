@@ -4,7 +4,7 @@
 
 > 2026-11-05 后续更新：下文“后续建议”第 2 条已完成。渲染页面现在都带 Content-Security-Policy，`flow` 的 `javascript:` 链接在预览、PDF 页面和导出文件里都不再执行，真实鼠标点击也测过，导出的页面在 Chromium 上结果相同。标签里的 `<video>`、`<audio>` 不再加载，标签和图表 CSS 里的远程图片不变。见 `WebDocumentLoading.md` 的“Page policy”。
 
-已发布版本（含 `v0.7.2`）都带 10.9.1 和 `loose`，发布新版之前用户仍受影响。
+已发布版本（最新为 `v0.7.1`）都带 10.9.1 和 `loose`，发布新版之前用户仍受影响。
 
 ## 脚本能否执行
 
