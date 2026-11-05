@@ -241,6 +241,89 @@ final class PreviewTaskToggleGUITests: XCTestCase {
         XCTAssertEqual(try preview.page.isolated("String(window.__md2SourceLineRevision)") as? String, shown)
     }
 
+    /// The older page finishes while a load is on its way, and an edit follows.
+    /// Going into that page, the edit would be overwritten by the load's older
+    /// text, under a label that passes the page as current.
+    @MainActor
+    func testEditDuringALoadIsNotOverwrittenByThatLoad() throws {
+        try skipUnlessGUITestsEnabled()
+        let preview = try HeldPreview(test: self, text: "Intro.\n\n- [ ] A")
+        defer { preview.close() }
+        let older = try XCTUnwrap(preview.coordinator.documentLoader.currentNavigation)
+        let gate = NavigationGate(in: preview)
+        defer { gate.open() }
+        _ = try preview.page.evaluate("window.__olderPage = true; true")
+
+        // A new diagram engine takes a full load, which stops at the gate.
+        preview.store.text = "Older.\n\n```mermaid\ngraph TD; A-->B;\n```"
+        try preview.catchUp()
+        XCTAssertTrue(gate.waitForHeld(1))
+        preview.coordinator.webView(preview.page.webView, didFinish: older)
+
+        preview.store.text = "Newest.\n\n- [ ] A"
+        try preview.catchUp()
+        XCTAssertTrue(gate.waitForHeld(2), "the edit must load its own page, not go into one on its way out")
+        gate.open()
+
+        XCTAssertTrue(try preview.page.waitFor("window.__olderPage !== true"))
+        XCTAssertTrue(preview.waitForLoad())
+        XCTAssertEqual(try preview.page.isolated("""
+            String(window.__md2SourceLineRevision) + ' ' + document.body.textContent.includes('Newest')
+            """) as? String, "\(preview.store.sourceLineRevision) true")
+    }
+
+    /// What `didFinish` does is for the page the preview is waiting for. On a
+    /// page some newer load will replace it would go with that page, and use
+    /// up the scroll target and the search on the way.
+    @MainActor
+    func testPostLoadWorkWaitsForTheLatestNavigation() throws {
+        try skipUnlessGUITestsEnabled()
+        let text = (1...200).map { "Paragraph \($0)." }.joined(separator: "\n\n")
+        let preview = try HeldPreview(test: self, text: text)
+        defer { preview.close() }
+        let webView: WKWebView = preview.page.webView
+        let superseded = try XCTUnwrap(preview.coordinator.documentLoader.currentNavigation)
+        let gate = NavigationGate(in: preview)
+        defer { gate.open() }
+        let typography = "document.getElementById('md2-typography')"
+        let found = "document.querySelector('mark.md2-find')"
+        _ = try preview.page.evaluate("\(typography).remove(); true")
+
+        // One turn of the main actor, so the load is still being prepared.
+        preview.coordinator.beginLoading()
+        preview.coordinator.documentLoader.load(preview.store.rendered.html, baseURL: nil, in: webView)
+        XCTAssertNil(preview.coordinator.documentLoader.currentNavigation)
+        preview.coordinator.setPendingScroll(.fraction(1), in: webView)
+        preview.coordinator.runFindWhenReady("Paragraph 200.", in: webView)
+        preview.coordinator.webView(webView, didFinish: superseded)
+
+        XCTAssertFalse(preview.coordinator.isLoaded)
+        // Scripts run in order, so anything the finish sent has run by this one.
+        XCTAssertEqual(try preview.page.evaluate("[!!\(typography), !!\(found)].join(' ')") as? String, "false false")
+
+        XCTAssertTrue(gate.waitForHeld(1))
+        gate.open()
+        XCTAssertTrue(preview.waitForLoad())
+        XCTAssertTrue(try preview.page.waitFor("\(typography) && \(found) && window.scrollY > 0"))
+    }
+
+    /// The web view's own context menu has a Reload. No load started that
+    /// navigation and none will replace its page, so it has to count as
+    /// finished, or the page stays unloaded.
+    @MainActor
+    func testAReloadNoLoadStartedStillFinishes() throws {
+        try skipUnlessGUITestsEnabled()
+        let preview = try HeldPreview(test: self, text: "- [ ] A")
+        defer { preview.close() }
+        let typography = "document.getElementById('md2-typography')"
+        _ = try preview.page.evaluate("\(typography).remove(); true")
+
+        preview.page.webView.reload()
+
+        XCTAssertTrue(try preview.page.waitFor("\(typography) !== null"))
+        XCTAssertTrue(preview.coordinator.isLoaded)
+    }
+
     /// The label lives in the isolated world. Page script must not be able to
     /// read it, and with no DOM trace it has nothing to rewrite either.
     @MainActor
@@ -541,13 +624,62 @@ final class PreviewTaskToggleGUITests: XCTestCase {
         return view.subviews.lazy.compactMap { webView(in: $0) }.first
     }
 
-    private static func spin(_ predicate: () -> Bool) -> Bool {
+    fileprivate static func spin(_ predicate: () -> Bool) -> Bool {
         let deadline = Date().addingTimeInterval(15)
         while Date() < deadline {
             if predicate() { return true }
             RunLoop.current.run(until: Date().addingTimeInterval(0.02))
         }
         return predicate()
+    }
+}
+
+/// Stands in front of the coordinator and keeps each navigation at its policy
+/// decision until `open`, so a load that takes its time is a state rather than
+/// a race against the rewrite ahead of it. The rest goes straight through.
+@MainActor private final class NavigationGate: NSObject, WKNavigationDelegate {
+    private let coordinator: MarkdownPreviewView.Coordinator
+    private var decisions: [() -> Void] = []
+    private var isOpen = false
+
+    init(in preview: HeldPreview) {
+        coordinator = preview.coordinator
+        super.init()
+        preview.page.webView.navigationDelegate = self
+    }
+
+    func waitForHeld(_ count: Int) -> Bool {
+        HeldPreview.spin { self.decisions.count >= count }
+    }
+
+    /// A test must get here: WebKit raises over a decision nobody made.
+    func open() {
+        isOpen = true
+        decisions.forEach { $0() }
+        decisions = []
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void
+    ) {
+        let decide = { [coordinator] in
+            coordinator.webView(webView, decidePolicyFor: navigationAction, decisionHandler: decisionHandler)
+        }
+        if isOpen {
+            decide()
+        } else {
+            decisions.append(decide)
+        }
+    }
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        coordinator.webView(webView, didCommit: navigation)
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        coordinator.webView(webView, didFinish: navigation)
     }
 }
 

@@ -1408,6 +1408,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// True from handing content over until it is in the page, while the
         /// page keeps the label of what it still shows.
         private var hasContentInFlight = false
+        /// True from `beginLoading` until the page of that load commits. A page
+        /// that finishes before then is one that load is about to replace.
+        private var isAwaitingCommit = false
         var lastFindQuery: String?
         var lastFocusToken: UUID?
         /// Token of the most recently consumed find-navigation command, so it runs
@@ -1646,6 +1649,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// a same-query search from running against the previous document body.
         func beginLoading() {
             isLoaded = false
+            isAwaitingCommit = true
             hasContentInFlight = true
             liveUpdateGeneration += 1
             liveUpdateWorkItem?.cancel()
@@ -1852,6 +1856,11 @@ struct MarkdownPreviewView: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            // Taken for loaded, a page on its way out would receive an edit that
+            // the load then overwrites with older text. Comparing navigations
+            // would not do: the Reload in the web view's own context menu is no
+            // load's navigation, and its page must finish like any other.
+            guard !isAwaitingCommit else { return }
             isLoaded = true
             applyTypography(in: webView)
             applyFrontMatterVisibility(in: webView)
@@ -1867,6 +1876,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             // from the end of parsing. A page some newer load will replace stays
             // unlabelled, so its clicks are refused.
             guard navigation === documentLoader.currentNavigation else { return }
+            isAwaitingCommit = false
             hasContentInFlight = false
             pageRevision = nil
             labelPage(in: webView)
