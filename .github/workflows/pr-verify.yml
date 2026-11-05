@@ -11,23 +11,26 @@ permissions:
 jobs:
   gui-tests:
     runs-on: macos-15
-    timeout-minutes: 40
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
       - name: Build
         run: swift build --build-tests
 
-      - name: Probe forced kill
+      - name: Soak the real case
         env:
           MD2_RUN_GUI_TESTS: "1"
-          MD2_PROBE_ITERATIONS: "96"
-          MD2_PROBE_DELAYS_MS: "1,2,5,20,200,1000"
-          MD2_PROBE_LOG: ${{ runner.temp }}/probe.log
+          MD2_SOAK_ITERATIONS: "300"
+          MD2_SOAK_LOG: ${{ runner.temp }}/soak.log
         run: |
           set -o pipefail
-          swift test --disable-swift-testing --filter 'SettingsWindowPresentationGUITests/testProbeForcedKill' 2>&1 | tail -30
+          swift test --disable-swift-testing --filter 'SettingsWindowPresentationGUITests/testSoakForcedTermination' 2>&1 | tee "$RUNNER_TEMP/soak.out" | tail -5
 
-      - name: Show probe log
+      - name: Show soak results
         if: ${{ !cancelled() }}
-        run: cat "$RUNNER_TEMP/probe.log"
+        run: |
+          echo "assertion failures:"; grep -c 'error: -\[' "$RUNNER_TEMP/soak.out" || true
+          grep 'error: -\[' "$RUNNER_TEMP/soak.out" | sed -E 's/.*swift:([0-9]+): error: .* : (.*)/line \1 \2/' | cut -c1-120 | sort | uniq -c
+          echo "passes logged: $(wc -l < "$RUNNER_TEMP/soak.log")"
+          awk '{split($2,a,"="); if (a[2] > 8) n++} END {print "passes over 8s:", n+0}' "$RUNNER_TEMP/soak.log"
