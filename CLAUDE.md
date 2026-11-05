@@ -78,6 +78,21 @@ during parsing. `MermaidLabelSecurityGUITests` and `PreviewSecurityGUITests` rem
 the policy on purpose: with it in the page, `window.pwned` stays unset whether or
 not a sanitizer works.
 
+Link scheme guards: `PreviewLinkRouter` is all that stands between a click in the
+preview and `NSWorkspace`, and it passes only `HTMLSafety.safeURLSchemes`, the list
+Markdown links are held to. A diagram engine draws its own links, which never pass
+`HTMLSafety`: `flow` can name any scheme, and Mermaid at `strict` keeps DOMPurify's
+`ftp`, `ftps`, `tel`, `callto`, `sms`, `cid`, `xmpp` and `matrix`. After changing the
+router, that list, or how `MarkdownPreviewView` hands a link over, run
+`MD2_RUN_GUI_TESTS=1 swift test --filter PreviewLinkSchemeGUITests` locally before
+landing. The failure is silent: a click starts whatever handles the URL, and nothing
+in the app reports it. Constraints those tests pin down: every system open goes
+through `onOpenWithSystem`, so a test can see it without starting a handler; a Mermaid
+fixture must use a scheme from that list, because Mermaid removes `ssh://` from its
+output and such a test would pass with no router at all; and "nothing opened" also
+holds for a click that missed, so each test checks the page saw the click and ends on
+a link that must open.
+
 Settings-window launch guard: `Sources/MD2App/MD2App.swift` declares `Settings`
 as the app's only SwiftUI scene (document windows are AppKit-managed), and
 SwiftUI presents an app's only scene at launch when the binary is linked below

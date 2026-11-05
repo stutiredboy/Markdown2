@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import MD2App
+@testable import MD2Core
 
 struct PreviewLinkRouterTests {
     private let pageURL = URL(fileURLWithPath: "/tmp/docs/.md2-preview-ABC.html")
@@ -18,6 +19,34 @@ struct PreviewLinkRouterTests {
     @Test func externalLinkFromUntitledDocumentOpensExternally() {
         let target = URL(string: "https://example.com")!
         #expect(PreviewLinkRouter.route(for: target, documentPageURL: nil) == .openExternal(target))
+    }
+
+    @Test(arguments: [
+        "http://example.com", "https://example.com/page", "HTTPS://example.com",
+        "mailto:someone@example.com", "MailTo:someone@example.com"
+    ])
+    func schemeMarkdownAllowsOpensExternally(source: String) {
+        let target = URL(string: source)!
+        #expect(HTMLSafety.isSafeURL(source))
+        #expect(PreviewLinkRouter.route(for: target, documentPageURL: pageURL) == .openExternal(target))
+        #expect(PreviewLinkRouter.route(for: target, documentPageURL: nil) == .openExternal(target))
+    }
+
+    /// A diagram engine draws its own links, so these reach the router without
+    /// passing `HTMLSafety`: `flow` names anything, and the `ftp` to `matrix` rows
+    /// are the ones Mermaid's sanitizing keeps at `strict`.
+    @Test(arguments: [
+        "ssh://example.com", "SSH://example.com", "x-man-page://ls", "shortcuts://run-shortcut?name=x",
+        "vnc://example.com", "smb://example.com/share", "facetime:someone@example.com",
+        "ftp://example.com/x", "ftps://example.com/x", "tel:123", "callto:123", "sms:123",
+        "cid:123", "xmpp:someone@example.com", "matrix:u/someone",
+        "data:text/html,x", "blob:https://example.com/id", "no-such-scheme://x"
+    ])
+    func schemeMarkdownRefusesIsIgnored(source: String) {
+        let target = URL(string: source)!
+        #expect(!HTMLSafety.isSafeURL(source))
+        #expect(PreviewLinkRouter.route(for: target, documentPageURL: pageURL) == .ignore)
+        #expect(PreviewLinkRouter.route(for: target, documentPageURL: nil) == .ignore)
     }
 
     /// A `flow` link that asks for a new window reaches the router before the
@@ -116,6 +145,11 @@ struct PreviewLinkRouterTests {
 
     @Test func localImageSchemeIsIgnored() {
         let target = URL(string: "md2-local-image://image/token")!
+        #expect(PreviewLinkRouter.route(for: target, documentPageURL: pageURL) == .ignore)
+    }
+
+    @Test func bundledAssetSchemeIsIgnored() {
+        let target = URL(string: "\(BundledWebAsset.scheme)://asset/katex.min.js")!
         #expect(PreviewLinkRouter.route(for: target, documentPageURL: pageURL) == .ignore)
     }
 }
