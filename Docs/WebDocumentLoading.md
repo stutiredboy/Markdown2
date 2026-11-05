@@ -63,6 +63,10 @@ because an exported file has no response.
 - A plain click on a `javascript:` URL never reaches the navigation policy, and the
   page policy stops it. A new-window request reaches the navigation policy first, so
   `PreviewLinkRouter` ignores the scheme itself.
+- `PreviewLinkRouter` hands the system only `HTMLSafety.safeURLSchemes`, the list
+  Markdown links are held to. A diagram engine draws its own links, which never pass
+  `HTMLSafety`, so the router is what holds them to that list. A link in an exported
+  file is left to whatever opens that file.
 
 ## Regression checks
 
@@ -72,6 +76,7 @@ MD2_RUN_GUI_TESTS=1 swift test \
   --filter WebDocumentLoaderGUITests \
   --filter MermaidOffscreenRenderingTests \
   --filter ContentSecurityPolicyGUITests \
+  --filter PreviewLinkSchemeGUITests \
   --filter MermaidLabelSecurityGUITests \
   --filter PDFExportEndToEndVerification \
   --filter PreviewSecurityGUITests \

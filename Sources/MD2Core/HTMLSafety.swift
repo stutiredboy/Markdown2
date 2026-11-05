@@ -2,7 +2,11 @@ import Foundation
 
 /// Author HTML is data. Only formatting tags and explicitly inert attributes
 /// survive; event handlers, CSS, DOM IDs and application metadata never do.
-enum HTMLSafety {
+public enum HTMLSafety {
+    /// What a document may link to. The preview's link router asks this too, so a
+    /// diagram engine, which draws its own links, cannot offer more than Markdown.
+    public static let safeURLSchemes: Set<String> = ["http", "https", "mailto", "file"]
+
     static func isSafeURL(_ value: String) -> Bool {
         // A restored fragment can splice markup into an href/src attribute; a
         // URL never contains *literal* angle brackets (U+003C/U+003E) or a
@@ -19,7 +23,7 @@ enum HTMLSafety {
         // A colon in a path/query is not a scheme.
         if prefix.contains("/") || prefix.contains("?") || prefix.contains("#") { return true }
         guard prefix.range(of: #"^[a-z][a-z0-9+.-]*$"#, options: .regularExpression) != nil else { return true }
-        return ["http", "https", "mailto", "file"].contains(String(prefix))
+        return safeURLSchemes.contains(String(prefix))
     }
 
     static func sanitizeTag(_ source: String) -> String {

@@ -51,12 +51,15 @@ extension RenderedPageTesting {
     /// Shows `markdown` on `surface` and hands `body` the settled page. `edit`
     /// rewrites the finished page. `files` sit beside an exported file, and
     /// `embedsFiles` makes that the saved document's folder, so export embeds them.
+    /// `onOpenWithSystem` receives what the preview hands to the system; nothing
+    /// a test clicks reaches the real handlers.
     func withPage(
         _ markdown: String,
         on surface: RenderedPageSurface,
         edit: (String) -> String = { $0 },
         files: [String: Data] = [:],
         embedsFiles: Bool = false,
+        onOpenWithSystem: @escaping (URL) -> Void = { _ in },
         _ body: (WKWebView) throws -> Void
     ) throws {
         _ = NSApplication.shared
@@ -77,6 +80,7 @@ extension RenderedPageTesting {
             let hosting = NSHostingView(rootView: MarkdownPreviewView(
                 html: edit(rendered.html), bodyHTML: rendered.body, baseURL: nil,
                 jumpHeadingID: .constant(nil), jumpFraction: .constant(nil), jumpAnchor: .constant(nil),
+                onOpenWithSystem: onOpenWithSystem,
                 findQuery: .constant(""), findNavigation: .constant(nil), focusToken: UUID()
             ))
             window.contentView = hosting
@@ -134,6 +138,28 @@ extension RenderedPageTesting {
         XCTAssertTrue(spin(5) { done }, "a script did not return")
         if let failure { throw failure }
         return value
+    }
+
+    /// A real, trusted mouse click, as a reader makes, on the middle of the
+    /// element a script expression names. It goes to the web view directly, so it
+    /// does not touch the machine's input.
+    func click(_ element: String, in webView: WKWebView) throws {
+        let rect = try XCTUnwrap(try evaluate("""
+            (function () {
+                var box = (\(element)).getBoundingClientRect();
+                return [box.left + box.width / 2, box.top + box.height / 2];
+            })()
+            """, in: webView) as? [Double])
+        let window = try XCTUnwrap(webView.window)
+        let location = webView.convert(NSPoint(x: rect[0], y: rect[1]), to: nil)
+        func event(_ type: NSEvent.EventType) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(
+                with: type, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
+            ))
+        }
+        webView.mouseDown(with: try event(.leftMouseDown))
+        webView.mouseUp(with: try event(.leftMouseUp))
     }
 
     func webView(in view: NSView) -> WKWebView? {

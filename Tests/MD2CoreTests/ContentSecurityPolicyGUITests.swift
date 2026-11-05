@@ -431,25 +431,8 @@ final class ContentSecurityPolicyGUITests: XCTestCase, RenderedPageTesting {
         (try? evaluate("window.pwned === 1", in: webView)) as? Bool == true
     }
 
-    /// A real, trusted mouse click, as a reader makes, sent to the web view
-    /// directly so it does not touch the machine's input.
     @MainActor private func click(linkIn webView: WKWebView) throws {
-        let rect = try XCTUnwrap(try evaluate("""
-            (function () {
-                var box = document.querySelector('.diagram-flow a').firstElementChild.getBoundingClientRect();
-                return [box.left + box.width / 2, box.top + box.height / 2];
-            })()
-            """, in: webView) as? [Double])
-        let window = try XCTUnwrap(webView.window)
-        let location = webView.convert(NSPoint(x: rect[0], y: rect[1]), to: nil)
-        func event(_ type: NSEvent.EventType) throws -> NSEvent {
-            try XCTUnwrap(NSEvent.mouseEvent(
-                with: type, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
-            ))
-        }
-        webView.mouseDown(with: try event(.leftMouseDown))
-        webView.mouseUp(with: try event(.leftMouseUp))
+        try click("document.querySelector('.diagram-flow a').firstElementChild", in: webView)
     }
 
     @MainActor private func dispatchClick(onLinkIn webView: WKWebView) throws {
