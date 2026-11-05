@@ -43,7 +43,7 @@ The system SHALL preserve the colors Mermaid assigns to its diagram output, whet
 
 ### Requirement: Mermaid diagrams wrap long node labels to a bounded width
 
-The system SHALL wrap long plain-text node labels in Mermaid diagrams — including CJK text that has no word-boundary characters — to a bounded width before rendering, so a diagram's natural width is driven by its structure rather than the longest label's un-wrapped length. A node label that is plain text and exceeds a length threshold SHALL be broken into multiple display lines. The wrapping SHALL NOT alter the graph topology, edge labels, styling directives (`classDef` / `style` / `linkStyle`), subgraph titles, or any label that contains HTML or markdown markup.
+The system SHALL wrap long plain-text node labels in Mermaid diagrams — including CJK text that has no word-boundary characters — to a bounded width before rendering, so a diagram's natural width is driven by its structure rather than the longest label's un-wrapped length. A node label that is plain text and exceeds a length threshold SHALL be broken into multiple display lines. The wrapping SHALL NOT alter the graph topology, edge labels, styling statements (`classDef` / `style` / `linkStyle` / `class` / `click`), `%%` comments and directives, front matter, subgraph titles, or any label that contains HTML or markdown markup.
 
 #### Scenario: Long CJK node label wraps to a bounded width
 
@@ -72,6 +72,24 @@ The system SHALL wrap long plain-text node labels in Mermaid diagrams — includ
 - **WHEN** a `mermaid` block contains a long edge label (`A -->|label| B`), a long subgraph title (`subgraph id [title]`), or a `style`/`classDef` directive
 - **THEN** the graph's edge labels, subgraph titles, and directives are passed through unchanged
 - **AND** only the plain-text node labels are subject to wrapping
+
+#### Scenario: A long value in a styling statement is not wrapped
+
+- **WHEN** a `classDef`, `style`, `linkStyle`, `class` or `click` statement holds a long `word(...)` value such as `url(...)`, whether the statement starts its line or follows a `;`
+- **THEN** the statement reaches the engine exactly as written, through the end of its line
+- **AND** in a diagram type whose grammar accepts the value, it reaches the rendered SVG intact
+
+#### Scenario: A long value in a comment, directive or front matter is not wrapped
+
+- **WHEN** a long `word(...)` value appears in a `%%` comment, in a `%%{init: ...}%%` directive on one line or several, or in front matter at the start of the block
+- **THEN** that text reaches the engine exactly as written
+- **AND** a config value the engine accepts reaches the rendered SVG intact
+
+#### Scenario: Labels beside styling and config text still wrap
+
+- **WHEN** a `mermaid` block has long plain node labels on the lines around styling statements, comments, directives and front matter
+- **THEN** those labels wrap as they would on their own
+- **AND** a node whose id starts with a statement keyword, such as `style-guide[...]`, is treated as a node
 
 ### Requirement: Mermaid source cannot run script
 

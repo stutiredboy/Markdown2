@@ -3319,11 +3319,33 @@ public struct MarkdownRenderer: Sendable {
             if (!isPlain(label) || Array.from(label).length <= LABEL_MIN) { return match; }
             return id + open + wrapText(label) + close;
         }
-        var s = source;
-        s = s.replace(/([A-Za-z0-9_][A-Za-z0-9_-]*)[[]([^\\]]+)]/g, function (m, id, label) { return wrap(m, id, label, "[", "]"); });
-        s = s.replace(/([A-Za-z0-9_][A-Za-z0-9_-]*)[(]([^)]+)[)]/g, function (m, id, label) { return wrap(m, id, label, "(", ")"); });
-        s = s.replace(/([A-Za-z0-9_][A-Za-z0-9_-]*)[{]([^}]+)[}]/g, function (m, id, label) { return wrap(m, id, label, "{", "}"); });
-        return s;
+        function wrapNodeLabels(text) {
+            var s = text;
+            s = s.replace(/([A-Za-z0-9_][A-Za-z0-9_-]*)[[]([^\\]]+)]/g, function (m, id, label) { return wrap(m, id, label, "[", "]"); });
+            s = s.replace(/([A-Za-z0-9_][A-Za-z0-9_-]*)[(]([^)]+)[)]/g, function (m, id, label) { return wrap(m, id, label, "(", ")"); });
+            s = s.replace(/([A-Za-z0-9_][A-Za-z0-9_-]*)[{]([^}]+)[}]/g, function (m, id, label) { return wrap(m, id, label, "{", "}"); });
+            return s;
+        }
+        // Styling and config text holds values, where `url(...)` looks just like
+        // `id(label)`, and a `<br/>` in one breaks the diagram or loses the value.
+        // These spans follow how the bundled Mermaid reads each form: front matter
+        // only at the very start, a directive anywhere and across lines, a comment
+        // only on its own line.
+        var NOT_LABELS = [
+            /^---\\s*[\\n\\r][\\s\\S]*?[\\n\\r]---\\s*[\\n\\r]+/,
+            /%%[{][\\s\\S]*?[}]%%/,
+            /(?:^|\\n)[ \\t]*%%(?![{])[^\\n]*/,
+            // The space keeps `style-guide[...]` a node. The diagrams that accept
+            // `url()` here read a statement to the end of its line, past any `;`, so
+            // this does too. In a flowchart, where `;` ends one, the only cost is
+            // that a label later on the same line stays unwrapped.
+            /(?:^|[\\n;])[ \\t]*(?:style|linkStyle|classDef|class|click)[ \\t][^\\n]*/
+        ];
+        var spans = NOT_LABELS.map(function (span) { return span.source; }).join("|");
+        // With one capturing group, `split` leaves the spans at the odd indexes.
+        var parts = source.split(new RegExp("(" + spans + ")", "i"));
+        for (var p = 0; p < parts.length; p += 2) { parts[p] = wrapNodeLabels(parts[p]); }
+        return parts.join("");
     }
 
     // The elements matching `selector` under `roots` (an element, the document,
