@@ -59,6 +59,8 @@ extension RenderedPageTesting {
         edit: (String) -> String = { $0 },
         files: [String: Data] = [:],
         embedsFiles: Bool = false,
+        baseURL: URL? = nil,
+        onOpenMarkdownLink: @escaping (URL) -> Void = { _ in },
         onOpenWithSystem: @escaping (URL) -> Void = { _ in },
         _ body: (WKWebView) throws -> Void
     ) throws {
@@ -78,8 +80,9 @@ extension RenderedPageTesting {
         case .preview:
             let rendered = MarkdownRenderer().render(markdown, assetMode: .appScheme)
             let hosting = NSHostingView(rootView: MarkdownPreviewView(
-                html: edit(rendered.html), bodyHTML: rendered.body, baseURL: nil,
+                html: edit(rendered.html), bodyHTML: rendered.body, baseURL: baseURL,
                 jumpHeadingID: .constant(nil), jumpFraction: .constant(nil), jumpAnchor: .constant(nil),
+                onOpenMarkdownLink: onOpenMarkdownLink,
                 onOpenWithSystem: onOpenWithSystem,
                 findQuery: .constant(""), findNavigation: .constant(nil), focusToken: UUID()
             ))
@@ -143,7 +146,7 @@ extension RenderedPageTesting {
     /// A real, trusted mouse click, as a reader makes, on the middle of the
     /// element a script expression names. It goes to the web view directly, so it
     /// does not touch the machine's input.
-    func click(_ element: String, in webView: WKWebView) throws {
+    func click(_ element: String, in webView: WKWebView, modifiers: NSEvent.ModifierFlags = []) throws {
         let rect = try XCTUnwrap(try evaluate("""
             (function () {
                 var box = (\(element)).getBoundingClientRect();
@@ -154,7 +157,7 @@ extension RenderedPageTesting {
         let location = webView.convert(NSPoint(x: rect[0], y: rect[1]), to: nil)
         func event(_ type: NSEvent.EventType) throws -> NSEvent {
             try XCTUnwrap(NSEvent.mouseEvent(
-                with: type, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                with: type, location: location, modifierFlags: modifiers, timestamp: ProcessInfo.processInfo.systemUptime,
                 windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
             ))
         }

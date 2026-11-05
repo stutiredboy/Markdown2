@@ -25,6 +25,15 @@ footnote fragments stay on the memory page. The preview navigation policy only
 allows its current page and its fragments; local document links continue to be
 handed back to the application. An untitled document has no relative file base.
 
+WebKit refuses a `file:` navigation from the memory page before asking the
+navigation delegate. The preview therefore forwards local-link clicks through
+its isolated interaction bridge, then uses the same `PreviewLinkRouter` and
+file-existence checks as every other navigation. The bridge accepts only trusted
+main-frame input; document scripts cannot access it or open a file with a
+synthetic click. It handles HTML and SVG links, including links added by live
+updates, Cmd+click and new-window targets. Fragment and web links keep their
+normal navigation path.
+
 `DocumentRenderWorker` defaults to `.appScheme`. Standalone HTML export explicitly
 uses `.inline`, then embeds local images with `SelfContainedHTMLBuilder`, preserving
 the portable single-file export. The public renderer's default remains `.inline`
@@ -77,6 +86,7 @@ MD2_RUN_GUI_TESTS=1 swift test \
   --filter MermaidOffscreenRenderingTests \
   --filter ContentSecurityPolicyGUITests \
   --filter PreviewLinkSchemeGUITests \
+  --filter PreviewLocalLinkGUITests \
   --filter MermaidLabelSecurityGUITests \
   --filter PDFExportEndToEndVerification \
   --filter PreviewSecurityGUITests \
