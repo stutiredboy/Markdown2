@@ -439,6 +439,104 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
         XCTAssertEqual(snapshots.filter { $0.fileURL == nil && $0.isDirty }.map(\.text), ["draft B"])
     }
 
+    // MARK: - THROWAWAY PROBE (never lands)
+
+    private static func probeShell(_ command: String) -> String {
+        let outputPath = NSTemporaryDirectory() + "md2-probe-\(UUID().uuidString).txt"
+        defer { unlink(outputPath) }
+        var argv: [UnsafeMutablePointer<CChar>?] = [strdup("/bin/sh"), strdup("-c"), strdup("\(command) > '\(outputPath)' 2>&1"), nil]
+        defer { argv.forEach { free($0) } }
+        var pid: pid_t = 0
+        guard posix_spawn(&pid, "/bin/sh", nil, nil, &argv, environ) == 0 else { return "spawn failed" }
+        var status: Int32 = 0
+        waitpid(pid, &status, 0)
+        return ((try? String(contentsOfFile: outputPath, encoding: .utf8)) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Arm A leaves `app` untouched until after the kill, as the real case does.
+    /// Arm B reads `processIdentifier` before the kill. Neither blocks on the run
+    /// loop: popen and usleep only, so `app` updates exactly as in the real case.
+    func testProbeForcedKill() throws {
+        let environment = ProcessInfo.processInfo.environment
+        let iterations = Int(environment["MD2_PROBE_ITERATIONS"] ?? "40") ?? 40
+        let logPath = environment["MD2_PROBE_LOG"] ?? "/tmp/md2-probe.log"
+        FileManager.default.createFile(atPath: logPath, contents: nil)
+        let log = try XCTUnwrap(FileHandle(forWritingAtPath: logPath))
+        func say(_ text: String) { log.write(Data((text + "\n").utf8)) }
+        say("env macOS=\(ProcessInfo.processInfo.operatingSystemVersionString) iterations=\(iterations)")
+
+        for index in 0..<iterations {
+            if index > 0 {
+                try tearDownWithError()
+                try setUpWithError()
+            }
+            let readsFirst = index % 2 == 1
+            let snapshot = DocumentRecoverySnapshot(id: UUID(), text: "未命名草稿 🚀", fileURL: nil,
+                identity: nil, format: MarkdownFileFormat(), fingerprint: nil,
+                isDirty: true, windowFrame: "100 100 980 680 0 0 1920 1080 ")
+            try FileManager.default.createDirectory(at: Self.recoveryDirectory, withIntermediateDirectories: true)
+            try JSONEncoder().encode(snapshot).write(
+                to: Self.recoveryDirectory.appendingPathComponent("\(snapshot.id.uuidString).json"), options: .atomic)
+
+            let app = try launchApp(arguments: [])
+            _ = try waitForRecord(stage: "didFinishLaunching")
+            let marker = temporaryRoot.lastPathComponent
+            let truePID = pid_t(Self.probeShell("/usr/bin/pgrep -f \(marker)/Markdown2.app").split(separator: "\n").first ?? "") ?? -999
+            let preRead = readsFirst ? "\(app.processIdentifier)" : "-"
+
+            let start = DispatchTime.now().uptimeNanoseconds
+            func elapsed() -> Double { Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000 }
+            let forced = app.forceTerminate()
+            let forceMs = elapsed()
+            var pidValues: [(Double, pid_t)] = []
+            var apparentGone: Double?
+            var trueGone: Double?
+            var firstKillErrno: Int32 = -1
+            var firstStat = ""
+            var sampled = false
+            while elapsed() < 3_000 {
+                let pid = app.processIdentifier
+                if pidValues.last?.1 != pid { pidValues.append((elapsed(), pid)) }
+                errno = 0
+                let apparent = kill(pid, 0)
+                if !sampled { firstKillErrno = errno }
+                if apparent != 0, apparentGone == nil { apparentGone = elapsed() }
+                if kill(truePID, 0) != 0, trueGone == nil { trueGone = elapsed() }
+                if !sampled {
+                    firstStat = Self.probeShell("/bin/ps -o stat= -p \(truePID)")
+                    sampled = true
+                }
+                if apparentGone != nil, trueGone != nil { break }
+                usleep(5_000)
+            }
+            let stuck = apparentGone == nil
+            var lateStat = ""
+            if stuck || trueGone == nil {
+                lateStat = Self.probeShell("/bin/ps -o pid=,ppid=,stat=,etime=,command= -p \(truePID)")
+            }
+            let values = pidValues.map { String(format: "%.1fms:%d", $0.0, $0.1) }.joined(separator: ",")
+            let timing = String(format: "force=%.1fms", forceMs)
+            say("i=\(index) arm=\(readsFirst ? "B" : "A") forced=\(forced) truePID=\(truePID) preRead=\(preRead) "
+                + "\(timing) pidValues=[\(values)] firstKillErrno=\(firstKillErrno) firstStat='\(firstStat)' "
+                + "apparentGone=\(apparentGone.map { String(format: "%.1f", $0) } ?? "NEVER") "
+                + "trueGone=\(trueGone.map { String(format: "%.1f", $0) } ?? "NEVER") "
+                + "isTerminated=\(app.isTerminated) stuck=\(stuck) late='\(lateStat)' desc='\(app)'")
+            if trueGone == nil {
+                let start2 = DispatchTime.now().uptimeNanoseconds
+                let result = kill(truePID, SIGKILL)
+                var gone = false
+                while DispatchTime.now().uptimeNanoseconds - start2 < 3_000_000_000 {
+                    if kill(truePID, 0) != 0 { gone = true; break }
+                    usleep(5_000)
+                }
+                say("  i=\(index) directSIGKILL result=\(result) gone=\(gone) after=\(Double(DispatchTime.now().uptimeNanoseconds - start2) / 1_000_000)ms")
+            }
+            launchedApps = []
+        }
+        try? log.close()
+    }
+
     private func launchApp(
         arguments: [String],
         createsNewInstance: Bool = true
