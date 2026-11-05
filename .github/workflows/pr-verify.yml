@@ -21,7 +21,8 @@ jobs:
       - name: Probe forced kill
         env:
           MD2_RUN_GUI_TESTS: "1"
-          MD2_PROBE_ITERATIONS: "400"
+          MD2_PROBE_ITERATIONS: "96"
+          MD2_PROBE_DELAYS_MS: "1,2,5,20,200,1000"
           MD2_PROBE_LOG: ${{ runner.temp }}/probe.log
         run: |
           set -o pipefail

@@ -489,6 +489,9 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
             func elapsed() -> Double { Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000 }
             let forced = app.forceTerminate()
             let forceMs = elapsed()
+            let delays = (environment["MD2_PROBE_DELAYS_MS"] ?? "").split(separator: ",").compactMap { UInt32($0) }
+            let delayMs = delays.isEmpty || readsFirst ? 0 : delays[(index / 2) % delays.count]
+            if delayMs > 0 { usleep(delayMs * 1_000) }
             var pidValues: [(Double, pid_t)] = []
             var apparentGone: Double?
             var trueGone: Double?
@@ -517,7 +520,7 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
             }
             let values = pidValues.map { String(format: "%.1fms:%d", $0.0, $0.1) }.joined(separator: ",")
             let timing = String(format: "force=%.1fms", forceMs)
-            say("i=\(index) arm=\(readsFirst ? "B" : "A") forced=\(forced) truePID=\(truePID) preRead=\(preRead) "
+            say("i=\(index) arm=\(readsFirst ? "B" : (delayMs > 0 ? "C\(delayMs)" : "A")) forced=\(forced) truePID=\(truePID) preRead=\(preRead) "
                 + "\(timing) pidValues=[\(values)] firstKillErrno=\(firstKillErrno) firstStat='\(firstStat)' "
                 + "apparentGone=\(apparentGone.map { String(format: "%.1f", $0) } ?? "NEVER") "
                 + "trueGone=\(trueGone.map { String(format: "%.1f", $0) } ?? "NEVER") "
