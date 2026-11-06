@@ -17,8 +17,8 @@ Formatting from Read mode switches to the source editor, using its retained sele
 | Option+Cmd+T | Insert a two-column table template, selecting its first header. |
 
 In code blocks Return preserves indentation without continuing literal Markdown
-markers. List indentation shares the renderer's column calculation: tabs count
-as four columns and marker gaps of five or more spaces use a one-column gap.
+markers. List indentation shares the renderer's column calculation: tabs advance
+to the next four-column tab stop and marker gaps of five or more spaces use a one-column gap.
 The task checkbox is not part of that column calculation.
 
 Code-block and table insertion retain the surrounding line-ending style,
