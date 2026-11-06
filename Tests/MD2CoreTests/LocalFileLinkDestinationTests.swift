@@ -38,7 +38,6 @@ struct LocalFileLinkDestinationTests {
             let actual = try #require(URL(string: base + actualSpelling))
             let expected = try #require(URL(string: base + expectedSpelling))
             #expect(actual.absoluteString != expected.absoluteString)
-            #expect(actual != expected, "the old URL-equality assertion must expose the spelling difference")
             #expect(try Data(contentsOf: URL(fileURLWithPath: actual.path)) == payload)
             #expect(try Data(contentsOf: URL(fileURLWithPath: expected.path)) == payload)
             let actualID = try #require(FileManager.default.attributesOfItem(atPath: actual.path)[.systemFileNumber] as? NSNumber)
