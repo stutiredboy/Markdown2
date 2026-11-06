@@ -10,6 +10,8 @@
 
 ## Testing
 
+发布与 PR 共用 `.github/workflows/verify.yml` 的三个只读验证 job（非 GUI/打包、GUI、产物交接），标签发布必须等待整个共享验证成功，并上传已验证的同一份 DMG。PR wrapper 还消费共享工作流的公开 outputs，检验发布所用的 artifact ID 与摘要返回路径；Swift/GUI 只各跑一次。更改发布链路时运行 `python3 -m unittest discover -s Tests/WorkflowTests -p 'test_*.py'`，并在首个 PR 上验证完整 Actions 编排；`Release` 手动入口是后续补充验证。迁移后的 PR check 名称与分支保护需核对。详细流程见 [发布验证](Docs/ReleaseVerification.md)。
+
 运行测试：
 - 非 GUI 套件：`swift test`
 - GUI/WebKit 套件（导出、打印、Mermaid/flow/sequence 渲染、PDF 外观）：`MD2_RUN_GUI_TESTS=1 swift test --filter MermaidOffscreenRenderingTests --filter PDFExportEndToEndVerification`
@@ -20,7 +22,7 @@ GUI 测试通过 `MD2_RUN_GUI_TESTS=1` 选择性开启：本地 `swift test` 默
 - `hostWindow.appearance = NSAppearance(named: .aqua)` —— 强制浅色外观（守：`testPDFExporterForcesLightAppearanceOnHostWindow`、`testForcedLightAppearanceUsesDefaultMermaidTheme`）
 - `printStyleScript` 里的 `img, canvas, svg:not(.diagram-mermaid svg)` 选择器 —— 保留 Mermaid 自然尺寸（守：`testNarrowMermaidKeepsNaturalSizeUnderPrintOverride`、`testWideMermaidFitsPrintableColumnUnderPrintOverride`、`testNonMermaidMediaCappedUnderPrintOverride`）
 
-CI 的 GUI lane：`.github/workflows/pr-verify.yml` 的 `gui-tests` job 在 GitHub 的 `macos-15` runner（有登录会话和 window server）上跑 `MD2_RUN_GUI_TESTS=1 swift test --disable-swift-testing`（只跑 XCTest：GUI 门控用例必须写成 XCTest，Swift Testing 套件已在 `build-test-package` 跑过，job 里有一步会拦住读 `MD2_RUN_GUI_TESTS` 的 Swift Testing 文件），再用 `Scripts/check_test_skips.py` 拒绝 `.github/gui-expected-skips.txt` 之外的任何 skip —— 被跳过的 GUI 测试同样是绿的，不查 skip，这个 lane 什么都证明不了。新增的 `XCTSkip` 路径如果会在 runner 上触发，必须在 allowlist 里加一条（钉住测试名和 skip 原因的开头）并写明为什么 runner 跑不了，否则 CI 失败。runner 镜像已授予 Accessibility，所以 `SettingsWindowPresentationGUITests` 里需要它的 Settings 命令用例在 CI 上也会真跑。CI 只覆盖 macOS 15，开发机覆盖当前系统，两者互补，所以上面"落地前在本地跑"的要求不变。
+CI 的 GUI lane：`.github/workflows/verify.yml` 的 `gui-tests` job 在 GitHub 的 `macos-15` runner（有登录会话和 window server）上跑 `MD2_RUN_GUI_TESTS=1 swift test --disable-swift-testing`（只跑 XCTest：GUI 门控用例必须写成 XCTest，Swift Testing 套件已在 `build-test-package` 跑过，job 里有一步会拦住读 `MD2_RUN_GUI_TESTS` 的 Swift Testing 文件），再用 `Scripts/check_test_skips.py` 拒绝 `.github/gui-expected-skips.txt` 之外的任何 skip —— 被跳过的 GUI 测试同样是绿的，不查 skip，这个 lane 什么都证明不了。新增的 `XCTSkip` 路径如果会在 runner 上触发，必须在 allowlist 里加一条（钉住测试名和 skip 原因的开头）并写明为什么 runner 跑不了，否则 CI 失败。runner 镜像已授予 Accessibility，所以 `SettingsWindowPresentationGUITests` 里需要它的 Settings 命令用例在 CI 上也会真跑。CI 只覆盖 macOS 15，开发机覆盖当前系统，两者互补，所以上面"落地前在本地跑"的要求不变。
 
 Find/delete GUI guards: the delete-after-reveal test and the find responsiveness
 benchmark in `Tests/MD2CoreTests/` are `MD2_RUN_GUI_TESTS`-gated: plain
