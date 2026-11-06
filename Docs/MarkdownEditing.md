@@ -1,8 +1,8 @@
 # Markdown-aware source editing
 
 These commands work in Write and in the editor pane of Side by Side. Menu
-commands target the focused source editor; they do not format a search field or
-modify a document while Read is active.
+commands target the focused source editor and do not format a search field.
+Formatting from Read mode switches to the source editor, using its retained selection.
 
 | Input | Behavior |
 | --- | --- |
@@ -20,6 +20,11 @@ In code blocks Return preserves indentation without continuing literal Markdown
 markers. List indentation shares the renderer's column calculation: tabs count
 as four columns and marker gaps of five or more spaces use a one-column gap.
 The task checkbox is not part of that column calculation.
+
+Code-block and table insertion retain the surrounding line-ending style,
+including CRLF or CR when inserting at the end of a document. Links inserted
+from the clipboard preserve literal HTML-entity spellings and URL percent
+escapes, so the preview opens the original destination.
 
 Typing `(`, `[`, `{`, single/double quotes, backticks, `（`, `「`, or `《` inserts
 a matching closer when appropriate, or wraps the selection. Typing an existing

@@ -77,6 +77,12 @@ public enum MarkdownEditing {
                     ending: source.substring(with: NSRange(location: contentsEnd, length: end - contentsEnd)))
     }
 
+    private static func lineEnding(_ source: NSString, for current: Line) -> String {
+        let ending = current.ending.isEmpty && current.range.location > 0
+            ? line(source, at: current.range.location - 1).ending : current.ending
+        return ending.isEmpty ? "\n" : ending
+    }
+
     private struct Marker {
         let range: NSRange
         let quote: Bool
@@ -157,9 +163,7 @@ public enum MarkdownEditing {
         let current = line(source, at: selection.location)
         let prefix = current.prefix
         let beforeCaret = (current.body as NSString).substring(to: min(selection.location - current.range.location, current.body.utf16.count))
-        let ending = current.ending.isEmpty && current.range.location > 0
-            ? line(source, at: current.range.location - 1).ending : current.ending
-        let newline = ending.isEmpty ? "\n" : ending
+        let newline = lineEnding(source, for: current)
         let parent = enclosingList(source, current: current)
         if let code = codeContext(source, through: selection.location, current: current, parent: parent) {
             if code.isOpeningFence {
@@ -493,8 +497,13 @@ public enum MarkdownEditing {
               !value.isEmpty, !value.contains(where: \.isWhitespace),
               let url = URLComponents(string: value), let scheme = url.scheme?.lowercased(),
               (["http", "https"].contains(scheme) && !(url.host ?? "").isEmpty) ||
-                (scheme == "mailto" && url.path.contains("@")) else { return nil }
-        return value.replacingOccurrences(of: "(", with: "%28").replacingOccurrences(of: ")", with: "%29")
+                (scheme == "mailto" && url.path.contains("@")),
+              let destination = url.url?.absoluteString else { return nil }
+        // The clipboard supplies a URL, not authored Markdown. Preserve literal
+        // entity spellings through the renderer's one HTML decode, and encode
+        // URL characters that otherwise become Markdown destination syntax.
+        return destination.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "(", with: "%28").replacingOccurrences(of: ")", with: "%29")
     }
 
     private static func heading(_ source: NSString, _ selection: NSRange, level: Int) -> Edit? {
@@ -511,8 +520,7 @@ public enum MarkdownEditing {
 
     private static func block(_ source: NSString, _ selection: NSRange, table: Bool) -> Edit {
         let selected = source.substring(with: selection)
-        let ending = line(source, at: selection.location).ending
-        let newline = ending.isEmpty ? "\n" : ending
+        let newline = lineEnding(source, for: line(source, at: selection.location))
         let leading = selection.location > 0 && ![10, 13].contains(source.character(at: selection.location - 1)) ? newline : ""
         let trailing = NSMaxRange(selection) < source.length && ![10, 13].contains(source.character(at: NSMaxRange(selection))) ? newline : ""
         if table {
