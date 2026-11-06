@@ -3,7 +3,8 @@ dist/
 .claude/
 .codex/
 .opencode/
-.gstack/
+.gstack/*
+!.gstack/pregate.json
 .DS_Store
 .playwright-mcp/
 memory/
