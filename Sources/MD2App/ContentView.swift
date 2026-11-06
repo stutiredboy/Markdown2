@@ -891,6 +891,7 @@ struct ContentView: View {
                 },
                 onRevealSourceLine: { line in revealSourceLineInEditor(line, inSplit: inSplit) },
                 onOpenMarkdownLink: onOpenMarkdownLink,
+                onMissingLocalLink: { document.reportMissingLocalLink($0) },
                 findQuery: $previewFindQuery,
                 findNavigation: $previewFindNavigation,
                 focusToken: previewSurfaceFocusToken,

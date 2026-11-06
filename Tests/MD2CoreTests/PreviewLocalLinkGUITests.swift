@@ -118,6 +118,23 @@ final class PreviewLocalLinkGUITests: XCTestCase, RenderedPageTesting {
         XCTAssertEqual(documents, [markdownFile!])
     }
 
+    @MainActor func testMissingLocalTargetReportsARealClickWithoutOpeningAnything() throws {
+        var missing: [URL] = []
+        var opened: [URL] = []
+        try withPage("[Missing](missing.md)", on: .preview, baseURL: directory,
+                     onOpenMarkdownLink: { opened.append($0) },
+                     onMissingLocalLink: { missing.append($0) }) { webView in
+            try recordClicks(in: webView)
+            _ = try evaluate("document.querySelector('main a').click(); true", in: webView)
+            XCTAssertTrue(missing.isEmpty, "synthetic clicks must not trigger native alerts")
+            try click("document.querySelector('main a')", in: webView)
+            XCTAssertTrue(spin(3) { missing.count == 1 }, "a missing target was silently ignored")
+            XCTAssertEqual(try evaluate("window.__localLinkClicks", in: webView) as? [Bool], [false, true])
+        }
+        XCTAssertEqual(missing, [directory.appendingPathComponent("missing.md")])
+        XCTAssertTrue(opened.isEmpty)
+    }
+
     @MainActor func testLinksInsertedByALiveUpdateStillOpen() throws {
         var documents: [URL] = []
         try withPage("Original paragraph.", on: .preview, baseURL: directory,

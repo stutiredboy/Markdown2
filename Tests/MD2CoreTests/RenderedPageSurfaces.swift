@@ -61,6 +61,7 @@ extension RenderedPageTesting {
         embedsFiles: Bool = false,
         baseURL: URL? = nil,
         onOpenMarkdownLink: @escaping (URL) -> Void = { _ in },
+        onMissingLocalLink: @escaping (URL) -> Void = { _ in },
         onOpenWithSystem: @escaping (URL) -> Void = { _ in },
         _ body: (WKWebView) throws -> Void
     ) throws {
@@ -83,6 +84,7 @@ extension RenderedPageTesting {
                 html: edit(rendered.html), bodyHTML: rendered.body, baseURL: baseURL,
                 jumpHeadingID: .constant(nil), jumpFraction: .constant(nil), jumpAnchor: .constant(nil),
                 onOpenMarkdownLink: onOpenMarkdownLink,
+                onMissingLocalLink: onMissingLocalLink,
                 onOpenWithSystem: onOpenWithSystem,
                 findQuery: .constant(""), findNavigation: .constant(nil), focusToken: UUID()
             ))

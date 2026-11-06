@@ -425,6 +425,7 @@ enum L10nKey: String, CaseIterable {
     case cancel
     case dontSave
     case alertCouldNotOpen
+    case alertHeadingNotFound, alertHeadingNotFoundDetail
     case alertUndecodableFile
     case alertUndecodableFileDetail
     case alertCouldNotSave
@@ -592,6 +593,8 @@ enum L10n {
         .cancel: "Cancel",
         .dontSave: "Don't Save",
         .alertCouldNotOpen: "Could not open %@.",
+        .alertHeadingNotFound: "The linked heading could not be found.",
+        .alertHeadingNotFoundDetail: "The document is open, but it has no heading with the identifier “%@”.",
         .alertUndecodableFile: "Could not read %@ as text.",
         .alertUndecodableFileDetail: "The file is not in a supported text encoding (UTF-8, UTF-16/32 with a byte-order mark, or GB18030).",
         .alertCouldNotSave: "Could not save %@.",
@@ -759,6 +762,8 @@ enum L10n {
         .cancel: "取消",
         .dontSave: "不保存",
         .alertCouldNotOpen: "无法打开 %@。",
+        .alertHeadingNotFound: "找不到链接指向的章节。",
+        .alertHeadingNotFoundDetail: "文档已打开，但没有标识为“%@”的标题。",
         .alertUndecodableFile: "无法将 %@ 作为文本读取。",
         .alertUndecodableFileDetail: "文件不是受支持的文本编码（UTF-8、带字节序标记的 UTF-16/32，或 GB18030）。",
         .alertCouldNotSave: "无法保存 %@。",

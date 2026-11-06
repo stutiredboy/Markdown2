@@ -55,7 +55,7 @@ A link resolving to a local file with an `md` or `markdown` path extension (case
 - **THEN** that window is brought to the front instead of opening a duplicate
 
 ### Requirement: Other local file links open with their default application
-A link resolving to a local non-Markdown file SHALL open with the system default application for that file type, and the preview SHALL NOT render the file's raw contents. A relative link that cannot be resolved to a file (an untitled document with no base directory, or a missing target) SHALL be ignored without navigating or crashing.
+A link resolving to a local non-Markdown file SHALL open with the system default application for that file type, and the preview SHALL NOT render the file's raw contents. A relative link in an untitled document with no base directory SHALL be ignored without navigating or crashing. A resolved local link whose target is missing SHALL show a localized missing-file alert without opening another application or an empty document window.
 
 #### Scenario: PDF link opens externally
 - **WHEN** the user clicks `[spec](docs/spec.pdf)` in a saved document's preview
@@ -110,3 +110,31 @@ A link in the preview SHALL reach a handler only if its scheme is one a Markdown
 - **WHEN** the user clicks a diagram link to an `https:` or `mailto:` URL
 - **THEN** it opens as the same Markdown link would
 
+
+### Requirement: Cross-document heading links reveal the destination
+A local Markdown link with a URL fragment SHALL open or focus the destination document and reveal the heading with that exact decoded identifier. The fragment and query SHALL NOT become part of the file URL used for saving, recovery, or recents. A link to an already-open document SHALL navigate within its latest in-memory text without reloading or discarding unsaved edits.
+
+#### Scenario: New document and encoded heading
+- **WHEN** a trusted click opens `chapter.md#%E7%9B%AE%E6%A0%87`
+- **THEN** the heading with identifier `目标` is revealed after the latest document render
+- **AND** its source line is revealed in Write mode and its rendered heading in Read mode
+
+#### Scenario: Already-open dirty document
+- **WHEN** the destination is already open with unsaved edits that move the heading
+- **THEN** the existing window is focused and the heading is located in the unsaved text
+- **AND** no text, dirty state, or undo history is changed by navigation
+
+#### Scenario: Empty or unknown fragment
+- **WHEN** the fragment is explicitly empty (`chapter.md#`)
+- **THEN** the document is revealed at the top
+- **WHEN** a non-empty fragment does not match a heading
+- **THEN** the document stays open at its current position and a localized alert names the missing identifier
+
+#### Scenario: Superseded request
+- **WHEN** a newer link, a different document open, an outline jump, or window close happens while a heading link is waiting for rendering
+- **THEN** the superseded request SHALL NOT subsequently move the viewport or show an alert
+
+#### Scenario: Trusted missing local target
+- **WHEN** a real user click targets a resolved local file that does not exist
+- **THEN** the source document shows a localized missing-file alert
+- **AND** synthetic clicks cannot trigger this alert or any native open handler
