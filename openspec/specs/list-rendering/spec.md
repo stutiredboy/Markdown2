@@ -15,7 +15,7 @@ The system SHALL render a run of consecutive list lines of a single kind as one 
 - **THEN** the preview renders a single `<ol>` containing two `<li>` items
 
 ### Requirement: Nested list rendering by indentation
-The system SHALL determine each list item's nesting level from its leading-whitespace indentation relative to the content column of the nearest preceding list item. A list item indented to or beyond the preceding item's content column SHALL render as a child list nested inside that preceding item's `<li>`. Returning to a shallower indentation SHALL close the deeper child list(s) and continue the appropriate ancestor list. The content column is the parent marker indentation plus marker width: two columns for an unordered marker such as `- `, three columns for an ordered marker such as `1. `, and four columns for an ordered marker such as `10. `. A tab and four spaces SHALL satisfy nesting under any one-, two-, or three-column marker. Nested ordered, unordered, mixed-kind, and task lists SHALL remain visibly indented from their parent item in the rendered preview.
+The system SHALL determine each list item's nesting level from its leading-whitespace indentation relative to the content column of the nearest preceding list item. A list item indented to or beyond the preceding item's content column SHALL render as a child list nested inside that preceding item's `<li>`, unless a block boundary or an existing indented code block makes the line literal code. Returning to a shallower indentation SHALL close the deeper child list(s) and continue the appropriate ancestor list. The content column is the parent marker indentation plus marker width: two columns for an unordered marker such as `- `, three columns for an ordered marker such as `1. `, and four columns for an ordered marker such as `10. `. A tab and four spaces SHALL satisfy nesting under any one-, two-, or three-column marker. Nested ordered, unordered, mixed-kind, and task lists SHALL remain visibly indented from their parent item in the rendered preview.
 
 #### Scenario: Single level of nesting
 - **WHEN** the source contains:
@@ -86,7 +86,7 @@ The system SHALL determine each list item's nesting level from its leading-white
 - **AND** the `second` item remains a sibling ordered item
 
 ### Requirement: Nested list lines are not treated as indented code
-The system SHALL recognize a four-space- or tab-indented line that is itself a list item as a nested list item while a list is being parsed, rather than treating it as an indented code block. Indented code handling SHALL continue to apply to indented lines that are not part of a surrounding list.
+The system SHALL recognize a four-space- or tab-indented line that is itself a list item as a nested list item while a list is being parsed, provided it is not part of an indented code continuation. After a blank-line or closed-fence block boundary, four or more columns beyond the current item's content column SHALL instead begin literal code. List-looking lines at that code indentation SHALL remain in the same code block, including ordered and task markers; they SHALL NOT create task controls. Indented code handling SHALL continue to apply outside lists.
 
 #### Scenario: Four-space indented list item nests instead of becoming code
 - **WHEN** a `- parent` line is immediately followed by a `    - child` line indented with four spaces
@@ -98,7 +98,7 @@ The system SHALL recognize a four-space- or tab-indented line that is itself a l
 - **THEN** it is still rendered as an indented code block
 
 ### Requirement: Preserve code indentation in captured list continuation
-When rendering space-indented captured continuation lines that begin after a blank line, the system SHALL remove no more than the list item's content-column indentation. Additional indentation SHALL remain available to the block renderer, including when every non-blank continuation line is indented code. Without that blank-line boundary, extra indentation SHALL NOT turn the initial paragraph's continuation into an indented code block. Reference-definition collection SHALL use the same dedenting rule so text inside such code cannot define a link in the surrounding document. Source-line spans SHALL continue to refer to the original document lines. Existing tab-stop approximation remains outside this requirement.
+When rendering captured continuation lines that begin after a blank line, the system SHALL remove no more than the list item's content-column indentation. Additional indentation SHALL remain available to the block renderer, including when every non-blank continuation line is indented code. Structural tabs SHALL advance to the next multiple-of-four column, measured from the original line and marker column. Removing part of a tab SHALL preserve its unused columns as spaces; code text beyond the structural indentation, including internal tabs, SHALL remain unchanged. Without a blank-line boundary, extra indentation SHALL NOT turn the initial paragraph's continuation into an indented code block, and SHALL NOT erase code after a later blank line. In a dedented list body, indented code SHALL take precedence over fence and blockquote-looking content. Reference-definition collection SHALL use the same code boundary and dedenting rules. Source-line spans SHALL continue to refer to the original document lines.
 
 #### Scenario: An item's only continuation is indented code
 - **WHEN** `- Foo` is followed by a blank line and `bar` and `baz` each indented six spaces, with blank lines between them
@@ -115,6 +115,23 @@ When rendering space-indented captured continuation lines that begin after a bla
 - **WHEN** `- Foo` is immediately followed by `bar` indented six spaces, with no intervening blank line
 - **THEN** `bar` remains paragraph text inside the item
 - **AND** the extra indentation does not introduce a code block
+
+#### Scenario: List-looking code cannot edit its source
+- **WHEN** `- parent` is followed by a blank line and `- [ ] literal` indented six spaces
+- **THEN** the marker remains visible inside a code block and no checkbox targets that source line
+- **AND** a legal two-space-indented task following the code still renders an editable checkbox
+
+#### Scenario: A closed fence also establishes a block boundary
+- **WHEN** a real fenced block inside an item closes and a sufficiently indented task-looking line immediately follows without a blank line
+- **THEN** the following line begins literal indented code rather than a task control
+- **AND** when the fence is not closed, that line remains part of the fenced code instead
+
+#### Scenario: Partial tabs preserve original columns and code text
+- **WHEN** a list item's code line begins with a tab and two spaces
+- **THEN** the two-column container is removed and four code columns remain
+- **WHEN** the code line begins with two tabs
+- **THEN** its code text retains two leading spaces after container and code indentation are removed
+- **AND** tabs within the remaining code text are not expanded
 
 ### Requirement: Task list and mixed-kind nesting preservation
 The system SHALL preserve task-list rendering and mixed ordered/unordered nesting. A list item written as `- [ ]` or `- [x]` SHALL render with an enabled (clickable) checkbox reflecting the checked state, including when nested. Each task checkbox SHALL carry a `data-md2-task-line` attribute holding the 1-based source line of its list item, absolute with respect to the whole document (including items rendered inside blockquotes). A nested child list MAY be of a different kind (ordered vs. unordered) than its parent. Task-list marker styling SHALL NOT collapse child-list indentation.
