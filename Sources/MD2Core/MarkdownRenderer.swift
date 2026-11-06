@@ -78,7 +78,8 @@ public struct MarkdownRenderer: Sendable {
         _ markdown: String,
         outline: [Heading],
         context: InlineContext,
-        lineOffset: Int = 0
+        lineOffset: Int = 0,
+        listContinuation: Bool = false
     ) -> String {
         let lines = markdown.normalizedMarkdownLines
         let headingsByLine = Dictionary(uniqueKeysWithValues: outline.map { ($0.line, $0) })
@@ -113,6 +114,14 @@ public struct MarkdownRenderer: Sendable {
                     index = frontMatter.nextIndex
                     continue
                 }
+            }
+
+            // Container indentation has already been removed for list bodies.
+            // Four remaining columns are literal code, including `>` and fences.
+            if listContinuation, let code = indentedCodeBlock(from: lines, startIndex: index) {
+                appendBlock(code.html, from: index, to: code.nextIndex)
+                index = code.nextIndex
+                continue
             }
 
             if let fence = fencedCodeBlock(from: lines, startIndex: index) {
@@ -773,27 +782,32 @@ public struct MarkdownRenderer: Sendable {
         return (built.html, nextIndex)
     }
 
-    /// Gathers the block-content lines belonging to a list item: consecutive
-    /// lines indented past the item's marker that are not themselves list items
-    /// (those open nested child lists, which `buildList` handles via the flat
-    /// `items` array). A blank line is included only when a qualifying
-    /// continuation line follows it, so a blank that merely separates the item
+    /// Gathers block-content lines belonging to a list item. List-looking lines
+    /// open children unless a block boundary has established code indentation.
+    /// Structural whitespace is normalized in original columns; code contents
+    /// and the number of source lines are preserved. A blank line is included
+    /// only when a qualifying continuation follows it, so a blank that separates the item
     /// from a sibling is left for the caller's loose-list handling. A fenced
     /// code block opened inside the continuation is consumed through its closing
     /// fence — including any internally dedented lines — so code is never cut
-    /// short. Returns the raw lines (original indentation preserved) and the
-    /// index of the first line that does not belong to the item.
+    /// short. Returns container-indented lines and the index of the first line
+    /// that does not belong to the item.
     private func collectListItemContinuation(
         from lines: [String],
         startIndex: Int,
         contentIndent: Int
     ) -> (lines: [String], nextIndex: Int) {
-        func belongs(_ line: String) -> Bool {
-            parseListItem(line) == nil && leadingIndentWidth(line) >= contentIndent
+        func belongs(_ line: String, afterBlockBoundary: Bool) -> Bool {
+            let indent = leadingIndentWidth(line)
+            guard indent >= contentIndent else { return false }
+            // Once code may start, its four columns take precedence over list
+            // syntax. A literal task marker must never become a preview control.
+            return (afterBlockBoundary && indent >= contentIndent + 4) || parseListItem(line) == nil
         }
 
         var continuation: [String] = []
         var index = startIndex
+        var canStartCode = false // Indented code cannot interrupt the item's paragraph.
 
         while index < lines.count {
             let line = lines[index]
@@ -803,71 +817,82 @@ public struct MarkdownRenderer: Sendable {
                 while lookahead < lines.count, lines[lookahead].trimmedMarkdownLine.isEmpty {
                     lookahead += 1
                 }
-                guard lookahead < lines.count, belongs(lines[lookahead]) else { break }
+                guard lookahead < lines.count, belongs(lines[lookahead], afterBlockBoundary: true) else { break }
                 continuation.append("")
+                canStartCode = true
                 index += 1
                 continue
             }
 
-            guard belongs(line) else { break }
+            guard belongs(line, afterBlockBoundary: canStartCode) else { break }
+            let isCode = canStartCode && leadingIndentWidth(line) >= contentIndent + 4
+            canStartCode = isCode
+            if isCode {
+                // Consume the container and code indentation in the ORIGINAL
+                // columns. Re-parsing a partially consumed tab from column zero
+                // would move the next tab stop and silently alter code whitespace.
+                // The block renderer later removes these four explicit spaces;
+                // all remaining code (including internal tabs) stays verbatim.
+                continuation.append(String(repeating: " ", count: contentIndent + 4)
+                    + dropIndentColumns(line, contentIndent + 4))
+                index += 1
+                continue
+            }
 
-            continuation.append(line)
-            index += 1
-
+            let indent = leadingIndentWidth(line)
             if let marker = MarkdownLine.fenceMarker(in: line) {
+                // A real fence may have up to three extra structural columns.
+                // Normalize those along with the container before preserving
+                // its code; internally dedented fence lines remain supported.
+                continuation.append(String(repeating: " ", count: contentIndent)
+                    + dropIndentColumns(line, indent))
+                index += 1
                 while index < lines.count {
                     let fenceLine = lines[index]
-                    continuation.append(fenceLine)
+                    continuation.append(String(repeating: " ", count: contentIndent)
+                        + dropIndentColumns(fenceLine, indent))
                     index += 1
                     if fenceLine.trimmedMarkdownLine.hasScalarPrefix(marker) {
+                        canStartCode = true // A closed fence also ends the preceding block.
                         break
                     }
                 }
+            } else {
+                // Rebase only structural indentation. Otherwise a remaining tab
+                // could advance farther after the container columns disappear.
+                continuation.append(String(repeating: " ", count: indent)
+                    + dropIndentColumns(line, indent))
+                index += 1
             }
         }
 
         return (continuation, index)
     }
 
-    /// A blank before the continuation establishes a block boundary, where only
-    /// the item's container indentation may be removed: stripping its entire
-    /// common indent would erase a code-only body's four extra columns. Without
-    /// that blank, retain the existing paragraph-continuation dedent because
-    /// indented code cannot interrupt the item's initial paragraph. Keep the
-    /// common-indent bound for captured fences with internally dedented lines.
+    /// Remove the item's container columns, preserving code after a block
+    /// boundary. Only the first line may need extra dedenting to continue the
+    /// item's initial paragraph; applying that to the whole body would erase
+    /// code after a later blank. Keep the common-indent bound for standalone
+    /// image lines attached to an item by the list collector.
     private func stripListIndent(_ lines: [String], contentIndent: Int) -> String {
         let commonIndent = lines
             .filter { !$0.trimmedMarkdownLine.isEmpty }
             .map { leadingIndentWidth($0) }
             .min() ?? 0
         let startsNewBlock = lines.first?.trimmedMarkdownLine.isEmpty == true
-        let minIndent = startsNewBlock ? min(contentIndent, commonIndent) : commonIndent
+        let minIndent = min(contentIndent, commonIndent)
 
-        guard minIndent > 0 else { return lines.joined(separator: "\n") }
-
-        return lines
-            .map { dropIndentColumns($0, minIndent) }
-            .joined(separator: "\n")
+        return lines.enumerated().map { index, line in
+            if index == 0, !startsNewBlock, leadingIndentWidth(line) >= contentIndent + 4 {
+                return dropIndentColumns(line, leadingIndentWidth(line))
+            }
+            return dropIndentColumns(line, minIndent)
+        }.joined(separator: "\n")
     }
 
-    /// Drops up to `columns` of leading-whitespace width from a line (a tab
-    /// counts as four columns). Stops at the first non-whitespace character.
+    /// Drops structural whitespace by columns, retaining the unused part of a tab.
     private func dropIndentColumns(_ line: String, _ columns: Int) -> String {
-        var remaining = columns
-        var rest = Substring(line).unicodeScalars
-
-        while remaining > 0, let first = rest.first {
-            if first == " " {
-                remaining -= 1
-            } else if first == "\t" {
-                remaining -= 4
-            } else {
-                break
-            }
-            rest = rest.dropFirst()
-        }
-
-        return String(rest)
+        MarkdownIndentation.dropping(line, columns: columns)
     }
 
     /// Derives each item's nesting level from indentation. A child list starts
@@ -957,7 +982,8 @@ public struct MarkdownRenderer: Sendable {
                     dedented,
                     outline: outlineBuilder.build(from: dedented),
                     context: context,
-                    lineOffset: lineOffset + item.lineIndex + 1
+                    lineOffset: lineOffset + item.lineIndex + 1,
+                    listContinuation: true
                 )
                 if !body.isEmpty {
                     content += "\n\(body)"
@@ -1049,7 +1075,8 @@ public struct MarkdownRenderer: Sendable {
 
     /// Walk the same containers as the block renderer. Definitions cannot
     /// interrupt paragraphs, and code/math/front matter never define links.
-    private func collectLinkReferences(_ lines: [String], into definitions: inout [String: LinkReference]) {
+    private func collectLinkReferences(_ lines: [String], into definitions: inout [String: LinkReference],
+                                       listContinuation: Bool = false) {
         var index = 0
         let inertContext = InlineContext(footnotes: FootnoteContext(),
             citations: CitationContext(entries: [:], style: .authorYear),
@@ -1058,6 +1085,9 @@ public struct MarkdownRenderer: Sendable {
             let trimmed = lines[index].trimmedMarkdownLine
             if trimmed.isEmpty { index += 1; continue }
             if index == 0, let block = frontMatterBlock(from: lines, startIndex: index) {
+                index = block.nextIndex; continue
+            }
+            if listContinuation, let block = indentedCodeBlock(from: lines, startIndex: index) {
                 index = block.nextIndex; continue
             }
             if let block = fencedCodeBlock(from: lines, startIndex: index) {
@@ -1094,7 +1124,8 @@ public struct MarkdownRenderer: Sendable {
                 let continuation = collectListItemContinuation(from: lines, startIndex: index + 1, contentIndent: item.contentIndent)
                 collectLinkReferences(
                     stripListIndent(continuation.lines, contentIndent: item.contentIndent).normalizedMarkdownLines,
-                    into: &definitions
+                    into: &definitions,
+                    listContinuation: true
                 )
                 index = continuation.nextIndex; continue
             }
@@ -1318,8 +1349,8 @@ public struct MarkdownRenderer: Sendable {
         return MarkdownIndentation.contentColumn(markerIndent: markerIndent, delimiterWidth: delimiterWidth, gap: rest)
     }
 
-    /// Counts the leading whitespace of a line in columns, treating a tab as 4
-    /// columns. Used to determine list-item nesting depth.
+    /// Counts leading whitespace using four-column tab stops. Used to determine
+    /// list-item nesting depth and the relative code indentation.
     private func leadingIndentWidth(_ line: String) -> Int {
         MarkdownIndentation.width(line)
     }
@@ -4269,8 +4300,8 @@ private struct ListItem {
     /// `listBlock` map an `items` index back to a source line after blank lines
     /// between items have been absorbed into a single (loose) list.
     let lineIndex: Int
-    /// Raw block-content lines indented under the item's marker (paragraphs,
-    /// code blocks, tables, …), in source order and with original indentation.
+    /// Block-content lines under the item's marker, in source order. Structural
+    /// indentation is normalized in original columns; code text remains literal.
     /// `buildList` dedents and renders these as the item's body so nested block
     /// content stays inside the `<li>` instead of leaking to the top-level walk.
     var continuation: [String] = []

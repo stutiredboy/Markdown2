@@ -55,19 +55,11 @@ enum MarkdownLine {
     }
 
     static func isIndentedCode(_ line: String) -> Bool {
-        line.hasScalarPrefix("    ") || line.hasScalarPrefix("\t")
+        MarkdownIndentation.width(line) >= 4
     }
 
     static func stripCodeIndent(_ line: String) -> String {
-        if line.hasScalarPrefix("\t") {
-            return line.droppingScalars(1)
-        }
-
-        if line.hasScalarPrefix("    ") {
-            return line.droppingScalars(4)
-        }
-
-        return line
+        MarkdownIndentation.dropping(line, columns: 4)
     }
 
     /// Whether a trimmed line opens or continues a blockquote.

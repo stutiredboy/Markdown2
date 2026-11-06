@@ -125,7 +125,12 @@ public enum MarkdownEditing {
                         count += rest[task].utf16.count
                         next += "[ ] "
                     }
-                    let width = MarkdownIndentation.contentColumn(markerIndent: 0, delimiterWidth: delimiter.count, gap: gap)
+                    let markerPrefix = source.substring(with: NSRange(location: indentStart, length: offset - indentStart))
+                    let markerColumn = markerPrefix.unicodeScalars.reduce(0) { column, scalar in
+                        column + (scalar == "\t" ? 4 - column % 4 : 1)
+                    }
+                    let width = MarkdownIndentation.contentColumn(markerIndent: markerColumn,
+                        delimiterWidth: delimiter.count, gap: gap) - markerColumn
                     markers.append(Marker(range: NSRange(location: offset, length: count), quote: false,
                                           next: next, continuation: String(repeating: " ", count: width)))
                     offset += count
@@ -553,17 +558,42 @@ public enum MarkdownEditing {
     }
 }
 
-/// Shared with the renderer: tabs occupy four columns; marker gaps of five or
-/// more spaces start code rather than pushing the list content column out.
+/// Shared with the renderer: structural tabs advance to four-column tab stops.
+/// Marker gaps of five or more columns start code rather than widening the item.
 enum MarkdownIndentation {
-    /// Leading-whitespace width in columns (a tab counts as four), read as
-    /// scalars so a joining scalar after the last space does not hide it.
-    static func width(_ string: String) -> Int {
-        string.unicodeScalars.prefix { $0 == " " || $0 == "\t" }.reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
+    /// Leading whitespace only, measured from its actual starting column.
+    static func width(_ string: String, startingAt start: Int = 0) -> Int {
+        var column = start
+        for scalar in string.unicodeScalars {
+            if scalar == " " { column += 1 }
+            else if scalar == "\t" { column += 4 - column % 4 }
+            else { break }
+        }
+        return column - start
     }
 
     static func contentColumn(markerIndent: Int, delimiterWidth: Int, gap: String) -> Int {
-        let width = width(gap)
-        return markerIndent + delimiterWidth + (width >= 5 ? 1 : max(width, 1))
+        let start = markerIndent + delimiterWidth
+        let width = width(gap, startingAt: start)
+        return start + (width >= 5 ? 1 : max(width, 1))
+    }
+
+    /// Remove only structural columns. If the boundary cuts a tab, keep its
+    /// unused columns as spaces; characters after the boundary remain literal.
+    static func dropping(_ string: String, columns: Int) -> String {
+        var column = 0
+        var rest = string.unicodeScalars[...]
+        while column < columns, let scalar = rest.first {
+            let next: Int
+            if scalar == " " { next = column + 1 }
+            else if scalar == "\t" { next = column + 4 - column % 4 }
+            else { break }
+            rest = rest.dropFirst()
+            if next > columns {
+                return String(repeating: " ", count: next - columns) + String(rest)
+            }
+            column = next
+        }
+        return String(rest)
     }
 }

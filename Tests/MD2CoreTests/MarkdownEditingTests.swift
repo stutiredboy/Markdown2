@@ -64,7 +64,10 @@ struct MarkdownEditingTests {
         Example("100. a¦", .softNewline, "100. a\n     ¦"),
         Example("1)   a¦", .softNewline, "1)   a\n     ¦"),
         Example("-     a¦", .softNewline, "-     a\n  ¦"),
-        Example("-\ta¦", .softNewline, "-\ta\n     ¦"),
+        // A tab after column 1 ends at column 4, rather than adding four.
+        Example("-\ta¦", .softNewline, "-\ta\n    ¦"),
+        Example(" -\ta¦", .softNewline, " -\ta\n    ¦"),
+        Example("  1.\ta¦", .softNewline, "  1.\ta\n        ¦"),
         Example("- [ ] a¦", .softNewline, "- [ ] a\n  ¦"),
         Example("> 10. a¦", .softNewline, "> 10. a\n>     ¦"),
         Example("- ¦", .softNewline, "- \n  ¦"),
