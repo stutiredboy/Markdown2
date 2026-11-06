@@ -31,7 +31,11 @@ protocol DocumentPrinting: AnyObject {
 final class DocumentStore: ObservableObject {
     @Published var text: String {
         didSet {
-            guard text != oldValue else { return }
+            // Source bytes matter for saving and UTF-16 editor offsets. Swift
+            // String equality treats different Unicode normalizations as equal.
+            // Most typing changes the byte count, so avoid scanning that case.
+            guard text.utf8.count != oldValue.utf8.count || !text.utf8.elementsEqual(oldValue.utf8) else { return }
+            textMutationRevision &+= 1
             sourceLineRevision &+= 1
             // The expensive full-document render that feeds the preview/stats is
             // coalesced off the keystroke path (see `scheduleRender`) so sustained
@@ -198,10 +202,9 @@ final class DocumentStore: ObservableObject {
     /// checked against, so nothing is silently overwritten or needlessly
     /// reloaded.
     private var lastKnownFingerprint: DocumentFileFingerprint?
-    /// True when the pending external reload came from the user choosing
-    /// "Reload from Disk" in the conflict prompt, which deliberately discards
-    /// the in-memory edits.
-    private var pendingReloadDiscardsEdits = false
+    /// A reload choice authorizes discarding only the text the user saw when
+    /// confirming. Edits during asynchronous viewport capture need a new choice.
+    private var pendingReloadDiscardRevision: Int?
     /// Coalesces the full-document render that feeds the preview/stats so a burst
     /// of typing renders once when the user pauses instead of synchronously on
     /// every keystroke. Bumped on each schedule so only the latest one fires.
@@ -212,6 +215,8 @@ final class DocumentStore: ObservableObject {
     /// every change but `toggleTask`'s. A preview's line numbers mean something
     /// only in the revision it was rendered from.
     private(set) var sourceLineRevision = 0
+    /// Unlike source-line mapping, this also advances for task checkbox edits.
+    private var textMutationRevision = 0
     /// The `sourceLineRevision` of the text `rendered` was built from. Always
     /// set together with `rendered`, whose publication carries it to the preview.
     private(set) var renderedSourceLineRevision = 0
@@ -814,7 +819,7 @@ final class DocumentStore: ObservableObject {
             hasExternalConflict = false
             externalConflictRequest = nil
             pendingExternalReload = nil
-            pendingReloadDiscardsEdits = false
+            pendingReloadDiscardRevision = nil
             startWatchingFile()
             persistRecoveryNow()
             let directory = url.deletingLastPathComponent()
@@ -1078,7 +1083,7 @@ final class DocumentStore: ObservableObject {
     /// calls `completeExternalReload(anchor:)`.
     private func beginExternalReload(discardingEdits: Bool = false) {
         if discardingEdits {
-            pendingReloadDiscardsEdits = true
+            pendingReloadDiscardRevision = textMutationRevision
         }
         guard pendingExternalReload == nil else { return }
         pendingExternalReload = UUID()
@@ -1092,8 +1097,8 @@ final class DocumentStore: ObservableObject {
     func completeExternalReload(anchor: ViewportAnchor?) {
         guard pendingExternalReload != nil else { return }
         pendingExternalReload = nil
-        let discardsEdits = pendingReloadDiscardsEdits
-        pendingReloadDiscardsEdits = false
+        let discardRevision = pendingReloadDiscardRevision
+        pendingReloadDiscardRevision = nil
         refreshFileLocation()
         guard let fileURL else { return }
 
@@ -1105,7 +1110,7 @@ final class DocumentStore: ObservableObject {
             )
             return
         }
-        guard !isDirty || discardsEdits else {
+        guard !isDirty || discardRevision == textMutationRevision else {
             raiseExternalConflict()
             return
         }
