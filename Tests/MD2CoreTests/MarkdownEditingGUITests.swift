@@ -91,6 +91,32 @@ final class MarkdownEditingGUITests: XCTestCase {
     }
 
     @MainActor
+    func testLinkShortcutAndMenuUseTheClipboardDestination() throws {
+        let label = "中文🙂e\u{301}"
+        let harness = try EditingWindow(label)
+        defer { harness.close() }
+        let editor = harness.editor
+        editor.linkClipboardText = { "https://example.com/?literal=&copy;" }
+        editor.setSelectedRange(NSRange(location: 0, length: label.utf16.count))
+        XCTAssertTrue(editor.performKeyEquivalent(with: harness.key("k", code: 40, flags: .command)))
+        harness.spin()
+        let expected = "[\(label)](https://example.com/?literal=&amp;copy;)"
+        XCTAssertEqual(harness.store.text, expected)
+        XCTAssertEqual(editor.selectedRange(), NSRange(location: 1, length: label.utf16.count))
+        XCTAssertTrue(harness.store.isDirty)
+        harness.store.undoManager.undo()
+        harness.spin()
+        XCTAssertEqual(harness.store.text, label)
+        editor.setSelectedRange(NSRange(location: 0, length: label.utf16.count))
+        harness.store.requestFormat(.link)
+        harness.spin()
+        XCTAssertEqual(harness.store.text, expected, "the menu command must use the same link input")
+        harness.store.undoManager.undo()
+        harness.spin()
+        XCTAssertEqual(harness.store.text, label)
+    }
+
+    @MainActor
     func testOnlyTrackedClosersSkipOrDeleteAsPairs() throws {
         let literal = try EditingWindow("foo()")
         defer { literal.close() }
