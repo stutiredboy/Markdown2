@@ -97,6 +97,25 @@ The system SHALL recognize a four-space- or tab-indented line that is itself a l
 - **WHEN** a four-space-indented line that is not a list item appears outside any list (for example after a blank line following a paragraph)
 - **THEN** it is still rendered as an indented code block
 
+### Requirement: Preserve code indentation in captured list continuation
+When rendering space-indented captured continuation lines that begin after a blank line, the system SHALL remove no more than the list item's content-column indentation. Additional indentation SHALL remain available to the block renderer, including when every non-blank continuation line is indented code. Without that blank-line boundary, extra indentation SHALL NOT turn the initial paragraph's continuation into an indented code block. Reference-definition collection SHALL use the same dedenting rule so text inside such code cannot define a link in the surrounding document. Source-line spans SHALL continue to refer to the original document lines. Existing tab-stop approximation remains outside this requirement.
+
+#### Scenario: An item's only continuation is indented code
+- **WHEN** `- Foo` is followed by a blank line and `bar` and `baz` each indented six spaces, with blank lines between them
+- **THEN** the two-column list prefix is removed while the four-column code indentation remains
+- **AND** `bar` and `baz` render in one code block inside the item, preserving internal blank lines
+- **AND** the code block and containing item carry their original absolute source-line spans
+
+#### Scenario: A reference definition in indented code remains literal
+- **WHEN** an item's code continuation contains `[ref]: https://example.com/` and the document later contains `[ref]`
+- **THEN** the definition remains visible code
+- **AND** it does not turn the later `[ref]` into a link
+
+#### Scenario: Indented continuation cannot interrupt the first paragraph
+- **WHEN** `- Foo` is immediately followed by `bar` indented six spaces, with no intervening blank line
+- **THEN** `bar` remains paragraph text inside the item
+- **AND** the extra indentation does not introduce a code block
+
 ### Requirement: Task list and mixed-kind nesting preservation
 The system SHALL preserve task-list rendering and mixed ordered/unordered nesting. A list item written as `- [ ]` or `- [x]` SHALL render with an enabled (clickable) checkbox reflecting the checked state, including when nested. Each task checkbox SHALL carry a `data-md2-task-line` attribute holding the 1-based source line of its list item, absolute with respect to the whole document (including items rendered inside blockquotes). A nested child list MAY be of a different kind (ordered vs. unordered) than its parent. Task-list marker styling SHALL NOT collapse child-list indentation.
 
