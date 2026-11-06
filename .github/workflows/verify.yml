@@ -131,7 +131,8 @@ jobs:
           MD2_RUN_GUI_TESTS: "1"
         run: |
           set -o pipefail
-          swift test --disable-swift-testing 2>&1 | tee "$RUNNER_TEMP/gui-tests.log"
+          printf '%s\n' 'INTENTIONAL GATE PROBE: GUI tests not executed; failing this job to verify downstream blocking.' | tee "$RUNNER_TEMP/gui-tests.log"
+          exit 1
 
       # A skipped GUI test passes green, so every skip must be one the
       # allowlist expects on this runner.
