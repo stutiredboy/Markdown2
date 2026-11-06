@@ -829,15 +829,19 @@ public struct MarkdownRenderer: Sendable {
         return (continuation, index)
     }
 
-    /// Removes the smallest non-blank leading-indent width from every line so an
-    /// item's captured body renders as top-level Markdown, while preserving
-    /// relative indentation (a code block nested deeper inside the item keeps
-    /// its shape). Blank lines stay blank.
-    private func stripCommonIndent(_ lines: [String]) -> String {
-        let minIndent = lines
+    /// A blank before the continuation establishes a block boundary, where only
+    /// the item's container indentation may be removed: stripping its entire
+    /// common indent would erase a code-only body's four extra columns. Without
+    /// that blank, retain the existing paragraph-continuation dedent because
+    /// indented code cannot interrupt the item's initial paragraph. Keep the
+    /// common-indent bound for captured fences with internally dedented lines.
+    private func stripListIndent(_ lines: [String], contentIndent: Int) -> String {
+        let commonIndent = lines
             .filter { !$0.trimmedMarkdownLine.isEmpty }
             .map { leadingIndentWidth($0) }
             .min() ?? 0
+        let startsNewBlock = lines.first?.trimmedMarkdownLine.isEmpty == true
+        let minIndent = startsNewBlock ? min(contentIndent, commonIndent) : commonIndent
 
         guard minIndent > 0 else { return lines.joined(separator: "\n") }
 
@@ -948,7 +952,7 @@ public struct MarkdownRenderer: Sendable {
             // shares `context` so footnotes/citations accumulate, and offsets to
             // the continuation's first source line to keep spans absolute.
             if !item.continuation.isEmpty {
-                let dedented = stripCommonIndent(item.continuation)
+                let dedented = stripListIndent(item.continuation, contentIndent: item.contentIndent)
                 let body = renderBody(
                     dedented,
                     outline: outlineBuilder.build(from: dedented),
@@ -1088,7 +1092,10 @@ public struct MarkdownRenderer: Sendable {
             if let item = parseListItem(lines[index]) {
                 collectLinkReferences([item.text], into: &definitions)
                 let continuation = collectListItemContinuation(from: lines, startIndex: index + 1, contentIndent: item.contentIndent)
-                collectLinkReferences(stripCommonIndent(continuation.lines).normalizedMarkdownLines, into: &definitions)
+                collectLinkReferences(
+                    stripListIndent(continuation.lines, contentIndent: item.contentIndent).normalizedMarkdownLines,
+                    into: &definitions
+                )
                 index = continuation.nextIndex; continue
             }
             if let table = tableBlock(from: lines, startIndex: index) {
