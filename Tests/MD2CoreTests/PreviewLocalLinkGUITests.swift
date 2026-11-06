@@ -81,7 +81,7 @@ final class PreviewLocalLinkGUITests: XCTestCase, RenderedPageTesting {
         ]
         let expected: [URL] = try cases.map { testCase in
             let file = directory.appendingPathComponent(testCase.filename)
-            try Data("# Target".utf8).write(to: file)
+            try Data("# Target\n\nFixture: \(testCase.filename)".utf8).write(to: file)
             var components = try XCTUnwrap(URLComponents(url: file, resolvingAgainstBaseURL: false))
             components.fragment = testCase.fragment
             return try XCTUnwrap(components.url)
@@ -100,8 +100,10 @@ final class PreviewLocalLinkGUITests: XCTestCase, RenderedPageTesting {
             XCTAssertTrue(documents.isEmpty, "entity decoding must not grant synthetic clicks native access")
             for index in cases.indices {
                 let element = "document.querySelectorAll('main a')[\(index)]"
-                XCTAssertEqual(try evaluate("\(element).getAttribute('href')", in: webView) as? String,
-                               expected[index].absoluteString)
+                let href = try XCTUnwrap(try evaluate("\(element).getAttribute('href')", in: webView) as? String)
+                let destination = try XCTUnwrap(URL(string: href))
+                XCTAssertTrue(LocalFileLinkDestination.matches(destination, expected[index]),
+                              "DOM destination \(destination) differs from \(expected[index])")
                 try click(element, in: webView)
                 XCTAssertTrue(spin(3) { documents.count == index + 1 }, "local handoff missed \(cases[index].destination)")
             }
@@ -109,7 +111,15 @@ final class PreviewLocalLinkGUITests: XCTestCase, RenderedPageTesting {
                            [false] + Array(repeating: true, count: cases.count))
             XCTAssertEqual(webView.url, pageURL)
         }
-        XCTAssertEqual(documents, expected)
+        XCTAssertEqual(documents.count, expected.count)
+        for (index, pair) in zip(documents, expected).enumerated() {
+            XCTAssertTrue(LocalFileLinkDestination.matches(pair.0, pair.1),
+                          "handoff \(pair.0) differs from \(pair.1)")
+            // Prove the handler received the real fixture, including literal
+            // percent/entity filenames, rather than only a plausible URL spelling.
+            XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: pair.0.path)),
+                           Data("# Target\n\nFixture: \(cases[index].filename)".utf8))
+        }
         XCTAssertTrue(external.isEmpty)
         XCTAssertTrue(missing.isEmpty)
     }
