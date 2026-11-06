@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import MD2Core
 import XCTest
 
 @testable import MD2App
@@ -188,8 +189,8 @@ final class DocumentLinkApplicationGUITests: XCTestCase {
 
     // MARK: - Isolated application and fixtures
 
-    private static let topMarker = "LINK_GUARD_TOP_MARKER"
-    private static let destinationMarker = "LINK_GUARD_DESTINATION_MARKER"
+    fileprivate static let topMarker = "LINKGUARDTOPMARKER"
+    fileprivate static let destinationMarker = "LINKGUARDDESTINATIONMARKER"
 
     private struct Fixture {
         let source: URL
@@ -493,6 +494,17 @@ final class DocumentLinkApplicationGUITests: XCTestCase {
         var dimensions = CGSize.zero
         guard AXValueGetValue(origin, .cgPoint, &point), AXValueGetValue(size, .cgSize, &dimensions) else { return nil }
         return CGRect(origin: point, size: dimensions)
+    }
+}
+
+/// These labels are observed as visible text through AX, so they must survive
+/// the actual renderer as one plain paragraph, without Markdown formatting.
+final class DocumentLinkApplicationFixtureTests: XCTestCase {
+    func testPreviewMarkersRemainWholePlainTextParagraphs() {
+        for marker in [DocumentLinkApplicationGUITests.topMarker, DocumentLinkApplicationGUITests.destinationMarker] {
+            let body = MarkdownRenderer().render(marker).body.withoutSourceLineMetadata
+            XCTAssertEqual(body, "<p>\(marker)</p>")
+        }
     }
 }
 
