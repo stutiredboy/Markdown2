@@ -19,6 +19,8 @@ final class DocumentLinkApplicationGUITests: XCTestCase {
     private var healthURL: URL!
     private var application: NSRunningApplication?
     private var pid: pid_t = 0
+    private var originalFrontmostApplication: NSRunningApplication?
+    private var originalFrontmostPID: pid_t = 0
 
     override func setUpWithError() throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
@@ -26,6 +28,8 @@ final class DocumentLinkApplicationGUITests: XCTestCase {
         guard AXIsProcessTrusted() else {
             throw LinkAppFailure("Accessibility trust is required to activate real links and observe the target window. This enabled GUI test cannot be validated without it.")
         }
+        originalFrontmostApplication = NSWorkspace.shared.frontmostApplication
+        originalFrontmostPID = originalFrontmostApplication?.processIdentifier ?? 0
         bundleIdentifier = "dev.codex.md2.link-guard.\(UUID().uuidString.lowercased())"
         root = FileManager.default.temporaryDirectory.appendingPathComponent(bundleIdentifier, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -36,6 +40,7 @@ final class DocumentLinkApplicationGUITests: XCTestCase {
     }
 
     override func tearDownWithError() throws {
+        defer { restoreOriginalFrontmostApplication() }
         if isAlive {
             application?.terminate()
             let deadline = Date().addingTimeInterval(5)
@@ -57,6 +62,25 @@ final class DocumentLinkApplicationGUITests: XCTestCase {
             try? FileManager.default.removeItem(at: recoveryDirectory.deletingLastPathComponent())
         }
         if let root { try? FileManager.default.removeItem(at: root) }
+    }
+
+    private func restoreOriginalFrontmostApplication() {
+        guard let originalFrontmostApplication, originalFrontmostPID > 0,
+              kill(originalFrontmostPID, 0) == 0 else { return }
+        // Activating the isolated app changes session state. Restore the prior
+        // foreground app (including the test host when it was active) before
+        // subsequent in-process AppKit suites measure their window geometry.
+        originalFrontmostApplication.activate()
+        let deadline = Date().addingTimeInterval(5)
+        while NSWorkspace.shared.frontmostApplication?.processIdentifier != originalFrontmostPID, Date() < deadline {
+            if Thread.isMainThread {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            } else {
+                usleep(50_000)
+            }
+        }
+        XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.processIdentifier, originalFrontmostPID,
+                       "the link-test app must restore foreground activation before the next suite")
     }
 
     func testNewWindowRevealsEncodedDuplicateHeadingAndRepeatsAfterTopLink() throws {
