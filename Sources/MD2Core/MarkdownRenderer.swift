@@ -28,10 +28,11 @@ public struct MarkdownRenderer: Sendable {
             }
         }
         let lines = markdown.normalizedMarkdownLines
-        let outline = outlineBuilder.build(from: markdown)
+        let metadataLines = metadataLines(from: lines)
+        let outline = outlineBuilder.build(from: metadataLines.joined(separator: "\n"))
 
         let footnotes = FootnoteContext()
-        collectFootnoteDefinitions(lines, into: footnotes)
+        collectFootnoteDefinitions(metadataLines, into: footnotes)
         var references: [String: LinkReference] = [:]
         collectLinkReferences(lines, into: &references)
 
@@ -694,7 +695,7 @@ public struct MarkdownRenderer: Sendable {
         let nestedMarkdown = quoteLines.joined(separator: "\n")
         let quote = renderBody(
             nestedMarkdown,
-            outline: outlineBuilder.build(from: nestedMarkdown),
+            outline: outlineForBody(nestedMarkdown),
             context: context,
             lineOffset: lineOffset + startIndex + (alertKind == nil ? 0 : 1)
         )
@@ -710,6 +711,20 @@ public struct MarkdownRenderer: Sendable {
     private func listBlock(from lines: [String], startIndex: Int, context: InlineContext, lineOffset: Int = 0) -> (html: String, nextIndex: Int)? {
         guard parseListItem(lines[startIndex]) != nil else { return nil }
 
+        let (items, index) = collectListItems(from: lines, startIndex: startIndex, lineOffset: lineOffset)
+
+        let levels = nestingLevels(for: items)
+
+        let built = buildList(items: items, levels: levels, start: 0, level: levels[0], context: context, lineOffset: lineOffset)
+        // `built.next` is an index into `items`; map it back to a raw line index
+        // so the body walk resumes correctly even when blank lines were absorbed.
+        // When every item was consumed, resume at the line that ended collection.
+        let nextIndex = built.next < items.count ? items[built.next].lineIndex : index
+        return (built.html, nextIndex)
+    }
+
+    private func collectListItems(from lines: [String], startIndex: Int, lineOffset: Int = 0)
+        -> (items: [ListItem], nextIndex: Int) {
         // Collect the run of list lines; indented continuation lines are included
         // so they can become nested child lists. A blank line does not terminate
         // the list as long as it is followed (after any run of blank lines) by
@@ -772,14 +787,62 @@ public struct MarkdownRenderer: Sendable {
             break
         }
 
-        let levels = nestingLevels(for: items)
+        return (items, index)
+    }
 
-        let built = buildList(items: items, levels: levels, start: 0, level: levels[0], context: context, lineOffset: lineOffset)
-        // `built.next` is an index into `items`; map it back to a raw line index
-        // so the body walk resumes correctly even when blank lines were absorbed.
-        // When every item was consumed, resume at the line that ended collection.
-        let nextIndex = built.next < items.count ? items[built.next].lineIndex : index
-        return (built.html, nextIndex)
+    /// Metadata pre-scans must not open fences or definitions inside code that
+    /// the list renderer has already classified as literal. Blank those lines,
+    /// preserving every source position and the existing root-level policies.
+    private func metadataLines(from lines: [String], listContinuation: Bool = false) -> [String] {
+        var result = lines
+        var index = 0
+        while index < lines.count {
+            if listContinuation, let code = indentedCodeBlock(from: lines, startIndex: index) {
+                for line in index..<code.nextIndex { result[line] = "" }
+                index = code.nextIndex
+                continue
+            }
+            if let fence = fencedCodeBlock(from: lines, startIndex: index) {
+                index = fence.nextIndex
+                continue
+            }
+            if MarkdownLine.isBlockquote(lines[index].trimmedMarkdownLine) {
+                let start = index
+                var nested: [String] = []
+                while index < lines.count, MarkdownLine.isBlockquote(lines[index].trimmedMarkdownLine) {
+                    nested.append(MarkdownLine.blockquoteContent(lines[index].trimmedMarkdownLine))
+                    index += 1
+                }
+                let masked = metadataLines(from: nested)
+                for offset in nested.indices where !nested[offset].isEmpty && masked[offset].isEmpty {
+                    result[start + offset] = ""
+                }
+                continue
+            }
+            if let code = indentedCodeBlock(from: lines, startIndex: index) {
+                index = code.nextIndex
+                continue
+            }
+            if parseListItem(lines[index]) != nil {
+                let collection = collectListItems(from: lines, startIndex: index)
+                for item in collection.items where !item.continuation.isEmpty {
+                    let body = stripListIndent(item.continuation, contentIndent: item.contentIndent).normalizedMarkdownLines
+                    let masked = metadataLines(from: body, listContinuation: true)
+                    for offset in body.indices where !body[offset].isEmpty && masked[offset].isEmpty {
+                        result[item.lineIndex + 1 + offset] = ""
+                    }
+                }
+                index = collection.nextIndex
+                continue
+            }
+            index += 1
+        }
+        return result
+    }
+
+    private func outlineForBody(_ markdown: String, listContinuation: Bool = false) -> [Heading] {
+        let lines = metadataLines(from: markdown.normalizedMarkdownLines, listContinuation: listContinuation)
+        return outlineBuilder.build(from: lines.joined(separator: "\n"))
     }
 
     /// Gathers block-content lines belonging to a list item. List-looking lines
@@ -980,7 +1043,7 @@ public struct MarkdownRenderer: Sendable {
                 let dedented = stripListIndent(item.continuation, contentIndent: item.contentIndent)
                 let body = renderBody(
                     dedented,
-                    outline: outlineBuilder.build(from: dedented),
+                    outline: outlineForBody(dedented, listContinuation: true),
                     context: context,
                     lineOffset: lineOffset + item.lineIndex + 1,
                     listContinuation: true
