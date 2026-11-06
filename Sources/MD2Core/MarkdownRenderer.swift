@@ -289,7 +289,9 @@ public struct MarkdownRenderer: Sendable {
         return nil
     }
 
-    private func fencedCodeBlock(from lines: [String], startIndex: Int) -> (html: String, nextIndex: Int)? {
+    // Structural pre-scans share the exact block boundaries but do not build
+    // HTML or syntax-highlight code that they immediately discard.
+    private func fencedCodeBlock(from lines: [String], startIndex: Int, renderContent: Bool = true) -> (html: String, nextIndex: Int)? {
         guard let marker = MarkdownLine.fenceMarker(in: lines[startIndex]) else { return nil }
 
         let opening = lines[startIndex].trimmedMarkdownLine
@@ -301,14 +303,14 @@ public struct MarkdownRenderer: Sendable {
 
         while index < lines.count {
             if lines[index].trimmedMarkdownLine.hasScalarPrefix(marker) {
-                return (fencedBlockHTML(language: language, code: code), index + 1)
+                return (renderContent ? fencedBlockHTML(language: language, code: code) : "", index + 1)
             }
 
-            code.append(lines[index])
+            if renderContent { code.append(lines[index]) }
             index += 1
         }
 
-        return (fencedBlockHTML(language: language, code: code), index)
+        return (renderContent ? fencedBlockHTML(language: language, code: code) : "", index)
     }
 
     /// Builds the HTML for a closed or unterminated fenced block. Diagram info
@@ -335,7 +337,7 @@ public struct MarkdownRenderer: Sendable {
         "<div class=\"\(PreviewClass.diagram) \(kind.cssClass) \(PreviewClass.diagramPending)\">\(escapeHTML(source.trimmingCharacters(in: .newlines)))</div>"
     }
 
-    private func indentedCodeBlock(from lines: [String], startIndex: Int) -> (html: String, nextIndex: Int)? {
+    private func indentedCodeBlock(from lines: [String], startIndex: Int, renderContent: Bool = true) -> (html: String, nextIndex: Int)? {
         guard MarkdownLine.isIndentedCode(lines[startIndex]) else { return nil }
 
         var code: [String] = []
@@ -344,7 +346,7 @@ public struct MarkdownRenderer: Sendable {
         while index < lines.count {
             let line = lines[index]
             if line.trimmedMarkdownLine.isEmpty {
-                code.append("")
+                if renderContent { code.append("") }
                 index += 1
                 continue
             }
@@ -353,11 +355,11 @@ public struct MarkdownRenderer: Sendable {
                 break
             }
 
-            code.append(MarkdownLine.stripCodeIndent(line))
+            if renderContent { code.append(MarkdownLine.stripCodeIndent(line)) }
             index += 1
         }
 
-        return ("<pre><code>\(escapeHTML(code.joined(separator: "\n")))</code></pre>", index)
+        return (renderContent ? "<pre><code>\(escapeHTML(code.joined(separator: "\n")))</code></pre>" : "", index)
     }
 
     /// Detects a display math block — delimited by `$$`, by `\[` / `\]`, or by a
@@ -797,12 +799,12 @@ public struct MarkdownRenderer: Sendable {
         var result = lines
         var index = 0
         while index < lines.count {
-            if listContinuation, let code = indentedCodeBlock(from: lines, startIndex: index) {
+            if listContinuation, let code = indentedCodeBlock(from: lines, startIndex: index, renderContent: false) {
                 for line in index..<code.nextIndex { result[line] = "" }
                 index = code.nextIndex
                 continue
             }
-            if let fence = fencedCodeBlock(from: lines, startIndex: index) {
+            if let fence = fencedCodeBlock(from: lines, startIndex: index, renderContent: false) {
                 index = fence.nextIndex
                 continue
             }
@@ -819,7 +821,7 @@ public struct MarkdownRenderer: Sendable {
                 }
                 continue
             }
-            if let code = indentedCodeBlock(from: lines, startIndex: index) {
+            if let code = indentedCodeBlock(from: lines, startIndex: index, renderContent: false) {
                 index = code.nextIndex
                 continue
             }
@@ -881,9 +883,12 @@ public struct MarkdownRenderer: Sendable {
                     lookahead += 1
                 }
                 guard lookahead < lines.count, belongs(lines[lookahead], afterBlockBoundary: true) else { break }
-                continuation.append("")
+                // The whole blank run has the same qualifying continuation.
+                // Consume it once; rescanning its suffix from each empty line
+                // makes a long run quadratic and repeats in metadata passes.
+                continuation.append(contentsOf: repeatElement("", count: lookahead - index))
                 canStartCode = true
-                index += 1
+                index = lookahead
                 continue
             }
 
@@ -1150,10 +1155,10 @@ public struct MarkdownRenderer: Sendable {
             if index == 0, let block = frontMatterBlock(from: lines, startIndex: index) {
                 index = block.nextIndex; continue
             }
-            if listContinuation, let block = indentedCodeBlock(from: lines, startIndex: index) {
+            if listContinuation, let block = indentedCodeBlock(from: lines, startIndex: index, renderContent: false) {
                 index = block.nextIndex; continue
             }
-            if let block = fencedCodeBlock(from: lines, startIndex: index) {
+            if let block = fencedCodeBlock(from: lines, startIndex: index, renderContent: false) {
                 index = block.nextIndex; continue
             }
             if MarkdownLine.isBlockquote(trimmed) {
@@ -1168,7 +1173,7 @@ public struct MarkdownRenderer: Sendable {
                 collectLinkReferences(nested, into: &definitions)
                 continue
             }
-            if let block = indentedCodeBlock(from: lines, startIndex: index) {
+            if let block = indentedCodeBlock(from: lines, startIndex: index, renderContent: false) {
                 index = block.nextIndex; continue
             }
             if let block = mathBlock(from: lines, startIndex: index) {
@@ -1213,11 +1218,11 @@ public struct MarkdownRenderer: Sendable {
     private func collectFootnoteDefinitions(_ lines: [String], into context: FootnoteContext) {
         var index = 0
         while index < lines.count {
-            if let fence = fencedCodeBlock(from: lines, startIndex: index) {
+            if let fence = fencedCodeBlock(from: lines, startIndex: index, renderContent: false) {
                 index = fence.nextIndex
                 continue
             }
-            if let code = indentedCodeBlock(from: lines, startIndex: index) {
+            if let code = indentedCodeBlock(from: lines, startIndex: index, renderContent: false) {
                 index = code.nextIndex
                 continue
             }
