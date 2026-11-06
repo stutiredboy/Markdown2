@@ -246,7 +246,16 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// to the front; otherwise an untouched starter window is reused or a new
     /// one is created. Also the open path for Markdown links clicked in a
     /// preview, so linked documents front/dedupe like any other open.
-    func openInNewWindow(_ url: URL) {
+    func openInNewWindow(_ linkURL: URL) {
+        let target = DocumentLinkTarget(linkURL)
+        let url = target.fileURL
+        // Run after every open path, including an existing window or restored
+        // dirty draft. The fragment uses that window's current text, not disk.
+        defer {
+            documentWindows.first(where: {
+                $0.store.fileURL?.resolvingSymlinksInPath() == url.resolvingSymlinksInPath()
+            })?.store.requestHeadingNavigation(target.fragment)
+        }
         for document in documentWindows { document.store.refreshFileLocation() }
         if let existing = documentWindows.first(where: {
             $0.store.fileURL?.resolvingSymlinksInPath() == url.resolvingSymlinksInPath()

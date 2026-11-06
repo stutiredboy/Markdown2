@@ -97,6 +97,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
     /// Called when the user clicks a link to a local Markdown file, so the app
     /// can open it in a document window (the preview itself never navigates).
     var onOpenMarkdownLink: (_ url: URL) -> Void = { _ in }
+    var onMissingLocalLink: (_ url: URL) -> Void = { _ in }
     /// Hands a clicked link to the system. A test replaces it, because the real
     /// one starts whatever handles the URL.
     var onOpenWithSystem: (_ url: URL) -> Void = { NSWorkspace.shared.open($0) }
@@ -1013,6 +1014,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         context.coordinator.onToggleTask = onToggleTask
         context.coordinator.onRevealSourceLine = onRevealSourceLine
         context.coordinator.onOpenMarkdownLink = onOpenMarkdownLink
+        context.coordinator.onMissingLocalLink = onMissingLocalLink
         context.coordinator.onOpenWithSystem = onOpenWithSystem
         context.coordinator.onAnchorChange = onAnchorChange
         context.coordinator.onFindShortcut = onFindShortcut
@@ -1397,6 +1399,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         coordinator.onToggleTask = onToggleTask
         coordinator.onRevealSourceLine = onRevealSourceLine
         coordinator.onOpenMarkdownLink = onOpenMarkdownLink
+        coordinator.onMissingLocalLink = onMissingLocalLink
         coordinator.onOpenWithSystem = onOpenWithSystem
         return coordinator
     }
@@ -1434,6 +1437,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         ) -> Void = { _, _, _, _ in }
         var onRevealSourceLine: (_ line: Int) -> Void = { _ in }
         var onOpenMarkdownLink: (_ url: URL) -> Void = { _ in }
+        var onMissingLocalLink: (_ url: URL) -> Void = { _ in }
         var onOpenWithSystem: (_ url: URL) -> Void = { _ in }
         var onAnchorChange: (_ anchor: ViewportAnchor, _ isUserInitiated: Bool) -> Void = { _, _ in }
         var onFindShortcut: (_ action: FindCommand.Action) -> Void = { _ in }
@@ -1909,12 +1913,16 @@ struct MarkdownPreviewView: NSViewRepresentable {
             case let .openExternal(url):
                 onOpenWithSystem(url)
             case let .openMarkdownDocument(url):
-                // A dead target (file since removed) is ignored rather than
-                // surfacing a failed open for a click the page offered.
-                guard FileManager.default.fileExists(atPath: url.path) else { return }
+                guard FileManager.default.fileExists(atPath: url.path) else {
+                    onMissingLocalLink(url)
+                    return
+                }
                 onOpenMarkdownLink(url)
             case let .openWithSystem(url):
-                guard FileManager.default.fileExists(atPath: url.path) else { return }
+                guard FileManager.default.fileExists(atPath: url.path) else {
+                    onMissingLocalLink(url)
+                    return
+                }
                 onOpenWithSystem(url)
             }
         }

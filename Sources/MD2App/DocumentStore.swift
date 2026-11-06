@@ -61,6 +61,7 @@ final class DocumentStore: ObservableObject {
     private var recoveryErrorReported = false
     private var isClosed = false
     @Published var alert: DocumentAlert?
+    private var headingNavigationTask: Task<Void, Never>?
     @Published var jumpLine: Int?
     @Published var jumpHeadingID: String?
     @Published var jumpFraction: Double?
@@ -645,7 +646,40 @@ final class DocumentStore: ObservableObject {
         findCommand = FindCommand(action)
     }
 
+    /// Wait for the current text, including unsaved edits in an already-open
+    /// document. A newer link, a different document, or a close cancels this jump.
+    func requestHeadingNavigation(_ fragment: String?) {
+        headingNavigationTask?.cancel()
+        headingNavigationTask = nil
+        guard let fragment else { return }
+        let identity = documentIdentity
+        headingNavigationTask = Task { [weak self] in
+            guard let self else { return }
+            await self.flushPendingRender()
+            guard !Task.isCancelled, !self.isClosed, self.documentIdentity == identity else { return }
+            if fragment.isEmpty {
+                self.editorJumpAnchor = nil
+                self.previewJumpAnchor = nil
+                self.jumpHeadingID = nil
+                self.jumpLine = 1
+                self.jumpFraction = 0
+            } else if let heading = self.rendered.outline.heading(forID: fragment) {
+                self.jump(to: heading)
+            } else {
+                self.alert = DocumentAlert(message: self.alertText(.alertHeadingNotFound),
+                    detail: self.alertText(.alertHeadingNotFoundDetail, fragment))
+            }
+        }
+    }
+
+    func reportMissingLocalLink(_ url: URL) {
+        alert = DocumentAlert(message: alertText(.alertCouldNotOpen, url.lastPathComponent),
+                              detail: alertText(.recentDocumentMissingDetail))
+    }
+
     func jump(to heading: Heading) {
+        headingNavigationTask?.cancel()
+        headingNavigationTask = nil
         editorJumpAnchor = nil
         previewJumpAnchor = nil
         jumpFraction = nil
@@ -750,7 +784,10 @@ final class DocumentStore: ObservableObject {
     }
 
     func open(_ url: URL) {
-        load(from: url)
+        let target = DocumentLinkTarget(url)
+        if load(from: target.fileURL) {
+            requestHeadingNavigation(target.fragment)
+        }
     }
 
     @discardableResult
@@ -900,6 +937,8 @@ final class DocumentStore: ObservableObject {
     }
 
     private func setDocumentText(_ newText: String, fileURL newFileURL: URL?, dirty: Bool) {
+        headingNavigationTask?.cancel()
+        headingNavigationTask = nil
         cancelAutosave()
         isLoading = true
         text = newText
@@ -1264,6 +1303,8 @@ final class DocumentStore: ObservableObject {
             }
         }
         isClosed = true
+        headingNavigationTask?.cancel()
+        headingNavigationTask = nil
         cancelAutosave()
         recoveryTask?.cancel()
         recoveryTask = nil
