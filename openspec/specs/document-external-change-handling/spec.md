@@ -45,6 +45,12 @@ WHEN the backing file changes externally while the document has unsaved edits, t
 - **WHEN** the user chooses to reload from disk
 - **THEN** the document shows the on-disk content, is no longer dirty, and the viewport is preserved
 
+#### Scenario: An edit follows reload confirmation
+- **WHEN** the user confirms Reload from Disk and then types, pastes, formats, undoes, or toggles a task before asynchronous viewport capture completes
+- **THEN** the newer in-memory text is preserved and a fresh conflict choice is requested
+- **AND** the earlier confirmation does not authorize discarding those later edits
+- **AND** confirming again without another edit reloads the disk contents normally
+
 ### Requirement: Writes never silently overwrite unseen external changes
 Every write of the document to its backing file (manual save and autosave) SHALL first verify that the on-disk state still matches the last content the app read from or wrote to that file. On mismatch the write SHALL be aborted and the conflict handling SHALL run instead of overwriting.
 

@@ -25,6 +25,13 @@ The app SHALL write atomic, per-document snapshots in its Application Support di
 - **THEN** the app reports the failure and keeps the document in memory
 - **AND** a failed final recovery flush cancels Quit
 
+### Requirement: Source edits are compared literally
+Dirty state, rendering revisions, autosave, and recovery SHALL recognize a changed source byte sequence even when the old and new text are canonically equivalent Unicode strings. Identical source bytes SHALL NOT create a new edit. Saving and recovery SHALL retain the author's Unicode representation rather than normalize it implicitly.
+
+#### Scenario: A Unicode-normalization-only edit
+- **WHEN** an edit replaces a precomposed character with its decomposed form, reverses that replacement, or reorders canonically equivalent combining marks
+- **THEN** the document becomes dirty, its preview updates, and normal autosave/recovery captures the exact new source
+
 ### Requirement: Restoration preserves external changes and other drafts
 Clean file-backed documents SHALL reopen current disk contents. Dirty snapshots whose backing file changed SHALL retain their text and ask the user to resolve the conflict. Missing files SHALL retain their recovery text without recreating the old path. Invalid records SHALL be left in place and reported without preventing valid records from loading. Two records for the same file SHALL preserve the extra text as an untitled draft rather than discard it or attach a second writer.
 
