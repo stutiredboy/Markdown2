@@ -1492,7 +1492,7 @@ public struct MarkdownRenderer: Sendable {
     /// Pre-existing HTML entities (`&amp;`, `&#960;`, …), protected so the later
     /// `escapeHTML` pass does not double-escape the ampersand.
     private func protectHTMLEntities(_ text: String, protector: InlineProtector) -> String {
-        replaceMatches(in: text, pattern: #"&(?:#\d+|#x[0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]+);"#) { match, source in
+        replaceMatches(in: text, pattern: #"&(?:#\d+|#[xX][0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]+);"#) { match, source in
             protector.protect(matchText(match, in: source), source: escapeHTML(matchText(match, in: source)), literal: true)
         }
     }

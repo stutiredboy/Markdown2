@@ -121,6 +121,13 @@ public enum HTMLSafety {
     /// guard fails closed rather than trusting an opaque named spelling.
     static var hasNamedEntityTable: Bool { !namedEntities.isEmpty }
 
+    /// Decodes semicolon-terminated references in a rendered HTML attribute
+    /// once, before URL parsing. Decoded text is not scanned again, and URL
+    /// percent escapes are left to the URL layer.
+    public static func decodeHTMLAttributeEntities(_ source: String) -> String {
+        decodeAllEntities(source)
+    }
+
     /// Decodes numeric and full HTML5 named references in one pass:
     /// `&amp;lt;` is visible as `&lt;`, not as `<`.
     static func decodeAllEntities(_ source: String) -> String {

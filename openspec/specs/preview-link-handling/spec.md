@@ -54,6 +54,18 @@ A link resolving to a local file with an `md` or `markdown` path extension (case
 - **WHEN** the linked Markdown file is already open in another window
 - **THEN** that window is brought to the front instead of opening a duplicate
 
+### Requirement: HTML entity spelling preserves local link destinations
+Before resolving a rendered link attribute against the document directory, the preview SHALL decode its semicolon-terminated numeric and named HTML character references exactly once, then parse the URL and escape the rewritten HTML attribute. Percent escapes SHALL be handled by the URL layer without an additional decoding pass. Entity-decoded same-page fragments and explicit schemes SHALL retain the existing fragment and scheme routing rules.
+
+#### Scenario: Entity-encoded path and fragment
+- **WHEN** the user clicks `[next](next&#32;chapter.md&#35;target)` (or uses `&#x23;`, `&#X23;`, or `&num;` for the fragment separator)
+- **THEN** the target is `next chapter.md` with fragment `target`
+
+#### Scenario: Entity references are not recursively expanded
+- **WHEN** a link destination contains `literal&amp;num;.md`
+- **THEN** the filename is `literal&num;.md` without a second expansion of `&num;`
+- **AND** `literal%2523.md` targets the filename `literal%23.md`, preserving the URL layer's single percent-decoding step
+
 ### Requirement: Other local file links open with their default application
 A link resolving to a local non-Markdown file SHALL open with the system default application for that file type, and the preview SHALL NOT render the file's raw contents. A relative link in an untitled document with no base directory SHALL be ignored without navigating or crashing. A resolved local link whose target is missing SHALL show a localized missing-file alert without opening another application or an empty document window.
 

@@ -131,11 +131,9 @@ enum LocalLinkHTMLRewriter {
             let range = match.range(at: 1)
             guard range.location != NSNotFound else { continue }
             result.append(sourceHTML.substring(with: NSRange(location: cursor, length: range.location - cursor)))
-            let source = sourceHTML.substring(with: range)
-                .replacingOccurrences(of: "&quot;", with: "\"")
-                .replacingOccurrences(of: "&#39;", with: "'")
-                .replacingOccurrences(of: "&apos;", with: "'")
-                .replacingOccurrences(of: "&amp;", with: "&")
+            // Match the browser's single HTML-attribute decoding pass before
+            // interpreting URL separators; do not decode percent escapes here.
+            let source = HTMLSafety.decodeHTMLAttributeEntities(sourceHTML.substring(with: range))
             if !source.isEmpty, !source.hasPrefix("#"), URL(string: source)?.scheme == nil,
                (source.hasPrefix("/") || directory != nil),
                let resolved = URL(string: source, relativeTo: directory ?? URL(fileURLWithPath: "/"))?.absoluteURL {

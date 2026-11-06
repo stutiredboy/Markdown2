@@ -70,6 +70,79 @@ final class PreviewLocalLinkGUITests: XCTestCase, RenderedPageTesting {
         XCTAssertEqual(documents, [markdownFile!, markdownFile!])
     }
 
+    @MainActor func testEntityEncodedLocalLinksReachTheExactFilesAndFragments() throws {
+        let cases: [(destination: String, filename: String, fragment: String)] = [
+            ("next&#32;chapter.MD&#35;target", "next chapter.MD", "target"),
+            ("next&#x20;chapter.MD&#x23;t&#97;rget", "next chapter.MD", "target"),
+            ("next&#X20;chapter.MD&#X23;target", "next chapter.MD", "target"),
+            ("caf&eacute;.md&num;x&amp;y", "café.md", "x&y"),
+            ("literal%2523.md&num;target", "literal%23.md", "target"),
+            ("literal&amp;num;.md#target", "literal&num;.md", "target")
+        ]
+        let expected: [URL] = try cases.map { testCase in
+            let file = directory.appendingPathComponent(testCase.filename)
+            try Data("# Target".utf8).write(to: file)
+            var components = try XCTUnwrap(URLComponents(url: file, resolvingAgainstBaseURL: false))
+            components.fragment = testCase.fragment
+            return try XCTUnwrap(components.url)
+        }
+        let markdown = cases.enumerated().map { "[Link \($0.offset + 1)](\($0.element.destination))" }.joined(separator: "\n\n")
+        var documents: [URL] = []
+        var external: [URL] = []
+        var missing: [URL] = []
+        try withPage(markdown, on: .preview, baseURL: directory,
+                     onOpenMarkdownLink: { documents.append($0) },
+                     onMissingLocalLink: { missing.append($0) },
+                     onOpenWithSystem: { external.append($0) }) { webView in
+            let pageURL = webView.url
+            try recordClicks(in: webView)
+            _ = try evaluate("document.querySelector('main a').click(); true", in: webView)
+            XCTAssertTrue(documents.isEmpty, "entity decoding must not grant synthetic clicks native access")
+            for index in cases.indices {
+                let element = "document.querySelectorAll('main a')[\(index)]"
+                XCTAssertEqual(try evaluate("\(element).getAttribute('href')", in: webView) as? String,
+                               expected[index].absoluteString)
+                try click(element, in: webView)
+                XCTAssertTrue(spin(3) { documents.count == index + 1 }, "local handoff missed \(cases[index].destination)")
+            }
+            XCTAssertEqual(try evaluate("window.__localLinkClicks", in: webView) as? [Bool],
+                           [false] + Array(repeating: true, count: cases.count))
+            XCTAssertEqual(webView.url, pageURL)
+        }
+        XCTAssertEqual(documents, expected)
+        XCTAssertTrue(external.isEmpty)
+        XCTAssertTrue(missing.isEmpty)
+    }
+
+    @MainActor func testDoubleEncodedNumericEntityDoesNotRetargetTheMarkdownFile() throws {
+        // One HTML decode leaves a literal '&#35;': the ampersand belongs to
+        // the filename and '#35;target' is the fragment. A second decode would
+        // incorrectly open the existing Markdown file without that ampersand.
+        let literalFile = directory.appendingPathComponent("next chapter.MD&")
+        try Data("Literal ampersand fixture".utf8).write(to: literalFile)
+        var components = try XCTUnwrap(URLComponents(url: literalFile, resolvingAgainstBaseURL: false))
+        components.fragment = "35;target"
+        let expected = try XCTUnwrap(components.url)
+        var documents: [URL] = []
+        var external: [URL] = []
+        try withPage("""
+            [Literal entity](next%20chapter.MD&amp;#35;target)
+
+            [Control](next%20chapter.MD)
+            """, on: .preview, baseURL: directory,
+            onOpenMarkdownLink: { documents.append($0) }, onOpenWithSystem: { external.append($0) }) { webView in
+            try recordClicks(in: webView)
+            try click("document.querySelector('main a')", in: webView)
+            XCTAssertTrue(spin(3) { external.count == 1 }, "the literal ampersand target did not reach its handler")
+            XCTAssertTrue(documents.isEmpty, "double decoding retargeted the Markdown file")
+            try click("document.querySelectorAll('main a')[1]", in: webView)
+            XCTAssertTrue(spin(3) { documents.count == 1 }, "the ordinary Markdown positive control missed")
+            XCTAssertEqual(try evaluate("window.__localLinkClicks", in: webView) as? [Bool], [true, true])
+        }
+        XCTAssertEqual(external, [expected])
+        XCTAssertEqual(documents, [markdownFile!])
+    }
+
     @MainActor func testFlowSVGLocalLinkReachesTheMarkdownHandler() throws {
         var documents: [URL] = []
         try withPage("""
@@ -142,7 +215,7 @@ final class PreviewLocalLinkGUITests: XCTestCase, RenderedPageTesting {
             let coordinator = try XCTUnwrap(webView.navigationDelegate as? MarkdownPreviewView.Coordinator)
             XCTAssertTrue(spin(5) { coordinator.isLoaded })
             _ = try evaluate("window.__localLinkOriginalPage = true; true", in: webView)
-            let body = MarkdownRenderer().render("[Added link](next%20chapter.MD)", assetMode: .appScheme).body
+            let body = MarkdownRenderer().render("[Added link](next&#32;chapter.MD)", assetMode: .appScheme).body
             coordinator.applyLiveContent(body, mathMacros: [:], in: webView)
             XCTAssertTrue(spin(5) {
                 (try? self.evaluate("document.querySelector('main a')?.textContent", in: webView)) as? String == "Added link"
