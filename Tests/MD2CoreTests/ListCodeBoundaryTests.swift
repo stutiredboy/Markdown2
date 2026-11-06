@@ -108,6 +108,42 @@ struct ListCodeBoundaryTests {
         #expect(!body.contains("data-md2-task-line"))
     }
 
+    @Test func literalFenceDoesNotHideFollowingOutlineAndFootnotes() {
+        let rendered = MarkdownRenderer().render("- parent\n\n      ```\n\n# Outside\n\nText[^n]\n\n[^n]: note")
+        #expect(rendered.outline.map(\.title) == ["Outside"])
+        #expect(rendered.outline.first?.line == 5)
+        #expect(rendered.body.contains("id=\"outside\""))
+        #expect(rendered.body.contains("href=\"#fn-n\""))
+        #expect(rendered.body.contains("class=\"footnotes\""))
+    }
+
+    @Test(arguments: [("", ""), ("- parent\n\n", "  "), ("10. parent\n\n", "    ")])
+    func realFencesStillProtectOutlineAndFootnoteContents(prefix: String, indent: String) {
+        let source = prefix + indent + "```\n" + indent + "# Hidden\n" + indent
+            + "[^ghost]: hidden\n" + indent + "```\n\n# Outside\n\nText[^n] [^ghost]\n\n[^n]: note"
+        let rendered = MarkdownRenderer().render(source)
+        #expect(rendered.outline.map(\.title) == ["Outside"])
+        #expect(rendered.body.contains("href=\"#fn-n\""))
+        #expect(!rendered.body.contains("href=\"#fn-ghost\""))
+    }
+
+    @Test func literalFenceAndFakeFootnoteRemainCodeDuringMetadataScan() {
+        let source = "- parent\n\n      ```\n      [^ghost]: hidden\n\n# Outside\n\nText[^n] [^ghost]\n\n[^n]: note"
+        let rendered = MarkdownRenderer().render(source)
+        #expect(rendered.outline.map(\.title) == ["Outside"])
+        #expect(rendered.outline.first?.line == 6)
+        #expect(rendered.body.contains("<code>```\n[^ghost]: hidden</code>"))
+        #expect(rendered.body.contains("href=\"#fn-n\""))
+        #expect(!rendered.body.contains("href=\"#fn-ghost\""))
+    }
+
+    @Test func quotedLiteralFenceDoesNotHideLaterQuotedHeading() {
+        let rendered = MarkdownRenderer().render("> - parent\n>\n>       ```\n>\n> # Outside")
+        #expect(rendered.body.contains("<code>```</code>"))
+        #expect(rendered.body.contains("id=\"outside\""))
+        #expect(rendered.body.contains("data-md2-source-line=\"5\""))
+    }
+
     @Test @MainActor func onlyRealRenderedTasksCanTriggerSourceEdits() async {
         let original = "- parent\n\n      - [ ] literal\n  - [ ] real"
         let store = DocumentStore()
