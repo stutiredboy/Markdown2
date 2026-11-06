@@ -378,7 +378,33 @@ final class DocumentLinkApplicationGUITests: XCTestCase {
     }
 
     private func waitForPreviewMarker(_ marker: String, in window: AXUIElement) throws {
-        try wait("the real WebKit preview must reveal \(marker)") { self.previewMarkerIsVisible(marker, in: window) }
+        do {
+            try wait("the real WebKit preview must reveal \(marker)") { self.previewMarkerIsVisible(marker, in: window) }
+        } catch {
+            // Only generated fixture content is inspected. Preserve the failure
+            // while distinguishing missing AX text from an offscreen target.
+            print(previewEvidence(in: window))
+            throw error
+        }
+    }
+
+    private func previewEvidence(in window: AXUIElement) -> String {
+        let elements = Self.descendants(window)
+        let counts = Dictionary(grouping: elements, by: { Self.string(kAXRoleAttribute, of: $0) ?? "(no role)" })
+            .mapValues(\.count)
+        var lines = ["Q3 preview evidence: window=\(Self.title(window)) frame=\(String(describing: Self.frame(of: window))) roles=\(counts)"]
+        for area in elements.filter({ Self.string(kAXRoleAttribute, of: $0) == "AXWebArea" }) {
+            let nodes = Self.descendants(area)
+            lines.append("WebArea frame=\(String(describing: Self.frame(of: area))) descendants=\(nodes.count)")
+            let candidates = nodes.filter {
+                let text = Self.accessibleText($0)
+                return text.contains("LINK") || text.contains("destination") || text.contains("目标")
+            }
+            for node in candidates.prefix(30) {
+                lines.append("role=\(Self.string(kAXRoleAttribute, of: node) ?? "nil") frame=\(String(describing: Self.frame(of: node))) value=\(Self.string(kAXValueAttribute, of: node) ?? "nil") title=\(Self.title(node)) description=\(Self.string(kAXDescriptionAttribute, of: node) ?? "nil")")
+            }
+        }
+        return lines.joined(separator: "\n")
     }
 
     private func previewMarkerIsVisible(_ marker: String, in window: AXUIElement) -> Bool {
