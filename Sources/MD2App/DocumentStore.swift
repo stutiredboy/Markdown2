@@ -288,8 +288,11 @@ final class DocumentStore: ObservableObject {
     /// True when this store still holds the untouched starter document, i.e. it
     /// has never been saved to disk and has no unsaved edits. Such a window can
     /// be reused to load a freshly opened file instead of spawning a new one.
+    /// A provisional input-method buffer belongs to this window even before it
+    /// reaches `text` and marks the document dirty.
     var isReusableEmptyDocument: Bool {
         fileURL == nil && !isDirty && text == Self.starterMarkdown
+            && editorSession.textView?.hasMarkedText() != true
     }
 
     @discardableResult
@@ -838,8 +841,30 @@ final class DocumentStore: ObservableObject {
     @discardableResult
     private func write(to requestedURL: URL, automatically: Bool = false) -> Bool {
         guard !isClosed else { return false }
-        // Resolve again at the write boundary, even before the watcher fires.
+        // Preserve destination intent across the modal encoding prompt: the
+        // watcher may follow a rename while that nested run loop is active.
         let writingBackingFile = requestedURL == fileURL
+        let writingDocumentIdentity = documentIdentity
+
+        var outputFormat = fileFormat
+        var data = outputFormat.encode(text)
+        if data == nil {
+            if automatically {
+                if !encodingWarningShown {
+                    encodingWarningShown = true
+                    encodingConversionRequest = UUID()
+                }
+                return false
+            }
+            guard confirmEncodingConversion(fileFormat.encodingLabel) else { return false }
+            outputFormat.encoding = .utf8
+            data = outputFormat.encode(text)
+        }
+        guard let writtenData = data else { return false }
+        // An encoding confirmation runs a nested event loop. Resolve and verify
+        // the destination only after it returns, before accepting any write.
+        guard !isClosed, !hasExternalConflict, documentIdentity == writingDocumentIdentity else { return false }
+        // Resolve again at the write boundary, even before the watcher fires.
         if writingBackingFile { refreshFileLocation() }
         let url = writingBackingFile ? (fileURL ?? requestedURL) : requestedURL
         if automatically && backingFileMissing { return false }
@@ -857,21 +882,6 @@ final class DocumentStore: ObservableObject {
             }
         }
 
-        var outputFormat = fileFormat
-        var data = outputFormat.encode(text)
-        if data == nil {
-            if automatically {
-                if !encodingWarningShown {
-                    encodingWarningShown = true
-                    encodingConversionRequest = UUID()
-                }
-                return false
-            }
-            guard confirmEncodingConversion(fileFormat.encodingLabel) else { return false }
-            outputFormat.encoding = .utf8
-            data = outputFormat.encode(text)
-        }
-        guard let writtenData = data else { return false }
         do {
             cancelAutosave()
             if Self.hasMultipleHardLinks(at: url), !persistRecoveryNow() { return false }
@@ -1116,6 +1126,16 @@ final class DocumentStore: ObservableObject {
             return
         }
 
+        // The input method can own a provisional buffer while the document is
+        // still clean. Do not accept the disk text/fingerprint unless the kept
+        // editor can accept it too; its later commit would otherwise resurrect
+        // the old document and silently autosave over the external version.
+        // A successful reset also clears undo actions against the replaced text.
+        guard editorSession.resetText(to: decoded.text) else {
+            raiseExternalConflict()
+            return
+        }
+
         cancelAutosave()
         jumpLine = nil
         jumpHeadingID = nil
@@ -1131,11 +1151,6 @@ final class DocumentStore: ObservableObject {
         encodingConversionRequest = nil
         isLoading = true
         text = decoded.text
-        // Revert semantics: the reload is not an undoable edit, and every action
-        // recorded so far addresses the replaced text, so the history goes too.
-        // Kept, an undo would raise past the end of shorter content or silently
-        // rewrite longer content — and autosave would persist the damage.
-        editorSession.resetText(to: decoded.text)
         isDirty = false
         renderImmediately()
         isLoading = false
