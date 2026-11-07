@@ -36,8 +36,9 @@ final class PreviewContextMenuGUITests: XCTestCase, RenderedPageTesting {
                                                    bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
                                                    isPlanar: false, colorSpaceName: .deviceRGB,
                                                    bytesPerRow: 0, bitsPerPixel: 0))
+        let imageColor = NSColor(deviceRed: 0.1, green: 0.4, blue: 0.8, alpha: 1)
         for x in 0..<32 {
-            for y in 0..<32 { bitmap.setColor(.systemBlue, atX: x, y: y) }
+            for y in 0..<32 { bitmap.setColor(imageColor, atX: x, y: y) }
         }
         try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: image)
         let outerLink = URL(string: "https://example.com/outer-image-link")!
@@ -227,18 +228,20 @@ final class PreviewContextMenuGUITests: XCTestCase, RenderedPageTesting {
         diagnostics = menu.items.map {
             "\($0.identifier?.rawValue ?? "nil") enabled=\($0.isEnabled) action=\($0.action.map(NSStringFromSelector) ?? "nil")"
         }.joined(separator: "; ")
-        guard Date() < deadline else { menu.cancelTracking(); return }
-        guard !performed else { return }
-        let identifiers: Set<String> = action == .openImage ? ["WKMenuItemIdentifierOpenImageInNewWindow"] :
-            ["WKMenuItemIdentifierOpenLink", "WKMenuItemIdentifierOpenLinkInNewWindow"]
-        guard let item = menu.items.first(where: { identifiers.contains($0.identifier?.rawValue ?? "") }),
-              item.isEnabled, item.action == NSSelectorFromString("openMenuTarget:"), item.target != nil else { return }
+        // Copy remains a separate assertion even when Open never binds. Inspect
+        // the actual native items on every tick, including the timeout tick.
         preservedCopyIdentifiers = Set(menu.items.compactMap { copyItem in
             guard let identifier = copyItem.identifier?.rawValue, copyIdentifiers.contains(identifier),
                   copyItem.isEnabled, copyItem.action != nil,
                   copyItem.action != NSSelectorFromString("openMenuTarget:") else { return nil }
             return identifier
         })
+        guard Date() < deadline else { menu.cancelTracking(); return }
+        guard !performed else { return }
+        let identifiers: Set<String> = action == .openImage ? ["WKMenuItemIdentifierOpenImageInNewWindow"] :
+            ["WKMenuItemIdentifierOpenLink", "WKMenuItemIdentifierOpenLinkInNewWindow"]
+        guard let item = menu.items.first(where: { identifiers.contains($0.identifier?.rawValue ?? "") }),
+              item.isEnabled, item.action == NSSelectorFromString("openMenuTarget:"), item.target != nil else { return }
         performed = true
         if action != .cancel {
             menu.performActionForItem(at: menu.index(of: item))
