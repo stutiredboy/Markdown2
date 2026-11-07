@@ -552,7 +552,9 @@ struct MarkdownEditorView: NSViewRepresentable {
         /// that window destroys the input method's composition buffer and can
         /// commit a stale candidate at a different selection.
         @MainActor func shouldApplyBoundText(_ boundText: String, to textView: NSTextView) -> Bool {
-            textView.string != boundText && !isApplyingStyle && !textView.hasMarkedText()
+            // UTF-16 source/undo ranges require literal equality, not Swift's
+            // canonical-equivalence comparison of visually identical text.
+            !(textView.string as NSString).isEqual(to: boundText) && !isApplyingStyle && !textView.hasMarkedText()
         }
 
         /// Programmatic text replacement (bound-text sync, a reload after the
@@ -1489,6 +1491,8 @@ final class MarkdownSourceTextView: NSTextView {
     }
     private var isPasting = false
     private var isSoftReturnEvent = false
+    /// Isolated command input keeps editor tests off the user's shared clipboard.
+    var linkClipboardText: () -> String? = { NSPasteboard.general.string(forType: .string) }
 
     // AppKit's default key bindings can map both Return and Shift-Return to
     // insertNewline:. Preserve the originating event while the input context
@@ -1517,6 +1521,7 @@ final class MarkdownSourceTextView: NSTextView {
         let selection = selectedRange()
         guard isEditable, !hasMarkedText(), selectedRanges.count == 1,
               let edit = MarkdownEditing.edit(string, selection: selection, action: action,
+                  clipboard: action == .link ? linkClipboardText() : nil,
                   autoClosingPositions: trackedCloser(at: selection.location)) else { return false }
         applyMarkdownEdit(edit)
         return true

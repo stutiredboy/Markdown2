@@ -38,6 +38,8 @@ final class WebDocumentLoader {
 
     func installImages(_ allowed: [String: URL]) { images.setAllowedImages(allowed) }
 
+    func originalImageURL(for url: URL) -> URL? { images.originalImageURL(for: url) }
+
     func load(_ html: String, baseURL: URL?, fragment: String? = nil, in webView: WKWebView) {
         loadGeneration += 1
         currentNavigation = nil

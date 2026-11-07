@@ -70,6 +70,38 @@ final class PreviewLocalLinkGUITests: XCTestCase, RenderedPageTesting {
         XCTAssertEqual(documents, [markdownFile!, markdownFile!])
     }
 
+    @MainActor func testInsertedClipboardLinksOpenTheirOriginalURLs() throws {
+        let clipboardURLs = [
+            "https://example.com/?literal=&copy;",
+            "https://example.com/?literal=&#35;target",
+            "https://example.com/?literal=&amp;",
+            "https://example.com/a<b>"
+        ]
+        let expected = try clipboardURLs.map { try XCTUnwrap(URL(string: $0)) }
+        let markdown = try clipboardURLs.enumerated().map { index, clipboard in
+            let label = "Link \(index + 1)"
+            let edit = try XCTUnwrap(MarkdownEditing.edit(label,
+                selection: NSRange(location: 0, length: label.utf16.count), action: .link, clipboard: clipboard))
+            return (label as NSString).replacingCharacters(in: edit.range, with: edit.replacement)
+        }.joined(separator: "\n\n")
+        var external: [URL] = []
+        try withPage(markdown, on: .preview, onOpenWithSystem: { external.append($0) }) { webView in
+            let pageURL = webView.url
+            try recordClicks(in: webView)
+            _ = try evaluate("document.querySelector('main a').click(); true", in: webView)
+            XCTAssertTrue(external.isEmpty)
+            for index in clipboardURLs.indices {
+                try click("document.querySelectorAll('main a')[\(index)]", in: webView)
+                XCTAssertTrue(spin(3) { external.last == expected[index] }, "inserted URL click missed")
+                XCTAssertEqual(external, Array(expected.prefix(index + 1)))
+            }
+            XCTAssertEqual(try evaluate("window.__localLinkClicks", in: webView) as? [Bool],
+                           [false] + Array(repeating: true, count: clipboardURLs.count))
+            XCTAssertEqual(webView.url, pageURL)
+        }
+        XCTAssertEqual(external, expected)
+    }
+
     @MainActor func testEntityEncodedLocalLinksReachTheExactFilesAndFragments() throws {
         let cases: [(destination: String, filename: String, fragment: String)] = [
             ("next&#32;chapter.MD&#35;target", "next chapter.MD", "target"),
@@ -181,7 +213,7 @@ final class PreviewLocalLinkGUITests: XCTestCase, RenderedPageTesting {
             [Control](\(Self.controlURL))
             """, on: .preview, edit: RenderedPageEdit.removingPolicy, baseURL: directory,
             onOpenMarkdownLink: { documents.append($0) }, onOpenWithSystem: { external.append($0) }) { webView in
-            XCTAssertEqual(try evaluate("typeof window.webkit?.messageHandlers?.openLocalLink", in: webView) as? String,
+            XCTAssertEqual(try evaluate("typeof window.webkit?.messageHandlers?.openLink", in: webView) as? String,
                            "undefined", "document scripts must not see the native open handler")
             _ = try evaluate("""
                 var link = document.querySelector('main a');
