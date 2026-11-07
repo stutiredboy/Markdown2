@@ -92,7 +92,8 @@ final class PreviewLocalLinkGUITests: XCTestCase, RenderedPageTesting {
             XCTAssertTrue(external.isEmpty)
             for index in clipboardURLs.indices {
                 try click("document.querySelectorAll('main a')[\(index)]", in: webView)
-                XCTAssertTrue(spin(3) { external.count == index + 1 }, "inserted URL click missed")
+                XCTAssertTrue(spin(3) { external.last == expected[index] }, "inserted URL click missed")
+                XCTAssertEqual(external, Array(expected.prefix(index + 1)))
             }
             XCTAssertEqual(try evaluate("window.__localLinkClicks", in: webView) as? [Bool],
                            [false] + Array(repeating: true, count: clipboardURLs.count))
@@ -212,7 +213,7 @@ final class PreviewLocalLinkGUITests: XCTestCase, RenderedPageTesting {
             [Control](\(Self.controlURL))
             """, on: .preview, edit: RenderedPageEdit.removingPolicy, baseURL: directory,
             onOpenMarkdownLink: { documents.append($0) }, onOpenWithSystem: { external.append($0) }) { webView in
-            XCTAssertEqual(try evaluate("typeof window.webkit?.messageHandlers?.openLocalLink", in: webView) as? String,
+            XCTAssertEqual(try evaluate("typeof window.webkit?.messageHandlers?.openLink", in: webView) as? String,
                            "undefined", "document scripts must not see the native open handler")
             _ = try evaluate("""
                 var link = document.querySelector('main a');

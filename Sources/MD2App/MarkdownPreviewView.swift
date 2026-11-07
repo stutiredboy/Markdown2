@@ -158,7 +158,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
     private static let anchorMessageName = "anchorChange"
     private static let toggleTaskMessageName = "toggleTask"
     private static let revealSourceLineMessageName = "revealSourceLine"
-    private static let openLocalLinkMessageName = "openLocalLink"
+    private static let openLinkMessageName = "openLink"
+    private static let forwardedLinkSchemes = String(decoding:
+        try! JSONEncoder().encode(HTMLSafety.safeURLSchemes.sorted().map { $0 + ":" }), as: UTF8.self)
 
     /// Page scripts (including diagram engines) cannot see native mutation
     /// handlers. Only trusted DOM input in the isolated world is forwarded.
@@ -166,17 +168,16 @@ struct MarkdownPreviewView: NSViewRepresentable {
         controller.add(handler, contentWorld: .defaultClient, name: enterEditMessageName)
         controller.add(handler, contentWorld: .defaultClient, name: toggleTaskMessageName)
         controller.add(handler, contentWorld: .defaultClient, name: revealSourceLineMessageName)
-        controller.add(handler, contentWorld: .defaultClient, name: openLocalLinkMessageName)
+        controller.add(handler, contentWorld: .defaultClient, name: openLinkMessageName)
         controller.addUserScript(WKUserScript(source: interactionScript,
             injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: .defaultClient))
     }
 
     static let interactionScript = """
-        // WebKit refuses file: navigation from our md2-doc: page before asking
-        // the navigation delegate. Forward a real click through the isolated
-        // bridge instead, leaving URL classification and existence checks to
-        // the same native router used by other links. Delegation also covers
-        // links inserted by live updates or drawn later by a diagram engine.
+        // WKNavigationAction.linkActivated also describes scripted clicks. Only
+        // trusted DOM input in this isolated world may invoke native handlers.
+        // Delegation includes live updates and diagram/SVG anchors; the native
+        // router still checks the shared scheme list and local file existence.
         document.addEventListener('click', function (event) {
             if (!event.isTrusted || event.defaultPrevented || event.button !== 0) { return; }
             var target = event.target;
@@ -186,10 +187,44 @@ struct MarkdownPreviewView: NSViewRepresentable {
             if (!href) { return; }
             var url;
             try { url = new URL(href, document.baseURI); } catch (_) { return; }
-            if (url.protocol !== 'file:') { return; }
+            var page = new URL(location.href), destinationPage = new URL(url.href);
+            page.hash = ''; destinationPage.hash = '';
+            if (destinationPage.href === page.href) { return; }
+            if (\(Self.forwardedLinkSchemes).indexOf(url.protocol) === -1) { return; }
             event.preventDefault();
-            window.webkit.messageHandlers.\(Self.openLocalLinkMessageName).postMessage(url.href);
+            window.webkit.messageHandlers.\(Self.openLinkMessageName).postMessage(url.href);
         }, true);
+        // Default WebKit menu actions do not dispatch DOM clicks. Capture only
+        // trusted main-frame context data, synchronously, in this isolated world.
+        // Native willOpenMenu consumes it; the data never authorizes navigation.
+        (function () {
+            var context = null;
+            window.__md2TakeContextMenu = function () {
+                var captured = context; context = null;
+                if (!captured || !captured.target.isConnected
+                    || document.elementFromPoint(captured.x, captured.y) !== captured.target) { return null; }
+                return { page: captured.page, link: captured.link, image: captured.image,
+                         x: captured.x, y: captured.y };
+            };
+            document.addEventListener('contextmenu', function (event) {
+                if (!event.isTrusted) { return; }
+                context = null;
+                if (event.defaultPrevented) { return; }
+                var target = event.target;
+                var link = target && target.closest ? target.closest('a') : null;
+                var image = target && target.closest ? target.closest('img') : null;
+                function absolute(source) {
+                    if (!source) { return null; }
+                    try { return new URL(source, document.baseURI).href; } catch (_) { return null; }
+                }
+                context = {
+                    target: target, x: event.clientX, y: event.clientY,
+                    page: location.href,
+                    link: absolute(link && (link.getAttribute('href') || link.getAttributeNS('http://www.w3.org/1999/xlink', 'href'))),
+                    image: absolute(image && (image.currentSrc || image.getAttribute('src')))
+                };
+            }, true);
+        })();
         document.addEventListener('dblclick', function(event) {
             if (event.isTrusted && event.metaKey) {
                 window.webkit.messageHandlers.\(Self.enterEditMessageName).postMessage(null);
@@ -972,6 +1007,13 @@ struct MarkdownPreviewView: NSViewRepresentable {
             context.coordinator.onFindShortcut(action)
         }
         webView.onEscape = onEscape
+        webView.contextMenuAdapter.open = { [weak coordinator = context.coordinator] url in
+            guard let coordinator else { return }
+            coordinator.dispatch(PreviewLinkRouter.route(for: url, documentPageURL: coordinator.documentLoader.documentPageURL))
+        }
+        webView.contextMenuAdapter.resolveImage = { [weak coordinator = context.coordinator] url in
+            coordinator?.documentLoader.originalImageURL(for: url)
+        }
         // The link policy below never lets the page navigate away from the
         // document, so there is no history for a swipe to traverse.
         webView.allowsBackForwardNavigationGestures = false
@@ -1406,6 +1448,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
 
     /// Preview and PDF export share the same memory page and resource boundary.
     private func load(_ html: String, baseURL: URL?, fragment: String?, in webView: WKWebView, coordinator: Coordinator) {
+        (webView as? PreviewWebView)?.contextMenuAdapter.invalidate()
         coordinator.documentLoader.load(html, baseURL: baseURL, fragment: fragment, in: webView)
     }
 
@@ -1503,6 +1546,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// preview's current source anchor. Called only when the page is loaded
         /// and no new diagram engine is required (the caller guarantees this).
         func applyLiveContent(_ bodyHTML: String, mathMacros: [String: String], in webView: WKWebView) {
+            (webView as? PreviewWebView)?.contextMenuAdapter.invalidate()
             liveUpdateGeneration += 1
             let generation = liveUpdateGeneration
             hasContentInFlight = true
@@ -1714,6 +1758,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// go unlabelled. WebKit also restores the reader's place, which a load
         /// does not, so that goes along. A page still loading has none to keep.
         private func reloadLatestContent(in webView: WKWebView) {
+            (webView as? PreviewWebView)?.contextMenuAdapter.invalidate()
             captureAnchor(in: webView) { [weak self, weak webView] anchor in
                 guard let self, let webView else { return }
                 let place = self.isLoaded ? anchor : nil
@@ -1803,10 +1848,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
             case MarkdownPreviewView.enterEditMessageName:
                 guard message.world == .defaultClient else { return }
                 onEnterEdit()
-            case MarkdownPreviewView.openLocalLinkMessageName:
+            case MarkdownPreviewView.openLinkMessageName:
                 guard message.world == .defaultClient,
                       let href = message.body as? String,
-                      let url = URL(string: href), url.isFileURL else { return }
+                      let url = URL(string: href) else { return }
                 dispatch(PreviewLinkRouter.route(for: url, documentPageURL: documentLoader.documentPageURL))
             case MarkdownPreviewView.toggleTaskMessageName:
                 guard message.world == .defaultClient else { return }
@@ -1848,11 +1893,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// The preview is a viewport onto the document, never a browser: the
         /// only allowed main-frame navigations are the app's own page (initial
         /// load, reload-on-edit, and same-page fragment jumps). Every other
-        /// target is cancelled; a genuine link activation (including
-        /// new-window requests, which carry no target frame) is handed off to
-        /// the matching external handler, while a script- or meta-driven
-        /// redirect is cancelled outright so a document can never auto-open
-        /// anything. WebKit's own Reload becomes a load of the latest HTML.
+        /// target is cancelled. Native opens require the isolated trusted-click
+        /// bridge or a native menu action, never navigationType or a missing target
+        /// frame: scripts can produce both. WebKit's own Reload becomes a load
+        /// of the latest HTML.
         func webView(
             _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction,
@@ -1882,31 +1926,22 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 return
             }
 
-            if navigationAction.navigationType == .linkActivated || navigationAction.targetFrame == nil {
-                dispatch(route)
-            }
             decisionHandler(.cancel)
         }
 
         /// `target="_blank"`/`window.open` requests never create an in-app
-        /// browsing context; a link-activated one routes exactly like a plain
-        /// click on the same URL.
+        /// browsing context. Trusted anchor clicks were already handled by the
+        /// isolated bridge; a script-created request cannot invoke a handler.
         func webView(
             _ webView: WKWebView,
             createWebViewWith configuration: WKWebViewConfiguration,
             for navigationAction: WKNavigationAction,
             windowFeatures: WKWindowFeatures
         ) -> WKWebView? {
-            if navigationAction.navigationType == .linkActivated {
-                dispatch(PreviewLinkRouter.route(
-                    for: navigationAction.request.url,
-                    documentPageURL: documentLoader.documentPageURL
-                ))
-            }
             return nil
         }
 
-        private func dispatch(_ route: PreviewLinkRouter.Route) {
+        fileprivate func dispatch(_ route: PreviewLinkRouter.Route) {
             switch route {
             case .allowInPage, .ignore:
                 break
@@ -1955,6 +1990,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            (webView as? PreviewWebView)?.contextMenuAdapter.invalidate()
             // A new document started loading; hold scrolling until it finishes.
             isLoaded = false
             // Label it now: `didFinish` waits for every image, and the boxes work
@@ -2017,6 +2053,33 @@ struct MarkdownPreviewView: NSViewRepresentable {
 }
 
 private final class PreviewWebView: WKWebView {
+    let contextMenuAdapter = PreviewContextMenuAdapter()
+
+    override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
+        super.willOpenMenu(menu, with: event)
+        let generation = contextMenuAdapter.begin(menu)
+        let page = url
+        let nativePoint = convert(event.locationInWindow, from: nil)
+        let clientPoint = NSPoint(x: nativePoint.x, y: isFlipped ? nativePoint.y : bounds.height - nativePoint.y)
+        evaluateJavaScript("window.__md2TakeContextMenu ? window.__md2TakeContextMenu() : null",
+                           in: nil, in: .defaultClient) { [weak self, weak menu] result in
+            guard let self, let menu, self.url == page,
+                  case let .success(value) = result, let data = value as? [String: Any],
+                  let capturedPage = data["page"] as? String, URL(string: capturedPage) == page,
+                  let x = data["x"] as? Double, let y = data["y"] as? Double,
+                  abs(x - clientPoint.x) <= 2, abs(y - clientPoint.y) <= 2 else { return }
+            self.contextMenuAdapter.bind(menu, generation: generation,
+                                         link: (data["link"] as? String).flatMap(URL.init(string:)),
+                                         image: (data["image"] as? String).flatMap(URL.init(string:)),
+                                         page: page)
+        }
+    }
+
+    override func didCloseMenu(_ menu: NSMenu, with event: NSEvent?) {
+        contextMenuAdapter.end(menu)
+        super.didCloseMenu(menu, with: event)
+    }
+
     var onFindAction: ((FindCommand.Action) -> Void)?
     /// Esc handler; returns whether the key was consumed (find bar dismissed).
     var onEscape: (() -> Bool)?

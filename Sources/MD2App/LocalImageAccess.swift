@@ -19,6 +19,18 @@ final class LocalImageSchemeHandler: NSObject, WKURLSchemeHandler {
         }
     }
 
+    /// Only the exact opaque URL emitted for a currently referenced image can
+    /// become a native Open Image target. This grants no additional read access.
+    func originalImageURL(for url: URL) -> URL? {
+        guard url.scheme == Self.scheme, url.host == "image",
+              url.user == nil, url.password == nil, url.port == nil,
+              url.query == nil, url.fragment == nil,
+              url.pathComponents.count == 2 else { return nil }
+        let token = url.lastPathComponent
+        guard url.absoluteString == "\(Self.scheme)://image/\(token)" else { return nil }
+        return imageURL(for: token)
+    }
+
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
         guard let url = urlSchemeTask.request.url,
               let token = url.pathComponents.dropFirst().first,

@@ -21,6 +21,25 @@ The preview web view SHALL only ever display the rendered page of the current do
 - **THEN** no new web view is created inside the app
 - **AND** the target is routed exactly as a plain click on the same URL would be
 
+### Requirement: Native opens require trusted input
+Only trusted main-frame input observed in the isolated interaction world, or an explicit native context-menu Open action, SHALL invoke a native open handler. A `linkActivated` navigation type or a missing target frame SHALL NOT count as user authorization. Showing or cancelling a menu SHALL NOT authorize a later navigation. Page scripts SHALL NOT access the interaction handlers or the menu metadata getter.
+
+#### Scenario: Scripted requests stay inert
+- **WHEN** a page calls an anchor's `click()`, `window.open`, or assigns `location`, including a new-window anchor
+- **THEN** no system handler or Markdown document window opens
+- **AND** real plain, Command, and new-window anchor clicks retain their normal routing
+
+#### Scenario: Default context menu retains native operations
+- **WHEN** the user opens a link or image context menu
+- **THEN** WebKit's localized Copy, Save, and Share items remain intact
+- **AND** choosing Open routes the immutable link or image target captured for that menu through the same scheme policy
+- **AND** cancelled, replaced-page, or unmatched menu metadata cannot be reused for another menu
+
+#### Scenario: Referenced local image opens by explicit menu action
+- **WHEN** the user chooses Open Image for a local image referenced by the current preview
+- **THEN** only its exact current opaque image URL may resolve through the existing image whitelist to a file handed to the default application
+- **AND** unknown tokens or URLs with altered host, path, query, or fragment do not resolve
+
 ### Requirement: In-page fragment links scroll within the document
 Link activations whose target is the current document's rendered page differing only in URL fragment — heading anchors, `[TOC]` entries, footnote references and back-references, and cross-reference links — SHALL be allowed so the preview scrolls in-page without a reload.
 
