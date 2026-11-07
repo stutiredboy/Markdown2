@@ -5,6 +5,56 @@ import Testing
 
 @MainActor
 struct MarkdownEditorIMERegressionTests {
+    @Test(arguments: [false, true])
+    func normalizationOnlyBoundTextChangesReachTheSession(_ startsDecomposed: Bool) throws {
+        let original = startsDecomposed ? "before e\u{301}" : "before \u{e9}"
+        let updated = startsDecomposed ? "before \u{e9}!" : "before e\u{301}!"
+        var modelText = original
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        let session = MarkdownEditorSession(undoManager: undo)
+        let editor = session.loadTextView(text: original)
+        let coordinator = MarkdownEditorView.Coordinator(
+            text: Binding(get: { modelText }, set: { modelText = $0 }), session: session)
+        undo.beginUndoGrouping()
+        editor.insertText("!", replacementRange: NSRange(location: original.utf16.count, length: 0))
+        undo.endUndoGrouping()
+        #expect(undo.canUndo)
+        modelText = updated
+        #expect(editor.string == modelText, "the visible strings are canonically equivalent")
+        #expect(!editor.string.utf16.elementsEqual(modelText.utf16))
+        #expect(coordinator.shouldApplyBoundText(modelText, to: editor))
+        // Follow the same guard/reset sequence as makeNSView and updateNSView.
+        if coordinator.shouldApplyBoundText(modelText, to: editor) {
+            #expect(session.resetText(to: modelText))
+        }
+        #expect(editor.string.utf16.elementsEqual(modelText.utf16))
+        #expect(!undo.canUndo, "old UTF-16 undo ranges must not survive the bound replacement")
+    }
+
+    @Test func normalizationOnlySyncWaitsForCompositionThenBecomesEligible() {
+        let original = "e\u{301}"
+        var modelText = original
+        let session = MarkdownEditorSession()
+        let editor = session.loadTextView(text: original)
+        let coordinator = MarkdownEditorView.Coordinator(
+            text: Binding(get: { modelText }, set: { modelText = $0 }), session: session)
+        editor.setMarkedText(original, selectedRange: NSRange(location: original.utf16.count, length: 0),
+                             replacementRange: NSRange(location: 0, length: original.utf16.count))
+        #expect(editor.hasMarkedText())
+        modelText = "\u{e9}"
+        #expect(!coordinator.shouldApplyBoundText(modelText, to: editor))
+        #expect(!session.resetText(to: modelText))
+        #expect(editor.string.utf16.elementsEqual(original.utf16))
+        editor.unmarkText()
+        #expect(!editor.hasMarkedText())
+        #expect(coordinator.shouldApplyBoundText(modelText, to: editor))
+        if coordinator.shouldApplyBoundText(modelText, to: editor) {
+            #expect(session.resetText(to: modelText))
+        }
+        #expect(editor.string.utf16.elementsEqual(modelText.utf16))
+    }
+
     @Test func headingCaretUsesHeadingFontForMarkedText() {
         let textView = NSTextView()
         textView.isRichText = false

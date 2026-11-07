@@ -117,6 +117,31 @@ final class MarkdownEditingGUITests: XCTestCase {
     }
 
     @MainActor
+    func testNormalizationOnlyBindingUpdateReachesEditorBeforeFurtherTyping() throws {
+        for startsDecomposed in [false, true] {
+            let original = startsDecomposed ? "before e\u{301}" : "before \u{e9}"
+            let updated = startsDecomposed ? "before \u{e9}" : "before e\u{301}"
+            let harness = try EditingWindow(original)
+            defer { harness.close() }
+            let editor = harness.editor
+            XCTAssertEqual(Array(editor.string.utf16), Array(original.utf16))
+            // An external model change must reach the actual representable,
+            // even though Swift String equality treats both forms as equal.
+            harness.store.text = updated
+            harness.spin(until: { editor.string.utf16.elementsEqual(updated.utf16) })
+            XCTAssertEqual(Array(editor.string.utf16), Array(updated.utf16))
+            XCTAssertEqual(Array(harness.store.text.utf16), Array(updated.utf16))
+            editor.setSelectedRange(NSRange(location: editor.string.utf16.count, length: 0))
+            // The native committed-text entry point must publish the updated
+            // bytes, not bring the previous normalization back into the model.
+            editor.insertText("x", replacementRange: NSRange(location: NSNotFound, length: 0))
+            harness.spin()
+            XCTAssertEqual(Array(editor.string.utf16), Array((updated + "x").utf16))
+            XCTAssertEqual(Array(harness.store.text.utf16), Array((updated + "x").utf16))
+        }
+    }
+
+    @MainActor
     func testOnlyTrackedClosersSkipOrDeleteAsPairs() throws {
         let literal = try EditingWindow("foo()")
         defer { literal.close() }

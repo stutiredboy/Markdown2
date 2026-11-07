@@ -552,7 +552,9 @@ struct MarkdownEditorView: NSViewRepresentable {
         /// that window destroys the input method's composition buffer and can
         /// commit a stale candidate at a different selection.
         @MainActor func shouldApplyBoundText(_ boundText: String, to textView: NSTextView) -> Bool {
-            textView.string != boundText && !isApplyingStyle && !textView.hasMarkedText()
+            // UTF-16 source/undo ranges require literal equality, not Swift's
+            // canonical-equivalence comparison of visually identical text.
+            !(textView.string as NSString).isEqual(to: boundText) && !isApplyingStyle && !textView.hasMarkedText()
         }
 
         /// Programmatic text replacement (bound-text sync, a reload after the
