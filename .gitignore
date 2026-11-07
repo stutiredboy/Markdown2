@@ -17,3 +17,6 @@ tmp/
 Tests/MD2CoreTests/Conformance/dashboard.md
 Tests/MD2CoreTests/Conformance/dashboard.json
 .audit/
+
+# Local OpenSpec planning content
+/openspec/
