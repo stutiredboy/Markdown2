@@ -33,8 +33,9 @@ final class DocumentStore: ObservableObject {
         didSet {
             // Source bytes matter for saving and UTF-16 editor offsets. Swift
             // String equality treats different Unicode normalizations as equal.
-            // Most typing changes the byte count, so avoid scanning that case.
-            guard text.utf8.count != oldValue.utf8.count || !text.utf8.elementsEqual(oldValue.utf8) else { return }
+            // Most typing changes the byte count. Otherwise NSString compares
+            // literal code units efficiently, as the editor session does.
+            guard text.utf8.count != oldValue.utf8.count || !(text as NSString).isEqual(to: oldValue) else { return }
             textMutationRevision &+= 1
             sourceLineRevision &+= 1
             // The expensive full-document render that feeds the preview/stats is

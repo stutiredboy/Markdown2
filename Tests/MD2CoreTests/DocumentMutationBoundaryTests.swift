@@ -63,6 +63,10 @@ struct DocumentMutationBoundaryTests {
         store.open(file)
         store.text = "cafe\u{301}"
         let expected = Data(store.text.utf8)
+        // Establish that the edit's queued work has run before measuring the
+        // save wait. Other MainActor tests can delay even the timer's start;
+        // flushPendingRender never saves or creates missing autosave work.
+        await store.flushPendingRender()
         let deadline = ContinuousClock.now.advanced(by: .seconds(1))
         while ContinuousClock.now < deadline, (try Data(contentsOf: file)) != expected {
             try await Task.sleep(for: .milliseconds(10))
