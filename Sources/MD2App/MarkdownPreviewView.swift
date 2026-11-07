@@ -1448,7 +1448,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
 
     /// Preview and PDF export share the same memory page and resource boundary.
     private func load(_ html: String, baseURL: URL?, fragment: String?, in webView: WKWebView, coordinator: Coordinator) {
-        (webView as? PreviewWebView)?.contextMenuAdapter.invalidate()
+        (webView as? PreviewWebView)?.invalidateContextMenu()
         coordinator.documentLoader.load(html, baseURL: baseURL, fragment: fragment, in: webView)
     }
 
@@ -1546,7 +1546,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// preview's current source anchor. Called only when the page is loaded
         /// and no new diagram engine is required (the caller guarantees this).
         func applyLiveContent(_ bodyHTML: String, mathMacros: [String: String], in webView: WKWebView) {
-            (webView as? PreviewWebView)?.contextMenuAdapter.invalidate()
+            (webView as? PreviewWebView)?.invalidateContextMenu()
             liveUpdateGeneration += 1
             let generation = liveUpdateGeneration
             hasContentInFlight = true
@@ -1758,7 +1758,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// go unlabelled. WebKit also restores the reader's place, which a load
         /// does not, so that goes along. A page still loading has none to keep.
         private func reloadLatestContent(in webView: WKWebView) {
-            (webView as? PreviewWebView)?.contextMenuAdapter.invalidate()
+            (webView as? PreviewWebView)?.invalidateContextMenu()
             captureAnchor(in: webView) { [weak self, weak webView] anchor in
                 guard let self, let webView else { return }
                 let place = self.isLoaded ? anchor : nil
@@ -1990,7 +1990,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-            (webView as? PreviewWebView)?.contextMenuAdapter.invalidate()
+            (webView as? PreviewWebView)?.invalidateContextMenu()
             // A new document started loading; hold scrolling until it finishes.
             isLoaded = false
             // Label it now: `didFinish` waits for every image, and the boxes work
@@ -2054,20 +2054,78 @@ struct MarkdownPreviewView: NSViewRepresentable {
 
 private final class PreviewWebView: WKWebView {
     let contextMenuAdapter = PreviewContextMenuAdapter()
+    private var contextMenuInput = PreviewContextMenuInput()
+
+    fileprivate func invalidateContextMenu() {
+        contextMenuInput.invalidate()
+        contextMenuAdapter.invalidate()
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow !== window { invalidateContextMenu() }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    private func recordContextMenuInput(_ event: NSEvent) {
+        let nativePoint = convert(event.locationInWindow, from: nil)
+        let clientPoint = NSPoint(x: nativePoint.x, y: isFlipped ? nativePoint.y : bounds.height - nativePoint.y)
+        contextMenuInput.record(event, point: clientPoint, page: url, windowNumber: window?.windowNumber)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        recordContextMenuInput(event)
+        super.rightMouseDown(with: event)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        // A Control-left gesture is a context click; an ordinary click clears
+        // a prior suppressed context event before normal WebKit processing.
+        recordContextMenuInput(event)
+        super.mouseDown(with: event)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        contextMenuInput.invalidate()
+        super.keyDown(with: event)
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        contextMenuInput.invalidate()
+        super.scrollWheel(with: event)
+    }
+
+    override func rightMouseDragged(with event: NSEvent) {
+        contextMenuInput.invalidate()
+        super.rightMouseDragged(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        contextMenuInput.invalidate()
+        super.mouseDragged(with: event)
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        contextMenuInput.invalidate()
+        super.otherMouseDown(with: event)
+    }
 
     override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
         super.willOpenMenu(menu, with: event)
         let generation = contextMenuAdapter.begin(menu)
         let page = url
-        let nativePoint = convert(event.locationInWindow, from: nil)
-        let clientPoint = NSPoint(x: nativePoint.x, y: isFlipped ? nativePoint.y : bounds.height - nativePoint.y)
+        // AppKit's callback can supply events unrelated to the pointer input
+        // (observed types 0 and 13 in the macOS 15 GUI tests).
+        // Match the original mouse-down input, not this callback's coordinates.
+        // Mouse-up deliberately does not clear it: menu creation is asynchronous.
+        let input = contextMenuInput.take(for: page)
         evaluateJavaScript("window.__md2TakeContextMenu ? window.__md2TakeContextMenu() : null",
                            in: nil, in: .defaultClient) { [weak self, weak menu] result in
-            guard let self, let menu, self.url == page,
+            guard let self, let menu, let input, self.url == page,
                   case let .success(value) = result, let data = value as? [String: Any],
                   let capturedPage = data["page"] as? String, URL(string: capturedPage) == page,
                   let x = data["x"] as? Double, let y = data["y"] as? Double,
-                  abs(x - clientPoint.x) <= 2, abs(y - clientPoint.y) <= 2 else { return }
+                  self.contextMenuInput.matches(input, page: self.url, point: NSPoint(x: x, y: y),
+                                                windowNumber: self.window?.windowNumber) else { return }
             self.contextMenuAdapter.bind(menu, generation: generation,
                                          link: (data["link"] as? String).flatMap(URL.init(string:)),
                                          image: (data["image"] as? String).flatMap(URL.init(string:)),
@@ -2076,6 +2134,7 @@ private final class PreviewWebView: WKWebView {
     }
 
     override func didCloseMenu(_ menu: NSMenu, with event: NSEvent?) {
+        contextMenuInput.invalidate()
         contextMenuAdapter.end(menu)
         super.didCloseMenu(menu, with: event)
     }
@@ -2087,6 +2146,7 @@ private final class PreviewWebView: WKWebView {
     private static let escapeKeyCode: UInt16 = 53
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        contextMenuInput.invalidate()
         // Esc travels as a plain key press; claim it only when the owner
         // actually consumed it (dismissed a find bar), so full-screen exit
         // and other system uses keep working.
@@ -2101,6 +2161,7 @@ private final class PreviewWebView: WKWebView {
     }
 
     override func cancelOperation(_ sender: Any?) {
+        contextMenuInput.invalidate()
         // Fallback path for an Esc that reaches the responder chain instead of
         // the key-equivalent pass (WebKit hands unhandled page keys back via
         // doCommandBySelector). Never call super: `NSResponder` declares but

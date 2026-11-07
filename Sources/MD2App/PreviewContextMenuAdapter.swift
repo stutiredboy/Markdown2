@@ -1,5 +1,39 @@
 import AppKit
 
+/// Data for matching one native context-menu gesture to its isolated DOM
+/// snapshot, never permission for a navigation delegate to open anything.
+@MainActor
+struct PreviewContextMenuInput {
+    struct Capture {
+        let generation: UUID
+        let point: NSPoint
+        let page: URL
+        let windowNumber: Int
+    }
+    private var generation = UUID()
+    private var pending: Capture?
+
+    mutating func record(_ event: NSEvent, point: NSPoint, page: URL?, windowNumber: Int?) {
+        invalidate()
+        guard event.type == .rightMouseDown || (event.type == .leftMouseDown && event.modifierFlags.contains(.control)),
+              let page, let windowNumber, event.windowNumber == windowNumber else { return }
+        pending = Capture(generation: generation, point: point, page: page, windowNumber: windowNumber)
+    }
+
+    mutating func take(for page: URL?) -> Capture? {
+        defer { pending = nil }
+        guard let pending, pending.page == page else { return nil }
+        return pending
+    }
+
+    func matches(_ input: Capture, page: URL?, point: NSPoint, windowNumber: Int?) -> Bool {
+        generation == input.generation && page == input.page && windowNumber == input.windowNumber
+            && abs(input.point.x - point.x) <= 2 && abs(input.point.y - point.y) <= 2
+    }
+
+    mutating func invalidate() { generation = UUID(); pending = nil }
+}
+
 /// Keeps WebKit's localized Copy/Save/Share items intact. These identifier raw
 /// values are WebKit implementation conventions, not public SDK constants:
 /// live-menu GUI tests pin their compatibility. No private selector is called.
