@@ -56,7 +56,7 @@ final class PreviewContextMenuAdapter {
             // NSMenuItem's target is weak. Retain the immutable action with its
             // own item, even when AppKit closes the menu before invoking it.
             item.representedObject = action
-            item.isEnabled = true
+            item.isEnabled = originals[ObjectIdentifier(item)]?.2 ?? false
         }
     }
 

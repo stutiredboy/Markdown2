@@ -37,6 +37,17 @@ import Testing
         #expect(opened == [first])
     }
 
+    @Test func originallyDisabledOpenItemsRemainDisabled() {
+        let adapter = PreviewContextMenuAdapter()
+        let target = MenuActionTarget()
+        let menu = fixture(target)
+        menu.items[0].isEnabled = false
+        let generation = adapter.begin(menu)
+        adapter.bind(menu, generation: generation, link: URL(string: "https://example.com/disabled"),
+                     image: nil, page: nil)
+        #expect(!menu.items[0].isEnabled)
+    }
+
     @Test func cancelledLateMetadataAndOldPageActionsCannotBindAnotherMenu() {
         let adapter = PreviewContextMenuAdapter()
         var opened: [URL] = []
