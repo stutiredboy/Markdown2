@@ -27,6 +27,22 @@ final class PreviewContextMenuGUITests: XCTestCase, RenderedPageTesting {
         XCTAssertEqual(opened, [destination])
     }
 
+    @MainActor func testControlClickMenuOpensExactTargetAndKeepsNativeCopy() throws {
+        let destination = URL(string: "https://example.com/control-click-menu#target")!
+        var opened: [URL] = []
+        try withPage("[**Control-click menu**](\(destination.absoluteString))", on: .preview,
+                     onOpenWithSystem: { opened.append($0) }) { webView in
+            let page = webView.url
+            try recordInput(in: webView)
+            try useNativeMenu(on: "document.querySelector('main a strong')", in: webView,
+                              action: .openLink, copyIdentifiers: ["WKMenuItemIdentifierCopyLink"], controlClick: true)
+            XCTAssertTrue(spin(5) { opened == [destination] }, "Control-click did not bind the native Open action")
+            try assertContextEvent(in: webView, link: destination.absoluteString, image: "")
+            XCTAssertEqual(webView.url, page)
+        }
+        XCTAssertEqual(opened, [destination])
+    }
+
     @MainActor func testLinkedImageMenuOpensImageInsteadOfOuterLinkAndKeepsNativeCopy() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("md2-menu-image-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -112,6 +128,87 @@ final class PreviewContextMenuGUITests: XCTestCase, RenderedPageTesting {
         XCTAssertEqual(opened, [control])
     }
 
+    @MainActor func testSuppressedMainFrameContextCannotAuthorizeAnIframeMenuAtTheSamePoint() throws {
+        let original = URL(string: "https://example.com/suppressed-main-frame-menu")!
+        let frameLink = URL(string: "https://example.com/iframe-menu")!
+        var opened: [URL] = []
+        try withPage("[**Suppressed main-frame menu**](\(original.absoluteString))", on: .preview,
+                     edit: RenderedPageEdit.removingPolicy,
+                     onOpenWithSystem: { opened.append($0) }) { webView in
+            let page = webView.url
+            try recordInput(in: webView)
+            _ = try evaluate("""
+                window.__originalContextLink = document.querySelector('main a');
+                document.addEventListener('contextmenu', function suppressOnce(event) {
+                    event.preventDefault();
+                    window.__contextWasSuppressed = event.isTrusted && event.defaultPrevented;
+                    document.removeEventListener('contextmenu', suppressOnce, true);
+                }, true);
+                true;
+                """, in: webView)
+            // The isolated capture listener runs before this page listener.
+            // Keep its real main-frame snapshot pending by suppressing the menu.
+            do {
+                let unexpectedMenu = NativeMenuSession(action: .cancel, copyIdentifiers: [], webView: webView)
+                unexpectedMenu.start()
+                defer { unexpectedMenu.stop() }
+                try sendContextClick(on: "window.__originalContextLink", in: webView)
+                XCTAssertTrue(spin(5) {
+                    (try? self.evaluate("window.__contextWasSuppressed === true", in: webView)) as? Bool == true
+                }, "the initial trusted main-frame context event was not suppressed")
+                XCTAssertFalse(unexpectedMenu.began, "preventDefault unexpectedly displayed a native menu")
+            }
+            try assertContextEvent(in: webView, link: original.absoluteString, image: "")
+            XCTAssertTrue(opened.isEmpty)
+
+            _ = try evaluate("""
+                (() => {
+                    const box = window.__originalContextLink.getBoundingClientRect();
+                    const frame = document.createElement('iframe');
+                    frame.id = 'contextFrame';
+                    frame.style.cssText = 'position:fixed;width:200px;height:60px;border:0;z-index:9999';
+                    frame.style.left = (box.left + box.width / 2 - 100) + 'px';
+                    frame.style.top = (box.top + box.height / 2 - 30) + 'px';
+                    frame.srcdoc = '<body style="margin:0"><a href="\(frameLink.absoluteString)" style="display:block;width:200px;height:60px">Frame link</a></body>';
+                    document.body.appendChild(frame);
+                    return true;
+                })();
+                """, in: webView)
+            XCTAssertTrue(spin(5) {
+                (try? self.evaluate("!!document.querySelector('#contextFrame').contentDocument?.querySelector('a')",
+                                    in: webView)) as? Bool == true
+            }, "the same-origin iframe fixture did not load")
+            _ = try evaluate("""
+                document.querySelector('#contextFrame').contentDocument.addEventListener('contextmenu', function (event) {
+                    window.__iframeContextEvent = { trusted: String(event.isTrusted), link: event.target.closest('a')?.href || '' };
+                }, true);
+                true;
+                """, in: webView)
+            XCTAssertEqual(try evaluate("""
+                (() => {
+                    const box = window.__originalContextLink.getBoundingClientRect();
+                    return window.__originalContextLink.isConnected &&
+                        document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2) === document.querySelector('#contextFrame');
+                })();
+                """, in: webView) as? Bool, true, "the iframe must cover the original point while its old target stays connected")
+
+            try useNativeMenu(on: "document.querySelector('#contextFrame')", in: webView,
+                              action: .rejectOpen, copyIdentifiers: ["WKMenuItemIdentifierCopyLink"])
+            XCTAssertEqual(try evaluate("window.__iframeContextEvent", in: webView) as? [String: String],
+                           ["trusted": "true", "link": frameLink.absoluteString], "the real iframe context click missed")
+            try assertContextEvent(in: webView, link: original.absoluteString, image: "")
+            XCTAssertTrue(opened.isEmpty, "an iframe menu reused the suppressed main-frame target")
+            XCTAssertEqual(webView.url, page)
+
+            _ = try evaluate("document.querySelector('#contextFrame').remove(); true", in: webView)
+            try useNativeMenu(on: "window.__originalContextLink", in: webView,
+                              action: .openLink, copyIdentifiers: ["WKMenuItemIdentifierCopyLink"])
+            XCTAssertTrue(spin(5) { opened == [original] }, "the main-frame native-menu positive control failed")
+            try assertContextEvent(in: webView, link: original.absoluteString, image: "", count: 2)
+        }
+        XCTAssertEqual(opened, [original])
+    }
+
     @MainActor private func recordInput(in webView: WKWebView) throws {
         _ = try evaluate("""
             window.__contextMenuEvents = [];
@@ -143,27 +240,17 @@ final class PreviewContextMenuGUITests: XCTestCase, RenderedPageTesting {
     /// Only then do we select an actual displayed item via NSMenu's public API.
     @MainActor private func useNativeMenu(on element: String, in webView: WKWebView,
                                          action: NativeMenuSession.Action, copyIdentifiers: Set<String>,
+                                         controlClick: Bool = false,
                                          file: StaticString = #filePath, line: UInt = #line) throws {
         let window = try XCTUnwrap(webView.window)
         let origin = window.frame.origin
         window.setFrameOrigin(NSPoint(x: 80, y: 80))
         window.makeKeyAndOrderFront(nil)
         defer { window.setFrameOrigin(origin) }
-        let point = try XCTUnwrap(try evaluate("""
-            (() => { const r = (\(element)).getBoundingClientRect();
-                return [r.left + r.width / 2, r.top + r.height / 2]; })()
-            """, in: webView) as? [Double])
-        let location = webView.convert(NSPoint(x: point[0], y: point[1]), to: nil)
-        let session = NativeMenuSession(action: action, copyIdentifiers: copyIdentifiers)
+        let session = NativeMenuSession(action: action, copyIdentifiers: copyIdentifiers, webView: webView)
         session.start()
         defer { session.stop() }
-        func event(_ type: NSEvent.EventType) throws -> NSEvent {
-            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
-                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
-                context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
-        }
-        webView.rightMouseDown(with: try event(.rightMouseDown))
-        webView.rightMouseUp(with: try event(.rightMouseUp))
+        try sendContextClick(on: element, in: webView, controlClick: controlClick)
         XCTAssertTrue(spin(8) { session.finished }, "the native menu did not finish: \(session.diagnostics)",
                       file: file, line: line)
         XCTAssertTrue(session.began, "WebKit never displayed its native menu", file: file, line: line)
@@ -171,27 +258,58 @@ final class PreviewContextMenuGUITests: XCTestCase, RenderedPageTesting {
                       file: file, line: line)
         XCTAssertEqual(session.preservedCopyIdentifiers, copyIdentifiers,
                        "the normal native Copy items lost their actions: \(session.diagnostics)", file: file, line: line)
+        if action == .rejectOpen {
+            XCTAssertTrue(session.rejectedOpenItems,
+                          "stale main-frame metadata enabled an iframe Open item: \(session.diagnostics)", file: file, line: line)
+        }
+    }
+
+    @MainActor private func sendContextClick(on element: String, in webView: WKWebView,
+                                            controlClick: Bool = false) throws {
+        let window = try XCTUnwrap(webView.window)
+        let point = try XCTUnwrap(try evaluate("""
+            (() => { const r = (\(element)).getBoundingClientRect();
+                return [r.left + r.width / 2, r.top + r.height / 2]; })()
+            """, in: webView) as? [Double])
+        let location = webView.convert(NSPoint(x: point[0], y: point[1]), to: nil)
+        func event(_ type: NSEvent.EventType) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: location, modifierFlags: controlClick ? .control : [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        if controlClick {
+            webView.mouseDown(with: try event(.leftMouseDown))
+            webView.mouseUp(with: try event(.leftMouseUp))
+        } else {
+            webView.rightMouseDown(with: try event(.rightMouseDown))
+            webView.rightMouseUp(with: try event(.rightMouseUp))
+        }
     }
 }
 
 /// NSObject callbacks avoid crossing Swift concurrency boundaries while AppKit
 /// runs its nested menu loop. A timer in both modes also bounds a broken menu.
 @MainActor private final class NativeMenuSession: NSObject {
-    enum Action { case openLink, openImage, cancel }
+    enum Action { case openLink, openImage, cancel, rejectOpen }
     private let action: Action
     private let copyIdentifiers: Set<String>
     private var menu: NSMenu?
     private var timer: Timer?
     private var deadline = Date.distantPast
+    private weak var webView: WKWebView?
+    private var barrierStarted = false
+    private var barrierCompleted = false
     private(set) var began = false
     private(set) var finished = false
     private(set) var performed = false
+    private(set) var rejectedOpenItems = false
     private(set) var preservedCopyIdentifiers: Set<String> = []
     private(set) var diagnostics = "no native menu notification"
 
-    init(action: Action, copyIdentifiers: Set<String>) {
+    init(action: Action, copyIdentifiers: Set<String>, webView: WKWebView) {
         self.action = action
         self.copyIdentifiers = copyIdentifiers
+        self.webView = webView
     }
 
     func start() {
@@ -240,7 +358,26 @@ final class PreviewContextMenuGUITests: XCTestCase, RenderedPageTesting {
         guard !performed else { return }
         let identifiers: Set<String> = action == .openImage ? ["WKMenuItemIdentifierOpenImageInNewWindow"] :
             ["WKMenuItemIdentifierOpenLink", "WKMenuItemIdentifierOpenLinkInNewWindow"]
-        guard let item = menu.items.first(where: { identifiers.contains($0.identifier?.rawValue ?? "") }),
+        let openItems = menu.items.filter { identifiers.contains($0.identifier?.rawValue ?? "") }
+        if action == .rejectOpen {
+            guard !openItems.isEmpty else { return }
+            if !barrierStarted {
+                barrierStarted = true
+                // The timer fires after willOpenMenu returned and issued its
+                // isolated-world query. A later round trip on the same web view
+                // prevents accepting its initial, not-yet-bound disabled state.
+                webView?.evaluateJavaScript("true") { [weak self] result, error in
+                    self?.barrierCompleted = error == nil && (result as? Bool) == true
+                }
+                return
+            }
+            guard barrierCompleted else { return }
+            rejectedOpenItems = openItems.allSatisfy { !$0.isEnabled && $0.action == nil && $0.target == nil }
+            performed = true
+            menu.cancelTracking()
+            return
+        }
+        guard let item = openItems.first,
               item.isEnabled, item.action == NSSelectorFromString("openMenuTarget:"), item.target != nil else { return }
         performed = true
         if action != .cancel {
