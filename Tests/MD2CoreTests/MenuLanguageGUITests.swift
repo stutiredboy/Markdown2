@@ -152,16 +152,15 @@ final class MenuLanguageGUITests: XCTestCase {
 
         try press(.formatHeading1, in: .zhHans, pid: pid)
         let expected = (original as NSString).replacingCharacters(in: target, with: "# Start writing in Markdown.")
-        try waitForWindow(pid: pid) { window in
+        try waitForWindow(pid: pid, description: "the second command's exact formatted source") { window in
             guard let editor = Self.firstElement(ofRole: "AXTextArea", in: window) else { return false }
             return Self.title(of: window).hasSuffix(" *") && Self.stringValue(kAXValueAttribute, of: editor) == expected
         }
 
         // Undo is AppKit-owned and keeps its launch language; locate its key
         // equivalent so this also proves the edit entered native undo history.
-        let undo = try menuItem(commandCharacter: "Z", pid: pid)
-        XCTAssertEqual(AXUIElementPerformAction(undo, kAXPressAction as CFString), .success)
-        try waitForWindow(pid: pid) { window in
+        try pressNativeUndo(pid: pid)
+        try waitForWindow(pid: pid, description: "native Undo restoring the original source") { window in
             guard let editor = Self.firstElement(ofRole: "AXTextArea", in: window) else { return false }
             return Self.stringValue(kAXValueAttribute, of: editor) == original
         }
@@ -178,6 +177,33 @@ final class MenuLanguageGUITests: XCTestCase {
             usleep(100_000)
         }
         throw GuardFailure("the revealed source editor did not receive keyboard focus")
+    }
+
+    private func pressNativeUndo(pid: pid_t) throws {
+        for barItem in Self.children(of: try menuBar(pid: pid)) {
+            for menu in Self.children(of: barItem) {
+                guard let undo = Self.children(of: menu).first(where: {
+                    Self.commandCharacter(of: $0) == "Z"
+                        && Self.intValue(kAXMenuItemCmdModifiersAttribute, of: $0) == 0
+                }) else { continue }
+                func isEnabled() -> Bool {
+                    var value: CFTypeRef?
+                    return AXUIElementCopyAttributeValue(undo, kAXEnabledAttribute as CFString, &value) == .success
+                        && (value as? Bool) == true
+                }
+                // Native Undo validates against the responder chain when its
+                // menu opens. Pressing a stale disabled AX item reports success
+                // without performing the action.
+                NSRunningApplication(processIdentifier: pid)?.activate()
+                XCTAssertEqual(AXUIElementPerformAction(barItem, kAXPressAction as CFString), .success)
+                let deadline = Date().addingTimeInterval(5)
+                while !isEnabled(), Date() < deadline { usleep(100_000) }
+                guard isEnabled() else { throw GuardFailure("native Undo is disabled after opening its menu") }
+                XCTAssertEqual(AXUIElementPerformAction(undo, kAXPressAction as CFString), .success)
+                return
+            }
+        }
+        throw GuardFailure("no unshifted Command-Z Undo item was found")
     }
 
     // MARK: - Shortcuts
@@ -532,6 +558,7 @@ final class MenuLanguageGUITests: XCTestCase {
     private func waitForWindow(
         pid: pid_t,
         timeout: TimeInterval = 10,
+        description: String = "the expected window",
         where matches: (AXUIElement) -> Bool
     ) throws -> AXUIElement {
         let deadline = Date().addingTimeInterval(timeout)
@@ -539,8 +566,12 @@ final class MenuLanguageGUITests: XCTestCase {
             if let window = Self.windows(pid: pid).first(where: matches) { return window }
             usleep(200_000)
         }
-        let seen = Self.windows(pid: pid).map(Self.title(of:))
-        throw GuardFailure("the expected window did not appear within \(timeout)s; windows: \(seen)")
+        let seen = Self.windows(pid: pid).map { window in
+            let source = Self.firstElement(ofRole: "AXTextArea", in: window)
+                .flatMap { Self.stringValue(kAXValueAttribute, of: $0) }
+            return "\(Self.title(of: window)); source: \(String(reflecting: source))"
+        }
+        throw GuardFailure("\(description) did not appear within \(timeout)s; windows: \(seen)")
     }
 
     // MARK: - Accessibility
