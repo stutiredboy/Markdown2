@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import MD2Core
 
 /// A find action relayed from a menu command to whichever document surface is
 /// currently active. Each instance carries a fresh `token` so that repeating the
@@ -33,10 +34,14 @@ struct FindReplaceCommand: Equatable {
 
     let action: Action
     let token = UUID()
+    let snapshot: FindReplacementSnapshot?
 
-    init(_ action: Action) {
+    init(_ action: Action, snapshot: FindReplacementSnapshot? = nil) {
         self.action = action
+        self.snapshot = snapshot
     }
+
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.token == rhs.token }
 }
 
 /// A presentation-mode action relayed from app commands to the active document
@@ -83,5 +88,37 @@ struct LineSelectionRequest: Equatable {
 
     init(line: Int) {
         self.line = line
+    }
+}
+
+/// A deferred native edit is valid only for the exact source, query, replacement,
+/// caret/selection and options the user invoked it on. UTF-16 literal equality
+/// matters even when two strings look canonically identical.
+@MainActor
+struct FindReplacementSnapshot {
+    let source: String
+    let query: String
+    let replacement: String
+    let selections: [NSRange]
+    let options: TextSearch.Options
+    let scope: FindSession.Scope
+    let identity: UUID
+
+    init(query: String, replacement: String, textView: NSTextView, find: FindSession) {
+        self.source = textView.string
+        self.query = query
+        self.replacement = replacement
+        selections = textView.selectedRanges.map(\.rangeValue)
+        options = find.options
+        scope = find.scope
+        identity = find.identity
+    }
+
+    func isCurrent(query: String, replacement: String, textView: NSTextView, find: FindSession) -> Bool {
+        identity == find.identity && options == find.options && scope == find.scope
+            && selections == textView.selectedRanges.map(\.rangeValue)
+            && (self.query as NSString).isEqual(to: query)
+            && (self.replacement as NSString).isEqual(to: replacement)
+            && (source as NSString).isEqual(to: textView.string)
     }
 }
