@@ -141,6 +141,40 @@ struct MarkdownImageReferenceTests {
         }
     }
 
+    @Test func attributeClosingBraceUsesRawEscapeParityAndMatchesRenderer() {
+        for count in 0...6 {
+            let slashes = String(repeating: "\\", count: count)
+            let text = "![real](real.png){width=31 note=\"" + slashes + "} ![literal](literal.png)\"} ![last](last.png)"
+            let expected = count.isMultiple(of: 2) ? ["real.png", "literal.png", "last.png"] : ["real.png", "last.png"]
+            #expect(MarkdownImageReferences.scan(text).references.map(\.destination) == expected)
+            #expect(MarkdownRenderer().render(text).body.components(separatedBy: "<img ").count - 1 == expected.count)
+        }
+        let raw = Array(#"{note="\} still here"}"#.utf16)
+        let last = MarkdownLinkSyntax.lastAttributeClosingBrace(in: raw, input: .rawSource)
+        #expect(MarkdownLinkSyntax.endOfImageAttributes(in: raw, after: 0, lastClosingBrace: last, input: .rawSource) == raw.count)
+        // Protected input is already tokenized by the renderer: any remaining
+        // brace is structural, even if preceded by a literal backslash unit.
+        #expect(MarkdownLinkSyntax.endOfImageAttributes(in: raw, after: 0, lastClosingBrace: last, input: .protectedEscapes) < raw.count)
+    }
+
+    @Test func multilineAndUnfinishedAttributesAreReportedWithoutEditingTheirContents() {
+        for payload in [#"{width=31 note="\}"# + "\n![literal](literal.png)\"}",
+                        #"{width=31 note="\} ![literal](literal.png)"#,
+                        #"{width=31 note="<span title='}'> ![literal](literal.png)"}"#,
+                        #"{width=31 note="<https://example.com/}> ![literal](literal.png)"}"#,
+                        #"{width=31 note="\ref{fig:unknown} ![literal](literal.png)"}"#,
+                        #"{width=31 note="[^label}] ![literal](literal.png)"}"#,
+                        #"{width=31 note="[@book, }] ![literal](literal.png)"}"#] {
+            let text = "![real](real.png)" + payload + "\n\n![top](top.png)"
+            let scan = MarkdownImageReferences.scan(text)
+            #expect(scan.references.map(\.destination) == ["top.png"])
+            #expect(scan.excludedBlocks == 1)
+        }
+        let many = String(repeating: #"![a](a.png){\} "#, count: 9_000)
+        #expect(MarkdownLinkSyntax.candidateRanges(in: many, includeImageMarker: true).count == 9_000)
+        #expect(MarkdownImageReferences.scan(many).excludedBlocks == 1)
+    }
+
     @Test func limitsFailClosedBeforeFilesystemPlanning() {
         let huge = String(repeating: "x", count: MarkdownImageReferences.maximumSourceUnits + 1)
         #expect(MarkdownImageReferences.scan(huge).exceededLimit)

@@ -6,6 +6,7 @@ import SwiftUI
 @MainActor
 final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let settings = AppSettings()
+    let attachmentCommandState = AttachmentCommandState()
 
     /// Recent-documents list (persists across launches). Noted on every
     /// successful open and first save.
@@ -32,6 +33,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     override init() {
         super.init()
+        attachmentCommandState.observeCurrentDocument { [weak self] in self?.currentDocumentStore }
         // Read before Finder can deliver openURLs and create this session's records.
         do { pendingRecoverySnapshots = try recoveryRepository.load() }
         catch { recoveryReadFailed = true }
@@ -452,6 +454,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             onFileBacked: { [weak self] url in self?.noteRecentDocument(url) }
         )
         documentWindows.append(documentWindow)
+        attachmentCommandState.refresh()
         window.delegate = self
         window.contentView = NSHostingView(rootView: contentView)
         // Let macOS group document windows into native tabs when the user
@@ -516,6 +519,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // cancels it, but the hosting view can keep references alive briefly.
         documentStore(for: window)?.closeDocument(discardRecovery: !isTerminating)
         documentWindows.removeAll { $0.window == window }
+        attachmentCommandState.refresh()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

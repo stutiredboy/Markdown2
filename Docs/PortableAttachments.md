@@ -20,7 +20,9 @@ Move the Markdown file and its attachment folder together. The command reports
 copied files, processed references, excluded block count and reasons for references
 it could not collect. A maximum of eight detailed issues is shown, followed by the
 remaining count. Repeated paths share one copy, and images already in the attachment
-folder are validated and retained without making another copy.
+folder are validated and retained without making another copy. The command follows
+the focused document, is unavailable while its attachment operation is running,
+and is disabled when Settings has focus or no document is open.
 
 The first version safely rewrites simple, single-line inline Markdown images such
 as `![caption](../pictures/plot.png "title"){width=480}` or
@@ -37,6 +39,9 @@ are supported. Its deliberately conservative source scanner does not collect:
   ordinary images in the same excluded block; the report names this limitation.
 - Complex inline destinations such as escaped punctuation,
   nested parentheses, multiline images, images nested in link labels/titles, or single-quoted titles.
+  Unclosed/multiline image attributes and attributes with protected HTML or
+  reference syntax are preserved by excluding their block. Escaped closing braces
+  in otherwise simple single-line attributes respect backslash parity.
 - Remote URLs, embedded data URLs, unknown schemes, diagram-internal resources,
   or resource links inside an SVG. No network resources are downloaded. A copied
   SVG with its own external dependencies may still require those dependencies.

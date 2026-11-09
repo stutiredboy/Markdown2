@@ -111,11 +111,10 @@ private struct AppCommands: Commands {
                 appDelegate.createCopy()
             }
 
-            Button(settings.text(.collectLocalImages)) {
-                guard let document = appDelegate.currentDocumentStore else { return }
+            CollectLocalImagesCommand(title: settings.text(.collectLocalImages), state: appDelegate.attachmentCommandState) {
+                guard let document = appDelegate.currentDocumentStore, !document.isWorkingOnAttachments else { return }
                 Task { await document.collectLocalImages(folder: settings.attachmentFolder) }
             }
-            .disabled(appDelegate.currentDocumentStore == nil || appDelegate.currentDocumentStore?.isWorkingOnAttachments == true)
 
             Menu(settings.text(.exportTo)) {
                 Button("PDF") {

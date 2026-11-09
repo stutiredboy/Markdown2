@@ -11,6 +11,7 @@ public enum MarkdownImageReferences {
     public struct Scan: Sendable {
         public var references: [Reference] = []
         fileprivate var syntaxRanges: [NSRange] = []
+        fileprivate var uncertainImageAttributes = false
         public var unsupported: [String] = []
         public var excludedBlocks = 0
         public var exceededLimit = false
@@ -50,6 +51,9 @@ public enum MarkdownImageReferences {
                 let firstSyntax = candidates.syntaxRanges.count
                 scanLine(line, base: base, into: &candidates)
                 if candidates.exceededLimit { result.exceededLimit = true; return }
+                // Multiline attributes and protected inline spans can hide a
+                // closing brace from the renderer. Preserve uncertain blocks.
+                if candidates.uncertainImageAttributes { result.excludedBlocks += 1; return }
                 // Accepted image syntax (including its inert attribute payload)
                 // cannot open a raw HTML block. Everything outside it still can.
                 if maskingImageSyntax(line, base: base, ranges: candidates.syntaxRanges[firstSyntax...]).contains("<") {
@@ -234,7 +238,7 @@ public enum MarkdownImageReferences {
             $0.location == 0 || units[$0.location - 1] != 33
         }
         var enclosingIndex = 0
-        let lastBrace = units.lastIndex(of: 125) ?? -1
+        let lastBrace = MarkdownLinkSyntax.lastAttributeClosingBrace(in: units, input: .rawSource)
         var index = 0
         while index + 1 < units.count {
             if units[index] == 92 { index += 2; continue }
@@ -294,7 +298,16 @@ public enum MarkdownImageReferences {
                 result.references.append(Reference(destination: LinkReference.decode(raw),
                     range: NSRange(location: base + destinationStart, length: destinationEnd - destinationStart)))
                 index = MarkdownLinkSyntax.endOfImageAttributes(in: units, after: cursor + 1,
-                                                                 lastClosingBrace: lastBrace)
+                                                                 lastClosingBrace: lastBrace, input: .rawSource)
+                if cursor + 1 < units.count, units[cursor + 1] == 123 {
+                    let payload = units[(cursor + 1)..<index]
+                    let unfinishedTag = (payload.lastIndex(of: 60) ?? -1) > (payload.lastIndex(of: 62) ?? -1)
+                    let rawPayload = String(decoding: payload, as: UTF16.self)
+                    let protectedReference = rawPayload.contains("[^") ||
+                        rawPayload.contains("@") || rawPayload.contains(#"\ref{"#)
+                    result.uncertainImageAttributes = result.uncertainImageAttributes ||
+                        index == cursor + 1 || unfinishedTag || protectedReference
+                }
                 result.syntaxRanges.append(NSRange(location: base + start, length: index - start))
             } else {
                 result.unsupported.append(String(decoding: units[start..<min(bound, start + 80)], as: UTF16.self))

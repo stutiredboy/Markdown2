@@ -3,12 +3,17 @@ import Foundation
 /// Bounds link-regex attempts to disjoint candidates. In particular an
 /// unfinished `[...[` run is visited once, rather than once per opening bracket.
 public enum MarkdownLinkSyntax {
-    public static func candidateRanges(in text: String, includeImageMarker: Bool = false) -> [NSRange] {
+    /// Raw source still contains backslash pairs; the renderer replaces escaped
+    /// punctuation with opaque tokens before it asks for candidates.
+    public enum Input { case rawSource, protectedEscapes }
+
+    public static func candidateRanges(in text: String, includeImageMarker: Bool = false,
+                                       input: Input = .rawSource) -> [NSRange] {
         let units = Array(text.utf16)
         var result: [NSRange] = []
         var opening: Int?
         var index = 0
-        let lastBrace = units.lastIndex(of: 125) ?? -1
+        let lastBrace = lastAttributeClosingBrace(in: units, input: input)
         while index < units.count {
             if units[index] == 91, opening == nil,
                !includeImageMarker || (index > 0 && units[index - 1] == 33) { opening = index }
@@ -30,7 +35,7 @@ public enum MarkdownLinkSyntax {
                     guard end < units.count else { break }
                     end += 1
                     // Image size / figure attributes belong to the same candidate.
-                    end = endOfImageAttributes(in: units, after: end, lastClosingBrace: lastBrace)
+                    end = endOfImageAttributes(in: units, after: end, lastClosingBrace: lastBrace, input: input)
                     let lower = includeImageMarker && start > 0 && units[start - 1] == 33 ? start - 1 : start
                     result.append(NSRange(location: lower, length: end - lower))
                     index = end - 1
@@ -42,14 +47,35 @@ public enum MarkdownLinkSyntax {
         return result
     }
 
+    /// Find the last syntactic brace once. A raw backslash consumes its next
+    /// unit here: paired backslashes leave a following brace structural, while
+    /// an odd run protects it. This matches the renderer's punctuation escapes.
+    /// Using a known closing bound prevents rescanning an unfinished suffix for
+    /// each image (including suffixes containing only escaped closing braces).
+    static func lastAttributeClosingBrace(in units: [UInt16], input: Input) -> Int {
+        guard input == .rawSource else { return units.lastIndex(of: 125) ?? -1 }
+        var last = -1
+        var index = 0
+        while index < units.count {
+            if units[index] == 92 { index += 2; continue }
+            if units[index] == 125 { last = index }
+            index += 1
+        }
+        return last
+    }
+
     /// The renderer's optional `{[^}]*}` payload is one syntactic unit, even
-    /// when its keys are unknown and it is later emitted as literal text. Both
-    /// render candidates and source edits must skip through the same first `}`.
-    /// A precomputed last brace avoids rescanning an unclosed suffix per image.
-    static func endOfImageAttributes(in units: [UInt16], after end: Int, lastClosingBrace: Int) -> Int {
+    /// when its keys are unknown. Raw source must skip escaped braces; protected
+    /// renderer input has already replaced them and uses its first literal `}`.
+    static func endOfImageAttributes(in units: [UInt16], after end: Int,
+                                     lastClosingBrace: Int, input: Input) -> Int {
         guard end < lastClosingBrace, units[end] == 123 else { return end }
         var cursor = end + 1
-        while cursor < units.count, units[cursor] != 125 { cursor += 1 }
-        return cursor < units.count ? cursor + 1 : end
+        while cursor <= lastClosingBrace {
+            if input == .rawSource, units[cursor] == 92 { cursor += 2; continue }
+            if units[cursor] == 125 { return cursor + 1 }
+            cursor += 1
+        }
+        return end
     }
 }

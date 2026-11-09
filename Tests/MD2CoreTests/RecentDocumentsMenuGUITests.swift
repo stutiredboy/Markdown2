@@ -77,6 +77,130 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
 
     // MARK: - Live list
 
+    /// Real SwiftUI command state after a no-document launch (independent R4 regression).
+    func testCollectionMenuEnablesAfterOpeningDocument() throws {
+        let document = try makeDocument("notes/ReviewCollect.md")
+        let healthURL = temporaryRoot.appendingPathComponent("collection-health.log")
+        let pid = try launch(recents: [], language: "english", appleLanguages: ["en"], healthURL: healthURL)
+        try waitForEntries([], pid: pid)
+        XCTAssertTrue(Self.windows(pid: pid).isEmpty, "the scenario must start without a document")
+
+        func collectionItem(openFile: Bool) throws -> (AXUIElement, AXUIElement) {
+            let (bar, menu, _) = try locateOpenRecent(pid: pid)
+            if openFile {
+                NSRunningApplication(processIdentifier: pid)?.activate()
+                AXUIElementSetMessagingTimeout(bar, 2)
+                XCTAssertEqual(AXUIElementPerformAction(bar, kAXPressAction as CFString), .success)
+            }
+            return (menu, try XCTUnwrap(Self.children(of: menu).first { Self.title(of: $0) == "Collect Local Images…" }))
+        }
+
+        // As the existing menu harness documents, opening/canceling the menu
+        // must be the final GUI action. Read only the closed tree at startup.
+        let (_, initialItem) = try collectionItem(openFile: false)
+        XCTAssertFalse(Self.isEnabled(initialItem))
+        try open(document)
+        try waitForEntries([document], pid: pid)
+        let healthPath = healthURL.path
+        let healthDeadline = Date().addingTimeInterval(5)
+        var documentReady = false
+        repeat {
+            let health = (try? String(contentsOfFile: healthPath, encoding: .utf8)) ?? ""
+            documentReady = LaunchHealthReporter.parse(health).contains { record in
+                record.stage == "openURLs" && record.windows.contains { $0.isVisible && $0.title.contains("ReviewCollect") }
+            }
+            if documentReady { break }
+            usleep(50_000)
+        } while Date() < healthDeadline
+        XCTAssertTrue(documentReady, "production launch health must observe the visible opened document")
+
+        let (fileMenu, _) = try collectionItem(openFile: true)
+        defer { AXUIElementPerformAction(fileMenu, kAXCancelAction as CFString) }
+        let deadline = Date().addingTimeInterval(5)
+        var enabled = false
+        repeat {
+            enabled = Self.isEnabled(try collectionItem(openFile: false).1)
+            if enabled { break }
+            usleep(50_000)
+        } while Date() < deadline
+        print("Collection menu: production documentReady=\(documentReady), AX windows=\(Self.windows(pid: pid).map(Self.title(of:))), recents=\(Self.storedNames()), collection enabled=\(enabled)")
+        XCTAssertTrue(enabled, "Collect Local Images must enable after a document opens, without changing a setting or relaunching")
+    }
+
+    func testCollectionMenuFollowsTwoOpenDocumentsAndDisablesAfterLastClose() throws {
+        let first = try makeDocument("notes/CollectFirst.md")
+        let second = try makeDocument("notes/CollectSecond.md")
+        let pid = try launch(recents: [], language: "english", appleLanguages: ["en"])
+        try waitForEntries([], pid: pid)
+        try waitForCollectionEnabled(false, pid: pid)
+        try open(first)
+        try waitForEntries([first], pid: pid)
+        try waitForCollectionEnabled(true, pid: pid)
+        try open(second)
+        try waitForEntries([second, first], pid: pid)
+        try open(first)
+        try waitForEntries([first, second], pid: pid)
+        try waitForCollectionEnabled(true, pid: pid)
+        let close = try menuItem(commandCharacter: "W", pid: pid)
+        XCTAssertEqual(AXUIElementPerformAction(close, kAXPressAction as CFString), .success)
+        try waitForCollectionEnabled(true, pid: pid)
+        // Wait for the first native close to settle before issuing another.
+        usleep(300_000)
+        XCTAssertEqual(AXUIElementPerformAction(try menuItem(commandCharacter: "W", pid: pid), kAXPressAction as CFString), .success)
+        try waitForCollectionEnabled(false, pid: pid)
+        try assertOpenedCollectionEnabled(false, pid: pid)
+    }
+
+    func testCollectionMenuDisablesWhenSettingsTakesFocus() throws {
+        let document = try makeDocument("notes/CollectBehindSettings.md")
+        let pid = try launch(recents: [], language: "english", appleLanguages: ["en"])
+        try open(document)
+        try waitForEntries([document], pid: pid)
+        try waitForCollectionEnabled(true, pid: pid)
+        NSRunningApplication(processIdentifier: pid)?.activate()
+        let settings = try menuItem(commandCharacter: ",", pid: pid)
+        AXUIElementSetMessagingTimeout(settings, 2)
+        XCTAssertEqual(AXUIElementPerformAction(settings, kAXPressAction as CFString), .success)
+        let settingsWindow = try waitForWindow(pid: pid) {
+            Self.title(of: $0).contains("Settings") && Self.firstElement(ofRole: "AXPopUpButton", in: $0) != nil
+        }
+        let focusDeadline = Date().addingTimeInterval(5)
+        var settingsHasFocus = false
+        repeat {
+            var value: CFTypeRef?
+            if AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXFocusedWindowAttribute as CFString, &value) == .success,
+               let focused = Self.element(value) {
+                settingsHasFocus = CFEqual(focused, settingsWindow)
+            }
+            if settingsHasFocus { break }
+            usleep(50_000)
+        } while Date() < focusDeadline
+        XCTAssertTrue(settingsHasFocus, "the real Settings window must have keyboard focus")
+        print("Collection Settings: focused=\(settingsHasFocus), title=\(Self.title(of: settingsWindow))")
+        try waitForCollectionEnabled(false, pid: pid)
+        try assertOpenedCollectionEnabled(false, pid: pid)
+    }
+
+    private func waitForCollectionEnabled(_ expected: Bool, pid: pid_t) throws {
+        let deadline = Date().addingTimeInterval(5)
+        repeat {
+            let (_, menu, _) = try locateOpenRecent(pid: pid)
+            if let item = Self.children(of: menu).first(where: { Self.title(of: $0) == "Collect Local Images…" }),
+               Self.isEnabled(item) == expected { return }
+            usleep(50_000)
+        } while Date() < deadline
+        XCTFail("Collect Local Images enabled state did not become \(expected)")
+        throw GuardFailure("collection menu state did not converge")
+    }
+
+    private func assertOpenedCollectionEnabled(_ expected: Bool, pid: pid_t) throws {
+        let (bar, menu, _) = try locateOpenRecent(pid: pid)
+        NSRunningApplication(processIdentifier: pid)?.activate()
+        XCTAssertEqual(AXUIElementPerformAction(bar, kAXPressAction as CFString), .success)
+        defer { AXUIElementPerformAction(menu, kAXCancelAction as CFString) }
+        try waitForCollectionEnabled(expected, pid: pid)
+    }
+
     func testOpeningADocumentShowsInTheFileMenuWithoutRelaunching() throws {
         let seeded = try makeDocument("notes/Seeded.md")
         let opened = try makeDocument("notes/Opened.md")
@@ -303,7 +427,8 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
     private func launch(
         recents: [URL],
         language: String? = nil,
-        appleLanguages: [String]? = nil
+        appleLanguages: [String]? = nil,
+        healthURL: URL? = nil
     ) throws -> pid_t {
         var values: [String: Any] = [
             "MD2.RestoresWindowsOnLaunch": false,
@@ -322,7 +447,9 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
         configuration.createsNewApplicationInstance = true
-        configuration.environment = Self.launchEnvironment
+        var environment = Self.launchEnvironment
+        if let healthURL { environment["MD2_HEALTH_FILE"] = healthURL.path }
+        configuration.environment = environment
 
         let result = LaunchResult()
         let semaphore = DispatchSemaphore(value: 0)

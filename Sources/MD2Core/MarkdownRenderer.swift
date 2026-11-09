@@ -3640,7 +3640,7 @@ public struct MarkdownRenderer: Sendable {
 
         let nsRange = NSRange(source.startIndex..<source.endIndex, in: source)
         let matches = linkCandidates
-            ? MarkdownLinkSyntax.candidateRanges(in: source, includeImageMarker: pattern.hasPrefix("!")).compactMap {
+            ? MarkdownLinkSyntax.candidateRanges(in: source, includeImageMarker: pattern.hasPrefix("!"), input: .protectedEscapes).compactMap {
                 regex.firstMatch(in: source, options: .anchored, range: $0)
             }
             : regex.matches(in: source, range: nsRange)

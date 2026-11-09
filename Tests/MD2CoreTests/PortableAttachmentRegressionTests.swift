@@ -92,6 +92,30 @@ struct PortableAttachmentRegressionTests {
         #expect(!FileManager.default.fileExists(atPath: notes.appendingPathComponent("assets/literal.png").path))
     }
 
+    @Test func escapedAttributePayloadIsPreservedAndOnlyRealImagesAreCopied() throws {
+        for count in 0...6 {
+            let root = ImageAttachmentManager.physicalURL(FileManager.default.temporaryDirectory.appendingPathComponent("md2-attribute-parity-\(UUID())"))
+            defer { try? FileManager.default.removeItem(at: root) }
+            try FileManager.default.copyItem(at: fixtureURL(), to: root)
+            let notes = root.appendingPathComponent("notes")
+            let shared = root.appendingPathComponent("shared")
+            let png = try Data(contentsOf: shared.appendingPathComponent("图片 sample.png"))
+            try png.write(to: shared.appendingPathComponent("real.png"))
+            try png.write(to: shared.appendingPathComponent("literal.png"))
+            let attributes = "{width=31 note=\"" + String(repeating: "\\", count: count) + "} ![literal](../shared/literal.png)\"}"
+            let source = "![real](../shared/real.png)" + attributes
+            let even = count.isMultiple(of: 2)
+            let expected = "![real](assets/real.png)" + (even ? attributes.replacingOccurrences(of: "../shared/literal.png", with: "assets/literal.png") : attributes)
+            let rendered = MarkdownRenderer().render(source).body
+            #expect(rendered.components(separatedBy: "<img ").count - 1 == (even ? 2 : 1))
+            let result = AttachmentCollection.collect(source, destination: .init(documentDirectory: notes, folder: "assets", approvedExternalDirectory: nil))
+            #expect(result.written == (even ? 2 : 1))
+            #expect(result.references == (even ? 2 : 1))
+            #expect(result.text == expected)
+            #expect(FileManager.default.fileExists(atPath: notes.appendingPathComponent("assets/literal.png").path) == even)
+        }
+    }
+
     @Test func angleImageRendererRetainsEscapingAndRejectsActiveSchemes() {
         let renderer = MarkdownRenderer()
         let normal = renderer.render(#"![图 &amp; "quoted"](<图片 sample.png> "标题 &amp; &quot;"){width=31}"#).body
