@@ -152,6 +152,29 @@ if name == 'ditto':
         self.assertTrue((self.install / "original").exists())
         self.assertEqual(self.commands(), [])
 
+    def test_build_refuses_redirected_output_directory(self):
+        external = self.root / "external"
+        external.mkdir()
+        app = external / "Markdown2.app"
+        app.mkdir()
+        marker = app / "original"
+        marker.write_text("keep external app")
+        (self.root / "dist").symlink_to(external, target_is_directory=True)
+        for arguments in ((), ("--release",)):
+            with self.subTest(arguments=arguments):
+                result = self.run_package(*arguments)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertTrue(marker.exists())
+                self.assertEqual(self.commands(), [])
+
+    def test_build_refuses_dangling_output_directory_link(self):
+        missing = self.root / "missing-external"
+        (self.root / "dist").symlink_to(missing, target_is_directory=True)
+        result = self.run_package()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(missing.exists())
+        self.assertEqual(self.commands(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

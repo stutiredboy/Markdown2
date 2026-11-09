@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 APP_NAME="Markdown2"     # SPM product / executable name inside the bundle
 DISPLAY_NAME="Markdown2" # CFBundleName and the distributed .app/.dmg file name
 APP_DIR="$ROOT_DIR/dist/$DISPLAY_NAME.app"
@@ -40,6 +40,15 @@ while [ "$#" -gt 0 ]; do
         *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
     esac
 done
+
+validate_output_directory() {
+    # A redirected dist must never turn build-only packaging into installation.
+    if [ -L "$ROOT_DIR/dist" ] || { [ -e "$ROOT_DIR/dist" ] && [ ! -d "$ROOT_DIR/dist" ]; }; then
+        echo "dist must be a real directory inside the checkout, not a symbolic link or file." >&2
+        exit 1
+    fi
+}
+validate_output_directory
 
 if $SET_DEFAULT && [ -z "$INSTALL_APP" ]; then
     echo "--set-default requires --install /absolute/Name.app." >&2; exit 1
@@ -88,6 +97,7 @@ COPYRIGHT="Copyright © 2026 stutiredboy"
 cd "$ROOT_DIR"
 swift build -c release --product "$APP_NAME"
 
+validate_output_directory
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
