@@ -18,30 +18,56 @@ final class FindSessionGUITests: XCTestCase {
         harness.settings.newDocumentMode = .split
         harness.store.text = "needle one\n\nneedle two\n\nneedle three"
         harness.host(ContentView(document: harness.store, settings: harness.settings, onOpen: {}))
+        try waitForNative(harness, "both native split panes are mounted") {
+            harness.store.editorSession.textView?.window === harness.window
+                && harness.descendants(WKWebView.self).contains { $0.window === harness.window }
+        }
         let editor = try XCTUnwrap(harness.store.editorSession.textView)
         let web = try XCTUnwrap(harness.descendants(WKWebView.self).first)
         harness.store.requestFind(.show)
-        harness.spin()
+        try waitForNative(harness, "source query field is focused") {
+            guard let fieldEditor = harness.queryField?.currentEditor() else { return false }
+            return fieldEditor === harness.window.firstResponder
+        }
         try harness.enterQuery("needle")
-        harness.spin(for: 0.4)
+        try waitForSourceMatch(endingAt: 6, in: harness)
         let show = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
                                    timestamp: 0, windowNumber: harness.window.windowNumber, context: nil,
                                    characters: "f", charactersIgnoringModifiers: "f", isARepeat: false, keyCode: 3)!
         XCTAssertTrue(web.performKeyEquivalent(with: show))
-        harness.spin(for: 0.4)
+        try harness.waitForPage("""
+            document.querySelector('main')?.textContent.includes('needle three') &&
+            document.querySelectorAll('mark.md2-find').length === 3 &&
+            document.querySelectorAll('mark.md2-find')[0].classList.contains('md2-find-current')
+            """, in: web, context: "split preview restores its query before menu navigation")
+        try waitForNative(harness, "both pane queries are restored and the preview field is focused") {
+            let fields = harness.descendants(NSTextField.self).filter { $0.placeholderString == harness.settings.text(.findPlaceholder) }
+            let previewField = fields.max { $0.convert($0.bounds, to: nil).midX < $1.convert($1.bounds, to: nil).midX }
+            guard let fieldEditor = previewField?.currentEditor() else { return false }
+            return fields.count == 2 && fields.allSatisfy { $0.stringValue == "needle" }
+                && fieldEditor === harness.window.firstResponder
+        }
         harness.store.requestFind(.next)
-        harness.spin()
         let index = "Array.from(document.querySelectorAll('mark.md2-find')).findIndex(e=>e.classList.contains('md2-find-current'))"
+        try harness.waitForPage("\(index) === 1", in: web, context: "split preview advances to the second match")
         XCTAssertEqual(try harness.js(index, web) as? Int, 1)
         let fields = harness.descendants(NSTextField.self).filter { $0.placeholderString == harness.settings.text(.findPlaceholder) }
         XCTAssertEqual(fields.count, 2)
         let sourceField = try XCTUnwrap(fields.min { $0.convert($0.bounds, to: nil).midX < $1.convert($1.bounds, to: nil).midX })
         XCTAssertTrue(harness.window.makeFirstResponder(sourceField))
-        harness.spin()
+        // A user's next menu action is a later event. Let the native focus
+        // notification reach SwiftUI before dispatching that separate action;
+        // currentEditor itself changes synchronously in makeFirstResponder.
+        var focusEventDelivered = false
+        DispatchQueue.main.async { focusEventDelivered = true }
+        try waitForNative(harness, "unchanged source query field owns the keyboard") {
+            guard let fieldEditor = sourceField.currentEditor() else { return false }
+            return focusEventDelivered && fieldEditor === harness.window.firstResponder && sourceField.stringValue == "needle"
+        }
         XCTAssertTrue(sourceField.currentEditor() === harness.window.firstResponder, "source find field must own keyboard")
         // Merely refocus the unchanged query. No binding setter fires here.
         harness.store.requestFind(.next)
-        harness.spin()
+        try waitForSourceMatch(endingAt: 18, in: harness)
         XCTAssertEqual(editor.selectedRange().location, 18)
         XCTAssertEqual(try harness.js(index, web) as? Int, 1, "menu navigation must leave the other pane's match alone")
     }
@@ -52,6 +78,8 @@ final class FindSessionGUITests: XCTestCase {
         defer { harness.close() }
         let web = WKWebView(frame: .zero)
         let coordinator = MarkdownPreviewView.Coordinator()
+        var resultCount = 0
+        coordinator.onFindResult = { _, _ in resultCount += 1 }
         // Real WebKit, held before didFinish, with the same page API contract.
         _ = try harness.js("""
             window.index = 0;
@@ -65,7 +93,8 @@ final class FindSessionGUITests: XCTestCase {
         coordinator.handleFindNavigation(.previous, in: web)
         XCTAssertEqual(try harness.js("window.index", web) as? Int, 0, "navigation must wait for the incoming page's matches")
         coordinator.webView(web, didFinish: nil)
-        harness.spin(for: 0.3)
+        try waitForNative(harness, "the pending search and three navigations all returned") { resultCount == 4 }
+        try harness.waitForPage("window.index === 2", in: web, context: "queued navigation completes after didFinish", requireLoaded: false)
         XCTAssertEqual(try harness.js("window.index", web) as? Int, 2, "queued commands execute once and in order after search")
     }
 
@@ -75,26 +104,31 @@ final class FindSessionGUITests: XCTestCase {
         defer { harness.close() }
         let server = try HeldFindImageServer()
         defer { server.stop() }
-        harness.spin(until: { server.port != nil })
+        try waitForNative(harness, "loopback load barrier is listening") { server.port != nil }
         let port = try XCTUnwrap(server.port)
         let original = "needle one\n\nneedle two\n\nneedle three\n\n![load barrier](http://127.0.0.1:\(port)/held.png)"
         harness.store.text = original
         harness.host(ContentView(document: harness.store, settings: harness.settings, onOpen: {}))
         harness.store.requestFind(.show)
-        harness.spin(until: { harness.queryField != nil })
+        try waitForNative(harness, "source query field is focused") {
+            guard let fieldEditor = harness.queryField?.currentEditor() else { return false }
+            return fieldEditor === harness.window.firstResponder
+        }
         try harness.enterQuery("needle")
+        try waitForSourceMatch(endingAt: 6, in: harness)
         try harness.press(.closeFind)
         harness.store.requestMode(.read)
-        harness.spin(until: { !harness.descendants(WKWebView.self).isEmpty })
+        try waitForNative(harness, "Read preview is mounted") { !harness.descendants(WKWebView.self).isEmpty }
         let web = try XCTUnwrap(harness.descendants(WKWebView.self).first)
         // Hold an actual image response, so the current document has parsed but
         // WebKit cannot send didFinish. No fake find implementation or timers.
         try harness.waitForPage("document.querySelector('main')?.textContent.includes('needle three') && typeof window.__md2Find === 'function'",
                                 in: web, context: "delayed current document parsed", requireLoaded: false)
-        harness.spin(until: { server.hasRequest })
+        try waitForNative(harness, "WebKit reached the held image request") { server.hasRequest }
         XCTAssertTrue(server.hasRequest)
         XCTAssertTrue(web.isLoading)
-        XCTAssertFalse(try XCTUnwrap(web.navigationDelegate as? MarkdownPreviewView.Coordinator).isLoaded)
+        let coordinator = try XCTUnwrap(web.navigationDelegate as? MarkdownPreviewView.Coordinator)
+        XCTAssertFalse(coordinator.isLoaded)
         XCTAssertNil(harness.queryField)
         // Observe each real page operation's result without replacing its find
         // algorithm or issuing any extra searches/navigation from the fixture.
@@ -110,12 +144,15 @@ final class FindSessionGUITests: XCTestCase {
             }
             true;
             """, web)
-        XCTAssertTrue(web.performKeyEquivalent(with: harness.findKey()))
-        harness.spin()
-        XCTAssertTrue(web.performKeyEquivalent(with: harness.findKey()))
-        harness.spin()
-        XCTAssertTrue(web.performKeyEquivalent(with: harness.findKey(previous: true)))
-        harness.spin()
+        for previous in [false, false, true] {
+            let consumed = coordinator.lastFindNavigationToken
+            XCTAssertTrue(web.performKeyEquivalent(with: harness.findKey(previous: previous)))
+            // Observe the real representable consuming each command token;
+            // fixed delays can collapse successive SwiftUI state assignments.
+            try waitForNative(harness, "preview accepted the next hidden navigation token") {
+                coordinator.lastFindNavigationToken != consumed
+            }
+        }
         XCTAssertEqual(try harness.js("document.querySelectorAll('mark.md2-find').length", web) as? Int, 0)
         server.release()
         try harness.waitForPage("document.querySelectorAll('mark.md2-find').length === 3 && Array.from(document.querySelectorAll('mark.md2-find')).findIndex(e=>e.classList.contains('md2-find-current')) === 1",
@@ -133,34 +170,45 @@ final class FindSessionGUITests: XCTestCase {
         let original = "needle one\n\nneedle two\n\n[needle three](https://example.com/needle)"
         harness.store.text = original
         harness.host(ContentView(document: harness.store, settings: harness.settings, onOpen: {}))
+        try waitForNative(harness, "the native source editor is mounted") {
+            harness.store.editorSession.textView?.window === harness.window
+        }
         let editor = try XCTUnwrap(harness.store.editorSession.textView)
         harness.store.requestFind(.show)
-        harness.spin()
+        try waitForNative(harness, "source query field is focused") {
+            guard let fieldEditor = harness.queryField?.currentEditor() else { return false }
+            return fieldEditor === harness.window.firstResponder
+        }
         try harness.enterQuery("needle")
-        harness.spin(for: 0.5)
+        try waitForSourceMatch(endingAt: 6, in: harness)
         XCTAssertEqual(editor.selectedRange().location, 6)
         try harness.press(.closeFind)
         XCTAssertTrue(editor.performKeyEquivalent(with: harness.findKey()))
-        harness.spin()
+        try waitForSourceMatch(endingAt: 18, in: harness)
         XCTAssertEqual(editor.selectedRange().location, 18)
         XCTAssertNil(harness.queryField)
         XCTAssertTrue(editor.performKeyEquivalent(with: harness.findKey(previous: true)))
-        harness.spin()
+        try waitForSourceMatch(endingAt: 6, in: harness)
         XCTAssertEqual(editor.selectedRange().location, 6)
         XCTAssertTrue(editor.performKeyEquivalent(with: harness.findKey(previous: true)))
-        harness.spin()
         let sourceOnlyMatch = (original as NSString).range(of: "needle", options: .backwards)
+        try waitForSourceMatch(endingAt: NSMaxRange(sourceOnlyMatch), in: harness)
         XCTAssertEqual(editor.selectedRange().location, NSMaxRange(sourceOnlyMatch), "source search includes link destinations")
         XCTAssertTrue(editor.performKeyEquivalent(with: harness.findKey()))
-        harness.spin()
+        try waitForSourceMatch(endingAt: 6, in: harness)
         XCTAssertEqual(editor.selectedRange().location, 6)
         harness.store.requestFind(.show)
-        harness.spin()
+        try waitForNative(harness, "source Find reopens with its saved query and keyboard focus") {
+            guard let field = harness.queryField, let fieldEditor = field.currentEditor() else { return false }
+            return field.stringValue == "needle" && fieldEditor === harness.window.firstResponder
+        }
         XCTAssertEqual(harness.queryField?.stringValue, "needle")
         try harness.press(.closeFind)
 
         harness.store.requestMode(.read)
-        harness.spin(until: { harness.descendants(WKWebView.self).first != nil && editor.window == nil })
+        try waitForNative(harness, "Read replaces the source editor with a preview") {
+            harness.descendants(WKWebView.self).first != nil && editor.window == nil
+        }
         let web = try XCTUnwrap(harness.descendants(WKWebView.self).first)
         try harness.waitForPage("""
             document.readyState === 'complete' && document.querySelector('main')?.textContent.includes('needle three') &&
@@ -177,18 +225,46 @@ final class FindSessionGUITests: XCTestCase {
                                 in: web, context: "hidden Read Shift-Cmd-G returns")
         XCTAssertEqual(try harness.js("Array.from(document.querySelectorAll('mark.md2-find')).findIndex(e=>e.classList.contains('md2-find-current'))", web) as? Int, 0)
         harness.store.requestFind(.show)
-        harness.spin()
+        try waitForNative(harness, "Read Find reopens with its saved query and keyboard focus") {
+            guard let field = harness.queryField, let fieldEditor = field.currentEditor() else { return false }
+            return field.stringValue == "needle" && fieldEditor === harness.window.firstResponder
+        }
         XCTAssertEqual(harness.queryField?.stringValue, "needle")
         try harness.press(.closeFind)
 
         harness.store.requestMode(.split)
-        harness.spin(until: { editor.window != nil })
-        harness.spin(for: 0.6)
+        try waitForSourceMatch(endingAt: 6, in: harness)
         harness.store.requestFind(.next)
-        harness.spin()
+        try waitForSourceMatch(endingAt: 18, in: harness)
         XCTAssertEqual(editor.selectedRange().location, 18)
         XCTAssertNil(harness.queryField)
         XCTAssertEqual(harness.store.text, original)
+    }
+
+    @MainActor
+    private func waitForNative(_ harness: InteractionTestWindow, _ context: String,
+                               file: StaticString = #filePath, line: UInt = #line,
+                               until predicate: () -> Bool) throws {
+        var satisfied = false
+        harness.spin(until: { satisfied = predicate(); return satisfied })
+        let fields = harness.descendants(NSTextField.self).filter { $0.placeholderString == harness.settings.text(.findPlaceholder) }
+        _ = try XCTUnwrap(satisfied ? true : nil,
+            "\(context): selection=\(String(describing: harness.store.editorSession.textView?.selectedRange())), fields=\(fields.map(\.stringValue)), firstResponder=\(String(describing: harness.window.firstResponder))",
+            file: file, line: line)
+    }
+
+    @MainActor
+    private func waitForSourceMatch(endingAt location: Int, in harness: InteractionTestWindow,
+                                    file: StaticString = #filePath, line: UInt = #line) throws {
+        try waitForNative(harness, "source needle match ends at \(location)", file: file, line: line) {
+            guard let editor = harness.store.editorSession.textView, editor.window != nil,
+                  editor.selectedRange() == NSRange(location: location, length: 0) else { return false }
+            // The retained caret can already be at this offset before a new
+            // host rebuilds the query. Its actual find highlight proves the
+            // new match index was applied as well.
+            return editor.layoutManager?.temporaryAttribute(.backgroundColor, atCharacterIndex: location - 1,
+                                                             effectiveRange: nil) != nil
+        }
     }
 }
 

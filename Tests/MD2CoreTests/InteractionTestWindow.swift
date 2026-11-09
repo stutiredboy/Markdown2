@@ -47,7 +47,8 @@ final class InteractionTestWindow {
         let buttons = descendants(NSButton.self)
         let button = try XCTUnwrap(buttons.max { $0.convert($0.bounds, to: nil).midX < $1.convert($1.bounds, to: nil).midX })
         button.performClick(nil)
-        spin()
+        spin(until: { queryField == nil })
+        XCTAssertNil(queryField, "closing Find must remove its native query field")
     }
     func findKey(previous: Bool = false) -> NSEvent {
         NSEvent.keyEvent(with: .keyDown, location: .zero,
