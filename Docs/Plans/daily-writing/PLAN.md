@@ -44,6 +44,12 @@ silently rewritten or claimed as collected. Reference-style image handling must
 preserve any shared link-definition semantics or report that occurrence as
 unsupported. Never fetch remote images automatically.
 
+Common single-line angle-wrapped destinations, including Chinese filenames with
+spaces and an optional title, are part of the collection acceptance fixture and
+must be supported. Complex multiline syntax may remain unchanged with a clear
+report. Image-internal dependencies (for example an SVG's external resources)
+are not recursively collected and must not be claimed as self-contained.
+
 ## Shared safety and interaction contract
 
 - Reuse the PR #55 image content validation, read/decode budgets, external-folder
