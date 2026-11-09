@@ -655,9 +655,20 @@ final class MenuLanguageGUITests: XCTestCase {
     }
 
     private static func firstElement(in root: AXUIElement, where matches: (AXUIElement) -> Bool) -> AXUIElement? {
-        for child in children(of: root) {
+        // During a native hierarchy transition AX can repeat an ancestor in
+        // its children. Preserve depth-first order without recursing forever
+        // (the old walker exhausted 32,561 stack frames in a Settings lookup).
+        var pending = Array(children(of: root).reversed())
+        var visited = [root]
+        while let child = pending.popLast() {
+            guard !visited.contains(where: { CFEqual($0, child) }) else { continue }
+            guard visited.count < 4_096 else {
+                XCTFail("Accessibility search exceeded 4096 distinct nodes while looking below role \(role(of: root) ?? "unknown")")
+                return nil
+            }
+            visited.append(child)
             if matches(child) { return child }
-            if let nested = firstElement(in: child, where: matches) { return nested }
+            pending.append(contentsOf: children(of: child).reversed())
         }
         return nil
     }
