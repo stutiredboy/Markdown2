@@ -226,8 +226,13 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
         guard allowed else { return false }
         if !isHistory { undoManager.beginUndoGrouping() }
         undoManager.registerUndo(withTarget: self) { session in
-            session.applyFindEdit(range: inverseRange, replacement: original, scope: oldScope,
-                                  selection: oldSelection, actionName: actionName)
+            // Pre-Swift 6.2 SDKs import this handler as nonisolated. This
+            // document's AppKit undo manager invokes it synchronously on the
+            // main thread; keep the inverse inside the current undo/redo group.
+            MainActor.assumeIsolated { () -> Void in
+                session.applyFindEdit(range: inverseRange, replacement: original, scope: oldScope,
+                                      selection: oldSelection, actionName: actionName)
+            }
         }
         isApplyingFindEdit = true
         find.replacementCount = nil
