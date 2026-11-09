@@ -177,6 +177,11 @@ final class DocumentStore: ObservableObject {
     /// Injected so the save-before-attachment flow can be tested without the
     /// modal `NSSavePanel`.
     private let saveLocationPicker: @MainActor (String) -> URL?
+    @Published private(set) var isWorkingOnAttachments = false
+    /// Injectable asynchronous boundary; production work never decodes on MainActor.
+    var attachmentWorker: @Sendable (AttachmentCollection.Job) async -> AttachmentCollection.Output = { job in
+        await Task.detached(priority: .userInitiated) { job.run() }.value
+    }
     private let confirmExternalAttachmentDirectory: (@MainActor (URL) -> Bool)?
     /// Approval belongs to this document and exact resolved target, for this session.
     private var approvedAttachmentDestinations: Set<AttachmentApproval> = []
@@ -367,70 +372,112 @@ final class DocumentStore: ObservableObject {
         return panel.url
     }
 
-    /// Turns image sources into the Markdown to insert — one `![alt](path)`
-    /// reference per image, newline-joined — or `nil` when nothing should be
-    /// inserted.
-    ///
-    /// An existing file (dropped, or a pasted file URL) is linked in place at its
-    /// absolute path and needs no save. Raw clipboard data (a screenshot) has no
-    /// location, so it is written into `folder` (document-relative) as PNG, which
-    /// first requires saving an untitled document — prompting once; a cancelled
-    /// save inserts nothing and a write failure surfaces through `alert`.
-    func insertImageAttachments(_ sources: [ImageAttachmentSource], folder: String) -> String? {
-        guard !sources.isEmpty else { return nil }
-
-        // Only raw clipboard data must be written into the document-relative
-        // folder, which needs a file-backed document; linked files need no save.
-        let needsAttachmentFolder = sources.contains { source in
-            if case .imageData = source { return true }
-            return false
+    /// Validation/copying runs off MainActor. Passing an insertion range applies
+    /// the result through the retained text system, as a single native undo step.
+    func insertImageAttachments(_ sources: [ImageAttachmentSource], folder: String,
+                                handling: ImageFileHandling = .copy,
+                                insertionRange: NSRange? = nil, expectedText: String? = nil) async -> String? {
+        guard !sources.isEmpty, !isWorkingOnAttachments, !isClosed,
+              !hasExternalConflict, !backingFileMissing,
+              editorSession.textView?.hasMarkedText() != true,
+              expectedText.map({ (text as NSString).isEqual(to: $0) }) ?? true else { return nil }
+        let identity = documentIdentity, revision = textMutationRevision
+        let selection = editorSession.textView?.selectedRange()
+        let needsFolder = handling == .copy || sources.contains { if case .imageData = $0 { return true }; return false }
+        if needsFolder, fileURL == nil { guard save(), fileURL != nil else { return nil } }
+        let url = fileURL
+        guard attachmentSnapshotIsCurrent(identity, revision: revision, url: url),
+              selection == editorSession.textView?.selectedRange() else { return nil }
+        let destination: AttachmentCollection.Destination?
+        if needsFolder {
+            guard let resolved = attachmentDestination(folder: folder) else { return nil }
+            destination = resolved
+        } else { destination = nil }
+        guard attachmentSnapshotIsCurrent(identity, revision: revision, url: url) else { return nil }
+        isWorkingOnAttachments = true
+        defer { isWorkingOnAttachments = false }
+        let output = await attachmentWorker(.insert(sources, handling, destination))
+        refreshFileLocation()
+        guard attachmentSnapshotIsCurrent(identity, revision: revision, url: url),
+              selection == editorSession.textView?.selectedRange() else {
+            reportAttachments(output, adopted: false, collection: false); return nil
         }
-        if needsAttachmentFolder, fileURL == nil {
-            guard save(), fileURL != nil else { return nil }
+        if let range = insertionRange, !output.text.isEmpty {
+            let original = text as NSString
+            guard range.location != NSNotFound, range.location >= 0, range.length >= 0,
+                  range.location <= original.length, range.length <= original.length - range.location,
+                  applyAttachmentEdit(changing: text,
+                      to: original.replacingCharacters(in: range, with: output.text)) else {
+                reportAttachments(output, adopted: false, collection: false); return nil
+            }
+            editorSession.textView?.setSelectedRange(NSRange(location: range.location + output.text.utf16.count, length: 0))
         }
+        if !output.issues.isEmpty { reportAttachments(output, adopted: true, collection: false) }
+        return output.text.isEmpty ? nil : output.text
+    }
 
+    func collectLocalImages(folder: String) async {
+        guard !isWorkingOnAttachments, !isClosed, !hasExternalConflict, !backingFileMissing,
+              editorSession.textView?.hasMarkedText() != true else { return }
+        let identity = documentIdentity, revision = textMutationRevision
+        let source = text
+        if fileURL == nil { guard save(), fileURL != nil else { return } }
+        let url = fileURL
+        guard let destination = attachmentDestination(folder: folder),
+              attachmentSnapshotIsCurrent(identity, revision: revision, url: url) else { return }
+        isWorkingOnAttachments = true
+        defer { isWorkingOnAttachments = false }
+        let output = await attachmentWorker(.collect(source, destination))
+        refreshFileLocation()
+        guard attachmentSnapshotIsCurrent(identity, revision: revision, url: url),
+              applyAttachmentEdit(changing: source, to: output.text) else {
+            reportAttachments(output, adopted: false, collection: true); return
+        }
+        reportAttachments(output, adopted: true, collection: true)
+    }
+
+    private func applyAttachmentEdit(changing current: String, to updated: String) -> Bool {
+        // An explicit group also works when a caller disables groupsByEvent.
+        // Keep the entire collection separate from the preceding native typing.
+        undoManager.beginUndoGrouping()
+        defer { undoManager.endUndoGrouping() }
+        return editorSession.applyUndoableEdit(changing: current, to: updated)
+    }
+
+    private func attachmentSnapshotIsCurrent(_ identity: UUID, revision: Int, url: URL?) -> Bool {
+        !Task.isCancelled && !isClosed && documentIdentity == identity && textMutationRevision == revision && fileURL == url &&
+            !hasExternalConflict && !backingFileMissing && editorSession.textView?.hasMarkedText() != true
+    }
+
+    private func attachmentDestination(folder: String) -> AttachmentCollection.Destination? {
+        guard let baseURL, let fileURL else { return nil }
+        let destination = ImageAttachmentManager.destination(toFolder: folder, documentDirectory: baseURL)
         var approvedDirectory: URL?
-        if needsAttachmentFolder, let baseURL, let fileURL {
-            let destination = ImageAttachmentManager.destination(toFolder: folder, documentDirectory: baseURL)
-            if destination.isExternal {
-                let approval = AttachmentApproval(document: fileURL.standardizedFileURL, directory: destination.directory)
-                if !approvedAttachmentDestinations.contains(approval) {
-                    let confirmed = confirmExternalAttachmentDirectory?(destination.directory)
-                        ?? presentExternalAttachmentConfirmation(destination.directory)
-                    guard confirmed else { return nil }
-                    approvedAttachmentDestinations.insert(approval)
-                }
-                approvedDirectory = destination.directory
+        if destination.isExternal {
+            let approval = AttachmentApproval(document: fileURL.standardizedFileURL, directory: destination.directory)
+            if !approvedAttachmentDestinations.contains(approval) {
+                let confirmed = confirmExternalAttachmentDirectory?(destination.directory)
+                    ?? presentExternalAttachmentConfirmation(destination.directory)
+                guard confirmed else { return nil }
+                approvedAttachmentDestinations.insert(approval)
             }
+            approvedDirectory = destination.directory
         }
-        let manager = ImageAttachmentManager()
-        var references: [String] = []
-        for source in sources {
-            switch source {
-            case let .file(url):
-                references.append(ImageAttachmentManager.directImageReference(forFile: url))
-            case let .imageData(data):
-                guard let documentDirectory = baseURL else { continue }
-                do {
-                    let written = try manager.writeImageData(
-                        data,
-                        toFolder: folder,
-                        documentDirectory: documentDirectory,
-                        approvedExternalDirectory: approvedDirectory
-                    )
-                    let linkPath = ImageAttachmentManager.markdownLinkPath(written.relativePath)
-                    references.append("![\(written.altText)](\(linkPath))")
-                } catch {
-                    alert = DocumentAlert(
-                        message: alertText(.alertAttachmentSaveFailed),
-                        detail: error.localizedDescription
-                    )
-                }
-            }
-        }
+        return AttachmentCollection.Destination(documentDirectory: baseURL, folder: folder,
+                                                 approvedExternalDirectory: approvedDirectory)
+    }
 
-        guard !references.isEmpty else { return nil }
-        return references.joined(separator: "\n")
+    private func reportAttachments(_ output: AttachmentCollection.Output, adopted: Bool, collection: Bool) {
+        var lines = [alertText(.attachmentWrittenCount, String(output.written))]
+        if !adopted { lines.append(alertText(.attachmentStale)) }
+        else { lines.append(alertText(.attachmentReferenceCount, String(output.references))) }
+        if collection { lines.append(alertText(.attachmentCollectionScope)) }
+        for issue in output.issues.prefix(8) {
+            let reason = alertText(issue.reason)
+            lines.append(issue.name.isEmpty ? reason : "\(reason): \(issue.name)")
+        }
+        if output.issues.count > 8 { lines.append(alertText(.alertHTMLExportMoreImages, String(output.issues.count - 8))) }
+        alert = DocumentAlert(message: alertText(.attachmentReport), detail: lines.joined(separator: "\n\n"))
     }
 
     private func presentExternalAttachmentConfirmation(_ directory: URL) -> Bool {

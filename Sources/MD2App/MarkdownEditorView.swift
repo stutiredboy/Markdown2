@@ -102,12 +102,9 @@ struct MarkdownEditorView: NSViewRepresentable {
     var onFindShortcut: (_ action: FindCommand.Action) -> Void = { _ in }
     /// Reports match count and the 1-based index of the current match.
     var onFindResult: (_ total: Int, _ index: Int) -> Void = { _, _ in }
-    /// Turns pasted/dropped image sources into stored attachments and returns the
-    /// Markdown text to insert (one `![alt](path)` per image, newline-joined), or
-    /// `nil` when nothing should be inserted (unsupported payload, cancelled save,
-    /// or a write failure). The editor inserts the returned text on the native
-    /// edit path so dirty marking, styling, autosave, selection, and undo apply.
-    var onInsertImageAttachments: (_ sources: [ImageAttachmentSource]) -> String? = { _ in nil }
+    /// Captures the intended range and source before asynchronous attachment
+    /// work. DocumentStore performs guarded, undoable adoption on completion.
+    var onInsertImageAttachments: (_ sources: [ImageAttachmentSource], _ range: NSRange, _ source: String) async -> Void = { _, _, _ in }
     /// Whether the source line-number gutter is drawn in the text view's left
     /// inset. Toggling it changes no text, selection, or geometry, so it cannot
     /// re-wrap the document; while it is on, clicking a number selects its line.
@@ -139,8 +136,8 @@ struct MarkdownEditorView: NSViewRepresentable {
             sourceTextView.onFindAction = { [weak coordinator] action in
                 coordinator?.onFindShortcut(action)
             }
-            sourceTextView.onInsertImageAttachments = { [weak coordinator] sources in
-                coordinator?.onInsertImageAttachments(sources)
+            sourceTextView.onInsertImageAttachments = { [weak coordinator] sources, range, source in
+                await coordinator?.onInsertImageAttachments(sources, range, source)
             }
             sourceTextView.showsLineNumbers = showsLineNumbers
         }
@@ -490,7 +487,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         }
         var onFindShortcut: (_ action: FindCommand.Action) -> Void = { _ in }
         var onFindResult: (_ total: Int, _ index: Int) -> Void = { _, _ in }
-        var onInsertImageAttachments: (_ sources: [ImageAttachmentSource]) -> String? = { _ in nil }
+        var onInsertImageAttachments: (_ sources: [ImageAttachmentSource], _ range: NSRange, _ source: String) async -> Void = { _, _, _ in }
         var lastFocusToken: UUID?
         /// Tokens of the most recently consumed find/replace commands, so a command
         /// is acted on exactly once even if `updateNSView` re-runs while the same
@@ -1792,9 +1789,9 @@ final class MarkdownSourceTextView: NSTextView {
     }
 
     var onFindAction: ((FindCommand.Action) -> Void)?
-    /// Turns pasted/dropped image sources into stored attachments and returns the
-    /// Markdown to insert, or `nil` to insert nothing. Set by `MarkdownEditorView`.
-    var onInsertImageAttachments: (([ImageAttachmentSource]) -> String?)?
+    /// Captures source/range for asynchronous attachment work and guarded native
+    /// undo adoption. Set by MarkdownEditorView; never inserts a stale result.
+    var onInsertImageAttachments: (([ImageAttachmentSource], NSRange, String) async -> Void)?
 
     /// Whether the source line-number gutter is drawn. Setting it only
     /// invalidates the gutter strip — the text container's geometry is never
@@ -1992,8 +1989,11 @@ final class MarkdownSourceTextView: NSTextView {
             super.paste(sender)
             return
         }
-        if let snippet = onInsertImageAttachments?(sources), !snippet.isEmpty {
-            insertText(snippet, replacementRange: selectedRange())
+        let range = selectedRange(), source = string
+        Task { [weak self] in
+            guard let self, self.selectedRange() == range,
+                  (self.string as NSString).isEqual(to: source) else { return }
+            await self.onInsertImageAttachments?(sources, range, source)
         }
     }
 
@@ -2049,15 +2049,13 @@ final class MarkdownSourceTextView: NSTextView {
 
         let dropPoint = convert(sender.draggingLocation, from: nil)
         let insertionIndex = characterIndexForInsertion(at: dropPoint)
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
+        let source = string, selection = selectedRange()
+        let range = NSRange(location: min(insertionIndex, (source as NSString).length), length: 0)
+        Task { [weak self] in
+            guard let self, self.selectedRange() == selection,
+                  (self.string as NSString).isEqual(to: source) else { return }
             self.window?.makeFirstResponder(self)
-            guard let snippet = self.onInsertImageAttachments?(sources), !snippet.isEmpty else {
-                return
-            }
-            let length = (self.string as NSString).length
-            let range = NSRange(location: min(insertionIndex, length), length: 0)
-            self.insertText(snippet, replacementRange: range)
+            await self.onInsertImageAttachments?(sources, range, source)
         }
         return true
     }
@@ -2068,9 +2066,12 @@ final class MarkdownSourceTextView: NSTextView {
         if let urls = imageFileURLs(from: pasteboard), !urls.isEmpty {
             return urls.map { .file($0) }
         }
-        if pasteboard.canReadObject(forClasses: [NSImage.self], options: nil),
-           let images = pasteboard.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage] {
-            return images.compactMap { $0.tiffRepresentation.map(ImageAttachmentSource.imageData) }
+        let preferred: [NSPasteboard.PasteboardType] = [.png, .tiff]
+        let otherImages = (pasteboard.types ?? []).filter {
+            !preferred.contains($0) && UTType($0.rawValue)?.conforms(to: .image) == true
+        }
+        for type in preferred + otherImages {
+            if let data = pasteboard.data(forType: type) { return [.imageData(data)] }
         }
         return []
     }

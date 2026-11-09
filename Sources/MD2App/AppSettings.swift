@@ -82,11 +82,13 @@ final class AppSettings: ObservableObject {
         }
     }
 
-    /// Document-relative folder where raw clipboard images are stored, e.g.
-    /// `assets` or `images/screenshots`. Dropped/pasted image files are linked
-    /// in place. The raw user value is kept as-typed; it is normalized
-    /// (absolute/`..`/escaping paths rejected back to `assets`) at write time by
-    /// `ImageAttachmentManager`.
+    /// Copying makes future file insertions document-relative; explicit linking
+    /// retains the original location. This never migrates existing references.
+    @Published var imageFileHandling: ImageFileHandling {
+        didSet { defaults.set(imageFileHandling.rawValue, forKey: Keys.imageFileHandling) }
+    }
+
+    /// Relative folder for copied image files and clipboard screenshots.
     @Published var attachmentFolder: String {
         didSet {
             defaults.set(attachmentFolder, forKey: Keys.attachmentFolder)
@@ -195,6 +197,7 @@ final class AppSettings: ObservableObject {
             showsLineNumbersInPreview = defaults.bool(forKey: Keys.showsLineNumbersInPreview)
         }
 
+        imageFileHandling = defaults.string(forKey: Keys.imageFileHandling).flatMap(ImageFileHandling.init(rawValue:)) ?? .copy
         let storedFolder = defaults.string(forKey: Keys.attachmentFolder)
         attachmentFolder = (storedFolder?.isEmpty == false) ? storedFolder! : "assets"
 
@@ -334,6 +337,7 @@ private enum Keys {
     static let restoresWindowsOnLaunch = "MD2.RestoresWindowsOnLaunch"
     static let showsLineNumbersInEditor = "MD2.ShowsLineNumbersInEditor"
     static let showsLineNumbersInPreview = "MD2.ShowsLineNumbersInPreview"
+    static let imageFileHandling = "MD2.ImageFileHandling"
     static let attachmentFolder = "MD2.AttachmentFolder"
     static let exportProfile = "MD2.ExportProfile"
     static let citationStyle = "MD2.CitationStyle"
@@ -364,7 +368,7 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     }
 }
 
-enum L10nKey: String, CaseIterable {
+enum L10nKey: String, CaseIterable, Sendable {
     case typography, editorFont, readingFont, fontSize, readingWidth, zoomIn, zoomOut, resetZoom, zoom
     case fontSystem, fontSerif, fontMonospaced, readingNarrow, readingComfortable, readingWide, readingFull
     case selectionStats
@@ -480,6 +484,24 @@ enum L10nKey: String, CaseIterable {
     case languageChangedMessage
     case restartNow
     case restartLater
+    case collectLocalImages
+    case imageFileHandling
+    case imageFileCopy
+    case imageFileLink
+    case attachmentReport
+    case attachmentWrittenCount
+    case attachmentReferenceCount
+    case attachmentStale
+    case attachmentCollectionScope
+    case attachmentUnsupportedSyntax
+    case attachmentExcludedBlocks
+    case attachmentNonlocal
+    case attachmentInvalidImage
+    case attachmentResourceLimit
+    case attachmentReadWriteFailed
+    case attachmentDestinationChanged
+    case attachmentScanLimit
+    case attachmentExternalNotPortable
     case attachmentFolder
     case attachmentFolderHelp
     case imageNotFound
@@ -711,8 +733,26 @@ enum L10n {
         .languageChangedMessage: "The menu bar updates to the new language after Markdown2 restarts.",
         .restartNow: "Restart Now",
         .restartLater: "Later",
+        .collectLocalImages: "Collect Local Images…",
+        .imageFileHandling: "Dropped / Pasted Image Files",
+        .imageFileCopy: "Copy to Attachment Folder (Default)",
+        .imageFileLink: "Link Original Location",
+        .attachmentReport: "Image Attachments",
+        .attachmentWrittenCount: "%@ new image files saved. Undo does not delete attachments.",
+        .attachmentReferenceCount: "%@ image references ready.",
+        .attachmentStale: "The document, selection or input state changed. Source text was not changed; completed copies remain in the attachment folder.",
+        .attachmentCollectionScope: "Scope: simple top-level inline Markdown images only. Reference-style images, containers (lists/quotes), code, HTML, math, diagram internals and SVG-internal resources are not collected. Remote resources are never downloaded. Move the document together with its local attachment folder.",
+        .attachmentUnsupportedSyntax: "Unsupported image syntax; left unchanged",
+        .attachmentExcludedBlocks: "Blocks excluded from the supported scope",
+        .attachmentNonlocal: "Remote, embedded or unsupported URL; left unchanged",
+        .attachmentInvalidImage: "Not a supported, complete image",
+        .attachmentResourceLimit: "Image size or decoding limit exceeded",
+        .attachmentReadWriteFailed: "Missing, unreadable image or attachment write failed",
+        .attachmentDestinationChanged: "Attachment folder changed; choose the external location again",
+        .attachmentScanLimit: "Document exceeds the safe collection scan limit; nothing changed",
+        .attachmentExternalNotPortable: "External attachment folder: moving this document directory alone will not carry these images",
         .attachmentFolder: "Image Attachment Folder",
-        .attachmentFolderHelp: "Screenshots pasted from the clipboard are saved in this document-relative folder. Dragged or pasted image files are linked in place. Defaults to assets.",
+        .attachmentFolderHelp: "Copied image files and screenshots are saved in this document-relative folder. Move it together with the document. Defaults to assets.",
         .imageNotFound: "Image not found",
         .remoteImageUnavailable: "Remote image could not be loaded",
         .imageLoadFailed: "Image could not be loaded",
@@ -918,8 +958,26 @@ enum L10n {
         .languageChangedMessage: "菜单栏将在 Markdown2 重启后切换到新语言。",
         .restartNow: "立即重启",
         .restartLater: "稍后",
+        .collectLocalImages: "收集本地图片…",
+        .imageFileHandling: "拖入或粘贴的图片文件",
+        .imageFileCopy: "复制到附件文件夹（默认）",
+        .imageFileLink: "链接原位置",
+        .attachmentReport: "图片附件",
+        .attachmentWrittenCount: "已保存 %@ 个新图片文件。撤销不会删除附件。",
+        .attachmentReferenceCount: "已处理 %@ 处图片引用。",
+        .attachmentStale: "文档、选区或输入状态已改变，未修改源文本；已复制的图片保留在附件文件夹。",
+        .attachmentCollectionScope: "范围：仅收集简单顶层行内 Markdown 图片。引用式图片、列表/引用等容器、代码、HTML、公式、图表及 SVG 内部资源不在范围内；不会下载网络资源。移动资料时请连同本地附件文件夹一起移动。",
+        .attachmentUnsupportedSyntax: "不支持的图片语法，已保留原文",
+        .attachmentExcludedBlocks: "因超出支持范围而保留的文本块数",
+        .attachmentNonlocal: "网络、内嵌或不支持的 URL，已保留原文",
+        .attachmentInvalidImage: "不是受支持的完整图片",
+        .attachmentResourceLimit: "图片大小或解码量超过上限",
+        .attachmentReadWriteFailed: "图片缺失、无法读取或附件写入失败",
+        .attachmentDestinationChanged: "附件文件夹已改变，请重新选择外部位置",
+        .attachmentScanLimit: "文档超过安全扫描上限，未作更改",
+        .attachmentExternalNotPortable: "附件文件夹位于外部：仅移动文档目录不会携带这些图片",
         .attachmentFolder: "图片附件文件夹",
-        .attachmentFolderHelp: "从剪贴板粘贴的截图会保存到该相对文档的文件夹；拖入或粘贴的图片文件会直接链接原位置。默认为 assets。",
+        .attachmentFolderHelp: "复制的图片文件和截图保存在此相对文档的文件夹中。移动文档时请连同它一起移动。默认为 assets。",
         .imageNotFound: "找不到图片",
         .remoteImageUnavailable: "无法加载远程图片",
         .imageLoadFailed: "无法加载图片",

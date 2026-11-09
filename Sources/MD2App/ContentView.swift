@@ -913,8 +913,9 @@ struct ContentView: View {
                     editorMatchTotal = total
                     editorMatchIndex = index
                 },
-                onInsertImageAttachments: { sources in
-                    document.insertImageAttachments(sources, folder: settings.attachmentFolder)
+                onInsertImageAttachments: { sources, range, source in
+                    _ = await document.insertImageAttachments(sources, folder: settings.attachmentFolder,
+                        handling: settings.imageFileHandling, insertionRange: range, expectedText: source)
                 },
                 showsLineNumbers: settings.showsLineNumbersInEditor,
                 session: document.editorSession,
