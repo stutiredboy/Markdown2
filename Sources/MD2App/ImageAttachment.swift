@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 
 /// One image the editor wants to reference. An existing file (dropped, or a
@@ -26,15 +27,16 @@ struct WrittenImageAttachment: Equatable {
 struct ImageAttachmentManager {
     static let defaultFolder = "assets"
 
-    var fileManager: FileManager = .default
-
     enum AttachmentError: LocalizedError {
         case unsupportedImageData
+        case externalDirectory(URL)
 
         var errorDescription: String? {
             switch self {
             case .unsupportedImageData:
                 return "The pasted image data could not be encoded."
+            case .externalDirectory(let url):
+                return "The attachment folder points outside this document’s directory: \(url.path). Choose this location explicitly before saving an image there."
             }
         }
     }
@@ -43,8 +45,8 @@ struct ImageAttachmentManager {
 
     /// Normalizes a user-configured attachment folder to a safe, document-relative
     /// POSIX path. Absolute paths, `~` expansion, and any `..` traversal collapse
-    /// back to the default so an attachment can never be written outside the
-    /// document directory. An empty/whitespace value also falls back to the default.
+    /// back to the default. The write boundary separately checks actual resolved
+    /// directories, including symlinks. Empty/whitespace also uses the default.
     static func normalizedFolder(_ raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return defaultFolder }
@@ -144,30 +146,126 @@ struct ImageAttachmentManager {
         return "![\(alt)](\(markdownLinkPath(url.path)))"
     }
 
-    /// Encodes raw clipboard bitmap data as PNG and writes it into `folder` beside
-    /// the document (creating the folder if needed), returning the relative path
-    /// and alt text for the Markdown reference.
+    struct Destination {
+        let documentDirectory: URL
+        let directory: URL
+        let relativeFolder: String
+        let isExternal: Bool
+    }
+
+    /// Resolve every existing symlink before any directory creation or file write.
+    /// Compare path components, not a textual prefix (`notes-other` is outside).
+    static func destination(toFolder folder: String, documentDirectory: URL) -> Destination {
+        let root = physicalURL(documentDirectory)
+        let normalized = normalizedFolder(folder)
+        let directory = physicalURL(root.appendingPathComponent(normalized, isDirectory: true))
+        let rootParts = root.pathComponents
+        return Destination(documentDirectory: root, directory: directory, relativeFolder: normalized,
+            isExternal: !directory.pathComponents.starts(with: rootParts))
+    }
+
+    /// Foundation deliberately preserves macOS aliases such as /var. Use
+    /// realpath for the existing prefix so O_NOFOLLOW can walk its physical path;
+    /// retain missing suffixes for document-local directory creation.
+    private static func physicalURL(_ url: URL) -> URL {
+        var prefix = url.resolvingSymlinksInPath()
+        var suffix: [String] = []
+        while true {
+            if let resolved = realpath(prefix.path, nil) {
+                defer { free(resolved) }
+                var result = URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
+                for component in suffix.reversed() { result.appendPathComponent(component, isDirectory: true) }
+                return result
+            }
+            guard errno == ENOENT, prefix.path != "/" else { return url.resolvingSymlinksInPath() }
+            suffix.append(prefix.lastPathComponent)
+            prefix.deleteLastPathComponent()
+        }
+    }
+
+    /// Raw clipboard data is saved beside the document by default. An external
+    /// symlink target needs explicit approval of that exact resolved directory.
+    /// Approval is checked anew on every write so retargeting a link cannot reuse it.
     func writeImageData(
         _ data: Data,
         toFolder folder: String,
-        documentDirectory: URL
+        documentDirectory: URL,
+        approvedExternalDirectory: URL? = nil
     ) throws -> WrittenImageAttachment {
         guard let png = Self.encodePNG(from: data) else {
             throw AttachmentError.unsupportedImageData
         }
-
-        let normalizedFolder = Self.normalizedFolder(folder)
-        let folderURL = documentDirectory.appendingPathComponent(normalizedFolder, isDirectory: true)
-        try fileManager.createDirectory(at: folderURL, withIntermediateDirectories: true)
-
-        let filename = Self.uniqueFilename(stem: Self.timestampStem(), ext: "png") { candidate in
-            fileManager.fileExists(atPath: folderURL.appendingPathComponent(candidate).path)
+        let destination = Self.destination(toFolder: folder, documentDirectory: documentDirectory)
+        guard !destination.isExternal || approvedExternalDirectory?.path == destination.directory.path else {
+            throw AttachmentError.externalDirectory(destination.directory)
         }
 
-        try png.write(to: folderURL.appendingPathComponent(filename), options: .atomic)
+        // Walk the resolved path with O_NOFOLLOW, pinning each directory as we
+        // descend. A link changed after the check fails instead of redirecting IO.
+        let root = destination.isExternal ? URL(fileURLWithPath: "/") : destination.documentDirectory
+        let rootFD = try Self.openDirectory(root)
+        defer { close(rootFD) }
+        let components = Array(destination.directory.pathComponents.dropFirst(root.pathComponents.count))
+        let directoryFD = try Self.descend(from: rootFD, components: components, create: true)
+        defer { close(directoryFD) }
 
-        let relativePath = normalizedFolder.isEmpty ? filename : "\(normalizedFolder)/\(filename)"
-        return WrittenImageAttachment(relativePath: relativePath, altText: "image")
+        // Create a new file exclusively relative to the pinned directory. This
+        // also treats dangling symlinks as collisions, and works on shared/removable
+        // filesystems without requiring hard-link support. Only a completed write
+        // returns a Markdown reference; a failed new file is removed.
+        let stem = Self.timestampStem()
+        var index = 1
+        while true {
+            let filename = index == 1 ? "\(stem).png" : "\(stem)-\(index).png"
+            let fileFD = openat(directoryFD, filename, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            if fileFD < 0 {
+                guard errno == EEXIST else { throw Self.posixError() }
+                index += 1
+                continue
+            }
+            let handle = FileHandle(fileDescriptor: fileFD, closeOnDealloc: true)
+            do {
+                try handle.write(contentsOf: png)
+                try handle.close()
+            } catch {
+                try? handle.close()
+                unlinkat(directoryFD, filename, 0)
+                throw error
+            }
+            return WrittenImageAttachment(relativePath: "\(destination.relativeFolder)/\(filename)", altText: "image")
+        }
+    }
+
+    private static func posixError() -> POSIXError {
+        POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+
+    private static func openDirectory(_ directory: URL) throws -> Int32 {
+        let rootFD = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard rootFD >= 0 else { throw posixError() }
+        defer { close(rootFD) }
+        return try descend(from: rootFD, components: Array(directory.pathComponents.dropFirst()), create: false)
+    }
+
+    private static func descend(from rootFD: Int32, components: [String], create: Bool) throws -> Int32 {
+        var current = dup(rootFD)
+        guard current >= 0 else { throw posixError() }
+        do {
+            for component in components {
+                var next = openat(current, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                if next < 0, errno == ENOENT, create {
+                    guard mkdirat(current, component, 0o755) == 0 || errno == EEXIST else { throw posixError() }
+                    next = openat(current, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                }
+                guard next >= 0 else { throw posixError() }
+                close(current)
+                current = next
+            }
+            return current
+        } catch {
+            close(current)
+            throw error
+        }
     }
 
     /// Encodes arbitrary bitmap data (TIFF from the pasteboard) as PNG. Returns

@@ -166,6 +166,13 @@ final class DocumentStore: ObservableObject {
     /// Injected so the save-before-attachment flow can be tested without the
     /// modal `NSSavePanel`.
     private let saveLocationPicker: @MainActor (String) -> URL?
+    private let confirmExternalAttachmentDirectory: (@MainActor (URL) -> Bool)?
+    /// Approval belongs to this document and exact resolved target, for this session.
+    private var approvedAttachmentDestinations: Set<AttachmentApproval> = []
+    private struct AttachmentApproval: Hashable {
+        let document: URL
+        let directory: URL
+    }
     /// Retains the in-flight print job for its (asynchronous) lifetime; cleared
     /// when printing completes. Like PDF export, printing is a derived artifact —
     /// it never touches `fileURL`, `isDirty`, or autosave.
@@ -250,6 +257,7 @@ final class DocumentStore: ObservableObject {
         pandocAvailabilityProvider: @escaping @MainActor () -> Bool = { PandocConverter.isAvailable() },
         conversionDestinationPicker: @escaping @MainActor (DocumentExportFormat, String) -> URL? = DocumentStore.presentConversionDestination,
         saveLocationPicker: @escaping @MainActor (String) -> URL? = DocumentStore.presentSaveLocation,
+        confirmExternalAttachmentDirectory: (@MainActor (URL) -> Bool)? = nil,
         exportProfileProvider: @escaping @MainActor () -> ExportProfile = { .default },
         renderConfigProvider: @escaping @MainActor () -> (citationStyle: CitationStyle, numberAllEquations: Bool) = { (.authorYear, false) },
         syntaxConfigProvider: @escaping @MainActor () -> (InlineFeatures, AlertLanguage) = { (.init(), .english) },
@@ -269,6 +277,7 @@ final class DocumentStore: ObservableObject {
         self.pandocAvailabilityProvider = pandocAvailabilityProvider
         self.conversionDestinationPicker = conversionDestinationPicker
         self.saveLocationPicker = saveLocationPicker
+        self.confirmExternalAttachmentDirectory = confirmExternalAttachmentDirectory
         self.exportProfileProvider = exportProfileProvider
         self.renderConfigProvider = renderConfigProvider
         self.syntaxConfigProvider = syntaxConfigProvider
@@ -359,6 +368,20 @@ final class DocumentStore: ObservableObject {
             guard save(), fileURL != nil else { return nil }
         }
 
+        var approvedDirectory: URL?
+        if needsAttachmentFolder, let baseURL, let fileURL {
+            let destination = ImageAttachmentManager.destination(toFolder: folder, documentDirectory: baseURL)
+            if destination.isExternal {
+                let approval = AttachmentApproval(document: fileURL.standardizedFileURL, directory: destination.directory)
+                if !approvedAttachmentDestinations.contains(approval) {
+                    let confirmed = confirmExternalAttachmentDirectory?(destination.directory)
+                        ?? presentExternalAttachmentConfirmation(destination.directory)
+                    guard confirmed else { return nil }
+                    approvedAttachmentDestinations.insert(approval)
+                }
+                approvedDirectory = destination.directory
+            }
+        }
         let manager = ImageAttachmentManager()
         var references: [String] = []
         for source in sources {
@@ -371,7 +394,8 @@ final class DocumentStore: ObservableObject {
                     let written = try manager.writeImageData(
                         data,
                         toFolder: folder,
-                        documentDirectory: documentDirectory
+                        documentDirectory: documentDirectory,
+                        approvedExternalDirectory: approvedDirectory
                     )
                     let linkPath = ImageAttachmentManager.markdownLinkPath(written.relativePath)
                     references.append("![\(written.altText)](\(linkPath))")
@@ -386,6 +410,16 @@ final class DocumentStore: ObservableObject {
 
         guard !references.isEmpty else { return nil }
         return references.joined(separator: "\n")
+    }
+
+    private func presentExternalAttachmentConfirmation(_ directory: URL) -> Bool {
+        let prompt = NSAlert()
+        prompt.alertStyle = .warning
+        prompt.messageText = alertText(.alertExternalAttachmentDirectory)
+        prompt.informativeText = alertText(.alertExternalAttachmentDirectoryDetail, directory.path)
+        prompt.addButton(withTitle: alertText(.cancel))
+        prompt.addButton(withTitle: alertText(.useAttachmentFolder))
+        return prompt.runModal() == .alertSecondButtonReturn
     }
 
     /// Exports the rendered preview to a paginated PDF chosen by the user. This

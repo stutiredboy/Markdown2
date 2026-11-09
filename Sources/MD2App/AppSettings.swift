@@ -438,6 +438,7 @@ enum L10nKey: String, CaseIterable {
     case alertPandocRequired
     case alertPandocRequiredDetail
     case alertHTMLExportInvalidImage, alertHTMLExportImageLimit
+    case alertExternalAttachmentDirectory, alertExternalAttachmentDirectoryDetail, useAttachmentFolder
     case alertAttachmentSaveFailed
     case alertExternalReloadFailedDetail
     case formatMenu, paragraphMenu
@@ -616,6 +617,9 @@ enum L10n {
         .alertPandocRequiredDetail: "Install Pandoc to enable DOCX and EPUB export.",
         .alertHTMLExportInvalidImage: "not a valid supported image",
         .alertHTMLExportImageLimit: "exceeds the export image size or decoding limit",
+        .alertExternalAttachmentDirectory: "Save images outside this document’s folder?",
+        .alertExternalAttachmentDirectoryDetail: "The attachment folder links to:\n%@\n\nUse this folder for pasted images in this document for this session, or cancel and choose a document-local attachment folder in Settings.",
+        .useAttachmentFolder: "Use This Folder",
         .alertAttachmentSaveFailed: "Could not save the image attachment.",
         .alertExternalReloadFailedDetail: "The file could not be re-read after it changed on disk.",
         .formatMenu: "Format",
@@ -787,6 +791,9 @@ enum L10n {
         .alertPandocRequiredDetail: "安装 Pandoc 后即可启用 DOCX 和 EPUB 导出。",
         .alertHTMLExportInvalidImage: "不是有效的受支持图片",
         .alertHTMLExportImageLimit: "超出导出图片大小或解码限制",
+        .alertExternalAttachmentDirectory: "将图片保存到文档文件夹之外？",
+        .alertExternalAttachmentDirectoryDetail: "附件文件夹链接到：\n%@\n\n可选择在本次会话中将此文档粘贴的图片保存到该位置，或取消并在设置中选择文档内的附件文件夹。",
+        .useAttachmentFolder: "使用此文件夹",
         .alertAttachmentSaveFailed: "无法保存图片附件。",
         .alertExternalReloadFailedDetail: "文件在磁盘上发生变化后无法重新读取。",
         .formatMenu: "格式",
