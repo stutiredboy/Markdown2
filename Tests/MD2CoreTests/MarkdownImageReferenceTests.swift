@@ -97,10 +97,47 @@ struct MarkdownImageReferenceTests {
     }
 
     @Test func malformedAndComplexCandidatesNeverInventDestinations() {
-        for source in ["![a](a(b).png)", "![a](<a b.png>)", "![a](a.png 'title')", "![a](a\\ b.png)"] {
+        for source in ["![a](a(b).png)", "![a](a.png 'title')", "![a](a\\ b.png)"] {
             let scan = MarkdownImageReferences.scan(source)
             #expect(scan.references.isEmpty)
             #expect(!scan.unsupported.isEmpty || scan.excludedBlocks > 0)
+        }
+    }
+
+    @Test func anglePathsPreserveDelimitersWhitespaceAndExactUnicodeRange() {
+        let text = "😀 ![图](<../shared/图片 sample.png>  \"标题\"){width=31}\r\n[普通链接][shared]\r\n"
+        let scan = MarkdownImageReferences.scan(text)
+        #expect(scan.references.count == 1)
+        #expect(scan.references.first?.destination == "../shared/图片 sample.png")
+        if let reference = scan.references.first {
+            #expect((text as NSString).substring(with: reference.range) == "../shared/图片 sample.png")
+            #expect((text as NSString).substring(with: NSRange(location: reference.range.location - 1, length: 1)) == "<")
+            #expect((text as NSString).substring(with: NSRange(location: NSMaxRange(reference.range), length: 1)) == ">")
+        }
+        #expect(scan.excludedBlocks == 0)
+        #expect(MarkdownImageReferences.scan("![p](<preview image.png>)").references.count == 1)
+    }
+
+    @Test func completeImageAttributesAreOneInertSyntacticPayload() {
+        for attributes in [#"{width=31 note="![literal](hidden.png)"}"#,
+                           #"{#fig:one note="![literal](hidden.png)"}"#,
+                           #"{unknown="![literal](hidden.png)"}"#,
+                           #"{width=31 note="<pre>![literal](hidden.png)"}"#] {
+            let text = "![real](real.png)" + attributes + " ![second](second.png)"
+            let scan = MarkdownImageReferences.scan(text)
+            #expect(scan.references.map(\.destination) == ["real.png", "second.png"])
+            #expect(scan.unsupported.isEmpty)
+            #expect(MarkdownRenderer().render(text).body.components(separatedBy: "<img ").count - 1 == 2)
+        }
+    }
+
+    @Test func listContextSurvivesBlankLinesNestedListsAndOrderedMarkers() {
+        for prefix in ["- list item\n\n  ", "1. list item\n\n   ",
+                       "- outer\n  - inner\n\n    ", "> quote\n>\n> - item\n>\n>   "] {
+            let text = prefix + "![nested](nested.png)\n\n- sibling\n\n![top](top.png)"
+            let scan = MarkdownImageReferences.scan(text)
+            #expect(scan.references.map(\.destination) == ["top.png"])
+            #expect(scan.excludedBlocks > 0)
         }
     }
 

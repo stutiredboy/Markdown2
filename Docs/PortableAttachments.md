@@ -23,8 +23,10 @@ remaining count. Repeated paths share one copy, and images already in the attach
 folder are validated and retained without making another copy.
 
 The first version safely rewrites simple, single-line inline Markdown images such
-as `![caption](../pictures/plot.png "title"){width=480}` in ordinary top-level text.
-Only destination ranges change: alt text, titles, figure attributes, line endings
+as `![caption](../pictures/plot.png "title"){width=480}` or
+`![caption](<../pictures/图片 sample.png> "title")` in ordinary top-level text.
+Only destination ranges change: angle delimiters, surrounding spaces, alt text,
+titles, figure attributes, line endings
 and surrounding source remain intact. Percent-encoded paths and Chinese filenames
 are supported. Its deliberately conservative source scanner does not collect:
 
@@ -33,7 +35,7 @@ are supported. Its deliberately conservative source scanner does not collect:
 - Blocks containing list/quote containers, indented or fenced code, inline code,
   HTML, math, YAML front matter, or definition syntax. This includes potentially
   ordinary images in the same excluded block; the report names this limitation.
-- Complex inline destinations such as angle-wrapped paths, escaped punctuation,
+- Complex inline destinations such as escaped punctuation,
   nested parentheses, multiline images, images nested in link labels/titles, or single-quoted titles.
 - Remote URLs, embedded data URLs, unknown schemes, diagram-internal resources,
   or resource links inside an SVG. No network resources are downloaded. A copied

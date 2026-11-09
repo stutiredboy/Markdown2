@@ -10,6 +10,7 @@ public enum MarkdownImageReferences {
     }
     public struct Scan: Sendable {
         public var references: [Reference] = []
+        fileprivate var syntaxRanges: [NSRange] = []
         public var unsupported: [String] = []
         public var excludedBlocks = 0
         public var exceededLimit = false
@@ -26,7 +27,8 @@ public enum MarkdownImageReferences {
         }
         let source = text as NSString
         var offset = 0
-        var block: [(String, Int)] = []
+        var block: [(String, Int, Bool)] = []
+        var containers = ContainerExclusionState()
         var fence: MarkdownFence?
         var frontMatter = false
         var htmlUntil: String?
@@ -37,19 +39,28 @@ public enum MarkdownImageReferences {
             defer { block.removeAll(keepingCapacity: true) }
             // A backtick/math/HTML token anywhere can protect a multiline span.
             // Container lazy continuations and definitions are excluded together.
-            let uncertain = block.contains { line, _ in
-                let trimmed = line.trimmingCharacters(in: .whitespaces)
-                return MarkdownLine.isIndentedCode(line) ||
-                    trimmed.hasPrefix(">") || trimmed.hasPrefix("[") ||
-                    trimmed.range(of: #"^(?:[-*+]|[0-9]{1,9}[.)])[ \t]"#, options: .regularExpression) != nil ||
-                    line.contains("`") || line.contains("$") || line.contains("<") ||
+            let uncertain = block.contains { line, _, inContainer in
+                inContainer || MarkdownLine.isIndentedCode(line) || isPotentialDefinition(line) ||
+                    line.contains("`") || line.contains("$") ||
                     line.contains("\\(") || line.contains("\\[") || line.contains("\\begin{")
             }
             if uncertain { result.excludedBlocks += 1; return }
-            for (line, base) in block {
-                scanLine(line, base: base, into: &result)
-                if result.exceededLimit { return }
+            var candidates = Scan()
+            for (line, base, _) in block {
+                let firstSyntax = candidates.syntaxRanges.count
+                scanLine(line, base: base, into: &candidates)
+                if candidates.exceededLimit { result.exceededLimit = true; return }
+                // Accepted image syntax (including its inert attribute payload)
+                // cannot open a raw HTML block. Everything outside it still can.
+                if maskingImageSyntax(line, base: base, ranges: candidates.syntaxRanges[firstSyntax...]).contains("<") {
+                    result.excludedBlocks += 1; return
+                }
             }
+            guard result.references.count + result.unsupported.count + candidates.references.count + candidates.unsupported.count <= maximumCandidates else {
+                result.exceededLimit = true; return
+            }
+            result.references += candidates.references
+            result.unsupported += candidates.unsupported
         }
         while offset < source.length {
             var start = 0, end = 0, contentsEnd = 0
@@ -82,6 +93,7 @@ public enum MarkdownImageReferences {
                 if line.lowercased().contains(closer) { htmlUntil = nil }
                 continue
             }
+            let inContainer = containers.consume(line)
             if containerContent.hasPrefix("\\begin{"),
                let closing = containerContent.firstIndex(of: "}"),
                containerContent.distance(from: containerContent.startIndex, to: closing) <= 80 {
@@ -98,7 +110,9 @@ public enum MarkdownImageReferences {
                 }
             }
             if mathUntil != nil { continue }
-            let lower = containerContent.lowercased()
+            var imageSyntax = Scan()
+            if containerContent.contains("<") { scanLine(containerContent, base: 0, into: &imageSyntax) }
+            let lower = maskingImageSyntax(containerContent, base: 0, ranges: imageSyntax.syntaxRanges[...]).lowercased()
             for (opener, closer) in [("<!--", "-->"), ("<script", "</script>"), ("<style", "</style>"), ("<pre", "</pre>")] {
                 if lower.contains(opener), !lower.contains(closer) {
                     flush(); htmlUntil = closer; result.excludedBlocks += 1
@@ -112,11 +126,89 @@ public enum MarkdownImageReferences {
             if let opening = MarkdownFence.opening(in: containerContent) {
                 flush(); fence = opening; result.excludedBlocks += 1; continue
             }
-            if trimmed.isEmpty { flush() } else { block.append((line, start)) }
+            if trimmed.isEmpty { flush() } else { block.append((line, start, inContainer)) }
             if result.exceededLimit { break }
         }
         flush()
         return result
+    }
+
+    private static func maskingImageSyntax(_ line: String, base: Int, ranges: ArraySlice<NSRange>) -> String {
+        guard line.contains("<"), !ranges.isEmpty else { return line }
+        let probe = NSMutableString(string: line)
+        for range in ranges.reversed() {
+            probe.replaceCharacters(in: NSRange(location: range.location - base, length: range.length), with: " ")
+        }
+        return probe as String
+    }
+
+    /// Definitions can share a paragraph with following lines, so keep the
+    /// whole block literal. A complete ordinary `[label][ref]` or inline link
+    /// does not turn neighboring images into definitions.
+    private static func isPotentialDefinition(_ line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("[") else { return false }
+        guard let close = trimmed.firstIndex(of: "]") else { return true }
+        let label = trimmed[..<close]
+        let after = trimmed.index(after: close)
+        return label.contains("\\") || trimmed.hasPrefix("[^") ||
+            (after < trimmed.endIndex && trimmed[after] == ":")
+    }
+
+    /// Persist the outer container across paragraph breaks. A less-indented
+    /// line after a blank boundary returns to top level; without that boundary,
+    /// prose may be a lazy continuation. Nested list markers retain the outer
+    /// list's content column. This state only excludes; it never fabricates a
+    /// source mapping for nested content.
+    private struct ContainerExclusionState {
+        var list: (indent: Int, content: Int)?
+        var quote = false
+        var afterBlank = false
+
+        mutating func consume(_ line: String) -> Bool {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty {
+                afterBlank = true
+                return list != nil || quote
+            }
+            let indent = MarkdownIndentation.width(line)
+            if trimmed.hasPrefix(">") {
+                quote = true; afterBlank = false
+                return true
+            }
+            if let marker = Self.listMarker(in: line, indent: indent) {
+                if list == nil || indent <= list!.indent { list = marker }
+                quote = false; afterBlank = false
+                return true
+            }
+            if let list {
+                if indent >= list.content {
+                    afterBlank = false
+                    return true
+                }
+                if !afterBlank, MarkdownLine.heading(in: line) == nil,
+                   !MarkdownLine.isHorizontalRule(line), MarkdownFence.opening(in: line) == nil {
+                    return true
+                }
+                self.list = nil
+            }
+            if quote {
+                if !afterBlank { return true }
+                quote = false
+            }
+            afterBlank = false
+            return false
+        }
+
+        private static func listMarker(in line: String, indent: Int) -> (indent: Int, content: Int)? {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard let range = trimmed.range(of: #"^(?:[-*+]|[0-9]{1,9}[.)])[ \t]+"#, options: .regularExpression) else { return nil }
+            let marker = String(trimmed[range])
+            let delimiter = marker.prefix { $0 != " " && $0 != "\t" }
+            let gap = String(marker.dropFirst(delimiter.count))
+            return (indent, MarkdownIndentation.contentColumn(markerIndent: indent,
+                delimiterWidth: delimiter.count, gap: gap))
+        }
     }
 
     private static func strippedContainer(_ line: String) -> String {
@@ -142,6 +234,7 @@ public enum MarkdownImageReferences {
             $0.location == 0 || units[$0.location - 1] != 33
         }
         var enclosingIndex = 0
+        let lastBrace = units.lastIndex(of: 125) ?? -1
         var index = 0
         while index + 1 < units.count {
             if units[index] == 92 { index += 2; continue }
@@ -171,10 +264,20 @@ public enum MarkdownImageReferences {
                 index = cursor; continue
             }
             cursor += 1
+            let angled = cursor < bound && units[cursor] == 60
+            if angled { cursor += 1 }
             let destinationStart = cursor
-            while cursor < bound, ![9, 32, 40, 41, 60, 62, 92].contains(units[cursor]) { cursor += 1 }
+            if angled {
+                while cursor < bound, ![60, 62, 92].contains(units[cursor]) { cursor += 1 }
+            } else {
+                while cursor < bound, ![9, 32, 40, 41, 60, 62, 92].contains(units[cursor]) { cursor += 1 }
+            }
             let destinationEnd = cursor
             var valid = destinationStart < destinationEnd
+            if angled {
+                valid = valid && cursor < bound && units[cursor] == 62
+                if valid { cursor += 1 }
+            }
             // Exactly the renderer's optional double-quoted title. No rewrite
             // of its spelling, whitespace, or trailing figure attributes.
             if cursor < bound, [9, 32].contains(units[cursor]) {
@@ -190,7 +293,9 @@ public enum MarkdownImageReferences {
                 let raw = String(decoding: units[destinationStart..<destinationEnd], as: UTF16.self)
                 result.references.append(Reference(destination: LinkReference.decode(raw),
                     range: NSRange(location: base + destinationStart, length: destinationEnd - destinationStart)))
-                index = cursor + 1
+                index = MarkdownLinkSyntax.endOfImageAttributes(in: units, after: cursor + 1,
+                                                                 lastClosingBrace: lastBrace)
+                result.syntaxRanges.append(NSRange(location: base + start, length: index - start))
             } else {
                 result.unsupported.append(String(decoding: units[start..<min(bound, start + 80)], as: UTF16.self))
                 // The candidate may contain more literal image examples. Consume

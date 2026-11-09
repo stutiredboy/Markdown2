@@ -30,11 +30,7 @@ public enum MarkdownLinkSyntax {
                     guard end < units.count else { break }
                     end += 1
                     // Image size / figure attributes belong to the same candidate.
-                    if end < lastBrace, units[end] == 123 {
-                        var brace = end + 1
-                        while brace < units.count, units[brace] != 125 { brace += 1 }
-                        if brace < units.count { end = brace + 1 }
-                    }
+                    end = endOfImageAttributes(in: units, after: end, lastClosingBrace: lastBrace)
                     let lower = includeImageMarker && start > 0 && units[start - 1] == 33 ? start - 1 : start
                     result.append(NSRange(location: lower, length: end - lower))
                     index = end - 1
@@ -44,5 +40,16 @@ public enum MarkdownLinkSyntax {
             index += 1
         }
         return result
+    }
+
+    /// The renderer's optional `{[^}]*}` payload is one syntactic unit, even
+    /// when its keys are unknown and it is later emitted as literal text. Both
+    /// render candidates and source edits must skip through the same first `}`.
+    /// A precomputed last brace avoids rescanning an unclosed suffix per image.
+    static func endOfImageAttributes(in units: [UInt16], after end: Int, lastClosingBrace: Int) -> Int {
+        guard end < lastClosingBrace, units[end] == 123 else { return end }
+        var cursor = end + 1
+        while cursor < units.count, units[cursor] != 125 { cursor += 1 }
+        return cursor < units.count ? cursor + 1 : end
     }
 }
