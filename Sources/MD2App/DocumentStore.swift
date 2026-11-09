@@ -105,6 +105,10 @@ final class DocumentStore: ObservableObject {
 
     func requestFormat(_ action: MarkdownEditing.Action) {
         if editorSession.textView?.hasMarkedText() == true { return }
+        // Focus can arrive before the new editor has visible geometry. Ignore
+        // repeated commands while its first source-target reveal is pending;
+        // never queue an edit to run later without a fresh user command.
+        guard !editorSession.revealSelectionOnNextHost else { return }
         if let editor = editorSession.textView, let window = editor.window {
             // A find field or Settings control owns the keyboard in Write mode.
             guard window.firstResponder === editor else { return }

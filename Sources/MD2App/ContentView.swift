@@ -520,6 +520,7 @@ struct ContentView: View {
     }
 
     private func handleEditorFindAction(_ action: FindCommand.Action) {
+        document.editorSession.revealSelectionOnNextHost = false
         focusedPane = .editor
         document.showsFormattingTargetNotice = false
         switch action {
@@ -623,6 +624,7 @@ struct ContentView: View {
                 focusedPane = pane
                 lastFindQuery = query
                 if pane == .editor {
+                    document.editorSession.revealSelectionOnNextHost = false
                     document.showsFormattingTargetNotice = false
                     editorFindQuery = query
                 }

@@ -3,6 +3,20 @@ import MD2Core
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Fresh SwiftUI hosts can attach and acquire their size on different turns.
+/// Notify the pending selection reveal when either prerequisite changes.
+private final class MarkdownEditorScrollView: NSScrollView {
+    var onLayout: (() -> Void)?
+    override func layout() {
+        super.layout()
+        onLayout?()
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onLayout?()
+    }
+}
+
 /// Hands the surrounding view a way to read the editor's *live* viewport
 /// anchor at the instant a mode switch is requested, instead of relying on
 /// the last (possibly stale) debounced scroll callback.
@@ -104,7 +118,7 @@ struct MarkdownEditorView: NSViewRepresentable {
     var onSelectionChange: (String?) -> Void = { _ in }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView()
+        let scrollView = MarkdownEditorScrollView()
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.drawsBackground = false
@@ -138,6 +152,8 @@ struct MarkdownEditorView: NSViewRepresentable {
         let clipView = scrollView.contentView
         clipView.postsBoundsChangedNotifications = true
         coordinator.observe(scrollView: scrollView)
+        scrollView.onLayout = { [weak coordinator] in coordinator?.scheduleSelectionReveal() }
+        coordinator.requestSelectionReveal(in: textView)
 
         viewportReader?.capture = { [weak scrollView] in
             guard let scrollView else { return nil }
@@ -154,10 +170,6 @@ struct MarkdownEditorView: NSViewRepresentable {
 
         DispatchQueue.main.async {
             textView.window?.makeFirstResponder(textView)
-            if session.revealSelectionOnNextHost {
-                session.revealSelectionOnNextHost = false
-                textView.scrollRangeToVisible(textView.selectedRange())
-            }
             coordinator.reportSelection(in: textView)
         }
 
@@ -479,6 +491,108 @@ struct MarkdownEditorView: NSViewRepresentable {
         /// in place and the anchor has placed its own caret.
         private var pendingLineSelection: (line: Int, textView: NSTextView)?
         private weak var scrollView: NSScrollView?
+        private var selectionToReveal: NSRange?
+        private var revealStylingReady = false
+        private var revealStyleRevision = 0
+        private var revealScheduled = false
+
+        /// A retained Read-mode target must survive zero-sized/unattached hosts
+        /// and the first asynchronous font reflow. Consume it only once the
+        /// current host actually displays it, without replacing its selection.
+        @MainActor func requestSelectionReveal(in textView: NSTextView) {
+            guard session.revealSelectionOnNextHost else { return }
+            selectionToReveal = textView.selectedRange()
+            waitForRevealStyling()
+        }
+
+        @MainActor private func waitForRevealStyling() {
+            guard selectionToReveal != nil else { return }
+            revealStylingReady = false
+            revealStyleRevision += 1
+            let revision = revealStyleRevision
+            let styling = self.styling
+            Task { [weak self] in
+                await styling.flush()
+                guard let self, self.revealStyleRevision == revision else { return }
+                self.revealStylingReady = true
+                self.scheduleSelectionReveal()
+            }
+        }
+
+        @MainActor func scheduleSelectionReveal() {
+            guard selectionToReveal != nil, !revealScheduled else { return }
+            revealScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.revealScheduled = false
+                self.revealSelectionIfReady()
+            }
+        }
+
+        @MainActor private func cancelSelectionReveal() {
+            guard selectionToReveal != nil else { return }
+            selectionToReveal = nil
+            // An outgoing coordinator must not consume a newer host's request.
+            if session.textView?.enclosingScrollView === scrollView {
+                session.revealSelectionOnNextHost = false
+            }
+        }
+
+        @MainActor private func revealSelectionIfReady() {
+            guard let target = selectionToReveal,
+                  let scrollView, let textView = session.textView,
+                  textView.enclosingScrollView === scrollView else { return }
+            guard session.revealSelectionOnNextHost else { cancelSelectionReveal(); return }
+            guard textView.selectedRange() == target else { cancelSelectionReveal(); return }
+            guard revealStylingReady, !isApplyingStyle,
+                  textView.window != nil,
+                  scrollView.contentSize.width > 0, scrollView.contentSize.height > 0,
+                  let layout = textView.layoutManager, let container = textView.textContainer else { return }
+            layout.ensureLayout(for: container)
+            let wasProgrammatic = isProgrammaticScroll
+            isProgrammaticScroll = true
+            textView.setFrameOrigin(.zero)
+            textView.scrollRangeToVisible(target)
+            isProgrammaticScroll = wasProgrammatic
+            let size = scrollView.contentSize
+            let height = textView.frame.height
+            // SwiftUI can finish laying out the new host after the first scroll.
+            // Verify on the next turn; a changed layout gets another pass.
+            DispatchQueue.main.async { [weak self, weak scrollView, weak textView] in
+                guard let self, let scrollView, let textView,
+                      self.selectionToReveal == target,
+                      textView.enclosingScrollView === scrollView else { return }
+                guard self.session.revealSelectionOnNextHost else { self.cancelSelectionReveal(); return }
+                guard textView.selectedRange() == target else { self.cancelSelectionReveal(); return }
+                let glyphs = layout.glyphRange(forCharacterRange: target, actualCharacterRange: nil)
+                var rect = layout.boundingRect(forGlyphRange: glyphs, in: container)
+                if target.length == 0 {
+                    rect = textView.firstRect(forCharacterRange: target, actualRange: nil)
+                    if let window = textView.window {
+                        rect = textView.convert(window.convertFromScreen(rect), from: nil)
+                    }
+                } else {
+                    rect.origin.x += textView.textContainerOrigin.x
+                    rect.origin.y += textView.textContainerOrigin.y
+                }
+                // A caret rect has zero width; its vertical row is the target.
+                rect.size.width = max(1, rect.width)
+                if self.revealStylingReady, textView.window != nil,
+                   scrollView.contentSize == size, textView.frame.height == height,
+                   textView.visibleRect.intersects(rect) {
+                    self.cancelSelectionReveal()
+                    textView.window?.makeFirstResponder(textView)
+                    if let line = Self.topVisibleLine(in: scrollView) {
+                        self.onAnchorLineChange(line, false)
+                    }
+                } else if scrollView.contentSize != size || textView.frame.height != height {
+                    self.scheduleSelectionReveal()
+                }
+                // If geometry did not change and the target is still invisible,
+                // keep the request for the next real layout/style notification;
+                // do not spin an unbounded main-queue retry loop.
+            }
+        }
         /// True while a programmatic scroll (mode-switch jump, outline jump,
         /// find reveal) is in flight, so its transient positions are never
         /// reported back as the user's anchor.
@@ -542,6 +656,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         /// or text that bypassed the editor). That posts no `textDidChange`, so do
         /// what an edit would trigger here.
         @MainActor func textWasReplaced(in textView: NSTextView) {
+            cancelSelectionReveal()
             scheduleStyle(in: textView)
             // The replacement can shift every line below it, but TextKit's own
             // display invalidation is glyph-scoped — it never covers the gutter
@@ -580,6 +695,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             guard !textView.hasMarkedText() else { return }
 
             if query != lastObservedQuery {
+                if revealMatches { cancelSelectionReveal() }
                 lastObservedQuery = query
                 findGeneration += 1
                 lastFindMutationWasQueryChange = true
@@ -933,6 +1049,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             let isUserScroll = Self.isUserScrollEvent(NSApp.currentEvent)
             if isUserScroll {
                 editViewportRestoreToken = UUID()
+                cancelSelectionReveal()
             }
             onAnchorLineChange(line, isUserScroll)
         }
@@ -1384,6 +1501,9 @@ struct MarkdownEditorView: NSViewRepresentable {
             // the viewport back after the caret has deliberately moved.
             if !isApplyingStyle {
                 editViewportRestoreToken = UUID()
+                if let target = selectionToReveal, textView.selectedRange() != target {
+                    cancelSelectionReveal()
+                }
             }
         }
 
@@ -1395,10 +1515,12 @@ struct MarkdownEditorView: NSViewRepresentable {
             }, didApply: { [weak self] in
                 self?.isApplyingStyle = false
             })
+            waitForRevealStyling()
         }
 
         @MainActor func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
+            cancelSelectionReveal()
             // The gutter's numbers depend on line breaks, and marked text returns
             // below without restyling — so composition could otherwise change the
             // text under a gutter that is never asked to redraw. Text redraws are
@@ -1524,6 +1646,11 @@ final class MarkdownSourceTextView: NSTextView {
 
     @discardableResult
     func performMarkdownAction(_ action: MarkdownEditing.Action) -> Bool {
+        // Native shortcuts/context-menu actions can bypass DocumentStore.
+        // Consume them during the reveal instead of bubbling into a menu or
+        // modifying a focused but not-yet-visible retained source selection.
+        if (delegate as? MarkdownEditorSession)?.revealSelectionOnNextHost == true,
+           MarkdownFormatCommand.items.contains(where: { $0.action == action }) { return true }
         let selection = selectedRange()
         guard isEditable, !hasMarkedText(), selectedRanges.count == 1,
               let edit = MarkdownEditing.edit(string, selection: selection, action: action,

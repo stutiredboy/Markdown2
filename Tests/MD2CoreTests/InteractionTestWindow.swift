@@ -72,6 +72,55 @@ final class InteractionTestWindow {
         if let error { throw error }
         return result
     }
+    /// Observe the page the user will act on; a WKWebView in the hierarchy can
+    /// still contain about:blank or an outgoing render. Never run find ourselves
+    /// to satisfy the condition: the product must restore its own query.
+    func waitForPage(_ predicate: String, in web: WKWebView, context: String,
+                     requireLoaded: Bool = true, file: StaticString = #filePath, line: UInt = #line) throws {
+        var satisfied = false
+        var lastError: Error?
+        spin(until: {
+            do {
+                let matches = try js(predicate, web) as? Bool == true
+                let loaded = (web.navigationDelegate as? MarkdownPreviewView.Coordinator)?.isLoaded == true
+                satisfied = matches && (!requireLoaded || (loaded && !web.isLoading))
+            } catch { lastError = error }
+            return satisfied
+        })
+        guard !satisfied else { return }
+        let page = try? js("""
+            JSON.stringify({url:location.href,ready:document.readyState,
+              text:document.querySelector('main')?.textContent.slice(0,600),
+              paragraphs:document.querySelectorAll('p').length,
+              findAPI:typeof window.__md2Find,matches:document.querySelectorAll('mark.md2-find').length,
+              index:Array.from(document.querySelectorAll('mark.md2-find')).findIndex(e=>e.classList.contains('md2-find-current'))})
+            """, web)
+        let coordinator = web.navigationDelegate as? MarkdownPreviewView.Coordinator
+        _ = try XCTUnwrap(satisfied ? true : nil,
+            "\(context): isLoading=\(web.isLoading), loaded=\(String(describing: coordinator?.isLoaded)), query=\(String(describing: coordinator?.lastFindQuery)), page=\(String(describing: page)), error=\(String(describing: lastError))",
+            file: file, line: line)
+    }
+
+    func targetRect(_ range: NSRange, in editor: NSTextView) -> NSRect {
+        guard let layout = editor.layoutManager, let container = editor.textContainer else { return .zero }
+        var rect = layout.boundingRect(forGlyphRange: layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil), in: container)
+        rect.origin.x += editor.textContainerOrigin.x
+        rect.origin.y += editor.textContainerOrigin.y
+        return rect
+    }
+
+    func waitForTarget(_ range: NSRange, in editor: NSTextView, context: String,
+                       file: StaticString = #filePath, line: UInt = #line) throws {
+        var visible = false
+        spin(until: {
+            visible = editor.window != nil && !store.editorSession.revealSelectionOnNextHost
+                && editor.visibleRect.intersects(targetRect(range, in: editor))
+            return visible
+        })
+        _ = try XCTUnwrap(visible ? true : nil,
+            "\(context): pending=\(store.editorSession.revealSelectionOnNextHost), window=\(editor.window != nil), clip=\(String(describing: editor.enclosingScrollView?.contentView.bounds)), frame=\(editor.frame), visible=\(editor.visibleRect), target=\(targetRect(range, in: editor)), selection=\(editor.selectedRange())",
+            file: file, line: line)
+    }
     func capture(_ name: String) throws {
         guard let directory = ProcessInfo.processInfo.environment["MD2_INTERACTION_EVIDENCE_DIR"],
               let view = window.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
