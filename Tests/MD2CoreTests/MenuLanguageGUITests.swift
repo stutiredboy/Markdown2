@@ -113,6 +113,13 @@ final class MenuLanguageGUITests: XCTestCase {
         try press(.new, in: .zhHans, pid: pid)
         let document = try waitForWindow(pid: pid) { Self.firstElement(ofRole: "AXTextArea", in: $0) != nil }
         XCTAssertNil(Self.firstElement(ofRole: "AXTextField", in: document), "the find bar must start closed")
+        let source = try XCTUnwrap(Self.firstElement(ofRole: "AXTextArea", in: document))
+        let original = try XCTUnwrap(Self.stringValue(kAXValueAttribute, of: source))
+        let target = NSRange(try XCTUnwrap(original.range(of: "Start writing in Markdown."),
+                                          "the starter paragraph is the explicit format target"), in: original)
+        var selection = CFRange(location: target.location, length: target.length)
+        let selectedRange = try XCTUnwrap(AXValueCreate(.cfRange, &selection))
+        XCTAssertEqual(AXUIElementSetAttributeValue(source, kAXSelectedTextRangeAttribute as CFString, selectedRange), .success)
 
         try press(.find, in: .zhHans, pid: pid)
         try waitForWindow(pid: pid) { Self.firstElement(ofRole: "AXTextField", in: $0) != nil }
@@ -120,10 +127,57 @@ final class MenuLanguageGUITests: XCTestCase {
         try press(.read, in: .zhHans, pid: pid)
         try waitForWindow(pid: pid) { Self.firstElement(ofRole: "AXWebArea", in: $0) != nil }
 
-        // From Read mode a format command applies at once, so the marker shows it
-        // reached the text without depending on who holds keyboard focus.
+        // Read formatting first reveals its source target without editing it.
+        // The localized command still acts, but only a second invocation in the
+        // focused editor may mutate the now-visible selection.
         try press(.formatHeading1, in: .zhHans, pid: pid)
-        try waitForWindow(pid: pid) { Self.title(of: $0).hasSuffix(" *") }
+        let revealed = try waitForWindow(pid: pid) { Self.firstElement(ofRole: "AXTextArea", in: $0) != nil }
+        let editor = try XCTUnwrap(Self.firstElement(ofRole: "AXTextArea", in: revealed))
+        XCTAssertEqual(Self.stringValue(kAXValueAttribute, of: editor), original, "the first Read-mode command must preserve source")
+        XCTAssertFalse(Self.title(of: revealed).hasSuffix(" *"), "revealing the target must not dirty the document")
+
+        NSRunningApplication(processIdentifier: pid)?.activate()
+        XCTAssertEqual(AXUIElementSetAttributeValue(editor, kAXFocusedAttribute as CFString, kCFBooleanTrue), .success)
+        try waitForSourceFocus(editor, pid: pid)
+        var rangeValue: CFTypeRef?
+        XCTAssertEqual(AXUIElementCopyAttributeValue(editor, kAXSelectedTextRangeAttribute as CFString, &rangeValue), .success)
+        let retainedRange = try XCTUnwrap(rangeValue)
+        guard CFGetTypeID(retainedRange) == AXValueGetTypeID() else {
+            throw GuardFailure("the source selection is not an Accessibility range")
+        }
+        var retainedSelection = CFRange(location: 0, length: 0)
+        XCTAssertTrue(AXValueGetValue(retainedRange as! AXValue, .cfRange, &retainedSelection))
+        XCTAssertEqual(retainedSelection.location, target.location)
+        XCTAssertEqual(retainedSelection.length, target.length)
+
+        try press(.formatHeading1, in: .zhHans, pid: pid)
+        let expected = (original as NSString).replacingCharacters(in: target, with: "# Start writing in Markdown.")
+        try waitForWindow(pid: pid) { window in
+            guard let editor = Self.firstElement(ofRole: "AXTextArea", in: window) else { return false }
+            return Self.title(of: window).hasSuffix(" *") && Self.stringValue(kAXValueAttribute, of: editor) == expected
+        }
+
+        // Undo is AppKit-owned and keeps its launch language; locate its key
+        // equivalent so this also proves the edit entered native undo history.
+        let undo = try menuItem(commandCharacter: "Z", pid: pid)
+        XCTAssertEqual(AXUIElementPerformAction(undo, kAXPressAction as CFString), .success)
+        try waitForWindow(pid: pid) { window in
+            guard let editor = Self.firstElement(ofRole: "AXTextArea", in: window) else { return false }
+            return Self.stringValue(kAXValueAttribute, of: editor) == original
+        }
+        try waitForCommandTitles(.zhHans, pid: pid)
+    }
+
+    private func waitForSourceFocus(_ editor: AXUIElement, pid: pid_t) throws {
+        let app = AXUIElementCreateApplication(pid)
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            var focused: CFTypeRef?
+            if AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
+               let focused, CFEqual(focused, editor) { return }
+            usleep(100_000)
+        }
+        throw GuardFailure("the revealed source editor did not receive keyboard focus")
     }
 
     // MARK: - Shortcuts
