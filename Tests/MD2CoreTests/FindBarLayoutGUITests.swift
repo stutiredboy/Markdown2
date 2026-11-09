@@ -29,7 +29,15 @@ final class FindBarLayoutGUITests: XCTestCase {
                     onNext: { pressed.insert("next") }, onPrevious: { pressed.insert("previous") },
                     onReplace: { pressed.insert("replace") }, onReplaceAll: { pressed.insert("all") },
                     onClose: { pressed.insert("close") })
-                harness.host(bar.frame(width: DocumentLayoutMetrics.splitEditorMinWidth), width: 360, height: 150)
+                let measurement = NativeFindBarController(rootView: bar)
+                let widths: [CGFloat?] = [nil, .infinity, DocumentLayoutMetrics.splitEditorMinWidth]
+                for width in widths {
+                    let size = measurement.barSize(for: width)
+                    XCTAssertTrue(size.width.isFinite && size.height.isFinite && size.height > 0,
+                                  "\(language) query=\(query): invalid native bar measurement \(size) at width \(String(describing: width))")
+                }
+                harness.host(NativeFindBar(pane: .editor) { bar }.frame(width: DocumentLayoutMetrics.splitEditorMinWidth),
+                             width: 360, height: 150)
                 let buttons = harness.descendants(NSButton.self)
                 XCTAssertEqual(buttons.count, 5)
                 for (index, button) in buttons.enumerated() {

@@ -47,6 +47,7 @@ final class FindSessionGUITests: XCTestCase {
             return fields.count == 2 && fields.allSatisfy { $0.stringValue == "needle" }
                 && fieldEditor === harness.window.firstResponder
         }
+        XCTAssertEqual(NativeFindFocus.pane(in: harness.window), .preview)
         harness.store.requestFind(.next)
         let index = "Array.from(document.querySelectorAll('mark.md2-find')).findIndex(e=>e.classList.contains('md2-find-current'))"
         try harness.waitForPage("\(index) === 1", in: web, context: "split preview advances to the second match")
@@ -55,21 +56,76 @@ final class FindSessionGUITests: XCTestCase {
         XCTAssertEqual(fields.count, 2)
         let sourceField = try XCTUnwrap(fields.min { $0.convert($0.bounds, to: nil).midX < $1.convert($1.bounds, to: nil).midX })
         XCTAssertTrue(harness.window.makeFirstResponder(sourceField))
-        // A user's next menu action is a later event. Let the native focus
-        // notification reach SwiftUI before dispatching that separate action;
-        // currentEditor itself changes synchronously in makeFirstResponder.
-        var focusEventDelivered = false
-        DispatchQueue.main.async { focusEventDelivered = true }
         try waitForNative(harness, "unchanged source query field owns the keyboard") {
             guard let fieldEditor = sourceField.currentEditor() else { return false }
-            return focusEventDelivered && fieldEditor === harness.window.firstResponder && sourceField.stringValue == "needle"
+            return fieldEditor === harness.window.firstResponder && sourceField.stringValue == "needle"
         }
+        XCTAssertEqual(NativeFindFocus.pane(in: harness.window), .editor)
         XCTAssertTrue(sourceField.currentEditor() === harness.window.firstResponder, "source find field must own keyboard")
         // Merely refocus the unchanged query. No binding setter fires here.
         harness.store.requestFind(.next)
         try waitForSourceMatch(endingAt: 18, in: harness)
         XCTAssertEqual(editor.selectedRange().location, 18)
         XCTAssertEqual(try harness.js(index, web) as? Int, 1, "menu navigation must leave the other pane's match alone")
+    }
+
+    @MainActor
+    func testNativeFindOwnerOutranksHeldFocusReportsAndStaysWithinItsWindow() throws {
+        let harness = InteractionTestWindow()
+        defer { harness.close() }
+        var publishedPane = SplitPane.preview
+        var heldReports: [SplitPane] = []
+        harness.host(HStack(spacing: 0) {
+            NativeFindBar(pane: .editor) {
+                EditorFindBar(query: .constant("needle"), replacement: .constant("replacement"),
+                              showsReplace: true, focusToken: UUID(), statusText: "1 of 3", settings: harness.settings,
+                              onSubmitQuery: {}, onNext: {}, onPrevious: {}, onReplace: {}, onReplaceAll: {}, onClose: {},
+                              onFocusChange: { if $0 { heldReports.append(.editor) } })
+            }
+            NativeFindBar(pane: .preview) {
+                PreviewFindBar(query: .constant("needle"), focusToken: UUID(), statusText: "1 of 3", settings: harness.settings,
+                               onSubmitQuery: {}, onNext: {}, onPrevious: {}, onClose: {},
+                               onFocusChange: { if $0 { heldReports.append(.preview) } })
+            }
+        }, height: 150)
+        let queries = harness.descendants(NSTextField.self).filter { $0.placeholderString == harness.settings.text(.findPlaceholder) }
+        XCTAssertEqual(queries.count, 2)
+        let source = try XCTUnwrap(queries.min { $0.convert($0.bounds, to: nil).midX < $1.convert($1.bounds, to: nil).midX })
+        let preview = try XCTUnwrap(queries.max { $0.convert($0.bounds, to: nil).midX < $1.convert($1.bounds, to: nil).midX })
+        let replacement = try XCTUnwrap(harness.descendants(NSTextField.self).first { $0.placeholderString == harness.settings.text(.replace) })
+        // Deliberately hold every SwiftUI focus report instead of publishing it.
+        // The native owner must win immediately, with no event barrier and no
+        // query mutation, for both source fields and the preview field.
+        for (field, expected) in [(source, SplitPane.editor), (replacement, .editor), (preview, .preview)] {
+            publishedPane = expected == .editor ? .preview : .editor
+            XCTAssertTrue(harness.window.makeFirstResponder(field))
+            XCTAssertTrue(field.currentEditor() === harness.window.firstResponder)
+            XCTAssertNotEqual(publishedPane, expected)
+            XCTAssertEqual(NativeFindFocus.pane(in: harness.window) ?? publishedPane, expected)
+        }
+
+        XCTAssertTrue(harness.window.makeFirstResponder(replacement))
+        XCTAssertEqual(NativeFindFocus.pane(in: harness.window), .editor)
+        XCTAssertTrue(queries.allSatisfy { $0.stringValue == "needle" })
+        XCTAssertEqual(replacement.stringValue, "replacement")
+
+        let other = InteractionTestWindow()
+        defer { other.close() }
+        other.host(NativeFindBar(pane: .preview) {
+            PreviewFindBar(query: .constant("needle"), focusToken: UUID(), statusText: "1 of 3", settings: other.settings,
+                           onSubmitQuery: {}, onNext: {}, onPrevious: {}, onClose: {})
+        }, height: 100)
+        let otherField = try XCTUnwrap(other.queryField)
+        XCTAssertTrue(other.window.makeFirstResponder(otherField))
+        XCTAssertEqual(NativeFindFocus.pane(in: other.window), .preview)
+        // An inactive window may end field editing. Derive its expectation from
+        // its own native control, never from the other window's focused field.
+        let ownResponder = try XCTUnwrap(harness.window.firstResponder)
+        let ownField = (queries + [replacement]).first { $0 === ownResponder || $0.currentEditor() === ownResponder }
+        let ownPane = ownField.map { $0 === preview ? SplitPane.preview : .editor }
+        XCTAssertEqual(NativeFindFocus.pane(in: harness.window), ownPane)
+        XCTAssertTrue(harness.window.makeFirstResponder(nil))
+        XCTAssertNil(NativeFindFocus.pane(in: harness.window), "ordinary responders use the existing pane-history fallback")
     }
 
     @MainActor

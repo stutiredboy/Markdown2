@@ -180,7 +180,7 @@ struct ContentView: View {
     /// Side by Side: the pane that most recently had user interaction, so a
     /// menu-driven Find routes to the surface the user is actually working in.
     @State private var focusedPane: SplitPane = .editor
-    /// Native find-field focus outranks delayed scroll/selection reports.
+    /// Reported find-field focus is the fallback when no native field is active.
     @State private var focusedFindPane: SplitPane?
     /// Side by Side scroll-sync driver: the pane currently driving the other.
     /// While set, the follower's settle-time anchor reports are ignored so the
@@ -510,8 +510,11 @@ struct ContentView: View {
         case .read:
             handlePreviewFindAction(command.action)
         case .split:
-            // Route a menu-driven Find to the pane the user last worked in.
-            if (focusedFindPane ?? focusedPane) == .preview {
+            // A field's actual native owner outranks asynchronously reported
+            // focus/scroll history, including an unchanged query just refocused.
+            let target = NativeFindFocus.pane(in: document.editorSession.textView?.window)
+                ?? focusedFindPane ?? focusedPane
+            if target == .preview {
                 handlePreviewFindAction(command.action)
             } else {
                 handleEditorFindAction(command.action)
@@ -831,21 +834,23 @@ struct ContentView: View {
             }
 
             if editorFindVisible {
-                EditorFindBar(
-                    query: findQueryBinding(for: .editor),
-                    replacement: $editorFindReplacement,
-                    showsReplace: editorFindShowsReplace,
-                    focusToken: editorFindFocusToken,
-                    statusText: editorStatusText,
-                    settings: settings,
-                    onSubmitQuery: { editorFindNavigation = FindCommand(.search) },
-                    onNext: { handleEditorFindAction(.next) },
-                    onPrevious: { handleEditorFindAction(.previous) },
-                    onReplace: { editorReplaceCommand = FindReplaceCommand(.current) },
-                    onReplaceAll: { editorReplaceCommand = FindReplaceCommand(.all) },
-                    onClose: { dismissEditorFind(refocusEditor: true) },
-                    onFocusChange: { editing in updateFindFieldFocus(.editor, editing: editing) }
-                )
+                NativeFindBar(pane: .editor) {
+                    EditorFindBar(
+                        query: findQueryBinding(for: .editor),
+                        replacement: $editorFindReplacement,
+                        showsReplace: editorFindShowsReplace,
+                        focusToken: editorFindFocusToken,
+                        statusText: editorStatusText,
+                        settings: settings,
+                        onSubmitQuery: { editorFindNavigation = FindCommand(.search) },
+                        onNext: { handleEditorFindAction(.next) },
+                        onPrevious: { handleEditorFindAction(.previous) },
+                        onReplace: { editorReplaceCommand = FindReplaceCommand(.current) },
+                        onReplaceAll: { editorReplaceCommand = FindReplaceCommand(.all) },
+                        onClose: { dismissEditorFind(refocusEditor: true) },
+                        onFocusChange: { editing in updateFindFieldFocus(.editor, editing: editing) }
+                    )
+                }
                 .transition(findDialogTransition)
                 .zIndex(1)
             }
@@ -972,17 +977,19 @@ struct ContentView: View {
             )
 
             if previewFindVisible {
-                PreviewFindBar(
-                    query: findQueryBinding(for: .preview),
-                    focusToken: previewFindFocusToken,
-                    statusText: previewStatusText,
-                    settings: settings,
-                    onSubmitQuery: { previewFindNavigation = FindCommand(.search) },
-                    onNext: { handlePreviewFindAction(.next) },
-                    onPrevious: { handlePreviewFindAction(.previous) },
-                    onClose: { dismissPreviewFind(refocusPreview: true) },
-                    onFocusChange: { editing in updateFindFieldFocus(.preview, editing: editing) }
-                )
+                NativeFindBar(pane: .preview) {
+                    PreviewFindBar(
+                        query: findQueryBinding(for: .preview),
+                        focusToken: previewFindFocusToken,
+                        statusText: previewStatusText,
+                        settings: settings,
+                        onSubmitQuery: { previewFindNavigation = FindCommand(.search) },
+                        onNext: { handlePreviewFindAction(.next) },
+                        onPrevious: { handlePreviewFindAction(.previous) },
+                        onClose: { dismissPreviewFind(refocusPreview: true) },
+                        onFocusChange: { editing in updateFindFieldFocus(.preview, editing: editing) }
+                    )
+                }
                 .transition(findDialogTransition)
                 .zIndex(1)
             }
@@ -1071,7 +1078,7 @@ struct ContentView: View {
 }
 
 /// The two surfaces of Side by Side mode.
-private enum SplitPane {
+enum SplitPane {
     case editor
     case preview
 }
