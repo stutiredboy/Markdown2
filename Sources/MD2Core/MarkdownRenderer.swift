@@ -28,13 +28,16 @@ public struct MarkdownRenderer: Sendable {
             }
         }
         let lines = markdown.normalizedMarkdownLines
-        let metadataLines = metadataLines(from: lines)
+        let budget = MarkdownParsingBudget()
+        let metadataLines = metadataLines(from: lines, budget: budget)
+        if budget.exhausted { return sourceFallback(markdown, config: config, assetMode: assetMode) }
         let outline = outlineBuilder.build(from: metadataLines.joined(separator: "\n"))
 
         let footnotes = FootnoteContext()
         collectFootnoteDefinitions(metadataLines, into: footnotes)
         var references: [String: LinkReference] = [:]
-        collectLinkReferences(lines, into: &references)
+        collectLinkReferences(lines, into: &references, budget: budget)
+        if budget.exhausted { return sourceFallback(markdown, config: config, assetMode: assetMode) }
 
         let citations = CitationContext(entries: config.bibliography, style: config.citationStyle)
         let crossReferences = CrossReferenceContext(numberAllEquations: config.numberAllEquations)
@@ -47,10 +50,12 @@ public struct MarkdownRenderer: Sendable {
             citations: citations,
             crossReferences: crossReferences,
             references: references,
-            config: config
+            config: config,
+            budget: budget
         )
 
         var body = renderBody(markdown, outline: outline, context: context)
+        if budget.exhausted { return sourceFallback(markdown, config: config, assetMode: assetMode) }
         if Task.isCancelled {
             return RenderedDocument(html: "", body: "", outline: [], stats: DocumentStats(plainText: ""))
         }
@@ -75,6 +80,20 @@ public struct MarkdownRenderer: Sendable {
         )
     }
 
+    /// If any traversal reaches the shared limit, discard partial metadata and
+    /// markup together. Literal source keeps every line visible, including text
+    /// after the offending container, without activating HTML or diagram syntax.
+    private func sourceFallback(_ markdown: String, config: RenderConfig, assetMode: RenderAssetMode) -> RenderedDocument {
+        let body = "<pre class=\"markdown-source-fallback\" data-md2-source-line=\"1\"><code>\(escapeHTML(markdown))</code></pre>"
+        return RenderedDocument(
+            html: htmlDocument(body: body, config: config, assetMode: assetMode),
+            body: body,
+            outline: [],
+            stats: DocumentStats(plainText: markdown, sourceLines: markdown.isEmpty ? 0 : markdown.normalizedMarkdownLines.count),
+            mathMacros: config.mathMacros
+        )
+    }
+
     private func renderBody(
         _ markdown: String,
         outline: [Heading],
@@ -83,6 +102,8 @@ public struct MarkdownRenderer: Sendable {
         listContinuation: Bool = false
     ) -> String {
         let lines = markdown.normalizedMarkdownLines
+        guard context.budget.enter(lines: lines) else { return "" }
+        defer { context.budget.leave() }
         let headingsByLine = Dictionary(uniqueKeysWithValues: outline.map { ($0.line, $0) })
         var blocks: [String] = []
         var index = 0
@@ -100,7 +121,7 @@ public struct MarkdownRenderer: Sendable {
         }
 
         while index < lines.count {
-            if Task.isCancelled { break }
+            if Task.isCancelled || context.budget.exhausted { break }
             let line = lines[index]
             let trimmed = line.trimmedMarkdownLine
 
@@ -697,7 +718,7 @@ public struct MarkdownRenderer: Sendable {
         let nestedMarkdown = quoteLines.joined(separator: "\n")
         let quote = renderBody(
             nestedMarkdown,
-            outline: outlineForBody(nestedMarkdown),
+            outline: outlineForBody(nestedMarkdown, budget: context.budget),
             context: context,
             lineOffset: lineOffset + startIndex + (alertKind == nil ? 0 : 1)
         )
@@ -795,10 +816,13 @@ public struct MarkdownRenderer: Sendable {
     /// Metadata pre-scans must not open fences or definitions inside code that
     /// the list renderer has already classified as literal. Blank those lines,
     /// preserving every source position and the existing root-level policies.
-    private func metadataLines(from lines: [String], listContinuation: Bool = false) -> [String] {
+    private func metadataLines(from lines: [String], listContinuation: Bool = false, budget: MarkdownParsingBudget) -> [String] {
+        guard budget.enter(lines: lines) else { return Array(repeating: "", count: lines.count) }
+        defer { budget.leave() }
         var result = lines
         var index = 0
         while index < lines.count {
+            if Task.isCancelled || budget.exhausted { break }
             if listContinuation, let code = indentedCodeBlock(from: lines, startIndex: index, renderContent: false) {
                 for line in index..<code.nextIndex { result[line] = "" }
                 index = code.nextIndex
@@ -815,7 +839,7 @@ public struct MarkdownRenderer: Sendable {
                     nested.append(MarkdownLine.blockquoteContent(lines[index].trimmedMarkdownLine))
                     index += 1
                 }
-                let masked = metadataLines(from: nested)
+                let masked = metadataLines(from: nested, budget: budget)
                 for offset in nested.indices where !nested[offset].isEmpty && masked[offset].isEmpty {
                     result[start + offset] = ""
                 }
@@ -829,7 +853,7 @@ public struct MarkdownRenderer: Sendable {
                 let collection = collectListItems(from: lines, startIndex: index)
                 for item in collection.items where !item.continuation.isEmpty {
                     let body = stripListIndent(item.continuation, contentIndent: item.contentIndent).normalizedMarkdownLines
-                    let masked = metadataLines(from: body, listContinuation: true)
+                    let masked = metadataLines(from: body, listContinuation: true, budget: budget)
                     for offset in body.indices where !body[offset].isEmpty && masked[offset].isEmpty {
                         result[item.lineIndex + 1 + offset] = ""
                     }
@@ -842,8 +866,8 @@ public struct MarkdownRenderer: Sendable {
         return result
     }
 
-    private func outlineForBody(_ markdown: String, listContinuation: Bool = false) -> [Heading] {
-        let lines = metadataLines(from: markdown.normalizedMarkdownLines, listContinuation: listContinuation)
+    private func outlineForBody(_ markdown: String, listContinuation: Bool = false, budget: MarkdownParsingBudget) -> [Heading] {
+        let lines = metadataLines(from: markdown.normalizedMarkdownLines, listContinuation: listContinuation, budget: budget)
         return outlineBuilder.build(from: lines.joined(separator: "\n"))
     }
 
@@ -1014,6 +1038,8 @@ public struct MarkdownRenderer: Sendable {
         context: InlineContext,
         lineOffset: Int
     ) -> (html: String, next: Int) {
+        guard context.budget.enter(work: items.count - start) else { return ("", items.count) }
+        defer { context.budget.leave() }
         let kind = items[start].kind
         let tag = kind == .ordered ? "ol" : "ul"
         var listItems: [String] = []
@@ -1021,6 +1047,7 @@ public struct MarkdownRenderer: Sendable {
         var index = start
 
         while index < items.count {
+            if Task.isCancelled || context.budget.exhausted { return ("", items.count) }
             if levels[index] < level { break }
             if levels[index] == level && items[index].kind != kind { break }
             if levels[index] > level { break } // defensive: handled below
@@ -1048,7 +1075,7 @@ public struct MarkdownRenderer: Sendable {
                 let dedented = stripListIndent(item.continuation, contentIndent: item.contentIndent)
                 let body = renderBody(
                     dedented,
-                    outline: outlineForBody(dedented, listContinuation: true),
+                    outline: outlineForBody(dedented, listContinuation: true, budget: context.budget),
                     context: context,
                     lineOffset: lineOffset + item.lineIndex + 1,
                     listContinuation: true
@@ -1144,12 +1171,15 @@ public struct MarkdownRenderer: Sendable {
     /// Walk the same containers as the block renderer. Definitions cannot
     /// interrupt paragraphs, and code/math/front matter never define links.
     private func collectLinkReferences(_ lines: [String], into definitions: inout [String: LinkReference],
-                                       listContinuation: Bool = false) {
+                                       listContinuation: Bool = false, budget: MarkdownParsingBudget) {
+        guard budget.enter(lines: lines) else { return }
+        defer { budget.leave() }
         var index = 0
         let inertContext = InlineContext(footnotes: FootnoteContext(),
             citations: CitationContext(entries: [:], style: .authorYear),
             crossReferences: CrossReferenceContext(numberAllEquations: false))
         while index < lines.count {
+            if Task.isCancelled || budget.exhausted { break }
             let trimmed = lines[index].trimmedMarkdownLine
             if trimmed.isEmpty { index += 1; continue }
             if index == 0, let block = frontMatterBlock(from: lines, startIndex: index) {
@@ -1170,7 +1200,7 @@ public struct MarkdownRenderer: Sendable {
                 if let first = nested.first, ["NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION"].contains(where: { first == "[!\($0)]" }) {
                     nested[0] = ""
                 }
-                collectLinkReferences(nested, into: &definitions)
+                collectLinkReferences(nested, into: &definitions, budget: budget)
                 continue
             }
             if let block = indentedCodeBlock(from: lines, startIndex: index, renderContent: false) {
@@ -1188,12 +1218,13 @@ public struct MarkdownRenderer: Sendable {
                 index = note.nextIndex; continue
             }
             if let item = parseListItem(lines[index]) {
-                collectLinkReferences([item.text], into: &definitions)
+                collectLinkReferences([item.text], into: &definitions, budget: budget)
                 let continuation = collectListItemContinuation(from: lines, startIndex: index + 1, contentIndent: item.contentIndent)
                 collectLinkReferences(
                     stripListIndent(continuation.lines, contentIndent: item.contentIndent).normalizedMarkdownLines,
                     into: &definitions,
-                    listContinuation: true
+                    listContinuation: true,
+                    budget: budget
                 )
                 index = continuation.nextIndex; continue
             }
@@ -3705,6 +3736,7 @@ private struct InlineContext {
     let crossReferences: CrossReferenceContext
     var references: [String: LinkReference] = [:]
     var config: RenderConfig = .init()
+    var budget = MarkdownParsingBudget()
 }
 
 /// A fenced code-block info string that should render as a diagram rather than
