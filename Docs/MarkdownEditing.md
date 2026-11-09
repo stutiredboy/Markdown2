@@ -63,12 +63,50 @@ Find and Replace use separate rows, with flexible fields at the 360-point
 minimum editor width. The bar occupies its own space above the source so it
 cannot cover the first line. Close the bar to return focus to the editor.
 
+Case matching and whole-word matching are document-local options shared by
+source and preview. By default searches ignore case and accents; Match case
+changes only case handling. Matches always cover complete Unicode grapheme
+clusters, including decomposed accents and emoji. Whole word treats consecutive
+Unicode letters, combining marks, numbers and connector punctuation (including
+`_`) as one token. It does not perform Chinese dictionary segmentation: `中文`
+does not whole-word-match part of `中文测试`. Inline Markdown formatting does
+not create an artificial word boundary in the preview.
+
+Only selection freezes a single nonempty **source** selection when enabled. If
+you select text before opening Find, that selection remains available even after
+search navigation moves the caret. Navigation and hiding the bar keep the frozen
+range. Find replacements adjust its length, and one Undo/Redo restores both the
+text and the range. Other committed edits or reloads expire the range. An expired
+scope stays explicitly marked and replacement remains disabled until you use a
+new source selection or turn off Only selection; it never becomes a whole-file
+replacement silently. Deleting the whole frozen selection leaves an empty scope.
+
+Read mode keeps case/word options and searches rendered text. Selection scope and
+replacement are disabled there. Returning to source retains its frozen or expired
+scope; a rendered selection is never guessed back into source coordinates.
+
+Replace All shows its source scope and match count, applies a snapshot once, then
+reports the replacement count. Replacement text is not searched recursively. The
+operation is one undo step, separate from surrounding typing. A replacement
+request is canceled with a notice if its source, query, replacement text, caret,
+options or scope changes before the native edit executes. Empty queries,
+zero matches, expired scope and active input-method composition cannot replace
+text. The three options and scope notices occupy additional rows so the fields
+remain usable at 360 points in both supported languages.
+
+Preview searches share the source matching engine and reject stale DOM results.
+To keep large rendered pages bounded, snapshots stop at 2,000,000 UTF-16 units,
+20,000 text nodes or 20,000 matches. Exceeding a limit shows an unavailable notice
+and no partial results. Source searching is not subject to these preview limits.
+Regular expressions remain deferred.
+
 ## Verification
 
 ```sh
 swift test
+swift test --filter PreciseTextSearchTests --filter PreciseFindSessionTests
 MD2_RUN_GUI_TESTS=1 swift test --filter MarkdownEditingGUITests --filter ReadFormattingSelectionGUITests
-MD2_RUN_GUI_TESTS=1 swift test --filter FindBarLayoutGUITests --filter FindSessionGUITests
+MD2_RUN_GUI_TESTS=1 swift test --filter PreciseFindGUITests --filter FindBarLayoutGUITests --filter FindSessionGUITests
 MD2_RUN_GUI_TESTS=1 swift test --filter UndoHistoryGUITests --filter FindFindDeleteGUITests --filter SettingsWindowPresentationGUITests
 ```
 

@@ -456,6 +456,19 @@ enum L10nKey: String, CaseIterable {
     case replace
     case replaceAll
     case formattingTargetNotice
+    case findMatchCase
+    case findWholeWord
+    case findOnlySelection
+    case findSourceSelection
+    case findWholeDocument
+    case findSelectionInvalid
+    case findSelectionFrozen
+    case findUseSelection
+    case findSourceOnlyHelp
+    case findScopeCount
+    case findReplacementCancelled
+    case findReplacedCount
+    case findPreviewUnavailable
     case closeFind
     case matchStatus
     case noResults
@@ -668,6 +681,19 @@ enum L10n {
         .replace: "Replace",
         .replaceAll: "Replace All",
         .formattingTargetNotice: "Source selection shown. Select the text to format, then run the command again.",
+        .findMatchCase: "Match case",
+        .findWholeWord: "Whole word",
+        .findOnlySelection: "Only selection",
+        .findSourceSelection: "Source selection",
+        .findWholeDocument: "Whole document",
+        .findSelectionInvalid: "Selection expired. Select source text again or turn off Only selection.",
+        .findSelectionFrozen: "Search is limited to the frozen source selection.",
+        .findUseSelection: "Use selection",
+        .findSourceOnlyHelp: "Selection scope and replacement require the source editor.",
+        .findScopeCount: "%@ · %d matches",
+        .findReplacementCancelled: "Search changed. Replacement canceled; run it again.",
+        .findReplacedCount: "%@ · Replaced %d",
+        .findPreviewUnavailable: "Search limit exceeded",
         .closeFind: "Close find bar",
         .matchStatus: "%d of %d",
         .noResults: "No results",
@@ -862,6 +888,19 @@ enum L10n {
         .replace: "替换",
         .replaceAll: "全部替换",
         .formattingTargetNotice: "已显示源码选区。请选择要格式化的文字，再次执行命令。",
+        .findMatchCase: "区分大小写",
+        .findWholeWord: "整词",
+        .findOnlySelection: "仅选区",
+        .findSourceSelection: "源码选区",
+        .findWholeDocument: "全文",
+        .findSelectionInvalid: "选区已失效。请重新选择源码，或关闭“仅选区”。",
+        .findSelectionFrozen: "查找范围已固定为源码选区。",
+        .findUseSelection: "使用选区",
+        .findSourceOnlyHelp: "仅选区和替换需在源码编辑器中使用。",
+        .findScopeCount: "%@ · %d 处匹配",
+        .findReplacementCancelled: "查找状态已变化，替换已取消。请重新执行。",
+        .findReplacedCount: "%@ · 已替换 %d 处",
+        .findPreviewUnavailable: "超出查找限制",
         .closeFind: "关闭查找栏",
         .matchStatus: "第 %d 个，共 %d 个",
         .noResults: "无结果",
