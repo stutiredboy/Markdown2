@@ -22,7 +22,7 @@ import UniformTypeIdentifiers
 enum SelfContainedHTMLBuilder {
     /// The exported page and the images it still depends on. Names are for
     /// showing to the user, in document order, each listed once.
-    struct Output {
+    struct Output: Sendable {
         let html: String
         /// Remote sources left as URLs; they need the network to display.
         let remoteImages: [String]
@@ -32,7 +32,7 @@ enum SelfContainedHTMLBuilder {
         var localImageFailures: [String: ImageFailure] = [:]
     }
 
-    enum ImageFailure: Error {
+    enum ImageFailure: Error, Sendable {
         case invalidImage, resourceLimit
 
         var noticeKey: L10nKey {

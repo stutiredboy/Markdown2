@@ -484,13 +484,10 @@ final class DocumentStore: ObservableObject {
 
         preparingDerivedArtifact = true
         defer { preparingDerivedArtifact = false }
-        let baseURL = self.baseURL
         let snapshot = makeRenderSnapshot()
-        let rendered = await renderWorker.render(snapshot, assetMode: .inline)
-
-        // Untitled documents have no `baseURL`, so relative image paths cannot be
-        // resolved; the builder leaves those references as-is rather than failing.
-        let export = SelfContainedHTMLBuilder.build(html: rendered.html, baseURL: baseURL)
+        // The worker also performs file reads, bounded decoding and base64
+        // encoding; the export keeps using the captured document/base URL.
+        let export = await renderWorker.renderSelfContainedHTML(snapshot)
         do {
             try export.html.write(to: url, atomically: true, encoding: .utf8)
         } catch {

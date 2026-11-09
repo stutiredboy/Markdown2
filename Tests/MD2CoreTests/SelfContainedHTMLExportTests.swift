@@ -395,6 +395,21 @@ struct SelfContainedHTMLExportTests {
         #expect(output.unembeddedLocalImages.isEmpty)
     }
 
+    @Test func exportImageBuilderRunsOffMainActorWhileInputCanContinue() async {
+        let heartbeat = DispatchSemaphore(value: 0)
+        let snapshot = DocumentRenderSnapshot(text: "# Export", baseURL: nil,
+            citationStyle: .authorYear, numberAllEquations: false)
+        // A blocking decoder is deliberate: a main-actor builder would prevent
+        // the queued input callback from releasing it and hit the timeout.
+        let result = await DocumentRenderWorker().renderSelfContainedHTML(snapshot) { html, baseURL in
+            #expect(!Thread.isMainThread)
+            DispatchQueue.main.async { heartbeat.signal() }
+            #expect(heartbeat.wait(timeout: .now() + 2) == .success)
+            return SelfContainedHTMLBuilder.build(html: html, baseURL: baseURL)
+        }
+        #expect(result.html.contains("Export"))
+    }
+
     // MARK: - DocumentStore.exportHTML integration
 
     @Test func exportHTMLWritesSelfContainedFileAndPreservesDocumentState() async throws {
