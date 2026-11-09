@@ -437,6 +437,7 @@ enum L10nKey: String, CaseIterable {
     case alertCouldNotPrint
     case alertPandocRequired
     case alertPandocRequiredDetail
+    case alertHTMLExportInvalidImage, alertHTMLExportImageLimit
     case alertAttachmentSaveFailed
     case alertExternalReloadFailedDetail
     case formatMenu, paragraphMenu
@@ -613,6 +614,8 @@ enum L10n {
         .alertCouldNotPrint: "Could not print the document.",
         .alertPandocRequired: "Pandoc is required to export %@.",
         .alertPandocRequiredDetail: "Install Pandoc to enable DOCX and EPUB export.",
+        .alertHTMLExportInvalidImage: "not a valid supported image",
+        .alertHTMLExportImageLimit: "exceeds the export image size or decoding limit",
         .alertAttachmentSaveFailed: "Could not save the image attachment.",
         .alertExternalReloadFailedDetail: "The file could not be re-read after it changed on disk.",
         .formatMenu: "Format",
@@ -782,6 +785,8 @@ enum L10n {
         .alertCouldNotPrint: "无法打印文档。",
         .alertPandocRequired: "导出 %@ 需要 Pandoc。",
         .alertPandocRequiredDetail: "安装 Pandoc 后即可启用 DOCX 和 EPUB 导出。",
+        .alertHTMLExportInvalidImage: "不是有效的受支持图片",
+        .alertHTMLExportImageLimit: "超出导出图片大小或解码限制",
         .alertAttachmentSaveFailed: "无法保存图片附件。",
         .alertExternalReloadFailedDetail: "文件在磁盘上发生变化后无法重新读取。",
         .formatMenu: "格式",

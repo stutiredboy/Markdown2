@@ -512,9 +512,13 @@ final class DocumentStore: ObservableObject {
     /// nil when everything is embedded. Each group lists a capped number of names,
     /// so a long run of remote images cannot hide a missing local one.
     private func htmlExportNotice(for export: SelfContainedHTMLBuilder.Output, fileName: String) -> DocumentAlert? {
+        let localNames = export.unembeddedLocalImages.map { name in
+            guard let reason = export.localImageFailures[name] else { return name }
+            return "\(name) — \(alertText(reason.noticeKey))"
+        }
         let groups = [
             (heading: alertText(.alertHTMLExportRemoteImages), names: export.remoteImages),
-            (heading: alertText(.alertHTMLExportLocalImages), names: export.unembeddedLocalImages)
+            (heading: alertText(.alertHTMLExportLocalImages), names: localNames)
         ].filter { !$0.names.isEmpty }
         guard !groups.isEmpty else { return nil }
 

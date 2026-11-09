@@ -1,4 +1,7 @@
+import AppKit
+import Darwin
 import Foundation
+import ImageIO
 import MD2Core
 import Testing
 @testable import MD2App
@@ -187,6 +190,154 @@ struct SelfContainedHTMLExportTests {
         #expect(output.unembeddedLocalImages == ["my pic&co.png"])
         // A URL keeps its percent escapes: they are part of the address.
         #expect(output.remoteImages == ["https://example.com/a%20b.png?x=1&y=2"])
+    }
+
+    // MARK: - Content validation (untrusted local references)
+
+    @Test func rejectsDisguisedTextAndSymlinkTargetWithoutEmbeddingTheirBytes() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let secret = Data("dummy-secret-only-for-export-regression".utf8)
+        try secret.write(to: dir.appendingPathComponent("secret.txt"))
+        try secret.write(to: dir.appendingPathComponent("disguised.png"))
+        try FileManager.default.createSymbolicLink(
+            at: dir.appendingPathComponent("innocent.png"),
+            withDestinationURL: dir.appendingPathComponent("secret.txt")
+        )
+        let html = #"<main><img src="disguised.png"><img src="innocent.png"></main>"#
+
+        let output = SelfContainedHTMLBuilder.build(html: html, baseURL: dir)
+
+        #expect(output.html == html)
+        #expect(!output.html.contains(secret.base64EncodedString()))
+        #expect(output.unembeddedLocalImages == ["disguised.png", "innocent.png"])
+    }
+
+    @Test func exportOfSymlinkToTextShowsNoticeWithoutLeakingTarget() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let secret = Data("dummy-private-text-for-test".utf8)
+        try secret.write(to: dir.appendingPathComponent("secret.txt"))
+        try FileManager.default.createSymbolicLink(
+            at: dir.appendingPathComponent("innocent.png"),
+            withDestinationURL: dir.appendingPathComponent("secret.txt")
+        )
+        let source = dir.appendingPathComponent("notes.md")
+        try "![image](innocent.png)".write(to: source, atomically: true, encoding: .utf8)
+        let destination = dir.appendingPathComponent("notes.html")
+        let store = DocumentStore(htmlDestinationPicker: { _ in destination })
+        store.open(source)
+
+        await store.exportHTML()
+
+        let exported = try String(contentsOf: destination, encoding: .utf8)
+        #expect(!exported.contains(secret.base64EncodedString()))
+        #expect(!exported.contains(String(decoding: secret, as: UTF8.self)))
+        let alert = try #require(store.alert)
+        #expect(alert.detail.contains("innocent.png — not a valid supported image"))
+    }
+
+    @Test func rejectsMalformedOrNonSVGDocuments() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let examples = ["not an image", "<notes>dummy</notes>", "<svg><g></svg>",
+                        #"<!DOCTYPE svg [<!ENTITY secret SYSTEM "file:///dummy-test-only">]><svg>&secret;</svg>"#]
+        for (index, contents) in (examples + [#"<!DOCTYPE svg [<!ENTITY a "text">]><svg>&a;</svg>"#]).enumerated() {
+            let name = "bad-\(index).svg"
+            try contents.write(to: dir.appendingPathComponent(name), atomically: true, encoding: .utf8)
+            let html = "<img src=\"\(name)\">"
+            let output = SelfContainedHTMLBuilder.build(html: html, baseURL: dir)
+            #expect(output.html == html)
+            #expect(output.unembeddedLocalImages == [name])
+            // XML declarations/entities cannot bypass validation through UTF-16.
+            try contents.data(using: .utf16)!.write(to: dir.appendingPathComponent(name))
+            let utf16 = SelfContainedHTMLBuilder.build(html: html, baseURL: dir)
+            #expect(utf16.html == html)
+            #expect(utf16.unembeddedLocalImages == [name])
+        }
+    }
+
+    @Test func preservesValidParentAndSymlinkedImagesAndSVG() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let child = dir.appendingPathComponent("document")
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+        try writePNG(named: "parent.png", into: dir)
+        try FileManager.default.createSymbolicLink(at: child.appendingPathComponent("shared.png"),
+                                                  withDestinationURL: dir.appendingPathComponent("parent.png"))
+        try #"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2"/></svg>"#
+            .write(to: child.appendingPathComponent("drawing.svg"), atomically: true, encoding: .utf8)
+        let html = #"<img src="../parent.png"><img src="shared.png"><img src="drawing.svg">"#
+        let output = SelfContainedHTMLBuilder.build(html: html, baseURL: child)
+        #expect(output.unembeddedLocalImages.isEmpty)
+        #expect(output.html.components(separatedBy: "data:image/png;base64,").count == 3)
+        #expect(output.html.contains("data:image/svg+xml;base64,"))
+    }
+
+    @Test func rasterMIMEComesFromContentAndCommonFormatsStillEmbed() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        let cases: [(NSBitmapImageRep.FileType, String, String)] = [
+            (.png, "png", "image/png"), (.jpeg, "jpeg", "image/jpeg"),
+            (.gif, "gif", "image/gif"), (.tiff, "tiff", "image/tiff"), (.bmp, "bmp", "image/bmp")
+        ]
+        for (format, ext, mime) in cases {
+            let bytes = try #require(bitmap.representation(using: format, properties: [:]))
+            let name = "image.\(ext)"
+            try bytes.write(to: dir.appendingPathComponent(name))
+            let output = SelfContainedHTMLBuilder.build(html: "<img src=\"\(name)\">", baseURL: dir)
+            #expect(output.unembeddedLocalImages.isEmpty)
+            #expect(output.html.contains("data:\(mime);base64,"))
+        }
+        try bitmap.representation(using: .jpeg, properties: [:])!.write(to: dir.appendingPathComponent("wrong.png"))
+        let renamed = SelfContainedHTMLBuilder.build(html: #"<img src="wrong.png">"#, baseURL: dir)
+        #expect(renamed.html.contains("data:image/jpeg;base64,"))
+    }
+
+    @Test func enforcesFileTotalBytesDimensionsPixelsAndFrameLimits() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        let png = bitmap.representation(using: .png, properties: [:])!
+        try png.write(to: dir.appendingPathComponent("image.png"))
+        var cases: [SelfContainedHTMLBuilder.Limits] = []
+        var bytes = SelfContainedHTMLBuilder.Limits(); bytes.fileBytes = png.count - 1; cases.append(bytes)
+        var total = SelfContainedHTMLBuilder.Limits(); total.totalBytes = png.count - 1; cases.append(total)
+        var dimension = SelfContainedHTMLBuilder.Limits(); dimension.dimension = 1; cases.append(dimension)
+        var pixels = SelfContainedHTMLBuilder.Limits(); pixels.pixels = 3; cases.append(pixels)
+        var totalPixels = SelfContainedHTMLBuilder.Limits(); totalPixels.totalPixels = 3; cases.append(totalPixels)
+        var frames = SelfContainedHTMLBuilder.Limits(); frames.frames = 0; cases.append(frames)
+        let html = #"<img src="image.png">"#
+        for limits in cases {
+            let output = SelfContainedHTMLBuilder.build(html: html, baseURL: dir, limits: limits)
+            #expect(output.html == html)
+            #expect(output.localImageFailures["image.png"] == .resourceLimit)
+        }
+        total.totalBytes = png.count
+        let repeated = SelfContainedHTMLBuilder.build(html: html + html, baseURL: dir, limits: total)
+        #expect(repeated.html.components(separatedBy: "data:image/png;base64,").count == 2)
+        #expect(repeated.unembeddedLocalImages == ["image.png"])
+        totalPixels.totalPixels = 4
+        let decodedOnce = SelfContainedHTMLBuilder.build(html: html + html, baseURL: dir, limits: totalPixels)
+        #expect(decodedOnce.html.components(separatedBy: "data:image/png;base64,").count == 2)
+        #expect(decodedOnce.unembeddedLocalImages == ["image.png"])
+    }
+
+    @Test func rejectsTruncatedImageAndFIFOWithoutBlocking() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let png = Data(base64Encoded: Self.pngBase64)!
+        try png.prefix(32).write(to: dir.appendingPathComponent("truncated.png"))
+        #expect(mkfifo(dir.appendingPathComponent("pipe.png").path, 0o600) == 0)
+        let html = #"<img src="truncated.png"><img src="pipe.png">"#
+        let output = SelfContainedHTMLBuilder.build(html: html, baseURL: dir)
+        #expect(output.html == html)
+        #expect(output.unembeddedLocalImages == ["truncated.png", "pipe.png"])
     }
 
     // MARK: - Builder: scan scope
