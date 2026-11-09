@@ -218,13 +218,17 @@ final class MarkdownEditingGUITests: XCTestCase {
         harness.spin(for: 0.5)
         XCTAssertNil(editor.window)
         harness.store.requestFormat(.italic)
-        // Applied before the editor is back: it must not wait for the editor's
-        // window or focus, which arrive turns later on a loaded machine.
-        XCTAssertEqual(harness.store.text, "***text***")
+        XCTAssertEqual(harness.store.text, "**text**", "the first Read-mode command must not edit hidden source")
         harness.spin(until: { editor.window != nil })
         harness.spin()
         XCTAssertNotNil(editor.window)
-        XCTAssertEqual(harness.store.text, "***text***", "the mounted editor must not apply it again")
+        XCTAssertEqual(harness.store.text, "**text**", "mounting must not apply the first request")
+        XCTAssertTrue(harness.store.showsFormattingTargetNotice)
+        XCTAssertTrue(harness.window.makeFirstResponder(editor))
+        harness.store.requestFormat(.italic)
+        harness.spin()
+        XCTAssertEqual(harness.store.text, "***text***")
+        XCTAssertFalse(harness.store.showsFormattingTargetNotice)
         XCTAssertTrue(harness.store.editorSession.textView === editor)
         let field = NSTextField(frame: NSRect(x: 10, y: 10, width: 100, height: 24))
         harness.window.contentView?.addSubview(field)
@@ -257,8 +261,11 @@ final class MarkdownEditingGUITests: XCTestCase {
         holder.holdsKeyboard = false
         XCTAssertTrue(harness.window.makeFirstResponder(editor))
         harness.spin()
+        XCTAssertEqual(harness.store.text, "text", "focus arriving later must not apply the first request")
+        harness.store.requestFormat(.bold)
+        harness.spin()
         XCTAssertEqual(harness.store.text, "**text**")
-        // The format went through the editor's editing path, so it undoes.
+        // Only the second command edits through the native undo path.
         harness.store.undoManager.undo()
         harness.spin()
         XCTAssertEqual(harness.store.text, "text")

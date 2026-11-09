@@ -216,6 +216,78 @@ struct ImageAttachmentTests {
         }
     }
 
+    @Test func rejectsAttachmentFolderSymlinkOutsideDocumentWithoutWriting() throws {
+        let directory = makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let document = directory.appendingPathComponent("document")
+        let external = directory.appendingPathComponent("shared")
+        try FileManager.default.createDirectory(at: document, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: external, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: document.appendingPathComponent("assets"),
+                                                  withDestinationURL: external)
+
+        #expect(throws: (any Error).self) {
+            try ImageAttachmentManager().writeImageData(Self.makeTIFFData(), toFolder: "assets",
+                                                        documentDirectory: document)
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: external.path).isEmpty)
+    }
+
+    @Test func rejectsNestedSymlinkBeforeCreatingExternalSubdirectory() throws {
+        let directory = makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let document = directory.appendingPathComponent("document")
+        let external = directory.appendingPathComponent("document-neighbor")
+        try FileManager.default.createDirectory(at: document, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: external, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: document.appendingPathComponent("images"),
+                                                  withDestinationURL: external)
+        #expect(throws: (any Error).self) {
+            try ImageAttachmentManager().writeImageData(Self.makeTIFFData(), toFolder: "images/screenshots",
+                                                        documentDirectory: document)
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: external.path).isEmpty)
+    }
+
+    @Test func permitsInternalSymlinkAndSymlinkedDocumentDirectory() throws {
+        let directory = makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let document = directory.appendingPathComponent("document")
+        let images = document.appendingPathComponent("real-images")
+        try FileManager.default.createDirectory(at: images, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: document.appendingPathComponent("assets"), withDestinationURL: images)
+        let alias = directory.appendingPathComponent("document-alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: document)
+        let written = try ImageAttachmentManager().writeImageData(Self.makeTIFFData(), toFolder: "assets",
+                                                                 documentDirectory: alias)
+        #expect(written.relativePath.hasPrefix("assets/"))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: images.path).count == 1)
+        #expect(FileManager.default.fileExists(atPath: alias.appendingPathComponent(written.relativePath).path))
+    }
+
+    @Test func explicitApprovalWritesToSharedDirectoryButDoesNotApproveAnotherTarget() throws {
+        let directory = makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let document = directory.appendingPathComponent("document")
+        let shared = directory.appendingPathComponent("shared")
+        let other = directory.appendingPathComponent("other")
+        for url in [document, shared, other] { try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) }
+        let link = document.appendingPathComponent("assets")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: shared)
+        let approved = ImageAttachmentManager.destination(toFolder: "assets", documentDirectory: document).directory
+        let written = try ImageAttachmentManager().writeImageData(Self.makeTIFFData(), toFolder: "assets",
+            documentDirectory: document, approvedExternalDirectory: approved)
+        #expect(FileManager.default.fileExists(atPath: document.appendingPathComponent(written.relativePath).path))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: shared.path).count == 1)
+        try FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: other)
+        #expect(throws: (any Error).self) {
+            try ImageAttachmentManager().writeImageData(Self.makeTIFFData(), toFolder: "assets",
+                documentDirectory: document, approvedExternalDirectory: approved)
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: other.path).isEmpty)
+    }
+
     // MARK: - Helpers
 
     private func makeTempDirectory() -> URL {

@@ -12,16 +12,17 @@ struct MarkdownStylePlan: Sendable {
     init(_ text: String) {
         self.text = text
         var spans: [Span] = []
-        var fenced = false
+        var activeFence: MarkdownFence?
         text.enumerateSubstrings(in: text.startIndex..<text.endIndex, options: [.byLines]) { line, content, enclosing, _ in
             let line = line ?? ""
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             let range = NSRange(content, in: text)
-            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
-                fenced.toggle()
+            if let fence = activeFence {
+                if fence.isClosed(by: line) { activeFence = nil }
                 spans.append(Span(range: NSRange(enclosing, in: text), kind: .code))
                 spans.append(Span(range: range, kind: .codeText))
-            } else if fenced {
+            } else if let fence = MarkdownFence.opening(in: line) {
+                activeFence = fence
                 spans.append(Span(range: NSRange(enclosing, in: text), kind: .code))
                 spans.append(Span(range: range, kind: .codeText))
             } else {

@@ -1,4 +1,6 @@
+import Darwin
 import Foundation
+import ImageIO
 import UniformTypeIdentifiers
 
 /// Produces a single HTML document by inlining every locally-stored image
@@ -20,19 +22,43 @@ import UniformTypeIdentifiers
 enum SelfContainedHTMLBuilder {
     /// The exported page and the images it still depends on. Names are for
     /// showing to the user, in document order, each listed once.
-    struct Output {
+    struct Output: Sendable {
         let html: String
         /// Remote sources left as URLs; they need the network to display.
         let remoteImages: [String]
         /// Local references left as written; they may show as broken images.
         let unembeddedLocalImages: [String]
+        /// Content/size rejections have a specific explanation in the export notice.
+        var localImageFailures: [String: ImageFailure] = [:]
+    }
+
+    enum ImageFailure: Error, Sendable {
+        case invalidImage, resourceLimit
+
+        var noticeKey: L10nKey {
+            switch self {
+            case .invalidImage: .alertHTMLExportInvalidImage
+            case .resourceLimit: .alertHTMLExportImageLimit
+            }
+        }
+    }
+
+    /// Bound both input bytes and image decoding before allocating raster buffers.
+    /// Internal so tests can exercise every boundary with small fixtures.
+    struct Limits {
+        var fileBytes = 32 * 1024 * 1024
+        var totalBytes = 128 * 1024 * 1024
+        var dimension = 16_384
+        var pixels = 40_000_000
+        var frames = 256
+        var totalPixels = 160_000_000
     }
 
     private static let imgTagPattern = #"<img\b[^>]*\bsrc\s*=\s*(['"])(.*?)\1[^>]*>"#
 
     /// Returns `html` with each `<img>` that points at a local image file replaced
     /// by an inlined `data:` URI, and reports the images it left outside the page.
-    static func build(html: String, baseURL: URL?) -> Output {
+    static func build(html: String, baseURL: URL?, limits: Limits = Limits()) -> Output {
         guard let regex = try? NSRegularExpression(pattern: imgTagPattern, options: [.caseInsensitive]) else {
             return Output(html: html, remoteImages: [], unembeddedLocalImages: [])
         }
@@ -42,6 +68,9 @@ enum SelfContainedHTMLBuilder {
         var result = html
         var remoteImages: [String] = []
         var localImages: [String] = []
+        var failures: [String: ImageFailure] = [:]
+        var remainingBytes = limits.totalBytes
+        var remainingPixels = limits.totalPixels
         // Replace right-to-left so earlier ranges stay valid as later text changes.
         for match in matches.reversed() {
             guard let sourceRange = Range(match.range(at: 2), in: result) else { continue }
@@ -52,17 +81,27 @@ enum SelfContainedHTMLBuilder {
 
             if lower.hasPrefix("http://") || lower.hasPrefix("https://") {
                 remoteImages.append(source)
-            } else if let fileURL = localImageFileURL(fromSource: source, baseURL: baseURL),
-                      let dataURI = dataURI(for: fileURL) {
-                result.replaceSubrange(sourceRange, with: dataURI)
             } else {
-                localImages.append(source.removingPercentEncoding ?? source)
+                let name = source.removingPercentEncoding ?? source
+                if let fileURL = localImageFileURL(fromSource: source, baseURL: baseURL) {
+                    do {
+                        let uri = try dataURI(for: fileURL, limits: limits, remainingBytes: &remainingBytes, remainingPixels: &remainingPixels)
+                        result.replaceSubrange(sourceRange, with: uri)
+                        continue
+                    } catch let failure as ImageFailure {
+                        failures[name] = failure
+                    } catch {
+                        // Missing/unreadable files retain the existing generic notice.
+                    }
+                }
+                localImages.append(name)
             }
         }
         return Output(
             html: result,
             remoteImages: uniqued(remoteImages.reversed()),
-            unembeddedLocalImages: uniqued(localImages.reversed())
+            unembeddedLocalImages: uniqued(localImages.reversed()),
+            localImageFailures: failures
         )
     }
 
@@ -113,9 +152,36 @@ enum SelfContainedHTMLBuilder {
         return url
     }
 
-    private static func dataURI(for fileURL: URL) -> String? {
-        guard let data = try? Data(contentsOf: fileURL) else { return nil }
-        return "data:\(mimeType(for: fileURL));base64,\(data.base64EncodedString())"
+    private static func dataURI(for fileURL: URL, limits: Limits, remainingBytes: inout Int,
+                                remainingPixels: inout Int) throws -> String {
+        // Open once, then inspect and read that descriptor. A symlink to a genuine
+        // image is supported; a FIFO/device must never block or be read as an image.
+        let fd = open(fileURL.path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { throw CocoaError(.fileReadNoPermission) }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+            throw ImageFailure.invalidImage
+        }
+        let byteLimit = max(0, min(limits.fileBytes, remainingBytes))
+        guard info.st_size > 0 else { throw ImageFailure.invalidImage }
+        guard info.st_size <= byteLimit else { throw ImageFailure.resourceLimit }
+        // A file can grow after fstat. The extra byte detects that without an
+        // unbounded Data(contentsOf:) allocation or a second path lookup.
+        let data = try handle.read(upToCount: byteLimit + 1) ?? Data()
+        guard data.count <= byteLimit else { throw ImageFailure.resourceLimit }
+        guard !data.isEmpty else { throw ImageFailure.invalidImage }
+        remainingBytes -= data.count
+
+        let mime: String
+        if fileURL.pathExtension.lowercased() == "svg" {
+            guard SVGValidator.validate(data) else { throw ImageFailure.invalidImage }
+            mime = "image/svg+xml"
+        } else {
+            mime = try validatedRasterMIME(data, limits: limits, remainingPixels: &remainingPixels)
+        }
+        return "data:\(mime);base64,\(data.base64EncodedString())"
     }
 
     private static func isSupportedImageFile(_ url: URL) -> Bool {
@@ -123,12 +189,96 @@ enum SelfContainedHTMLBuilder {
         return type.conforms(to: .image)
     }
 
-    private static func mimeType(for url: URL) -> String {
-        if let type = UTType(filenameExtension: url.pathExtension),
-           let mime = type.preferredMIMEType {
-            return mime
+    private static func validatedRasterMIME(_ data: Data, limits: Limits,
+                                            remainingPixels: inout Int) throws -> String {
+        guard let source = CGImageSourceCreateWithData(data as CFData,
+                                                      [kCGImageSourceShouldCache: false] as CFDictionary),
+              let identifier = CGImageSourceGetType(source),
+              let type = UTType(identifier as String), type.conforms(to: .image),
+              let mime = type.preferredMIMEType,
+              CGImageSourceGetStatus(source) == .statusComplete else {
+            throw ImageFailure.invalidImage
         }
-        return "application/octet-stream"
+        let count = CGImageSourceGetCount(source)
+        guard count > 0 else { throw ImageFailure.invalidImage }
+        guard count <= limits.frames else { throw ImageFailure.resourceLimit }
+        var imagePixels = 0
+        // Check all frames before decoding any of them, including animated images.
+        for index in 0..<count {
+            guard let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any],
+                  let width = properties[kCGImagePropertyPixelWidth] as? Int,
+                  let height = properties[kCGImagePropertyPixelHeight] as? Int,
+                  width > 0, height > 0 else { throw ImageFailure.invalidImage }
+            guard width <= limits.dimension, height <= limits.dimension,
+                  width <= min(limits.pixels - imagePixels, remainingPixels) / height else { throw ImageFailure.resourceLimit }
+            imagePixels += width * height
+            remainingPixels -= width * height
+        }
+        for index in 0..<count {
+            let decoded = autoreleasepool {
+                CGImageSourceCreateImageAtIndex(source, index,
+                    [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) != nil
+            }
+            guard decoded, CGImageSourceGetStatusAtIndex(source, index) == .statusComplete else {
+                throw ImageFailure.invalidImage
+            }
+        }
+        // MIME comes from the decoded format, never the authored filename.
+        return mime
+    }
+
+    /// SVG is XML rather than an ImageIO raster format. Check the complete XML
+    /// document and its root without loading DTDs or resolving entities. This is
+    /// format validation, not a new policy for SVG's authored resource links.
+    private final class SVGValidator: NSObject, XMLParserDelegate {
+        private var hasRoot = false
+        private var valid = true
+        private var depth = 0
+        private var elements = 0
+
+        static func validate(_ data: Data) -> Bool {
+            let delegate = SVGValidator()
+            let parser = XMLParser(data: data)
+            parser.shouldProcessNamespaces = true
+            // Report external entity declarations so the delegate can reject them;
+            // the independent .never policy prevents any file/network resolution.
+            parser.shouldResolveExternalEntities = true
+            parser.externalEntityResolvingPolicy = .never
+            parser.delegate = delegate
+            return parser.parse() && delegate.valid && delegate.hasRoot && delegate.depth == 0
+        }
+
+        private func reject(_ parser: XMLParser) {
+            valid = false
+            parser.abortParsing()
+        }
+
+        func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?,
+                    qualifiedName qName: String?, attributes attributeDict: [String: String]) {
+            if !hasRoot {
+                hasRoot = true
+                guard elementName == "svg", namespaceURI == nil || namespaceURI == "" ||
+                        namespaceURI == "http://www.w3.org/2000/svg" else { reject(parser); return }
+            }
+            depth += 1
+            elements += 1
+            if depth > 128 || elements > 100_000 { reject(parser) }
+        }
+
+        func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?,
+                    qualifiedName qName: String?) { depth -= 1 }
+
+        func parser(_ parser: XMLParser, foundInternalEntityDeclarationWithName name: String, value: String?) {
+            reject(parser)
+        }
+
+        func parser(_ parser: XMLParser, foundExternalEntityDeclarationWithName name: String,
+                    publicID: String?, systemID: String?) { reject(parser) }
+
+        func parser(_ parser: XMLParser, resolveExternalEntityName name: String, systemID: String?) -> Data? {
+            reject(parser)
+            return nil
+        }
     }
 
     private static func htmlUnescaped(_ source: String) -> String {

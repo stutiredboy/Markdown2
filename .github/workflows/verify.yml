@@ -50,7 +50,7 @@ jobs:
         env:
           CI: "true"
           MARKDOWN2_VERSION: ${{ inputs.package-version || 'v0.0.0' }}
-        run: bash Scripts/package_app.sh
+        run: bash Scripts/package_app.sh --release
 
       - name: Verify macOS 15 floor and packaged app
         env:

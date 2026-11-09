@@ -100,21 +100,29 @@ final class DocumentStore: ObservableObject {
     /// action through the same viewport-preserving transition path as the toolbar.
     @Published var modeCommand: ModeCommand?
     @Published var formatCommand: MarkdownFormatCommand?
+    /// Read-mode formatting first reveals the source target without editing it.
+    @Published var showsFormattingTargetNotice = false
 
     func requestFormat(_ action: MarkdownEditing.Action) {
         if editorSession.textView?.hasMarkedText() == true { return }
+        // Focus can arrive before the new editor has visible geometry. Ignore
+        // repeated commands while its first source-target reveal is pending;
+        // never queue an edit to run later without a fresh user command.
+        guard !editorSession.revealSelectionOnNextHost else { return }
         if let editor = editorSession.textView, let window = editor.window {
             // A find field or Settings control owns the keyboard in Write mode.
             guard window.firstResponder === editor else { return }
+            showsFormattingTargetNotice = false
             formatCommand = MarkdownFormatCommand(action: action)
             return
         }
-        // In Read mode the source editor is unmounted. Format its kept text view
-        // now, at the selection it kept, and then switch to it. Leaving the
-        // request to the mounted editor made it depend on when that editor got
-        // its window and focus, which can be several run-loop turns later on a
-        // loaded machine.
-        editorSession.applyFormatWhileUnmounted(action, documentText: text)
+        // Rendered selection is not a source range: repeated text, links and
+        // formula output cannot be mapped by guessing. The first command only
+        // reveals the retained source selection. A new command after the user
+        // sees/focuses that target is required to edit it.
+        formatCommand = nil
+        showsFormattingTargetNotice = true
+        editorSession.revealSelectionOnNextHost = true
         requestMode(.write)
     }
 
@@ -166,6 +174,13 @@ final class DocumentStore: ObservableObject {
     /// Injected so the save-before-attachment flow can be tested without the
     /// modal `NSSavePanel`.
     private let saveLocationPicker: @MainActor (String) -> URL?
+    private let confirmExternalAttachmentDirectory: (@MainActor (URL) -> Bool)?
+    /// Approval belongs to this document and exact resolved target, for this session.
+    private var approvedAttachmentDestinations: Set<AttachmentApproval> = []
+    private struct AttachmentApproval: Hashable {
+        let document: URL
+        let directory: URL
+    }
     /// Retains the in-flight print job for its (asynchronous) lifetime; cleared
     /// when printing completes. Like PDF export, printing is a derived artifact —
     /// it never touches `fileURL`, `isDirty`, or autosave.
@@ -250,6 +265,7 @@ final class DocumentStore: ObservableObject {
         pandocAvailabilityProvider: @escaping @MainActor () -> Bool = { PandocConverter.isAvailable() },
         conversionDestinationPicker: @escaping @MainActor (DocumentExportFormat, String) -> URL? = DocumentStore.presentConversionDestination,
         saveLocationPicker: @escaping @MainActor (String) -> URL? = DocumentStore.presentSaveLocation,
+        confirmExternalAttachmentDirectory: (@MainActor (URL) -> Bool)? = nil,
         exportProfileProvider: @escaping @MainActor () -> ExportProfile = { .default },
         renderConfigProvider: @escaping @MainActor () -> (citationStyle: CitationStyle, numberAllEquations: Bool) = { (.authorYear, false) },
         syntaxConfigProvider: @escaping @MainActor () -> (InlineFeatures, AlertLanguage) = { (.init(), .english) },
@@ -269,6 +285,7 @@ final class DocumentStore: ObservableObject {
         self.pandocAvailabilityProvider = pandocAvailabilityProvider
         self.conversionDestinationPicker = conversionDestinationPicker
         self.saveLocationPicker = saveLocationPicker
+        self.confirmExternalAttachmentDirectory = confirmExternalAttachmentDirectory
         self.exportProfileProvider = exportProfileProvider
         self.renderConfigProvider = renderConfigProvider
         self.syntaxConfigProvider = syntaxConfigProvider
@@ -359,6 +376,20 @@ final class DocumentStore: ObservableObject {
             guard save(), fileURL != nil else { return nil }
         }
 
+        var approvedDirectory: URL?
+        if needsAttachmentFolder, let baseURL, let fileURL {
+            let destination = ImageAttachmentManager.destination(toFolder: folder, documentDirectory: baseURL)
+            if destination.isExternal {
+                let approval = AttachmentApproval(document: fileURL.standardizedFileURL, directory: destination.directory)
+                if !approvedAttachmentDestinations.contains(approval) {
+                    let confirmed = confirmExternalAttachmentDirectory?(destination.directory)
+                        ?? presentExternalAttachmentConfirmation(destination.directory)
+                    guard confirmed else { return nil }
+                    approvedAttachmentDestinations.insert(approval)
+                }
+                approvedDirectory = destination.directory
+            }
+        }
         let manager = ImageAttachmentManager()
         var references: [String] = []
         for source in sources {
@@ -371,7 +402,8 @@ final class DocumentStore: ObservableObject {
                     let written = try manager.writeImageData(
                         data,
                         toFolder: folder,
-                        documentDirectory: documentDirectory
+                        documentDirectory: documentDirectory,
+                        approvedExternalDirectory: approvedDirectory
                     )
                     let linkPath = ImageAttachmentManager.markdownLinkPath(written.relativePath)
                     references.append("![\(written.altText)](\(linkPath))")
@@ -386,6 +418,16 @@ final class DocumentStore: ObservableObject {
 
         guard !references.isEmpty else { return nil }
         return references.joined(separator: "\n")
+    }
+
+    private func presentExternalAttachmentConfirmation(_ directory: URL) -> Bool {
+        let prompt = NSAlert()
+        prompt.alertStyle = .warning
+        prompt.messageText = alertText(.alertExternalAttachmentDirectory)
+        prompt.informativeText = alertText(.alertExternalAttachmentDirectoryDetail, directory.path)
+        prompt.addButton(withTitle: alertText(.cancel))
+        prompt.addButton(withTitle: alertText(.useAttachmentFolder))
+        return prompt.runModal() == .alertSecondButtonReturn
     }
 
     /// Exports the rendered preview to a paginated PDF chosen by the user. This
@@ -484,13 +526,10 @@ final class DocumentStore: ObservableObject {
 
         preparingDerivedArtifact = true
         defer { preparingDerivedArtifact = false }
-        let baseURL = self.baseURL
         let snapshot = makeRenderSnapshot()
-        let rendered = await renderWorker.render(snapshot, assetMode: .inline)
-
-        // Untitled documents have no `baseURL`, so relative image paths cannot be
-        // resolved; the builder leaves those references as-is rather than failing.
-        let export = SelfContainedHTMLBuilder.build(html: rendered.html, baseURL: baseURL)
+        // The worker also performs file reads, bounded decoding and base64
+        // encoding; the export keeps using the captured document/base URL.
+        let export = await renderWorker.renderSelfContainedHTML(snapshot)
         do {
             try export.html.write(to: url, atomically: true, encoding: .utf8)
         } catch {
@@ -512,9 +551,13 @@ final class DocumentStore: ObservableObject {
     /// nil when everything is embedded. Each group lists a capped number of names,
     /// so a long run of remote images cannot hide a missing local one.
     private func htmlExportNotice(for export: SelfContainedHTMLBuilder.Output, fileName: String) -> DocumentAlert? {
+        let localNames = export.unembeddedLocalImages.map { name in
+            guard let reason = export.localImageFailures[name] else { return name }
+            return "\(name) — \(alertText(reason.noticeKey))"
+        }
         let groups = [
             (heading: alertText(.alertHTMLExportRemoteImages), names: export.remoteImages),
-            (heading: alertText(.alertHTMLExportLocalImages), names: export.unembeddedLocalImages)
+            (heading: alertText(.alertHTMLExportLocalImages), names: localNames)
         ].filter { !$0.names.isEmpty }
         guard !groups.isEmpty else { return nil }
 

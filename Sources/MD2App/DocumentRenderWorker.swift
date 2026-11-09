@@ -13,6 +13,18 @@ struct DocumentRenderSnapshot: Sendable {
 /// Serial, non-main-actor rendering keeps CPU work and bibliography IO away
 /// from input handling. DocumentStore coalesces pending preview revisions.
 actor DocumentRenderWorker {
+    /// Rendering, local file reads, image decoding and base64 encoding all stay
+    /// on this worker; bounded image validation must not block editor input.
+    func renderSelfContainedHTML(
+        _ snapshot: DocumentRenderSnapshot,
+        builder: @Sendable (String, URL?) -> SelfContainedHTMLBuilder.Output = {
+            SelfContainedHTMLBuilder.build(html: $0, baseURL: $1)
+        }
+    ) -> SelfContainedHTMLBuilder.Output {
+        let rendered = render(snapshot, assetMode: .inline)
+        return builder(rendered.html, snapshot.baseURL)
+    }
+
     func render(_ snapshot: DocumentRenderSnapshot, assetMode: RenderAssetMode = .appScheme) -> RenderedDocument {
         let fields = FrontMatterReader.fields(in: snapshot.text)
         var bibliography: [String: BibEntry] = [:]

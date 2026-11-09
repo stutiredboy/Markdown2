@@ -2,7 +2,12 @@
 
 These commands work in Write and in the editor pane of Side by Side. Menu
 commands target the focused source editor and do not format a search field.
-Formatting from Read mode switches to the source editor, using its retained selection.
+The first formatting command from Read mode switches to the source editor and
+reveals its retained selection or caret **without changing the document**. A short
+notice asks you to select the source text and run the command again. Rendered text
+is not guessed back to a source range: repeated words, links, formulas and
+cross-paragraph selections can be ambiguous. Only a subsequent command in the
+focused source editor applies formatting.
 
 | Input | Behavior |
 | --- | --- |
@@ -45,11 +50,25 @@ the input method. Return used to commit Latin letters from a Chinese IME must
 not also continue a list. Shift+Return's originating event is retained because
 AppKit may dispatch it as `insertNewline:` rather than `insertLineBreak:`.
 
+## Find and replace
+
+The last query stays with the document when its find bar closes or its mode
+changes. Cmd+G / Shift+Cmd+G continue forward/backward with the bar hidden;
+opening Find restores that query. The incoming surface computes its own matches
+from source or rendered text. In Side by Side, a search updates the pane you
+use; the other pane adopts the last query when you invoke Find or navigation
+there. Opening another document resets the query.
+
+Find and Replace use separate rows, with flexible fields at the 360-point
+minimum editor width. The bar occupies its own space above the source so it
+cannot cover the first line. Close the bar to return focus to the editor.
+
 ## Verification
 
 ```sh
 swift test
-MD2_RUN_GUI_TESTS=1 swift test --filter MarkdownEditingGUITests
+MD2_RUN_GUI_TESTS=1 swift test --filter MarkdownEditingGUITests --filter ReadFormattingSelectionGUITests
+MD2_RUN_GUI_TESTS=1 swift test --filter FindBarLayoutGUITests --filter FindSessionGUITests
 MD2_RUN_GUI_TESTS=1 swift test --filter UndoHistoryGUITests --filter FindFindDeleteGUITests --filter SettingsWindowPresentationGUITests
 ```
 

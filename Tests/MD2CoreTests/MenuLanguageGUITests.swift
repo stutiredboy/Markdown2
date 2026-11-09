@@ -113,6 +113,13 @@ final class MenuLanguageGUITests: XCTestCase {
         try press(.new, in: .zhHans, pid: pid)
         let document = try waitForWindow(pid: pid) { Self.firstElement(ofRole: "AXTextArea", in: $0) != nil }
         XCTAssertNil(Self.firstElement(ofRole: "AXTextField", in: document), "the find bar must start closed")
+        let source = try XCTUnwrap(Self.firstElement(ofRole: "AXTextArea", in: document))
+        let original = try XCTUnwrap(Self.stringValue(kAXValueAttribute, of: source))
+        let target = NSRange(try XCTUnwrap(original.range(of: "Start writing in Markdown."),
+                                          "the starter paragraph is the explicit format target"), in: original)
+        var selection = CFRange(location: target.location, length: target.length)
+        let selectedRange = try XCTUnwrap(AXValueCreate(.cfRange, &selection))
+        XCTAssertEqual(AXUIElementSetAttributeValue(source, kAXSelectedTextRangeAttribute as CFString, selectedRange), .success)
 
         try press(.find, in: .zhHans, pid: pid)
         try waitForWindow(pid: pid) { Self.firstElement(ofRole: "AXTextField", in: $0) != nil }
@@ -120,10 +127,145 @@ final class MenuLanguageGUITests: XCTestCase {
         try press(.read, in: .zhHans, pid: pid)
         try waitForWindow(pid: pid) { Self.firstElement(ofRole: "AXWebArea", in: $0) != nil }
 
-        // From Read mode a format command applies at once, so the marker shows it
-        // reached the text without depending on who holds keyboard focus.
+        // Read formatting first reveals its source target without editing it.
+        // The localized command still acts, but only a second invocation in the
+        // focused editor may mutate the now-visible selection.
         try press(.formatHeading1, in: .zhHans, pid: pid)
-        try waitForWindow(pid: pid) { Self.title(of: $0).hasSuffix(" *") }
+        let revealed = try waitForWindow(pid: pid) { Self.firstElement(ofRole: "AXTextArea", in: $0) != nil }
+        let editor = try XCTUnwrap(Self.firstElement(ofRole: "AXTextArea", in: revealed))
+        XCTAssertEqual(Self.stringValue(kAXValueAttribute, of: editor), original, "the first Read-mode command must preserve source")
+        XCTAssertFalse(Self.title(of: revealed).hasSuffix(" *"), "revealing the target must not dirty the document")
+
+        NSRunningApplication(processIdentifier: pid)?.activate()
+        XCTAssertEqual(AXUIElementSetAttributeValue(editor, kAXFocusedAttribute as CFString, kCFBooleanTrue), .success)
+        try waitForSourceFocus(editor, pid: pid)
+        var rangeValue: CFTypeRef?
+        XCTAssertEqual(AXUIElementCopyAttributeValue(editor, kAXSelectedTextRangeAttribute as CFString, &rangeValue), .success)
+        let retainedRange = try XCTUnwrap(rangeValue)
+        guard CFGetTypeID(retainedRange) == AXValueGetTypeID() else {
+            throw GuardFailure("the source selection is not an Accessibility range")
+        }
+        var retainedSelection = CFRange(location: 0, length: 0)
+        XCTAssertTrue(AXValueGetValue(retainedRange as! AXValue, .cfRange, &retainedSelection))
+        XCTAssertEqual(retainedSelection.location, target.location)
+        XCTAssertEqual(retainedSelection.length, target.length)
+
+        try waitForRevealedSource(editor, selection: selectedRange, target: target)
+        try press(.formatHeading1, in: .zhHans, pid: pid)
+        let expected = (original as NSString).replacingCharacters(in: target, with: "# Start writing in Markdown.")
+        try waitForWindow(pid: pid, description: "the second command's exact formatted source") { window in
+            guard let editor = Self.firstElement(ofRole: "AXTextArea", in: window) else { return false }
+            return Self.title(of: window).hasSuffix(" *") && Self.stringValue(kAXValueAttribute, of: editor) == expected
+        }
+
+        // Undo is AppKit-owned and keeps its launch language; locate its key
+        // equivalent so this also proves the edit entered native undo history.
+        try pressNativeUndo(pid: pid)
+        try waitForWindow(pid: pid, description: "native Undo restoring the original source") { window in
+            guard let editor = Self.firstElement(ofRole: "AXTextArea", in: window) else { return false }
+            return Self.stringValue(kAXValueAttribute, of: editor) == original
+        }
+        try waitForCommandTitles(.zhHans, pid: pid)
+    }
+
+    private func waitForSourceFocus(_ editor: AXUIElement, pid: pid_t) throws {
+        let app = AXUIElementCreateApplication(pid)
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            var focused: CFTypeRef?
+            if AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
+               let focused, CFEqual(focused, editor) { return }
+            usleep(100_000)
+        }
+        throw GuardFailure("the revealed source editor did not receive keyboard focus")
+    }
+
+    private func waitForRevealedSource(_ editor: AXUIElement, selection: AXValue, target: NSRange) throws {
+        var settable = DarwinBoolean(true)
+        XCTAssertEqual(AXUIElementIsAttributeSettable(editor, kAXElementBusyAttribute as CFString, &settable), .success)
+        XCTAssertFalse(settable.boolValue, "assistive technology must not be able to bypass the source-target reveal")
+        let deadline = Date().addingTimeInterval(5)
+        var lastState = "no Accessibility response"
+        while Date() < deadline {
+            var busyValue: CFTypeRef?
+            let busyStatus = AXUIElementCopyAttributeValue(editor, kAXElementBusyAttribute as CFString, &busyValue)
+            var visibleValue: CFTypeRef?
+            let visibleStatus = AXUIElementCopyAttributeValue(editor, kAXVisibleCharacterRangeAttribute as CFString, &visibleValue)
+            var boundsValue: CFTypeRef?
+            let boundsStatus = AXUIElementCopyParameterizedAttributeValue(editor,
+                kAXBoundsForRangeParameterizedAttribute as CFString, selection, &boundsValue)
+            var visible = CFRange(location: 0, length: 0)
+            var bounds = CGRect.zero
+            let hasVisibleRange = visibleStatus == .success && visibleValue.map {
+                CFGetTypeID($0) == AXValueGetTypeID() && AXValueGetValue($0 as! AXValue, .cfRange, &visible)
+            } == true
+            let hasBounds = boundsStatus == .success && boundsValue.map {
+                CFGetTypeID($0) == AXValueGetTypeID() && AXValueGetValue($0 as! AXValue, .cgRect, &bounds)
+            } == true
+            let viewport = Self.scrollViewport(containing: editor)
+            lastState = "busy=\(String(describing: busyValue)) (\(busyStatus.rawValue)), visible=\(visible) (\(visibleStatus.rawValue)), bounds=\(bounds) (\(boundsStatus.rawValue)), viewport=\(String(describing: viewport))"
+            // Focus and AXTextArea existence are not readiness: a native editor
+            // can have both while the source-target reveal is still settling.
+            if busyStatus == .success, busyValue as? Bool == false,
+               hasVisibleRange, visible.location <= target.location,
+               visible.location + visible.length >= NSMaxRange(target),
+               hasBounds, !bounds.isEmpty, !bounds.isInfinite, !bounds.isNull,
+               let viewport, viewport.intersects(bounds) {
+                return
+            }
+            usleep(100_000)
+        }
+        throw GuardFailure("the retained source target did not become ready and visible: \(lastState)")
+    }
+
+    private static func scrollViewport(containing editor: AXUIElement) -> CGRect? {
+        var ancestor = editor
+        for _ in 0..<8 {
+            var parent: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(ancestor, kAXParentAttribute as CFString, &parent) == .success,
+                  let next = element(parent) else { return nil }
+            ancestor = next
+            guard role(of: ancestor) == "AXScrollArea" else { continue }
+            var positionValue: CFTypeRef?
+            var sizeValue: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(ancestor, kAXPositionAttribute as CFString, &positionValue) == .success,
+                  AXUIElementCopyAttributeValue(ancestor, kAXSizeAttribute as CFString, &sizeValue) == .success,
+                  let positionValue, CFGetTypeID(positionValue) == AXValueGetTypeID(),
+                  let sizeValue, CFGetTypeID(sizeValue) == AXValueGetTypeID() else { return nil }
+            var position = CGPoint.zero
+            var size = CGSize.zero
+            guard AXValueGetValue(positionValue as! AXValue, .cgPoint, &position),
+                  AXValueGetValue(sizeValue as! AXValue, .cgSize, &size) else { return nil }
+            return CGRect(origin: position, size: size)
+        }
+        return nil
+    }
+
+    private func pressNativeUndo(pid: pid_t) throws {
+        for barItem in Self.children(of: try menuBar(pid: pid)) {
+            for menu in Self.children(of: barItem) {
+                guard let undo = Self.children(of: menu).first(where: {
+                    Self.commandCharacter(of: $0) == "Z"
+                        && Self.intValue(kAXMenuItemCmdModifiersAttribute, of: $0) == 0
+                }) else { continue }
+                func isEnabled() -> Bool {
+                    var value: CFTypeRef?
+                    return AXUIElementCopyAttributeValue(undo, kAXEnabledAttribute as CFString, &value) == .success
+                        && (value as? Bool) == true
+                }
+                // Native Undo validates against the responder chain when its
+                // menu opens. Pressing a stale disabled AX item reports success
+                // without performing the action.
+                NSRunningApplication(processIdentifier: pid)?.activate()
+                XCTAssertEqual(AXUIElementPerformAction(barItem, kAXPressAction as CFString), .success)
+                let deadline = Date().addingTimeInterval(5)
+                while !isEnabled(), Date() < deadline { usleep(100_000) }
+                guard isEnabled() else { throw GuardFailure("native Undo is disabled after opening its menu") }
+                XCTAssertEqual(AXUIElementPerformAction(undo, kAXPressAction as CFString), .success)
+                return
+            }
+        }
+        throw GuardFailure("no unshifted Command-Z Undo item was found")
     }
 
     // MARK: - Shortcuts
@@ -478,6 +620,7 @@ final class MenuLanguageGUITests: XCTestCase {
     private func waitForWindow(
         pid: pid_t,
         timeout: TimeInterval = 10,
+        description: String = "the expected window",
         where matches: (AXUIElement) -> Bool
     ) throws -> AXUIElement {
         let deadline = Date().addingTimeInterval(timeout)
@@ -485,8 +628,12 @@ final class MenuLanguageGUITests: XCTestCase {
             if let window = Self.windows(pid: pid).first(where: matches) { return window }
             usleep(200_000)
         }
-        let seen = Self.windows(pid: pid).map(Self.title(of:))
-        throw GuardFailure("the expected window did not appear within \(timeout)s; windows: \(seen)")
+        let seen = Self.windows(pid: pid).map { window in
+            let source = Self.firstElement(ofRole: "AXTextArea", in: window)
+                .flatMap { Self.stringValue(kAXValueAttribute, of: $0) }
+            return "\(Self.title(of: window)); source: \(String(reflecting: source))"
+        }
+        throw GuardFailure("\(description) did not appear within \(timeout)s; windows: \(seen)")
     }
 
     // MARK: - Accessibility
@@ -508,9 +655,20 @@ final class MenuLanguageGUITests: XCTestCase {
     }
 
     private static func firstElement(in root: AXUIElement, where matches: (AXUIElement) -> Bool) -> AXUIElement? {
-        for child in children(of: root) {
+        // During a native hierarchy transition AX can repeat an ancestor in
+        // its children. Preserve depth-first order without recursing forever
+        // (the old walker exhausted 32,561 stack frames in a Settings lookup).
+        var pending = Array(children(of: root).reversed())
+        var visited = [root]
+        while let child = pending.popLast() {
+            guard !visited.contains(where: { CFEqual($0, child) }) else { continue }
+            guard visited.count < 4_096 else {
+                XCTFail("Accessibility search exceeded 4096 distinct nodes while looking below role \(role(of: root) ?? "unknown")")
+                return nil
+            }
+            visited.append(child)
             if matches(child) { return child }
-            if let nested = firstElement(in: child, where: matches) { return nested }
+            pending.append(contentsOf: children(of: child).reversed())
         }
         return nil
     }

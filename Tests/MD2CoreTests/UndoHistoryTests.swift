@@ -214,22 +214,21 @@ struct DocumentUndoHistoryTests {
         #expect(!store.undoManager.canUndo)
     }
 
-    @Test func formatWithNoEditorMountedEditsTheKeptSelectionAndUndoes() throws {
+    @Test func formatWithNoEditorMountedOnlyRevealsTheKeptSelection() throws {
         let store = DocumentStore()
         store.undoManager.groupsByEvent = false
         store.text = "some text"
         let textView = store.editorSession.loadTextView(text: store.text)
         textView.setSelectedRange(NSRange(location: 5, length: 4))
 
-        MarkdownEditorSessionTests.step(store.undoManager) {
-            store.requestFormat(.bold)
-        }
-        #expect(store.text == "some **text**", "applied at once, not left for an editor that mounts later")
+        store.undoManager.removeAllActions()
+        store.requestFormat(.bold)
+        #expect(store.text == "some text", "a hidden retained selection must never be formatted")
         #expect(store.formatCommand == nil)
         #expect(store.modeCommand?.mode == .write)
 
-        store.undoManager.undo()
-        #expect(store.text == "some text")
+        #expect(!store.undoManager.canUndo)
+        #expect(textView.selectedRange() == NSRange(location: 5, length: 4))
     }
 
     @Test func formatWithNoEditorMountedFollowsADocumentChangedWithoutTheTextView() throws {
@@ -244,7 +243,7 @@ struct DocumentUndoHistoryTests {
 
         store.requestFormat(.bold)
         // Formatting the stale "text" would write it back over "more text".
-        #expect(store.text == "more **text**")
+        #expect(store.text == "more text")
     }
 
     @Test func externalReloadClearsTheHistory() async throws {

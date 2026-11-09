@@ -1,13 +1,84 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 APP_NAME="Markdown2"     # SPM product / executable name inside the bundle
 DISPLAY_NAME="Markdown2" # CFBundleName and the distributed .app/.dmg file name
 APP_DIR="$ROOT_DIR/dist/$DISPLAY_NAME.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
+
+usage() {
+    cat <<'USAGE'
+Usage: Scripts/package_app.sh [--release] [--install /absolute/Name.app] [--set-default]
+
+By default, build only dist/Markdown2.app with a separate development identity.
+  --release       Use the distributed application's identity (for CI/releases).
+  --install PATH  Explicitly replace/install the app at PATH; its parent must exist.
+  --set-default   Also make that installed app the default Markdown editor.
+                  Requires --install. Installation is not allowed in CI.
+  --help          Show this help without building or changing anything.
+USAGE
+}
+
+RELEASE_BUILD=false
+INSTALL_APP=""
+SET_DEFAULT=false
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --release) RELEASE_BUILD=true; shift ;;
+        --install)
+            if [ "$#" -lt 2 ] || [ -n "$INSTALL_APP" ]; then
+                echo "--install requires one absolute .app destination." >&2; exit 1
+            fi
+            INSTALL_APP="$2"
+            shift 2
+            ;;
+        --set-default) SET_DEFAULT=true; shift ;;
+        --help|-h) usage; exit 0 ;;
+        *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
+    esac
+done
+
+validate_output_directory() {
+    # A redirected dist must never turn build-only packaging into installation.
+    if [ -L "$ROOT_DIR/dist" ] || { [ -e "$ROOT_DIR/dist" ] && [ ! -d "$ROOT_DIR/dist" ]; }; then
+        echo "dist must be a real directory inside the checkout, not a symbolic link or file." >&2
+        exit 1
+    fi
+}
+validate_output_directory
+
+if $SET_DEFAULT && [ -z "$INSTALL_APP" ]; then
+    echo "--set-default requires --install /absolute/Name.app." >&2; exit 1
+fi
+if [ -n "$INSTALL_APP" ]; then
+    if [ -n "${CI:-}" ]; then
+        echo "Installation and default-handler changes are disabled in CI." >&2; exit 1
+    fi
+    case "$INSTALL_APP" in
+        /*.app) ;;
+        *) echo "--install must name an absolute .app destination." >&2; exit 1 ;;
+    esac
+    if [ -L "$INSTALL_APP" ]; then
+        echo "--install must not replace a symbolic link." >&2; exit 1
+    fi
+    INSTALL_PARENT="$(cd "$(dirname "$INSTALL_APP")" && pwd -P)" || exit 1
+    INSTALL_APP="$INSTALL_PARENT/$(basename "$INSTALL_APP")"
+    if [ "$INSTALL_APP" = "$APP_DIR" ]; then
+        echo "The install destination must differ from the dist bundle." >&2; exit 1
+    fi
+fi
+
+BUNDLE_IDENTIFIER="dev.codex.md2.development"
+BUNDLE_NAME="Markdown2 Development"
+HANDLER_RANK="Alternate"
+if $RELEASE_BUILD; then
+    BUNDLE_IDENTIFIER="dev.codex.md2"
+    BUNDLE_NAME="$DISPLAY_NAME"
+    HANDLER_RANK="Owner"
+fi
 
 # Derive the marketing version from the build tag so the About panel matches
 # the GitHub release. Priority: explicit MARKDOWN2_VERSION, then the CI ref name
@@ -26,6 +97,7 @@ COPYRIGHT="Copyright © 2026 stutiredboy"
 cd "$ROOT_DIR"
 swift build -c release --product "$APP_NAME"
 
+validate_output_directory
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
@@ -80,13 +152,13 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
                 <string>public.plain-text</string>
             </array>
             <key>LSHandlerRank</key>
-            <string>Owner</string>
+            <string>$HANDLER_RANK</string>
         </dict>
     </array>
     <key>CFBundleExecutable</key>
     <string>$APP_NAME</string>
     <key>CFBundleIdentifier</key>
-    <string>dev.codex.md2</string>
+    <string>$BUNDLE_IDENTIFIER</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleIconName</key>
@@ -94,7 +166,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>$DISPLAY_NAME</string>
+    <string>$BUNDLE_NAME</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -143,47 +215,41 @@ CODESIGN_IDENTITY="${MARKDOWN2_CODESIGN_IDENTITY:--}"
 codesign --force --deep --sign "$CODESIGN_IDENTITY" "$APP_DIR"
 codesign --verify --deep --strict "$APP_DIR"
 
-# CI only needs the signed bundle. Do not change Launch Services registrations
-# or the runner's default Markdown editor during build verification or release.
-if [ -n "${CI:-}" ]; then
-    echo "Built $APP_DIR"
-    exit 0
-fi
+# Packaging alone never installs, unregisters bundles, or changes associations.
+echo "Built $APP_DIR ($BUNDLE_IDENTIFIER)"
+if [ -z "$INSTALL_APP" ]; then exit 0; fi
 
-# Launch Services bookkeeping.
-#
-# dist/ is a build artifact, not an install. Finder's "Open With" menu lists
-# every registered copy of the app, so registering dist/ adds one more menu entry
-# per build. Register only the installed copy instead, and drop whatever
-# registration the dist bundle picked up previously.
+# Stage and verify before replacing the explicitly selected installation.
+INSTALL_STAGE="$(mktemp -d "$INSTALL_PARENT/.md2-install.XXXXXX")"
+restore_install_on_failure() {
+    if [ -e "$INSTALL_STAGE/Previous.app" ] && [ ! -e "$INSTALL_APP" ]; then
+        mv "$INSTALL_STAGE/Previous.app" "$INSTALL_APP"
+    fi
+    rm -rf "$INSTALL_STAGE"
+}
+trap restore_install_on_failure EXIT
+ditto "$APP_DIR" "$INSTALL_STAGE/New.app"
+codesign --verify --deep --strict "$INSTALL_STAGE/New.app"
+if [ -e "$INSTALL_APP" ]; then mv "$INSTALL_APP" "$INSTALL_STAGE/Previous.app"; fi
+mv "$INSTALL_STAGE/New.app" "$INSTALL_APP"
+
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
-INSTALL_APP="${MARKDOWN2_INSTALL_APP:-/Applications/$DISPLAY_NAME.app}"
+"$LSREGISTER" -f "$INSTALL_APP"
+echo "Installed $INSTALL_APP"
 
-# CI only needs the dist/ artifact; installing into /Applications is local-only.
-if [ -z "${CI:-}" ]; then
-    case "$INSTALL_APP" in
-        *.app) ;;
-        *) echo "MARKDOWN2_INSTALL_APP must end in .app (got: $INSTALL_APP)" >&2; exit 1 ;;
-    esac
-    rm -rf "$INSTALL_APP"
-    # ditto, not cp: it carries the bundle's code signature and extended
-    # attributes over intact, which a fresh ad-hoc-signed build depends on.
-    ditto "$APP_DIR" "$INSTALL_APP"
-    "$LSREGISTER" -f "$INSTALL_APP" >/dev/null 2>&1 || true
-fi
-"$LSREGISTER" -u "$APP_DIR" >/dev/null 2>&1 || true
-
-swift - >/dev/null 2>&1 <<'SWIFT' || true
+if $SET_DEFAULT; then
+MD2_INSTALL_BUNDLE_IDENTIFIER="$BUNDLE_IDENTIFIER" swift - <<'SWIFT'
 import CoreServices
 import Foundation
 
-let bundleID = "dev.codex.md2" as NSString
+let bundleID = ProcessInfo.processInfo.environment["MD2_INSTALL_BUNDLE_IDENTIFIER"]! as NSString
 for contentType in ["net.daringfireball.markdown", "public.markdown"] {
-    LSSetDefaultRoleHandlerForContentType(contentType as NSString, LSRolesMask.editor, bundleID)
+    let status = LSSetDefaultRoleHandlerForContentType(contentType as NSString, LSRolesMask.editor, bundleID)
+    guard status == noErr else {
+        fputs("Could not set the default handler for \(contentType): \(status)\n", stderr)
+        exit(1)
+    }
 }
 SWIFT
-
-echo "Built $APP_DIR"
-if [ -z "${CI:-}" ]; then
-    echo "Installed $INSTALL_APP"
+echo "Set $BUNDLE_IDENTIFIER as the default Markdown editor"
 fi

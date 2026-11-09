@@ -7,23 +7,24 @@ public struct OutlineBuilder: Sendable {
         let lines = markdown.normalizedMarkdownLines
         var headings: [Heading] = []
         var usedSlugs: [String: Int] = [:]
-        var activeFence: String?
+        var activeFence: MarkdownFence?
         var index = leadingFrontMatterEndIndex(in: lines) ?? 0
 
         while index < lines.count {
             let line = lines[index]
 
-            if let marker = MarkdownLine.fenceMarker(in: line) {
-                if activeFence == marker {
-                    activeFence = nil
-                } else if activeFence == nil {
-                    activeFence = marker
-                }
+            if let fence = activeFence {
+                if fence.isClosed(by: line) { activeFence = nil }
+                index += 1
+                continue
+            }
+            if let fence = MarkdownFence.opening(in: line) {
+                activeFence = fence
                 index += 1
                 continue
             }
 
-            if activeFence != nil || MarkdownLine.isIndentedCode(line) {
+            if MarkdownLine.isIndentedCode(line) {
                 index += 1
                 continue
             }

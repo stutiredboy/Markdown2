@@ -93,6 +93,69 @@ struct DocumentStoreImageAttachmentTests {
         #expect(store.alert != nil)
     }
 
+    @Test func externalFolderRequiresDeliberateChoiceAndCachesOnlyExactDestination() throws {
+        let directory = makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let document = directory.appendingPathComponent("document")
+        let shared = directory.appendingPathComponent("shared")
+        let other = directory.appendingPathComponent("other")
+        for url in [document, shared, other] { try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) }
+        let source = document.appendingPathComponent("notes.md")
+        try "# Notes".write(to: source, atomically: true, encoding: .utf8)
+        let link = document.appendingPathComponent("assets")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: shared)
+        var choices: [URL] = []
+        var allow = false
+        let store = DocumentStore(confirmExternalAttachmentDirectory: { url in
+            choices.append(url)
+            return allow
+        })
+        store.open(source)
+        #expect(store.insertImageAttachments([.imageData(Self.makeTIFFData())], folder: "assets") == nil)
+        #expect(choices.count == 1)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: shared.path).isEmpty)
+        allow = true
+        #expect(store.insertImageAttachments([.imageData(Self.makeTIFFData())], folder: "assets") != nil)
+        #expect(store.insertImageAttachments([.imageData(Self.makeTIFFData())], folder: "assets") != nil)
+        #expect(choices.count == 2)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: shared.path).count == 2)
+        try FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: other)
+        allow = false
+        #expect(store.insertImageAttachments([.imageData(Self.makeTIFFData())], folder: "assets") == nil)
+        #expect(choices.count == 3)
+        #expect(choices[0] != choices[2])
+        #expect(try FileManager.default.contentsOfDirectory(atPath: other.path).isEmpty)
+    }
+
+    @Test func localPastesNeverPromptAndRetargetDuringConfirmationCannotEscapeApproval() throws {
+        let directory = makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let document = directory.appendingPathComponent("document")
+        let shared = directory.appendingPathComponent("shared")
+        let other = directory.appendingPathComponent("other")
+        for url in [document, shared, other] { try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) }
+        let source = document.appendingPathComponent("notes.md")
+        try "# Notes".write(to: source, atomically: true, encoding: .utf8)
+        let link = document.appendingPathComponent("shared-link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: shared)
+        var prompts = 0
+        let store = DocumentStore(confirmExternalAttachmentDirectory: { _ in
+            prompts += 1
+            try! FileManager.default.removeItem(at: link)
+            try! FileManager.default.createSymbolicLink(at: link, withDestinationURL: other)
+            return true
+        })
+        store.open(source)
+        #expect(store.insertImageAttachments([.imageData(Self.makeTIFFData())], folder: "assets") != nil)
+        #expect(prompts == 0)
+        #expect(store.insertImageAttachments([.imageData(Self.makeTIFFData())], folder: "shared-link") == nil)
+        #expect(prompts == 1)
+        #expect(store.alert != nil)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: shared.path).isEmpty)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: other.path).isEmpty)
+    }
+
     // MARK: - Helpers
 
     private func makeTempDirectory() -> URL {
