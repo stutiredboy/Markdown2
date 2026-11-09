@@ -82,11 +82,13 @@ final class AppSettings: ObservableObject {
         }
     }
 
-    /// Document-relative folder where raw clipboard images are stored, e.g.
-    /// `assets` or `images/screenshots`. Dropped/pasted image files are linked
-    /// in place. The raw user value is kept as-typed; it is normalized
-    /// (absolute/`..`/escaping paths rejected back to `assets`) at write time by
-    /// `ImageAttachmentManager`.
+    /// Copying makes future file insertions document-relative; explicit linking
+    /// retains the original location. This never migrates existing references.
+    @Published var imageFileHandling: ImageFileHandling {
+        didSet { defaults.set(imageFileHandling.rawValue, forKey: Keys.imageFileHandling) }
+    }
+
+    /// Relative folder for copied image files and clipboard screenshots.
     @Published var attachmentFolder: String {
         didSet {
             defaults.set(attachmentFolder, forKey: Keys.attachmentFolder)
@@ -195,6 +197,7 @@ final class AppSettings: ObservableObject {
             showsLineNumbersInPreview = defaults.bool(forKey: Keys.showsLineNumbersInPreview)
         }
 
+        imageFileHandling = defaults.string(forKey: Keys.imageFileHandling).flatMap(ImageFileHandling.init(rawValue:)) ?? .copy
         let storedFolder = defaults.string(forKey: Keys.attachmentFolder)
         attachmentFolder = (storedFolder?.isEmpty == false) ? storedFolder! : "assets"
 
@@ -334,6 +337,7 @@ private enum Keys {
     static let restoresWindowsOnLaunch = "MD2.RestoresWindowsOnLaunch"
     static let showsLineNumbersInEditor = "MD2.ShowsLineNumbersInEditor"
     static let showsLineNumbersInPreview = "MD2.ShowsLineNumbersInPreview"
+    static let imageFileHandling = "MD2.ImageFileHandling"
     static let attachmentFolder = "MD2.AttachmentFolder"
     static let exportProfile = "MD2.ExportProfile"
     static let citationStyle = "MD2.CitationStyle"
@@ -364,7 +368,7 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     }
 }
 
-enum L10nKey: String, CaseIterable {
+enum L10nKey: String, CaseIterable, Sendable {
     case typography, editorFont, readingFont, fontSize, readingWidth, zoomIn, zoomOut, resetZoom, zoom
     case fontSystem, fontSerif, fontMonospaced, readingNarrow, readingComfortable, readingWide, readingFull
     case selectionStats
@@ -374,6 +378,10 @@ enum L10nKey: String, CaseIterable {
     case clearMenu
     case recentDocumentMissingDetail
     case save
+    case createCopy, createCopyAction, copyPromptDetail, copyNameSuffix, copyFilename
+    case copyCreated, copyCreatedDetail, openCopy, dismissCopyNotice, copyFailed
+    case copySaveFirst, copyFinishComposition, copySourceChanged, copyInvalidName
+    case copySourceUnavailable, copyNameExists, copyEncodingUnavailable, copyOpenFailed, copySaveUnavailable
     case exportTo
     case exportPDF
     case exportHTML
@@ -452,6 +460,19 @@ enum L10nKey: String, CaseIterable {
     case replace
     case replaceAll
     case formattingTargetNotice
+    case findMatchCase
+    case findWholeWord
+    case findOnlySelection
+    case findSourceSelection
+    case findWholeDocument
+    case findSelectionInvalid
+    case findSelectionFrozen
+    case findUseSelection
+    case findSourceOnlyHelp
+    case findScopeCount
+    case findReplacementCancelled
+    case findReplacedCount
+    case findPreviewUnavailable
     case closeFind
     case matchStatus
     case noResults
@@ -463,6 +484,24 @@ enum L10nKey: String, CaseIterable {
     case languageChangedMessage
     case restartNow
     case restartLater
+    case collectLocalImages
+    case imageFileHandling
+    case imageFileCopy
+    case imageFileLink
+    case attachmentReport
+    case attachmentWrittenCount
+    case attachmentReferenceCount
+    case attachmentStale
+    case attachmentCollectionScope
+    case attachmentUnsupportedSyntax
+    case attachmentExcludedBlocks
+    case attachmentNonlocal
+    case attachmentInvalidImage
+    case attachmentResourceLimit
+    case attachmentReadWriteFailed
+    case attachmentDestinationChanged
+    case attachmentScanLimit
+    case attachmentExternalNotPortable
     case attachmentFolder
     case attachmentFolderHelp
     case imageNotFound
@@ -545,6 +584,25 @@ enum L10n {
         .clearMenu: "Clear Menu",
         .recentDocumentMissingDetail: "The file no longer exists at its recorded location.",
         .save: "Save",
+        .createCopy: "Create Copy…",
+        .createCopyAction: "Create Copy",
+        .copyPromptDetail: "Create a new Markdown file in:\n%@\n\nThe copy uses your current editor text, including unsaved edits. Existing images and attachments are shared; they will not be copied or deleted. The original document stays open and keeps any unresolved conflict.",
+        .copyNameSuffix: " copy",
+        .copyFilename: "Copy filename",
+        .copyCreated: "Created Markdown copy: %@",
+        .copySaveUnavailable: "The copy could not be verified at its current location. Your edits remain in this window. Locate the actual copy before saving again.",
+        .copyOpenFailed: "The copy was created, but it can no longer be opened safely at that location. It may have moved, changed, been removed, or become a link to another file. No new window was opened. Locate the copy in Finder or create a new copy.",
+        .copyCreatedDetail: "The copy contains the text captured when you confirmed its name. Existing attachments are shared. Open it separately to continue editing the copy.",
+        .openCopy: "Open Copy",
+        .dismissCopyNotice: "Dismiss",
+        .copyFailed: "Could not create a copy.",
+        .copySaveFirst: "Save this untitled document first, then choose Create Copy. The original has not been saved by this command.",
+        .copyFinishComposition: "Finish your current input-method composition, then try again. Your provisional text has been kept.",
+        .copySourceChanged: "The source document or its location changed. Try Create Copy again from the document you want to copy.",
+        .copyInvalidName: "Enter a new filename ending in .md or .markdown, without folder separators or leading or trailing spaces.",
+        .copySourceUnavailable: "The source must be an existing local regular file. Reopen or save the document before creating a copy.",
+        .copyNameExists: "That filename already exists or refers to the original. Choose a different name; no existing file was replaced.",
+        .copyEncodingUnavailable: "The current text cannot be represented in %@. No copy was created and the original encoding is unchanged.",
         .exportTo: "Export To",
         .exportPDF: "Export as PDF…",
         .exportHTML: "Export as HTML…",
@@ -645,6 +703,19 @@ enum L10n {
         .replace: "Replace",
         .replaceAll: "Replace All",
         .formattingTargetNotice: "Source selection shown. Select the text to format, then run the command again.",
+        .findMatchCase: "Match case",
+        .findWholeWord: "Whole word",
+        .findOnlySelection: "Only selection",
+        .findSourceSelection: "Source selection",
+        .findWholeDocument: "Whole document",
+        .findSelectionInvalid: "Selection expired. Select source text again or turn off Only selection.",
+        .findSelectionFrozen: "Search is limited to the frozen source selection.",
+        .findUseSelection: "Use selection",
+        .findSourceOnlyHelp: "Selection scope and replacement require the source editor.",
+        .findScopeCount: "%@ · %d matches",
+        .findReplacementCancelled: "Search changed. Replacement canceled; run it again.",
+        .findReplacedCount: "%@ · Replaced %d",
+        .findPreviewUnavailable: "Search limit exceeded",
         .closeFind: "Close find bar",
         .matchStatus: "%d of %d",
         .noResults: "No results",
@@ -662,8 +733,26 @@ enum L10n {
         .languageChangedMessage: "The menu bar updates to the new language after Markdown2 restarts.",
         .restartNow: "Restart Now",
         .restartLater: "Later",
+        .collectLocalImages: "Collect Local Images…",
+        .imageFileHandling: "Dropped / Pasted Image Files",
+        .imageFileCopy: "Copy to Attachment Folder (Default)",
+        .imageFileLink: "Link Original Location",
+        .attachmentReport: "Image Attachments",
+        .attachmentWrittenCount: "%@ new image files saved. Undo does not delete attachments.",
+        .attachmentReferenceCount: "%@ image references ready.",
+        .attachmentStale: "The document, selection or input state changed. Source text was not changed; completed copies remain in the attachment folder.",
+        .attachmentCollectionScope: "Scope: simple top-level inline Markdown images only. Reference-style images, containers (lists/quotes), code, HTML, math, diagram internals and SVG-internal resources are not collected. Remote resources are never downloaded. Move the document together with its local attachment folder.",
+        .attachmentUnsupportedSyntax: "Unsupported image syntax; left unchanged",
+        .attachmentExcludedBlocks: "Blocks excluded from the supported scope",
+        .attachmentNonlocal: "Remote, embedded or unsupported URL; left unchanged",
+        .attachmentInvalidImage: "Not a supported, complete image",
+        .attachmentResourceLimit: "Image size or decoding limit exceeded",
+        .attachmentReadWriteFailed: "Missing, unreadable image or attachment write failed",
+        .attachmentDestinationChanged: "Attachment folder changed; choose the external location again",
+        .attachmentScanLimit: "Document exceeds the safe collection scan limit; nothing changed",
+        .attachmentExternalNotPortable: "External attachment folder: moving this document directory alone will not carry these images",
         .attachmentFolder: "Image Attachment Folder",
-        .attachmentFolderHelp: "Screenshots pasted from the clipboard are saved in this document-relative folder. Dragged or pasted image files are linked in place. Defaults to assets.",
+        .attachmentFolderHelp: "Copied image files and screenshots are saved in this document-relative folder. Move it together with the document. Defaults to assets.",
         .imageNotFound: "Image not found",
         .remoteImageUnavailable: "Remote image could not be loaded",
         .imageLoadFailed: "Image could not be loaded",
@@ -720,6 +809,25 @@ enum L10n {
         .clearMenu: "清除菜单",
         .recentDocumentMissingDetail: "文件已不在原来的位置（可能已被移动或删除）。",
         .save: "保存",
+        .createCopy: "创建副本…",
+        .createCopyAction: "创建副本",
+        .copyPromptDetail: "在以下文件夹中新建 Markdown 文件：\n%@\n\n副本包含当前编辑内容（包括未保存的修改）。现有图片和附件由两份文档共享，不会复制或删除。原文档保持打开，已有冲突仍需另行处理。",
+        .copyNameSuffix: " 副本",
+        .copyFilename: "副本文件名",
+        .copyCreated: "已创建 Markdown 副本：%@",
+        .copySaveUnavailable: "无法在当前位置确认副本身份。编辑内容仍保留在当前窗口中；请先找到实际副本，再保存。",
+        .copyOpenFailed: "副本已创建，但目前无法在该位置安全打开：它可能已移动、更改、删除，或与其他文件建立了链接。未打开新窗口。请在 Finder 中查找副本，或重新创建副本。",
+        .copyCreatedDetail: "副本包含确认名称时的编辑内容，继续共享现有附件。可单独打开副本继续编辑。",
+        .openCopy: "打开副本",
+        .dismissCopyNotice: "关闭提示",
+        .copyFailed: "无法创建副本。",
+        .copySaveFirst: "请先保存未命名文档，再选择“创建副本”。此命令未保存原稿。",
+        .copyFinishComposition: "请先完成当前输入法组词，再重试。正在输入的文字已保留。",
+        .copySourceChanged: "原文档或位置已改变。请在要复制的文档中重新选择“创建副本”。",
+        .copyInvalidName: "请输入以 .md 或 .markdown 结尾的新文件名，不含文件夹分隔符及首尾空格。",
+        .copySourceUnavailable: "原稿必须是已存在的本地普通文件。请先重新打开或保存文档，再创建副本。",
+        .copyNameExists: "该名称已存在或指向原稿。请换一个名称；没有覆盖任何已有文件。",
+        .copyEncodingUnavailable: "当前内容含有 %@ 无法表示的字符。未创建副本，原稿编码保持不变。",
         .exportTo: "导出到",
         .exportPDF: "导出为 PDF…",
         .exportHTML: "导出为 HTML…",
@@ -820,6 +928,19 @@ enum L10n {
         .replace: "替换",
         .replaceAll: "全部替换",
         .formattingTargetNotice: "已显示源码选区。请选择要格式化的文字，再次执行命令。",
+        .findMatchCase: "区分大小写",
+        .findWholeWord: "整词",
+        .findOnlySelection: "仅选区",
+        .findSourceSelection: "源码选区",
+        .findWholeDocument: "全文",
+        .findSelectionInvalid: "选区已失效。请重新选择源码，或关闭“仅选区”。",
+        .findSelectionFrozen: "查找范围已固定为源码选区。",
+        .findUseSelection: "使用选区",
+        .findSourceOnlyHelp: "仅选区和替换需在源码编辑器中使用。",
+        .findScopeCount: "%@ · %d 处匹配",
+        .findReplacementCancelled: "查找状态已变化，替换已取消。请重新执行。",
+        .findReplacedCount: "%@ · 已替换 %d 处",
+        .findPreviewUnavailable: "超出查找限制",
         .closeFind: "关闭查找栏",
         .matchStatus: "第 %d 个，共 %d 个",
         .noResults: "无结果",
@@ -837,8 +958,26 @@ enum L10n {
         .languageChangedMessage: "菜单栏将在 Markdown2 重启后切换到新语言。",
         .restartNow: "立即重启",
         .restartLater: "稍后",
+        .collectLocalImages: "收集本地图片…",
+        .imageFileHandling: "拖入或粘贴的图片文件",
+        .imageFileCopy: "复制到附件文件夹（默认）",
+        .imageFileLink: "链接原位置",
+        .attachmentReport: "图片附件",
+        .attachmentWrittenCount: "已保存 %@ 个新图片文件。撤销不会删除附件。",
+        .attachmentReferenceCount: "已处理 %@ 处图片引用。",
+        .attachmentStale: "文档、选区或输入状态已改变，未修改源文本；已复制的图片保留在附件文件夹。",
+        .attachmentCollectionScope: "范围：仅收集简单顶层行内 Markdown 图片。引用式图片、列表/引用等容器、代码、HTML、公式、图表及 SVG 内部资源不在范围内；不会下载网络资源。移动资料时请连同本地附件文件夹一起移动。",
+        .attachmentUnsupportedSyntax: "不支持的图片语法，已保留原文",
+        .attachmentExcludedBlocks: "因超出支持范围而保留的文本块数",
+        .attachmentNonlocal: "网络、内嵌或不支持的 URL，已保留原文",
+        .attachmentInvalidImage: "不是受支持的完整图片",
+        .attachmentResourceLimit: "图片大小或解码量超过上限",
+        .attachmentReadWriteFailed: "图片缺失、无法读取或附件写入失败",
+        .attachmentDestinationChanged: "附件文件夹已改变，请重新选择外部位置",
+        .attachmentScanLimit: "文档超过安全扫描上限，未作更改",
+        .attachmentExternalNotPortable: "附件文件夹位于外部：仅移动文档目录不会携带这些图片",
         .attachmentFolder: "图片附件文件夹",
-        .attachmentFolderHelp: "从剪贴板粘贴的截图会保存到该相对文档的文件夹；拖入或粘贴的图片文件会直接链接原位置。默认为 assets。",
+        .attachmentFolderHelp: "复制的图片文件和截图保存在此相对文档的文件夹中。移动文档时请连同它一起移动。默认为 assets。",
         .imageNotFound: "找不到图片",
         .remoteImageUnavailable: "无法加载远程图片",
         .imageLoadFailed: "无法加载图片",

@@ -51,6 +51,7 @@ final class DocumentStore: ObservableObject {
     }
 
     @Published private(set) var rendered: RenderedDocument
+    let copyFlow = DocumentCopyFlow()
     @Published private(set) var fileURL: URL?
     @Published private(set) var isDirty = false
     @Published private(set) var fileFormat = MarkdownFileFormat()
@@ -59,6 +60,8 @@ final class DocumentStore: ObservableObject {
     private var encodingWarningShown = false
     private let confirmEncodingConversion: @MainActor (String) -> Bool
     private var fileIdentity: DocumentFileIdentity?
+    private var copyFileReference: DocumentCopyFileReference?
+    var copySaveIO = DocumentCopySaveIO()
     private let recoveryRepository: DocumentRecoveryRepository?
     private(set) var recoveryID = UUID()
     var windowFrame: String? { didSet { if windowFrame != oldValue { scheduleRecovery() } } }
@@ -174,6 +177,11 @@ final class DocumentStore: ObservableObject {
     /// Injected so the save-before-attachment flow can be tested without the
     /// modal `NSSavePanel`.
     private let saveLocationPicker: @MainActor (String) -> URL?
+    @Published private(set) var isWorkingOnAttachments = false
+    /// Injectable asynchronous boundary; production work never decodes on MainActor.
+    var attachmentWorker: @Sendable (AttachmentCollection.Job) async -> AttachmentCollection.Output = { job in
+        await Task.detached(priority: .userInitiated) { job.run() }.value
+    }
     private let confirmExternalAttachmentDirectory: (@MainActor (URL) -> Bool)?
     /// Approval belongs to this document and exact resolved target, for this session.
     private var approvedAttachmentDestinations: Set<AttachmentApproval> = []
@@ -312,6 +320,16 @@ final class DocumentStore: ObservableObject {
             && editorSession.textView?.hasMarkedText() != true
     }
 
+    /// Read-only editor capture. In particular, do not refresh a moved source or
+    /// save an untitled draft as a side effect of creating a copy.
+    func captureCopySource() throws -> DocumentCopySource {
+        guard !isClosed, !backingFileMissing else { throw DocumentCopyFlowError.unavailable }
+        guard editorSession.textView?.hasMarkedText() != true else { throw DocumentCopyFlowError.composing }
+        guard let fileURL else { throw DocumentCopyFlowError.untitled }
+        return DocumentCopySource(documentID: documentIdentity, revision: textMutationRevision,
+                                  text: text, format: fileFormat, url: fileURL, identity: fileIdentity)
+    }
+
     @discardableResult
     func save() -> Bool {
         // An unresolved external conflict blocks every write; asking again is
@@ -354,70 +372,112 @@ final class DocumentStore: ObservableObject {
         return panel.url
     }
 
-    /// Turns image sources into the Markdown to insert — one `![alt](path)`
-    /// reference per image, newline-joined — or `nil` when nothing should be
-    /// inserted.
-    ///
-    /// An existing file (dropped, or a pasted file URL) is linked in place at its
-    /// absolute path and needs no save. Raw clipboard data (a screenshot) has no
-    /// location, so it is written into `folder` (document-relative) as PNG, which
-    /// first requires saving an untitled document — prompting once; a cancelled
-    /// save inserts nothing and a write failure surfaces through `alert`.
-    func insertImageAttachments(_ sources: [ImageAttachmentSource], folder: String) -> String? {
-        guard !sources.isEmpty else { return nil }
-
-        // Only raw clipboard data must be written into the document-relative
-        // folder, which needs a file-backed document; linked files need no save.
-        let needsAttachmentFolder = sources.contains { source in
-            if case .imageData = source { return true }
-            return false
+    /// Validation/copying runs off MainActor. Passing an insertion range applies
+    /// the result through the retained text system, as a single native undo step.
+    func insertImageAttachments(_ sources: [ImageAttachmentSource], folder: String,
+                                handling: ImageFileHandling = .copy,
+                                insertionRange: NSRange? = nil, expectedText: String? = nil) async -> String? {
+        guard !sources.isEmpty, !isWorkingOnAttachments, !isClosed,
+              !hasExternalConflict, !backingFileMissing,
+              editorSession.textView?.hasMarkedText() != true,
+              expectedText.map({ (text as NSString).isEqual(to: $0) }) ?? true else { return nil }
+        let identity = documentIdentity, revision = textMutationRevision
+        let selection = editorSession.textView?.selectedRange()
+        let needsFolder = handling == .copy || sources.contains { if case .imageData = $0 { return true }; return false }
+        if needsFolder, fileURL == nil { guard save(), fileURL != nil else { return nil } }
+        let url = fileURL
+        guard attachmentSnapshotIsCurrent(identity, revision: revision, url: url),
+              selection == editorSession.textView?.selectedRange() else { return nil }
+        let destination: AttachmentCollection.Destination?
+        if needsFolder {
+            guard let resolved = attachmentDestination(folder: folder) else { return nil }
+            destination = resolved
+        } else { destination = nil }
+        guard attachmentSnapshotIsCurrent(identity, revision: revision, url: url) else { return nil }
+        isWorkingOnAttachments = true
+        defer { isWorkingOnAttachments = false }
+        let output = await attachmentWorker(.insert(sources, handling, destination))
+        refreshFileLocation()
+        guard attachmentSnapshotIsCurrent(identity, revision: revision, url: url),
+              selection == editorSession.textView?.selectedRange() else {
+            reportAttachments(output, adopted: false, collection: false); return nil
         }
-        if needsAttachmentFolder, fileURL == nil {
-            guard save(), fileURL != nil else { return nil }
+        if let range = insertionRange, !output.text.isEmpty {
+            let original = text as NSString
+            guard range.location != NSNotFound, range.location >= 0, range.length >= 0,
+                  range.location <= original.length, range.length <= original.length - range.location,
+                  applyAttachmentEdit(changing: text,
+                      to: original.replacingCharacters(in: range, with: output.text)) else {
+                reportAttachments(output, adopted: false, collection: false); return nil
+            }
+            editorSession.textView?.setSelectedRange(NSRange(location: range.location + output.text.utf16.count, length: 0))
         }
+        if !output.issues.isEmpty { reportAttachments(output, adopted: true, collection: false) }
+        return output.text.isEmpty ? nil : output.text
+    }
 
+    func collectLocalImages(folder: String) async {
+        guard !isWorkingOnAttachments, !isClosed, !hasExternalConflict, !backingFileMissing,
+              editorSession.textView?.hasMarkedText() != true else { return }
+        let identity = documentIdentity, revision = textMutationRevision
+        let source = text
+        if fileURL == nil { guard save(), fileURL != nil else { return } }
+        let url = fileURL
+        guard let destination = attachmentDestination(folder: folder),
+              attachmentSnapshotIsCurrent(identity, revision: revision, url: url) else { return }
+        isWorkingOnAttachments = true
+        defer { isWorkingOnAttachments = false }
+        let output = await attachmentWorker(.collect(source, destination))
+        refreshFileLocation()
+        guard attachmentSnapshotIsCurrent(identity, revision: revision, url: url),
+              applyAttachmentEdit(changing: source, to: output.text) else {
+            reportAttachments(output, adopted: false, collection: true); return
+        }
+        reportAttachments(output, adopted: true, collection: true)
+    }
+
+    private func applyAttachmentEdit(changing current: String, to updated: String) -> Bool {
+        // An explicit group also works when a caller disables groupsByEvent.
+        // Keep the entire collection separate from the preceding native typing.
+        undoManager.beginUndoGrouping()
+        defer { undoManager.endUndoGrouping() }
+        return editorSession.applyUndoableEdit(changing: current, to: updated)
+    }
+
+    private func attachmentSnapshotIsCurrent(_ identity: UUID, revision: Int, url: URL?) -> Bool {
+        !Task.isCancelled && !isClosed && documentIdentity == identity && textMutationRevision == revision && fileURL == url &&
+            !hasExternalConflict && !backingFileMissing && editorSession.textView?.hasMarkedText() != true
+    }
+
+    private func attachmentDestination(folder: String) -> AttachmentCollection.Destination? {
+        guard let baseURL, let fileURL else { return nil }
+        let destination = ImageAttachmentManager.destination(toFolder: folder, documentDirectory: baseURL)
         var approvedDirectory: URL?
-        if needsAttachmentFolder, let baseURL, let fileURL {
-            let destination = ImageAttachmentManager.destination(toFolder: folder, documentDirectory: baseURL)
-            if destination.isExternal {
-                let approval = AttachmentApproval(document: fileURL.standardizedFileURL, directory: destination.directory)
-                if !approvedAttachmentDestinations.contains(approval) {
-                    let confirmed = confirmExternalAttachmentDirectory?(destination.directory)
-                        ?? presentExternalAttachmentConfirmation(destination.directory)
-                    guard confirmed else { return nil }
-                    approvedAttachmentDestinations.insert(approval)
-                }
-                approvedDirectory = destination.directory
+        if destination.isExternal {
+            let approval = AttachmentApproval(document: fileURL.standardizedFileURL, directory: destination.directory)
+            if !approvedAttachmentDestinations.contains(approval) {
+                let confirmed = confirmExternalAttachmentDirectory?(destination.directory)
+                    ?? presentExternalAttachmentConfirmation(destination.directory)
+                guard confirmed else { return nil }
+                approvedAttachmentDestinations.insert(approval)
             }
+            approvedDirectory = destination.directory
         }
-        let manager = ImageAttachmentManager()
-        var references: [String] = []
-        for source in sources {
-            switch source {
-            case let .file(url):
-                references.append(ImageAttachmentManager.directImageReference(forFile: url))
-            case let .imageData(data):
-                guard let documentDirectory = baseURL else { continue }
-                do {
-                    let written = try manager.writeImageData(
-                        data,
-                        toFolder: folder,
-                        documentDirectory: documentDirectory,
-                        approvedExternalDirectory: approvedDirectory
-                    )
-                    let linkPath = ImageAttachmentManager.markdownLinkPath(written.relativePath)
-                    references.append("![\(written.altText)](\(linkPath))")
-                } catch {
-                    alert = DocumentAlert(
-                        message: alertText(.alertAttachmentSaveFailed),
-                        detail: error.localizedDescription
-                    )
-                }
-            }
-        }
+        return AttachmentCollection.Destination(documentDirectory: baseURL, folder: folder,
+                                                 approvedExternalDirectory: approvedDirectory)
+    }
 
-        guard !references.isEmpty else { return nil }
-        return references.joined(separator: "\n")
+    private func reportAttachments(_ output: AttachmentCollection.Output, adopted: Bool, collection: Bool) {
+        var lines = [alertText(.attachmentWrittenCount, String(output.written))]
+        if !adopted { lines.append(alertText(.attachmentStale)) }
+        else { lines.append(alertText(.attachmentReferenceCount, String(output.references))) }
+        if collection { lines.append(alertText(.attachmentCollectionScope)) }
+        for issue in output.issues.prefix(8) {
+            let reason = alertText(issue.reason)
+            lines.append(issue.name.isEmpty ? reason : "\(reason): \(issue.name)")
+        }
+        if output.issues.count > 8 { lines.append(alertText(.alertHTMLExportMoreImages, String(output.issues.count - 8))) }
+        alert = DocumentAlert(message: alertText(.attachmentReport), detail: lines.joined(separator: "\n\n"))
     }
 
     private func presentExternalAttachmentConfirmation(_ directory: URL) -> Bool {
@@ -842,6 +902,23 @@ final class DocumentStore: ObservableObject {
         }
     }
 
+    /// Consume validated bytes without another path read. The pinned identity
+    /// remains authoritative across the UI handoff and subsequent copy saves.
+    func openVerifiedCopy(_ opened: DocumentCopyOpenData) throws {
+        let receipt = opened.receipt
+        guard isReusableEmptyDocument, !isClosed,
+              let decoded = MarkdownFileDecoder.decode(opened.data) else { throw DocumentCopyOpenError.invalidData }
+        try DocumentCopyReader.validateDirectory(receipt)
+        try receipt.fileReference.validate(at: receipt.destinationURL)
+        copyFileReference = receipt.fileReference
+        fileIdentity = DocumentFileIdentity(copyReference: receipt.fileReference)
+        fileFormat = decoded.format
+        setDocumentText(decoded.text, fileURL: receipt.destinationURL, dirty: false)
+        lastKnownFingerprint = DocumentFileFingerprint.of(data: opened.data, at: receipt.destinationURL)
+        startWatchingFile()
+        persistRecoveryNow()
+    }
+
     @discardableResult
     private func load(from url: URL) -> Bool {
         do {
@@ -857,6 +934,7 @@ final class DocumentStore: ObservableObject {
                 return false
             }
             fileFormat = decoded.format
+            copyFileReference = nil
             fileIdentity = DocumentFileIdentity(url: url)
             backingFileMissing = false
             encodingWarningShown = false
@@ -910,7 +988,7 @@ final class DocumentStore: ObservableObject {
         // Resolve again at the write boundary, even before the watcher fires.
         if writingBackingFile { refreshFileLocation() }
         let url = writingBackingFile ? (fileURL ?? requestedURL) : requestedURL
-        if automatically && backingFileMissing { return false }
+        if backingFileMissing && (automatically || (writingBackingFile && copyFileReference != nil)) { return false }
         if url == fileURL, let lastKnown = lastKnownFingerprint {
             let comparison = DocumentFileFingerprint.comparison(
                 lastKnown: lastKnown, current: DocumentFileFingerprint.current(at: url))
@@ -928,10 +1006,13 @@ final class DocumentStore: ObservableObject {
         do {
             cancelAutosave()
             if Self.hasMultipleHardLinks(at: url), !persistRecoveryNow() { return false }
-            try Self.writePreservingMetadata(writtenData, to: url)
+            if writingBackingFile, let copyFileReference { try copyFileReference.validate(at: url) }
+            let newCopyReference = try Self.writePreservingMetadata(writtenData, to: url,
+                independentCopy: writingBackingFile && copyFileReference != nil, copyIO: copySaveIO)
+            copyFileReference = newCopyReference
             lastKnownFingerprint = DocumentFileFingerprint.of(data: writtenData, at: url)
             fileURL = url
-            fileIdentity = DocumentFileIdentity(url: url)
+            fileIdentity = newCopyReference.map { DocumentFileIdentity(copyReference: $0) } ?? DocumentFileIdentity(url: url)
             fileFormat = outputFormat
             isDirty = false
             backingFileMissing = false
@@ -943,19 +1024,24 @@ final class DocumentStore: ObservableObject {
             return true
         } catch {
             alert = DocumentAlert(message: alertText(.alertCouldNotSave, url.lastPathComponent),
-                                  detail: error.localizedDescription)
+                                  detail: error is DocumentCopyOpenError ? alertText(.copySaveUnavailable) : error.localizedDescription)
             persistRecoveryNow()
             return false
         }
     }
 
-    private static func writePreservingMetadata(_ data: Data, to url: URL) throws {
+    /// Copy windows always replace a directory entry atomically; they never
+    /// select the shared-inode write path, even if a hardlink appears in a race.
+    private static func writePreservingMetadata(_ data: Data, to url: URL,
+                                                independentCopy: Bool = false,
+                                                copyIO: DocumentCopySaveIO = .init()) throws -> DocumentCopyFileReference? {
         let manager = FileManager.default
         guard manager.fileExists(atPath: url.path) else {
+            if independentCopy { throw DocumentCopyOpenError.unavailable }
             try data.write(to: url, options: .atomic)
-            return
+            return nil
         }
-        if hasMultipleHardLinks(at: url) {
+        if !independentCopy && hasMultipleHardLinks(at: url) {
             // Replacing an inode severs its other names. For a hard-linked file,
             // update that inode after securing a recovery snapshot instead.
             let original = try Data(contentsOf: url)
@@ -971,14 +1057,19 @@ final class DocumentStore: ObservableObject {
                 try? handle.synchronize()
                 throw error
             }
-            return
+            return nil
         }
         let replacement = try manager.url(for: .itemReplacementDirectory, in: .userDomainMask,
                                           appropriateFor: url, create: true)
         defer { try? manager.removeItem(at: replacement) }
         let temporary = replacement.appendingPathComponent(UUID().uuidString)
-        try data.write(to: temporary)
-        _ = try manager.replaceItemAt(url, withItemAt: temporary, backupItemName: nil, options: [])
+        if independentCopy { try copyIO.writeTemporary(data, temporary) }
+        else { try data.write(to: temporary) }
+        let reference = independentCopy ? try DocumentCopyFileReference.open(at: temporary) : nil
+        if independentCopy { try copyIO.replace(url, temporary) }
+        else { _ = try manager.replaceItemAt(url, withItemAt: temporary, backupItemName: nil, options: []) }
+        try reference?.validate(at: url)
+        return reference
     }
 
     private static func hasMultipleHardLinks(at url: URL) -> Bool {
@@ -1112,6 +1203,10 @@ final class DocumentStore: ObservableObject {
         url: URL
     ) {
         guard fileURL == url, lastKnownFingerprint == lastKnown, !isClosed else { return }
+        if let copyFileReference, (try? copyFileReference.validate(at: url)) == nil {
+            refreshFileLocation()
+            return
+        }
         switch ExternalChangeDecision.action(
             for: DocumentFileFingerprint.comparison(lastKnown: lastKnown, current: current),
             isDirty: isDirty
@@ -1120,7 +1215,7 @@ final class DocumentStore: ObservableObject {
             // Same bytes; refresh the date so a touch is not re-hashed forever.
             if let current {
                 lastKnownFingerprint = current
-                fileIdentity = DocumentFileIdentity(url: url)
+                if copyFileReference == nil { fileIdentity = DocumentFileIdentity(url: url) }
                 backingFileMissing = false
             }
         case .reloadPreservingViewport:
@@ -1156,7 +1251,8 @@ final class DocumentStore: ObservableObject {
         refreshFileLocation()
         guard let fileURL else { return }
 
-        guard let data = try? Data(contentsOf: fileURL),
+        guard copyFileReference == nil || !backingFileMissing,
+              let data = try? copyFileReference?.read(at: fileURL) ?? Data(contentsOf: fileURL),
               let decoded = MarkdownFileDecoder.decode(data) else {
             alert = DocumentAlert(
                 message: alertText(.alertCouldNotOpen, fileURL.lastPathComponent),
@@ -1188,7 +1284,7 @@ final class DocumentStore: ObservableObject {
             previewJumpAnchor = anchor
         }
         fileFormat = decoded.format
-        fileIdentity = DocumentFileIdentity(url: fileURL)
+        if copyFileReference == nil { fileIdentity = DocumentFileIdentity(url: fileURL) }
         backingFileMissing = false
         encodingWarningShown = false
         encodingConversionRequest = nil
@@ -1229,7 +1325,7 @@ final class DocumentStore: ObservableObject {
             refreshFileLocation()
             if let fileURL, let current = DocumentFileFingerprint.current(at: fileURL) {
                 lastKnownFingerprint = current
-                fileIdentity = DocumentFileIdentity(url: fileURL)
+                if copyFileReference == nil { fileIdentity = DocumentFileIdentity(url: fileURL) }
             }
             scheduleAutosaveIfNeeded()
             persistRecoveryNow()
@@ -1281,7 +1377,7 @@ final class DocumentStore: ObservableObject {
         backingFileMissing = false
         guard resolved != previous else { return }
         fileURL = resolved
-        fileIdentity = DocumentFileIdentity(url: resolved)
+        if copyFileReference == nil { fileIdentity = DocumentFileIdentity(url: resolved) }
         startWatchingFile()
         renderImmediately()
         persistRecoveryNow()
@@ -1367,6 +1463,7 @@ final class DocumentStore: ObservableObject {
             }
         }
         isClosed = true
+        copyFlow.cancel()
         headingNavigationTask?.cancel()
         headingNavigationTask = nil
         cancelAutosave()
@@ -1374,6 +1471,7 @@ final class DocumentStore: ObservableObject {
         recoveryTask = nil
         stopWatchingFile()
         fileIdentity = nil
+        copyFileReference = nil
         return true
     }
 

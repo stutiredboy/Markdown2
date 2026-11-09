@@ -26,6 +26,14 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
     /// The document's undo manager: the window returns it to the Edit menu and
     /// the text view registers its edits on it.
     let undoManager: UndoManager
+    let find = FindSession()
+    private var isApplyingFindEdit = false
+    /// Keep native edits outside SwiftUI updateNSView. An interaction harness
+    /// may hold this scheduling boundary without bypassing the real button,
+    /// click-time snapshot, host checks or replacement execution.
+    var scheduleFindReplacement: (@escaping @MainActor () -> Void) -> Void = { operation in
+        DispatchQueue.main.async { operation() }
+    }
     /// Receives the new text when the text view changes while no editor is
     /// mounted (undo/redo or a checkbox toggle in Read mode).
     var onUnmountedTextChange: ((String) -> Void)?
@@ -121,6 +129,8 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
         scrollView.documentView = textView
     }
 
+    func isHosted(by coordinator: MarkdownEditorView.Coordinator) -> Bool { self.coordinator === coordinator }
+
     /// Detaches the text view from an editor SwiftUI is tearing down, unless a
     /// newer editor has already re-hosted it.
     func unhost(from scrollView: NSScrollView, coordinator: MarkdownEditorView.Coordinator) {
@@ -177,6 +187,7 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
         guard !textView.hasMarkedText() else { return false }
 
         if let change = TextReplacement(from: storage.string, to: newText) {
+            find.invalidateSelection()
             storage.replaceCharacters(in: change.range, with: change.replacement)
             // TextKit moves the selection with the edit; clamp defensively, since
             // restoring a selection past the end raises.
@@ -193,6 +204,50 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
         return true
     }
 
+    /// A single document undo action contains both the source edit and frozen
+    /// search bounds. Native text notifications still drive dirty state/style.
+    @discardableResult
+    func applyFindEdit(range: NSRange, replacement: String, scope: FindSession.Scope,
+                       selection: NSRange? = nil, actionName: String = "Replace All") -> Bool {
+        guard let textView, let storage = textView.textStorage, !textView.hasMarkedText(),
+              range.location >= 0, range.location <= storage.length,
+              range.length >= 0, range.length <= storage.length - range.location else { return false }
+        let original = (storage.string as NSString).substring(with: range)
+        let oldScope = find.scope
+        let oldSelection = textView.selectedRange()
+        let inverseRange = NSRange(location: range.location, length: (replacement as NSString).length)
+        let isHistory = undoManager.isUndoing || undoManager.isRedoing
+        textView.breakUndoCoalescing()
+        // Register exactly one inverse operation; disable NSTextView's separate
+        // text-only record so redo cannot restore text with stale search bounds.
+        undoManager.disableUndoRegistration()
+        let allowed = textView.shouldChangeText(in: range, replacementString: replacement)
+        undoManager.enableUndoRegistration()
+        guard allowed else { return false }
+        if !isHistory { undoManager.beginUndoGrouping() }
+        undoManager.registerUndo(withTarget: self) { session in
+            // Pre-Swift 6.2 SDKs import this handler as nonisolated. This
+            // document's AppKit undo manager invokes it synchronously on the
+            // main thread; keep the inverse inside the current undo/redo group.
+            MainActor.assumeIsolated { () -> Void in
+                session.applyFindEdit(range: inverseRange, replacement: original, scope: oldScope,
+                                      selection: oldSelection, actionName: actionName)
+            }
+        }
+        isApplyingFindEdit = true
+        find.replacementCount = nil
+        storage.replaceCharacters(in: range, with: replacement)
+        find.scope = scope
+        let target = selection ?? NSRange(location: inverseRange.location + inverseRange.length, length: 0)
+        textView.setSelectedRange(target)
+        textView.didChangeText()
+        isApplyingFindEdit = false
+        undoManager.setActionName(actionName)
+        if !isHistory { undoManager.endUndoGrouping() }
+        textView.breakUndoCoalescing()
+        return true
+    }
+
     // MARK: NSTextViewDelegate
 
     func undoManager(for view: NSTextView) -> UndoManager? {
@@ -204,10 +259,12 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
     }
 
     func textViewDidChangeSelection(_ notification: Notification) {
+        if let textView, textView.window?.firstResponder === textView { find.rememberSelection(in: textView) }
         coordinator?.textViewDidChangeSelection(notification)
     }
 
     func textDidChange(_ notification: Notification) {
+        if let textView, !textView.hasMarkedText(), !isApplyingFindEdit { find.invalidateSelection() }
         if let coordinator {
             coordinator.textDidChange(notification)
         } else if let textView, !textView.hasMarkedText() {

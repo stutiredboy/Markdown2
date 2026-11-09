@@ -7,6 +7,7 @@ struct DocumentFileIdentity: Codable, Sendable {
     var bookmark: Data?
     // Foundation may resolve a bookmark by path when that name has been reused.
     // Keep a live inode reference too. Do not serialize descriptors across runs.
+    private var copyReference: DocumentCopyFileReference? = nil
     private var handle: FileHandle? = nil
     private enum CodingKeys: String, CodingKey { case bookmark }
 
@@ -16,7 +17,15 @@ struct DocumentFileIdentity: Codable, Sendable {
         if descriptor >= 0 { handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true) }
     }
 
+    init(copyReference: DocumentCopyFileReference) {
+        self.copyReference = copyReference
+    }
+
     func resolve(fallback: URL) -> URL? {
+        if let copyReference {
+            guard let resolved = copyReference.currentURL() else { return nil }
+            return resolved.resolvingSymlinksInPath() == fallback.resolvingSymlinksInPath() ? fallback : resolved
+        }
         if let liveURL = liveURL() { return usableURL(liveURL, fallback: fallback) }
         if let bookmark {
             var stale = false

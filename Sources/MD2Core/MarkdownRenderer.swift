@@ -1945,7 +1945,7 @@ public struct MarkdownRenderer: Sendable {
         var figureNumbers: [Int: String] = [:]
         return replaceMatches(
             in: text,
-            pattern: #"!\[([^\]]*)\]\((\S+?)(?:\s+&quot;(.+?)&quot;)?\)(?:\{([^}]*)\})?"#,
+            pattern: #"!\[([^\]]*)\]\((&lt;.+?&gt;|\S+?)(?:\s+&quot;(.+?)&quot;)?\)(?:\{([^}]*)\})?"#,
             linkCandidates: true,
             prepare: { match, source in
                 guard let context,
@@ -1961,7 +1961,11 @@ public struct MarkdownRenderer: Sendable {
             }
 
             let alt = String(source[altRange])
-            let src = String(source[srcRange])
+            let authoredSource = String(source[srcRange])
+            // As for ordinary links, angle brackets delimit paths containing
+            // spaces. They are syntax and must not reach the image URL.
+            let src = authoredSource.hasPrefix("&lt;") && authoredSource.hasSuffix("&gt;")
+                ? String(authoredSource.dropFirst(4).dropLast(4)) : authoredSource
             guard HTMLSafety.isSafeURL(protector.restore(in: src)) else { return alt }
 
             // `alt` and `title` are attribute values: protected code, math and
@@ -3636,7 +3640,7 @@ public struct MarkdownRenderer: Sendable {
 
         let nsRange = NSRange(source.startIndex..<source.endIndex, in: source)
         let matches = linkCandidates
-            ? MarkdownLinkSyntax.candidateRanges(in: source, includeImageMarker: pattern.hasPrefix("!")).compactMap {
+            ? MarkdownLinkSyntax.candidateRanges(in: source, includeImageMarker: pattern.hasPrefix("!"), input: .protectedEscapes).compactMap {
                 regex.firstMatch(in: source, options: .anchored, range: $0)
             }
             : regex.matches(in: source, range: nsRange)

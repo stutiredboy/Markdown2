@@ -6,6 +6,7 @@ import SwiftUI
 @MainActor
 final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let settings = AppSettings()
+    let attachmentCommandState = AttachmentCommandState()
 
     /// Recent-documents list (persists across launches). Noted on every
     /// successful open and first save.
@@ -32,6 +33,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     override init() {
         super.init()
+        attachmentCommandState.observeCurrentDocument { [weak self] in self?.currentDocumentStore }
         // Read before Finder can deliver openURLs and create this session's records.
         do { pendingRecoverySnapshots = try recoveryRepository.load() }
         catch { recoveryReadFailed = true }
@@ -242,6 +244,23 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    func createCopy() {
+        guard let store = currentDocumentStore else { return }
+        Task { await store.copyFlow.create(from: store, text: settings.text) }
+    }
+
+    /// A newly committed copy must open its on-disk bytes in a fresh Store, not
+    /// restore an older recovery draft that once happened to use this filename.
+    private func openCreatedCopy(_ receipt: DocumentCopyReceipt, from source: DocumentStore) {
+        Task {
+            guard let store = await source.copyFlow.openCreatedCopy(receipt, from: source,
+                text: settings.text, makeStore: makeDocumentStore) else { return }
+            let documentWindow = makeDocumentWindow(store: store)
+            documentWindow.window.makeKeyAndOrderFront(nil)
+            source.copyFlow.dismiss()
+        }
+    }
+
     /// Loads `url` into a window. If it is already open, that window is brought
     /// to the front; otherwise an untouched starter window is reused or a new
     /// one is created. Also the open path for Markdown links clicked in a
@@ -403,7 +422,11 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             document: store,
             settings: settings,
             onOpen: { [weak self] in self?.openDocument() },
-            onOpenMarkdownLink: { [weak self] url in self?.openInNewWindow(url) }
+            onOpenMarkdownLink: { [weak self] url in self?.openInNewWindow(url) },
+            onOpenCreatedCopy: { [weak self, weak store] receipt in
+                guard let store else { return }
+                self?.openCreatedCopy(receipt, from: store)
+            }
         )
 
         let window = ModeShortcutWindow(
@@ -431,6 +454,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             onFileBacked: { [weak self] url in self?.noteRecentDocument(url) }
         )
         documentWindows.append(documentWindow)
+        attachmentCommandState.refresh()
         window.delegate = self
         window.contentView = NSHostingView(rootView: contentView)
         // Let macOS group document windows into native tabs when the user
@@ -495,6 +519,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // cancels it, but the hosting view can keep references alive briefly.
         documentStore(for: window)?.closeDocument(discardRecovery: !isTerminating)
         documentWindows.removeAll { $0.window == window }
+        attachmentCommandState.refresh()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

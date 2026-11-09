@@ -197,6 +197,7 @@ struct ContentView: View {
     /// Opens a local Markdown file the user clicked in the preview, routed up
     /// to the app delegate's open-in-window path.
     private let onOpenMarkdownLink: (URL) -> Void
+    private let onOpenCreatedCopy: (DocumentCopyReceipt) -> Void
     private var findDialogEntranceAnimation: Animation { .easeOut(duration: 0.20) }
     private var findDialogExitAnimation: Animation { .easeIn(duration: 0.15) }
     private var findDialogTransition: AnyTransition {
@@ -210,18 +211,21 @@ struct ContentView: View {
         document: DocumentStore,
         settings: AppSettings,
         onOpen: @escaping () -> Void,
-        onOpenMarkdownLink: @escaping (URL) -> Void = { _ in }
+        onOpenMarkdownLink: @escaping (URL) -> Void = { _ in },
+        onOpenCreatedCopy: @escaping (DocumentCopyReceipt) -> Void = { _ in }
     ) {
         self.document = document
         self.settings = settings
         self.onOpen = onOpen
         self.onOpenMarkdownLink = onOpenMarkdownLink
+        self.onOpenCreatedCopy = onOpenCreatedCopy
         _mode = State(initialValue: settings.presentationMode(isFileBacked: document.fileURL != nil))
         _showsOutline = State(initialValue: settings.showsOutlineByDefault)
     }
 
     var body: some View {
         VStack(spacing: 0) {
+            DocumentCopyNotice(flow: document.copyFlow, settings: settings, onOpen: onOpenCreatedCopy)
             HStack(spacing: 0) {
                 if showsOutline {
                     OutlineSidebar(
@@ -280,6 +284,7 @@ struct ContentView: View {
             editorSelection = nil
             previewSelection = nil
             selectionStats = nil
+            document.editorSession.find.reset()
             lastFindQuery = ""
             editorFindQuery = ""
             previewFindQuery = ""
@@ -546,12 +551,20 @@ struct ContentView: View {
     }
 
     private func showEditorFind(showsReplace: Bool) {
+        if !editorFindVisible { document.editorSession.find.rememberSelection(in: document.editorSession.textView) }
         editorFindQuery = lastFindQuery
         withAnimation(findDialogEntranceAnimation) {
             editorFindVisible = true
             editorFindShowsReplace = showsReplace
         }
         editorFindFocusToken = UUID()
+    }
+
+    private func requestEditorReplacement(_ action: FindReplaceCommand.Action) {
+        guard let editor = document.editorSession.textView else { return }
+        let snapshot = FindReplacementSnapshot(query: editorFindQuery, replacement: editorFindReplacement,
+                                                textView: editor, find: document.editorSession.find)
+        editorReplaceCommand = FindReplaceCommand(action, snapshot: snapshot)
     }
 
     private func dismissEditorFind(refocusEditor: Bool = false) {
@@ -625,6 +638,7 @@ struct ContentView: View {
             get: { pane == .editor ? editorFindQuery : previewFindQuery },
             set: { query in
                 focusedPane = pane
+                if query != lastFindQuery { document.editorSession.find.replacementCount = nil }
                 lastFindQuery = query
                 if pane == .editor {
                     document.editorSession.revealSelectionOnNextHost = false
@@ -638,7 +652,8 @@ struct ContentView: View {
 
     /// Localized "i of n" match status, "No results", or empty when idle.
     private var previewStatusText: String {
-        matchStatusText(query: previewFindQuery, total: previewMatchTotal, index: previewMatchIndex)
+        if document.editorSession.find.previewUnavailable { return settings.text(.findPreviewUnavailable) }
+        return matchStatusText(query: previewFindQuery, total: previewMatchTotal, index: previewMatchIndex)
     }
 
     private var editorStatusText: String {
@@ -845,10 +860,12 @@ struct ContentView: View {
                         onSubmitQuery: { editorFindNavigation = FindCommand(.search) },
                         onNext: { handleEditorFindAction(.next) },
                         onPrevious: { handleEditorFindAction(.previous) },
-                        onReplace: { editorReplaceCommand = FindReplaceCommand(.current) },
-                        onReplaceAll: { editorReplaceCommand = FindReplaceCommand(.all) },
+                        onReplace: { requestEditorReplacement(.current) },
+                        onReplaceAll: { requestEditorReplacement(.all) },
                         onClose: { dismissEditorFind(refocusEditor: true) },
-                        onFocusChange: { editing in updateFindFieldFocus(.editor, editing: editing) }
+                        onFocusChange: { editing in updateFindFieldFocus(.editor, editing: editing) },
+                        findSession: document.editorSession.find, matchCount: editorMatchTotal,
+                        onUseSelection: { document.editorSession.find.useSelection(in: document.editorSession.textView) }
                     )
                 }
                 .transition(findDialogTransition)
@@ -879,6 +896,8 @@ struct ContentView: View {
                 },
                 onEnterPreview: { handleEditorEscape() },
                 findQuery: $editorFindQuery,
+                findOptions: document.editorSession.find.options,
+                findScope: document.editorSession.find.scope,
                 findMayRevealMatches: !document.showsFormattingTargetNotice,
                 findNavigation: $editorFindNavigation,
                 findReplacement: $editorFindReplacement,
@@ -894,8 +913,9 @@ struct ContentView: View {
                     editorMatchTotal = total
                     editorMatchIndex = index
                 },
-                onInsertImageAttachments: { sources in
-                    document.insertImageAttachments(sources, folder: settings.attachmentFolder)
+                onInsertImageAttachments: { sources, range, source in
+                    _ = await document.insertImageAttachments(sources, folder: settings.attachmentFolder,
+                        handling: settings.imageFileHandling, insertionRange: range, expectedText: source)
                 },
                 showsLineNumbers: settings.showsLineNumbersInEditor,
                 session: document.editorSession,
@@ -956,6 +976,7 @@ struct ContentView: View {
                 onOpenMarkdownLink: onOpenMarkdownLink,
                 onMissingLocalLink: { document.reportMissingLocalLink($0) },
                 findQuery: $previewFindQuery,
+                findOptions: document.editorSession.find.options,
                 findNavigation: $previewFindNavigation,
                 focusToken: previewSurfaceFocusToken,
                 onFindShortcut: { action in
@@ -966,6 +987,7 @@ struct ContentView: View {
                     previewMatchTotal = total
                     previewMatchIndex = index
                 },
+                onFindUnavailable: { document.editorSession.find.previewUnavailable = $0 },
                 localImageMissingLabel: settings.text(.imageNotFound),
                 remoteImageUnavailableLabel: settings.text(.remoteImageUnavailable),
                 genericImageLoadFailedLabel: settings.text(.imageLoadFailed),
@@ -987,7 +1009,8 @@ struct ContentView: View {
                         onNext: { handlePreviewFindAction(.next) },
                         onPrevious: { handlePreviewFindAction(.previous) },
                         onClose: { dismissPreviewFind(refocusPreview: true) },
-                        onFocusChange: { editing in updateFindFieldFocus(.preview, editing: editing) }
+                        onFocusChange: { editing in updateFindFieldFocus(.preview, editing: editing) },
+                        findSession: document.editorSession.find
                     )
                 }
                 .transition(findDialogTransition)

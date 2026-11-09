@@ -29,6 +29,12 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
+      - name: Record macOS and Swift toolchain versions
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
       - name: Test release artifact validation
         run: python3 -m unittest discover -s Tests/WorkflowTests -p 'test_*.py'
 
@@ -114,6 +120,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
+
+      - name: Record macOS and Swift toolchain versions
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
 
       # This job runs XCTest only. Every GUI-gated case is an XCTest case, and
       # the Swift Testing suites (timing ratios, the heartbeat) already run in

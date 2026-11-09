@@ -42,6 +42,12 @@ struct SettingsView: View {
 
                 lineNumberSettings
 
+                Picker(settings.text(.imageFileHandling), selection: $settings.imageFileHandling) {
+                    Text(settings.text(.imageFileCopy)).tag(ImageFileHandling.copy)
+                    Text(settings.text(.imageFileLink)).tag(ImageFileHandling.link)
+                }
+                .pickerStyle(.menu)
+
                 VStack(alignment: .leading, spacing: 4) {
                     TextField(settings.text(.attachmentFolder), text: $settings.attachmentFolder)
                         .textFieldStyle(.roundedBorder)

@@ -107,6 +107,15 @@ private struct AppCommands: Commands {
             }
             .keyboardShortcut("s")
 
+            Button(settings.text(.createCopy)) {
+                appDelegate.createCopy()
+            }
+
+            CollectLocalImagesCommand(title: settings.text(.collectLocalImages), state: appDelegate.attachmentCommandState) {
+                guard let document = appDelegate.currentDocumentStore, !document.isWorkingOnAttachments else { return }
+                Task { await document.collectLocalImages(folder: settings.attachmentFolder) }
+            }
+
             Menu(settings.text(.exportTo)) {
                 Button("PDF") {
                     Task { await appDelegate.currentDocumentStore?.exportPDF() }

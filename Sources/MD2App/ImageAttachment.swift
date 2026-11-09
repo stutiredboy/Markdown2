@@ -2,18 +2,16 @@ import AppKit
 import Darwin
 import Foundation
 
-/// One image the editor wants to reference. An existing file (dropped, or a
-/// pasted file URL) is linked in place at its current location; raw bitmap data
-/// from the clipboard (a screenshot) has no location, so it is saved into the
-/// document-relative attachment folder as PNG.
-enum ImageAttachmentSource {
+/// Pasteboard values captured on the main actor, then validated/copied off it.
+/// File sources follow the copy/link preference; raw bitmap data becomes PNG.
+enum ImageAttachmentSource: Sendable {
     case file(URL)
     case imageData(Data)
 }
 
 /// The relative path and alt text of raw image data written into the attachment
 /// folder, ready to be turned into a Markdown image reference.
-struct WrittenImageAttachment: Equatable {
+struct WrittenImageAttachment: Equatable, Sendable {
     /// POSIX relative path from the document directory, e.g. `assets/image-…​.png`.
     let relativePath: String
     /// Alt text for the inserted reference.
@@ -146,7 +144,7 @@ struct ImageAttachmentManager {
         return "![\(alt)](\(markdownLinkPath(url.path)))"
     }
 
-    struct Destination {
+    struct Destination: Sendable {
         let documentDirectory: URL
         let directory: URL
         let relativeFolder: String
@@ -167,7 +165,7 @@ struct ImageAttachmentManager {
     /// Foundation deliberately preserves macOS aliases such as /var. Use
     /// realpath for the existing prefix so O_NOFOLLOW can walk its physical path;
     /// retain missing suffixes for document-local directory creation.
-    private static func physicalURL(_ url: URL) -> URL {
+    static func physicalURL(_ url: URL) -> URL {
         var prefix = url.resolvingSymlinksInPath()
         var suffix: [String] = []
         while true {
@@ -195,6 +193,15 @@ struct ImageAttachmentManager {
         guard let png = Self.encodePNG(from: data) else {
             throw AttachmentError.unsupportedImageData
         }
+        return try writeValidatedData(png, stem: Self.timestampStem(), ext: "png", alt: "image",
+            toFolder: folder, documentDirectory: documentDirectory,
+            approvedExternalDirectory: approvedExternalDirectory)
+    }
+
+    /// Call only with content from LocalImageValidator or validated PNG encoding.
+    func writeValidatedData(_ data: Data, stem: String, ext: String, alt: String,
+                            toFolder folder: String, documentDirectory: URL,
+                            approvedExternalDirectory: URL? = nil) throws -> WrittenImageAttachment {
         let destination = Self.destination(toFolder: folder, documentDirectory: documentDirectory)
         guard !destination.isExternal || approvedExternalDirectory?.path == destination.directory.path else {
             throw AttachmentError.externalDirectory(destination.directory)
@@ -213,10 +220,10 @@ struct ImageAttachmentManager {
         // also treats dangling symlinks as collisions, and works on shared/removable
         // filesystems without requiring hard-link support. Only a completed write
         // returns a Markdown reference; a failed new file is removed.
-        let stem = Self.timestampStem()
+        let stem = Self.sanitizedStem(stem).isEmpty ? Self.timestampStem() : Self.sanitizedStem(stem)
         var index = 1
         while true {
-            let filename = index == 1 ? "\(stem).png" : "\(stem)-\(index).png"
+            let filename = index == 1 ? "\(stem).\(ext)" : "\(stem)-\(index).\(ext)"
             let fileFD = openat(directoryFD, filename, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
             if fileFD < 0 {
                 guard errno == EEXIST else { throw Self.posixError() }
@@ -225,14 +232,14 @@ struct ImageAttachmentManager {
             }
             let handle = FileHandle(fileDescriptor: fileFD, closeOnDealloc: true)
             do {
-                try handle.write(contentsOf: png)
+                try handle.write(contentsOf: data)
                 try handle.close()
             } catch {
                 try? handle.close()
                 unlinkat(directoryFD, filename, 0)
                 throw error
             }
-            return WrittenImageAttachment(relativePath: "\(destination.relativeFolder)/\(filename)", altText: "image")
+            return WrittenImageAttachment(relativePath: "\(destination.relativeFolder)/\(filename)", altText: alt)
         }
     }
 
@@ -271,7 +278,16 @@ struct ImageAttachmentManager {
     /// Encodes arbitrary bitmap data (TIFF from the pasteboard) as PNG. Returns
     /// `nil` when the data is not a decodable image.
     static func encodePNG(from data: Data) -> Data? {
-        guard let rep = NSBitmapImageRep(data: data) else { return nil }
-        return rep.representation(using: .png, properties: [:])
+        var remainingPixels = LocalImageValidator.Limits().totalPixels
+        guard let image = try? LocalImageValidator.validate(data, extensionHint: "tiff",
+                  limits: .init(), remainingPixels: &remainingPixels) else { return nil }
+        return encodePNG(from: image)
+    }
+
+    static func encodePNG(from image: LocalImageValidator.Image) -> Data? {
+        guard let rep = NSBitmapImageRep(data: image.data),
+              let png = rep.representation(using: .png, properties: [:]),
+              png.count <= LocalImageValidator.Limits().fileBytes else { return nil }
+        return png
     }
 }

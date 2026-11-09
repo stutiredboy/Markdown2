@@ -7,10 +7,11 @@ import Testing
 struct DocumentStoreImageAttachmentTests {
     // MARK: - Dropped / pasted files link in place (no copy, no save)
 
-    @Test func fileDropLinksDirectlyWithoutSaving() {
+    @Test func fileDropLinksDirectlyWithoutSaving() async throws {
         let directory = makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let source = directory.appendingPathComponent("photo.png")
+        try Self.makeTIFFData().write(to: source)
 
         var pickerCalls = 0
         let store = DocumentStore(saveLocationPicker: { _ in
@@ -18,7 +19,7 @@ struct DocumentStoreImageAttachmentTests {
             return nil
         })
 
-        let result = store.insertImageAttachments([.file(source)], folder: "assets")
+        let result = await store.insertImageAttachments([.file(source)], folder: "assets", handling: .link)
 
         #expect(result == ImageAttachmentManager.directImageReference(forFile: source))
         #expect(pickerCalls == 0) // an existing file needs no save
@@ -26,14 +27,16 @@ struct DocumentStoreImageAttachmentTests {
         #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("assets").path))
     }
 
-    @Test func multiFileDropLinksEachInOrder() {
+    @Test func multiFileDropLinksEachInOrder() async throws {
         let directory = makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let first = directory.appendingPathComponent("one.png")
         let second = directory.appendingPathComponent("two.png")
+        try Self.makeTIFFData().write(to: first)
+        try Self.makeTIFFData().write(to: second)
 
         let store = DocumentStore()
-        let result = store.insertImageAttachments([.file(first), .file(second)], folder: "assets")
+        let result = await store.insertImageAttachments([.file(first), .file(second)], folder: "assets", handling: .link)
 
         let expected = ImageAttachmentManager.directImageReference(forFile: first)
             + "\n" + ImageAttachmentManager.directImageReference(forFile: second)
@@ -42,7 +45,7 @@ struct DocumentStoreImageAttachmentTests {
 
     // MARK: - Raw clipboard data writes to the attachment folder (needs a save)
 
-    @Test func cancellingSaveInsertsNothingForClipboardImage() {
+    @Test func cancellingSaveInsertsNothingForClipboardImage() async {
         let directory = makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -52,14 +55,14 @@ struct DocumentStoreImageAttachmentTests {
             return nil // user cancels
         })
 
-        let result = store.insertImageAttachments([.imageData(Self.makeTIFFData())], folder: "assets")
+        let result = await store.insertImageAttachments([.imageData(Self.makeTIFFData())], folder: "assets")
 
         #expect(result == nil)
         #expect(pickerCalls == 1)
         #expect(store.fileURL == nil)
     }
 
-    @Test func savesUntitledThenWritesClipboardImageToAssets() {
+    @Test func savesUntitledThenWritesClipboardImageToAssets() async {
         let directory = makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let savedDocument = directory.appendingPathComponent("notes.md")
@@ -70,7 +73,7 @@ struct DocumentStoreImageAttachmentTests {
             return savedDocument
         })
 
-        let result = store.insertImageAttachments([.imageData(Self.makeTIFFData())], folder: "assets")
+        let result = await store.insertImageAttachments([.imageData(Self.makeTIFFData())], folder: "assets")
 
         #expect(pickerCalls == 1)
         #expect(store.fileURL == savedDocument)
@@ -78,7 +81,7 @@ struct DocumentStoreImageAttachmentTests {
         #expect(result?.hasSuffix(".png)") == true)
     }
 
-    @Test func clipboardWriteFailureSurfacesAlertAndInsertsNothing() throws {
+    @Test func clipboardWriteFailureSurfacesAlertAndInsertsNothing() async throws {
         let directory = makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let documentURL = directory.appendingPathComponent("notes.md")
@@ -87,13 +90,13 @@ struct DocumentStoreImageAttachmentTests {
         let store = DocumentStore()
         store.open(documentURL)
 
-        let result = store.insertImageAttachments([.imageData(Data("not an image".utf8))], folder: "assets")
+        let result = await store.insertImageAttachments([.imageData(Data("not an image".utf8))], folder: "assets")
 
         #expect(result == nil)
         #expect(store.alert != nil)
     }
 
-    @Test func externalFolderRequiresDeliberateChoiceAndCachesOnlyExactDestination() throws {
+    @Test func externalFolderRequiresDeliberateChoiceAndCachesOnlyExactDestination() async throws {
         let directory = makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let document = directory.appendingPathComponent("document")
@@ -111,24 +114,24 @@ struct DocumentStoreImageAttachmentTests {
             return allow
         })
         store.open(source)
-        #expect(store.insertImageAttachments([.imageData(Self.makeTIFFData())], folder: "assets") == nil)
+        #expect(await store.insertImageAttachments([.imageData(Self.makeTIFFData())], folder: "assets") == nil)
         #expect(choices.count == 1)
         #expect(try FileManager.default.contentsOfDirectory(atPath: shared.path).isEmpty)
         allow = true
-        #expect(store.insertImageAttachments([.imageData(Self.makeTIFFData())], folder: "assets") != nil)
-        #expect(store.insertImageAttachments([.imageData(Self.makeTIFFData())], folder: "assets") != nil)
+        #expect(await store.insertImageAttachments([.imageData(Self.makeTIFFData())], folder: "assets") != nil)
+        #expect(await store.insertImageAttachments([.imageData(Self.makeTIFFData())], folder: "assets") != nil)
         #expect(choices.count == 2)
         #expect(try FileManager.default.contentsOfDirectory(atPath: shared.path).count == 2)
         try FileManager.default.removeItem(at: link)
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: other)
         allow = false
-        #expect(store.insertImageAttachments([.imageData(Self.makeTIFFData())], folder: "assets") == nil)
+        #expect(await store.insertImageAttachments([.imageData(Self.makeTIFFData())], folder: "assets") == nil)
         #expect(choices.count == 3)
         #expect(choices[0] != choices[2])
         #expect(try FileManager.default.contentsOfDirectory(atPath: other.path).isEmpty)
     }
 
-    @Test func localPastesNeverPromptAndRetargetDuringConfirmationCannotEscapeApproval() throws {
+    @Test func localPastesNeverPromptAndRetargetDuringConfirmationCannotEscapeApproval() async throws {
         let directory = makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let document = directory.appendingPathComponent("document")
@@ -147,9 +150,9 @@ struct DocumentStoreImageAttachmentTests {
             return true
         })
         store.open(source)
-        #expect(store.insertImageAttachments([.imageData(Self.makeTIFFData())], folder: "assets") != nil)
+        #expect(await store.insertImageAttachments([.imageData(Self.makeTIFFData())], folder: "assets") != nil)
         #expect(prompts == 0)
-        #expect(store.insertImageAttachments([.imageData(Self.makeTIFFData())], folder: "shared-link") == nil)
+        #expect(await store.insertImageAttachments([.imageData(Self.makeTIFFData())], folder: "shared-link") == nil)
         #expect(prompts == 1)
         #expect(store.alert != nil)
         #expect(try FileManager.default.contentsOfDirectory(atPath: shared.path).isEmpty)

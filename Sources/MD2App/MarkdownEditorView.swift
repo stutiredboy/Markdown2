@@ -75,6 +75,10 @@ struct MarkdownEditorView: NSViewRepresentable {
     var onEnterPreview: () -> Void = {}
     /// The current edit-mode find query.
     @Binding var findQuery: String
+    // Value inputs make option/scope mutations observable to SwiftUI even when
+    // the native editor is the only visible pane. The session owns the values.
+    var findOptions = TextSearch.Options()
+    var findScope = FindSession.Scope.document
     /// Formatting reveal takes precedence over an automatic restored-query jump.
     var findMayRevealMatches = true
     /// A next/previous navigation request; consumed once applied.
@@ -98,12 +102,9 @@ struct MarkdownEditorView: NSViewRepresentable {
     var onFindShortcut: (_ action: FindCommand.Action) -> Void = { _ in }
     /// Reports match count and the 1-based index of the current match.
     var onFindResult: (_ total: Int, _ index: Int) -> Void = { _, _ in }
-    /// Turns pasted/dropped image sources into stored attachments and returns the
-    /// Markdown text to insert (one `![alt](path)` per image, newline-joined), or
-    /// `nil` when nothing should be inserted (unsupported payload, cancelled save,
-    /// or a write failure). The editor inserts the returned text on the native
-    /// edit path so dirty marking, styling, autosave, selection, and undo apply.
-    var onInsertImageAttachments: (_ sources: [ImageAttachmentSource]) -> String? = { _ in nil }
+    /// Captures the intended range and source before asynchronous attachment
+    /// work. DocumentStore performs guarded, undoable adoption on completion.
+    var onInsertImageAttachments: (_ sources: [ImageAttachmentSource], _ range: NSRange, _ source: String) async -> Void = { _, _, _ in }
     /// Whether the source line-number gutter is drawn in the text view's left
     /// inset. Toggling it changes no text, selection, or geometry, so it cannot
     /// re-wrap the document; while it is on, clicking a number selects its line.
@@ -135,8 +136,8 @@ struct MarkdownEditorView: NSViewRepresentable {
             sourceTextView.onFindAction = { [weak coordinator] action in
                 coordinator?.onFindShortcut(action)
             }
-            sourceTextView.onInsertImageAttachments = { [weak coordinator] sources in
-                coordinator?.onInsertImageAttachments(sources)
+            sourceTextView.onInsertImageAttachments = { [weak coordinator] sources, range, source in
+                await coordinator?.onInsertImageAttachments(sources, range, source)
             }
             sourceTextView.showsLineNumbers = showsLineNumbers
         }
@@ -241,11 +242,19 @@ struct MarkdownEditorView: NSViewRepresentable {
 
         if let replaceCommand, context.coordinator.lastReplaceCommandToken != replaceCommand.token {
             context.coordinator.lastReplaceCommandToken = replaceCommand.token
-            context.coordinator.replace(
-                replaceCommand.action,
-                replacement: findReplacement,
-                in: textView
-            )
+            let coordinator = context.coordinator
+            let snapshot = replaceCommand.snapshot ?? FindReplacementSnapshot(query: findQuery, replacement: findReplacement,
+                                                    textView: textView, find: coordinator.session.find)
+            let queryBinding = $findQuery
+            let replacementBinding = $findReplacement
+            // Editing publishes document/search state; do it outside SwiftUI's
+            // update pass, after consuming the token exactly once. Revalidate the
+            // exact invocation context so a new edit/query/host cannot be hit.
+            coordinator.session.scheduleFindReplacement { [weak textView, weak coordinator] in
+                guard let textView, let coordinator, coordinator.session.isHosted(by: coordinator) else { return }
+                coordinator.replaceIfUnchanged(replaceCommand.action, snapshot: snapshot,
+                    query: queryBinding.wrappedValue, replacement: replacementBinding.wrappedValue, in: textView)
+            }
         }
 
         if context.coordinator.lastFocusToken != focusToken {
@@ -478,7 +487,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         }
         var onFindShortcut: (_ action: FindCommand.Action) -> Void = { _ in }
         var onFindResult: (_ total: Int, _ index: Int) -> Void = { _, _ in }
-        var onInsertImageAttachments: (_ sources: [ImageAttachmentSource]) -> String? = { _ in nil }
+        var onInsertImageAttachments: (_ sources: [ImageAttachmentSource], _ range: NSRange, _ source: String) async -> Void = { _, _, _ in }
         var lastFocusToken: UUID?
         /// Tokens of the most recently consumed find/replace commands, so a command
         /// is acted on exactly once even if `updateNSView` re-runs while the same
@@ -598,6 +607,8 @@ struct MarkdownEditorView: NSViewRepresentable {
         /// reported back as the user's anchor.
         private var isProgrammaticScroll = false
         private var lastFindQuery = ""
+        private var lastObservedOptions = TextSearch.Options()
+        private var lastObservedScope = FindSession.Scope.document
         private var matches: [NSRange] = []
         private var currentMatchIndex = -1
         private var highlightedRanges: [NSRange] = []
@@ -694,7 +705,9 @@ struct MarkdownEditorView: NSViewRepresentable {
             // while the input method owns the selection for marked text.
             guard !textView.hasMarkedText() else { return }
 
-            if query != lastObservedQuery {
+            if query != lastObservedQuery || session.find.options != lastObservedOptions || session.find.scope != lastObservedScope {
+                lastObservedOptions = session.find.options
+                lastObservedScope = session.find.scope
                 if revealMatches { cancelSelectionReveal() }
                 lastObservedQuery = query
                 findGeneration += 1
@@ -813,6 +826,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         }
 
         @MainActor func navigateFind(forward: Bool, in textView: NSTextView) {
+            guard !textView.hasMarkedText() else { return }
             // A pending query-driven rebuild must run first, or navigation would
             // step through the previous query's match list.
             flushPendingFindRebuild(in: textView)
@@ -846,6 +860,20 @@ struct MarkdownEditorView: NSViewRepresentable {
             }
         }
 
+        @discardableResult
+        @MainActor func replaceIfUnchanged(_ action: FindReplaceCommand.Action, snapshot: FindReplacementSnapshot,
+                                           query: String, replacement: String, in textView: NSTextView) -> Bool {
+            guard snapshot.identity == session.find.identity else { return false }
+            guard !textView.hasMarkedText(), snapshot.isCurrent(query: query, replacement: replacement, textView: textView, find: session.find) else {
+                session.find.replacementCount = nil
+                session.find.replacementCancelled = true
+                return false
+            }
+            session.find.replacementCancelled = false
+            replace(action, replacement: replacement, in: textView)
+            return true
+        }
+
         @MainActor func replace(
             _ action: FindReplaceCommand.Action,
             replacement: String,
@@ -853,8 +881,11 @@ struct MarkdownEditorView: NSViewRepresentable {
         ) {
             // Replace must act on the current query's matches, never the previous
             // query's list, so a pending query-driven rebuild is flushed first.
+            guard !textView.hasMarkedText(), session.find.canReplace else { return }
+            updateFind(query: lastObservedQuery, in: textView, revealMatches: false)
             flushPendingFindRebuild(in: textView)
             guard !lastFindQuery.isEmpty, !matches.isEmpty else {
+                session.find.replacementCount = 0
                 reportFindResult()
                 return
             }
@@ -869,30 +900,41 @@ struct MarkdownEditorView: NSViewRepresentable {
 
         @MainActor private func replaceCurrent(with replacement: String, in textView: NSTextView) {
             guard currentMatchIndex >= 0, currentMatchIndex < matches.count else { return }
-            let range = matches[currentMatchIndex]
-            textView.insertText(replacement, replacementRange: range)
-            rebuildFindIndex(
-                query: lastFindQuery,
-                in: textView,
-                preferredIndex: min(currentMatchIndex, max(0, matches.count - 1)),
-                shouldReveal: true
-            )
+            applyReplacements([matches[currentMatchIndex]], with: replacement, in: textView)
         }
 
         @MainActor private func replaceAll(with replacement: String, in textView: NSTextView) {
-            let fullRange = NSRange(location: 0, length: (textView.string as NSString).length)
-            let mutable = NSMutableString(string: textView.string)
-            for range in matches.reversed() {
-                mutable.replaceCharacters(in: range, with: replacement)
-            }
+            applyReplacements(matches, with: replacement, in: textView)
+        }
 
-            guard textView.shouldChangeText(in: fullRange, replacementString: mutable as String) else {
+        @MainActor private func applyReplacements(_ targets: [NSRange], with replacement: String, in textView: NSTextView) {
+            guard let first = targets.first, let last = targets.last else { return }
+            let range = NSRange(location: first.location, length: NSMaxRange(last) - first.location)
+            let original = (textView.string as NSString).substring(with: range)
+            let mutable = NSMutableString(string: original)
+            for target in targets.reversed() {
+                mutable.replaceCharacters(in: NSRange(location: target.location - range.location, length: target.length), with: replacement)
+            }
+            if (original as NSString).isEqual(to: mutable as String) {
+                session.find.replacementCount = 0
                 return
             }
-
-            textView.textStorage?.replaceCharacters(in: fullRange, with: mutable as String)
-            textView.didChangeText()
-            rebuildFindIndex(query: lastFindQuery, in: textView, preferredIndex: 0, shouldReveal: true)
+            var scope = session.find.scope
+            if case .selection(let old) = scope {
+                scope = .selection(NSRange(location: old.location, length: old.length + mutable.length - range.length))
+            }
+            // Production always uses the retained session text system. The
+            // detached coordinator fixtures also exercise the native path below.
+            if session.textView === textView {
+                guard session.applyFindEdit(range: range, replacement: mutable as String, scope: scope) else { return }
+            } else {
+                textView.breakUndoCoalescing()
+                textView.insertText(mutable as String, replacementRange: range)
+                textView.breakUndoCoalescing()
+                session.find.scope = scope
+            }
+            session.find.replacementCount = targets.count
+            rebuildFindIndex(query: lastFindQuery, in: textView, preferredIndex: max(currentMatchIndex, 0), shouldReveal: true)
         }
 
         @MainActor private func rebuildFindIndex(
@@ -902,7 +944,9 @@ struct MarkdownEditorView: NSViewRepresentable {
             shouldReveal: Bool
         ) {
             lastFindQuery = query
-            matches = TextSearch.matches(of: query, in: textView.string)
+            matches = session.find.canReplace
+                ? TextSearch.matches(of: query, in: textView.string, options: session.find.options, scope: session.find.range)
+                : []
 
             if matches.isEmpty {
                 currentMatchIndex = -1
@@ -1745,9 +1789,9 @@ final class MarkdownSourceTextView: NSTextView {
     }
 
     var onFindAction: ((FindCommand.Action) -> Void)?
-    /// Turns pasted/dropped image sources into stored attachments and returns the
-    /// Markdown to insert, or `nil` to insert nothing. Set by `MarkdownEditorView`.
-    var onInsertImageAttachments: (([ImageAttachmentSource]) -> String?)?
+    /// Captures source/range for asynchronous attachment work and guarded native
+    /// undo adoption. Set by MarkdownEditorView; never inserts a stale result.
+    var onInsertImageAttachments: (([ImageAttachmentSource], NSRange, String) async -> Void)?
 
     /// Whether the source line-number gutter is drawn. Setting it only
     /// invalidates the gutter strip — the text container's geometry is never
@@ -1945,8 +1989,11 @@ final class MarkdownSourceTextView: NSTextView {
             super.paste(sender)
             return
         }
-        if let snippet = onInsertImageAttachments?(sources), !snippet.isEmpty {
-            insertText(snippet, replacementRange: selectedRange())
+        let range = selectedRange(), source = string
+        Task { [weak self] in
+            guard let self, self.selectedRange() == range,
+                  (self.string as NSString).isEqual(to: source) else { return }
+            await self.onInsertImageAttachments?(sources, range, source)
         }
     }
 
@@ -2002,15 +2049,13 @@ final class MarkdownSourceTextView: NSTextView {
 
         let dropPoint = convert(sender.draggingLocation, from: nil)
         let insertionIndex = characterIndexForInsertion(at: dropPoint)
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
+        let source = string, selection = selectedRange()
+        let range = NSRange(location: min(insertionIndex, (source as NSString).length), length: 0)
+        Task { [weak self] in
+            guard let self, self.selectedRange() == selection,
+                  (self.string as NSString).isEqual(to: source) else { return }
             self.window?.makeFirstResponder(self)
-            guard let snippet = self.onInsertImageAttachments?(sources), !snippet.isEmpty else {
-                return
-            }
-            let length = (self.string as NSString).length
-            let range = NSRange(location: min(insertionIndex, length), length: 0)
-            self.insertText(snippet, replacementRange: range)
+            await self.onInsertImageAttachments?(sources, range, source)
         }
         return true
     }
@@ -2021,9 +2066,12 @@ final class MarkdownSourceTextView: NSTextView {
         if let urls = imageFileURLs(from: pasteboard), !urls.isEmpty {
             return urls.map { .file($0) }
         }
-        if pasteboard.canReadObject(forClasses: [NSImage.self], options: nil),
-           let images = pasteboard.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage] {
-            return images.compactMap { $0.tiffRepresentation.map(ImageAttachmentSource.imageData) }
+        let preferred: [NSPasteboard.PasteboardType] = [.png, .tiff]
+        let otherImages = (pasteboard.types ?? []).filter {
+            !preferred.contains($0) && UTType($0.rawValue)?.conforms(to: .image) == true
+        }
+        for type in preferred + otherImages {
+            if let data = pasteboard.data(forType: type) { return [.imageData(data)] }
         }
         return []
     }
