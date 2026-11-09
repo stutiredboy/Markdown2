@@ -1,6 +1,7 @@
 # Daily writing: portable attachments, copies, precise find
 
-Status: implementation authorized; work-package design and acceptance contract.
+Status: implementation integrated; independent package reviews passed.
+Unified acceptance is recorded against the final integration commit in the PR.
 Baseline: `aac08c90cae5c0d8c11652b9278adafd76198c36` (PR #55 merged).
 
 ## Product outcome and priorities
