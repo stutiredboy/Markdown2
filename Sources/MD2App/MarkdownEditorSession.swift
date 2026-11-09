@@ -34,7 +34,14 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
     /// Keep consumption across re-hosting, just like the text and undo history.
     var lastFormatToken: UUID?
     /// A Read-mode format request reveals the source target without editing.
-    var revealSelectionOnNextHost = false
+    var revealSelectionOnNextHost = false {
+        didSet {
+            guard oldValue != revealSelectionOnNextHost else { return }
+            if let textView {
+                NSAccessibility.post(element: textView, notification: .init(rawValue: "AXElementBusyChanged"))
+            }
+        }
+    }
     private weak var coordinator: MarkdownEditorView.Coordinator?
     /// True while `applyUndoableEdit` runs, so the mounted editor can tell the
     /// document's own edit from typing.

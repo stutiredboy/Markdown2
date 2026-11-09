@@ -150,6 +150,7 @@ final class MenuLanguageGUITests: XCTestCase {
         XCTAssertEqual(retainedSelection.location, target.location)
         XCTAssertEqual(retainedSelection.length, target.length)
 
+        try waitForRevealedSource(editor, selection: selectedRange, target: target)
         try press(.formatHeading1, in: .zhHans, pid: pid)
         let expected = (original as NSString).replacingCharacters(in: target, with: "# Start writing in Markdown.")
         try waitForWindow(pid: pid, description: "the second command's exact formatted source") { window in
@@ -177,6 +178,67 @@ final class MenuLanguageGUITests: XCTestCase {
             usleep(100_000)
         }
         throw GuardFailure("the revealed source editor did not receive keyboard focus")
+    }
+
+    private func waitForRevealedSource(_ editor: AXUIElement, selection: AXValue, target: NSRange) throws {
+        var settable = DarwinBoolean(true)
+        XCTAssertEqual(AXUIElementIsAttributeSettable(editor, kAXElementBusyAttribute as CFString, &settable), .success)
+        XCTAssertFalse(settable.boolValue, "assistive technology must not be able to bypass the source-target reveal")
+        let deadline = Date().addingTimeInterval(5)
+        var lastState = "no Accessibility response"
+        while Date() < deadline {
+            var busyValue: CFTypeRef?
+            let busyStatus = AXUIElementCopyAttributeValue(editor, kAXElementBusyAttribute as CFString, &busyValue)
+            var visibleValue: CFTypeRef?
+            let visibleStatus = AXUIElementCopyAttributeValue(editor, kAXVisibleCharacterRangeAttribute as CFString, &visibleValue)
+            var boundsValue: CFTypeRef?
+            let boundsStatus = AXUIElementCopyParameterizedAttributeValue(editor,
+                kAXBoundsForRangeParameterizedAttribute as CFString, selection, &boundsValue)
+            var visible = CFRange(location: 0, length: 0)
+            var bounds = CGRect.zero
+            let hasVisibleRange = visibleStatus == .success && visibleValue.map {
+                CFGetTypeID($0) == AXValueGetTypeID() && AXValueGetValue($0 as! AXValue, .cfRange, &visible)
+            } == true
+            let hasBounds = boundsStatus == .success && boundsValue.map {
+                CFGetTypeID($0) == AXValueGetTypeID() && AXValueGetValue($0 as! AXValue, .cgRect, &bounds)
+            } == true
+            let viewport = Self.scrollViewport(containing: editor)
+            lastState = "busy=\(String(describing: busyValue)) (\(busyStatus.rawValue)), visible=\(visible) (\(visibleStatus.rawValue)), bounds=\(bounds) (\(boundsStatus.rawValue)), viewport=\(String(describing: viewport))"
+            // Focus and AXTextArea existence are not readiness: a native editor
+            // can have both while the source-target reveal is still settling.
+            if busyStatus == .success, busyValue as? Bool == false,
+               hasVisibleRange, visible.location <= target.location,
+               visible.location + visible.length >= NSMaxRange(target),
+               hasBounds, !bounds.isEmpty, !bounds.isInfinite, !bounds.isNull,
+               let viewport, viewport.intersects(bounds) {
+                return
+            }
+            usleep(100_000)
+        }
+        throw GuardFailure("the retained source target did not become ready and visible: \(lastState)")
+    }
+
+    private static func scrollViewport(containing editor: AXUIElement) -> CGRect? {
+        var ancestor = editor
+        for _ in 0..<8 {
+            var parent: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(ancestor, kAXParentAttribute as CFString, &parent) == .success,
+                  let next = element(parent) else { return nil }
+            ancestor = next
+            guard role(of: ancestor) == "AXScrollArea" else { continue }
+            var positionValue: CFTypeRef?
+            var sizeValue: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(ancestor, kAXPositionAttribute as CFString, &positionValue) == .success,
+                  AXUIElementCopyAttributeValue(ancestor, kAXSizeAttribute as CFString, &sizeValue) == .success,
+                  let positionValue, CFGetTypeID(positionValue) == AXValueGetTypeID(),
+                  let sizeValue, CFGetTypeID(sizeValue) == AXValueGetTypeID() else { return nil }
+            var position = CGPoint.zero
+            var size = CGSize.zero
+            guard AXValueGetValue(positionValue as! AXValue, .cgPoint, &position),
+                  AXValueGetValue(sizeValue as! AXValue, .cgSize, &size) else { return nil }
+            return CGRect(origin: position, size: size)
+        }
+        return nil
     }
 
     private func pressNativeUndo(pid: pid_t) throws {

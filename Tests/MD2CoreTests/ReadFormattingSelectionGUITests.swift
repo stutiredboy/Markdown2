@@ -103,6 +103,12 @@ final class ReadFormattingSelectionGUITests: XCTestCase {
         XCTAssertEqual((editor.textStorage?.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize, 16)
         XCTAssertNil(editor.window)
         XCTAssertTrue(session.revealSelectionOnNextHost, "an unhosted reveal must remain pending")
+        let busy = NSAccessibility.Attribute(rawValue: "AXElementBusy")
+        XCTAssertEqual(editor.accessibilityAttributeValue(busy) as? Bool, true)
+        XCTAssertFalse(editor.accessibilityIsAttributeSettable(busy))
+        editor.accessibilitySetValue(false, forAttribute: busy)
+        XCTAssertTrue(session.revealSelectionOnNextHost, "an AX write must not release the formatting guard")
+        XCTAssertEqual(editor.accessibilityAttributeValue(busy) as? Bool, true)
         if reselect { editor.setSelectedRange(NSRange(location: 0, length: 0)) }
         if let query {
             // Replace the constant binding itself; the unmatched search must
@@ -118,12 +124,14 @@ final class ReadFormattingSelectionGUITests: XCTestCase {
         if reselect || query != nil {
             harness.spin(until: { !session.revealSelectionOnNextHost })
             XCTAssertFalse(session.revealSelectionOnNextHost, "the explicit new action must cancel the old reveal")
+            XCTAssertEqual(editor.accessibilityAttributeValue(busy) as? Bool, false, "cancellation ends the busy state")
         }
         harness.window.contentView = host
         harness.window.makeKeyAndOrderFront(nil)
         host.layoutSubtreeIfNeeded()
         harness.spin(until: { !session.revealSelectionOnNextHost })
         XCTAssertFalse(session.revealSelectionOnNextHost)
+        XCTAssertEqual(editor.accessibilityAttributeValue(busy) as? Bool, false, "completed reveal ends the busy state")
         XCTAssertEqual(editor.selectedRange(), reselect ? NSRange(location: 0, length: 0) : target)
         let layout = try XCTUnwrap(editor.layoutManager)
         let container = try XCTUnwrap(editor.textContainer)

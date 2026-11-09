@@ -1610,6 +1610,33 @@ private func scrollableContentHeight(for documentView: NSView) -> CGFloat {
 }
 
 final class MarkdownSourceTextView: NSTextView {
+    private static let elementBusyAttribute = NSAccessibility.Attribute(rawValue: "AXElementBusy")
+
+    /// The native text/focus can exist before the retained source target is
+    /// ready. Assistive technology needs the same readiness boundary as format
+    /// commands. AppKit has no method-based accessor for this standard AX state,
+    /// so bridge only this attribute; keep all other native text behavior.
+    override func accessibilityAttributeNames() -> [NSAccessibility.Attribute] {
+        let names = super.accessibilityAttributeNames()
+        return names.contains(Self.elementBusyAttribute) ? names : names + [Self.elementBusyAttribute]
+    }
+
+    override func accessibilityAttributeValue(_ attribute: NSAccessibility.Attribute) -> Any? {
+        if attribute == Self.elementBusyAttribute {
+            return (delegate as? MarkdownEditorSession)?.revealSelectionOnNextHost == true
+        }
+        return super.accessibilityAttributeValue(attribute)
+    }
+
+    override func accessibilityIsAttributeSettable(_ attribute: NSAccessibility.Attribute) -> Bool {
+        attribute == Self.elementBusyAttribute ? false : super.accessibilityIsAttributeSettable(attribute)
+    }
+
+    override func accessibilitySetValue(_ value: Any?, forAttribute attribute: NSAccessibility.Attribute) {
+        guard attribute != Self.elementBusyAttribute else { return }
+        super.accessibilitySetValue(value, forAttribute: attribute)
+    }
+
     var typography: TypographySettings = .init() {
         didSet {
             let width = max(58, ceil(gutterFontSize * 3.2 + Self.gutterTrailingInset))
