@@ -107,6 +107,10 @@ private struct AppCommands: Commands {
             }
             .keyboardShortcut("s")
 
+            Button(settings.text(.createCopy)) {
+                appDelegate.createCopy()
+            }
+
             Menu(settings.text(.exportTo)) {
                 Button("PDF") {
                     Task { await appDelegate.currentDocumentStore?.exportPDF() }

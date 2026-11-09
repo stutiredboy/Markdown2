@@ -197,6 +197,7 @@ struct ContentView: View {
     /// Opens a local Markdown file the user clicked in the preview, routed up
     /// to the app delegate's open-in-window path.
     private let onOpenMarkdownLink: (URL) -> Void
+    private let onOpenCreatedCopy: (DocumentCopyReceipt) -> Void
     private var findDialogEntranceAnimation: Animation { .easeOut(duration: 0.20) }
     private var findDialogExitAnimation: Animation { .easeIn(duration: 0.15) }
     private var findDialogTransition: AnyTransition {
@@ -210,18 +211,21 @@ struct ContentView: View {
         document: DocumentStore,
         settings: AppSettings,
         onOpen: @escaping () -> Void,
-        onOpenMarkdownLink: @escaping (URL) -> Void = { _ in }
+        onOpenMarkdownLink: @escaping (URL) -> Void = { _ in },
+        onOpenCreatedCopy: @escaping (DocumentCopyReceipt) -> Void = { _ in }
     ) {
         self.document = document
         self.settings = settings
         self.onOpen = onOpen
         self.onOpenMarkdownLink = onOpenMarkdownLink
+        self.onOpenCreatedCopy = onOpenCreatedCopy
         _mode = State(initialValue: settings.presentationMode(isFileBacked: document.fileURL != nil))
         _showsOutline = State(initialValue: settings.showsOutlineByDefault)
     }
 
     var body: some View {
         VStack(spacing: 0) {
+            DocumentCopyNotice(flow: document.copyFlow, settings: settings, onOpen: onOpenCreatedCopy)
             HStack(spacing: 0) {
                 if showsOutline {
                     OutlineSidebar(

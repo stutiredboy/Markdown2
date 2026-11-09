@@ -242,6 +242,21 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    func createCopy() {
+        guard let store = currentDocumentStore else { return }
+        Task { await store.copyFlow.create(from: store, text: settings.text) }
+    }
+
+    /// A newly committed copy must open its on-disk bytes in a fresh Store, not
+    /// restore an older recovery draft that once happened to use this filename.
+    private func openCreatedCopy(_ receipt: DocumentCopyReceipt, from source: DocumentStore) {
+        guard source.copyFlow.mayOpen(from: source, text: settings.text) else { return }
+        let store = DocumentCopyFlow.openFreshStore(receipt, makeStore: makeDocumentStore)
+        let documentWindow = makeDocumentWindow(store: store)
+        documentWindow.window.makeKeyAndOrderFront(nil)
+        source.copyFlow.dismiss()
+    }
+
     /// Loads `url` into a window. If it is already open, that window is brought
     /// to the front; otherwise an untouched starter window is reused or a new
     /// one is created. Also the open path for Markdown links clicked in a
@@ -403,7 +418,11 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             document: store,
             settings: settings,
             onOpen: { [weak self] in self?.openDocument() },
-            onOpenMarkdownLink: { [weak self] url in self?.openInNewWindow(url) }
+            onOpenMarkdownLink: { [weak self] url in self?.openInNewWindow(url) },
+            onOpenCreatedCopy: { [weak self, weak store] receipt in
+                guard let store else { return }
+                self?.openCreatedCopy(receipt, from: store)
+            }
         )
 
         let window = ModeShortcutWindow(

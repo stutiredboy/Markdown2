@@ -51,6 +51,7 @@ final class DocumentStore: ObservableObject {
     }
 
     @Published private(set) var rendered: RenderedDocument
+    let copyFlow = DocumentCopyFlow()
     @Published private(set) var fileURL: URL?
     @Published private(set) var isDirty = false
     @Published private(set) var fileFormat = MarkdownFileFormat()
@@ -310,6 +311,16 @@ final class DocumentStore: ObservableObject {
     var isReusableEmptyDocument: Bool {
         fileURL == nil && !isDirty && text == Self.starterMarkdown
             && editorSession.textView?.hasMarkedText() != true
+    }
+
+    /// Read-only editor capture. In particular, do not refresh a moved source or
+    /// save an untitled draft as a side effect of creating a copy.
+    func captureCopySource() throws -> DocumentCopySource {
+        guard !isClosed, !backingFileMissing else { throw DocumentCopyFlowError.unavailable }
+        guard editorSession.textView?.hasMarkedText() != true else { throw DocumentCopyFlowError.composing }
+        guard let fileURL else { throw DocumentCopyFlowError.untitled }
+        return DocumentCopySource(documentID: documentIdentity, revision: textMutationRevision,
+                                  text: text, format: fileFormat, url: fileURL, identity: fileIdentity)
     }
 
     @discardableResult
@@ -1367,6 +1378,7 @@ final class DocumentStore: ObservableObject {
             }
         }
         isClosed = true
+        copyFlow.cancel()
         headingNavigationTask?.cancel()
         headingNavigationTask = nil
         cancelAutosave()

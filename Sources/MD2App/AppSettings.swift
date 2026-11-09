@@ -374,6 +374,10 @@ enum L10nKey: String, CaseIterable {
     case clearMenu
     case recentDocumentMissingDetail
     case save
+    case createCopy, createCopyAction, copyPromptDetail, copyNameSuffix, copyFilename
+    case copyCreated, copyCreatedDetail, openCopy, dismissCopyNotice, copyFailed
+    case copySaveFirst, copyFinishComposition, copySourceChanged, copyInvalidName
+    case copySourceUnavailable, copyNameExists, copyEncodingUnavailable
     case exportTo
     case exportPDF
     case exportHTML
@@ -545,6 +549,23 @@ enum L10n {
         .clearMenu: "Clear Menu",
         .recentDocumentMissingDetail: "The file no longer exists at its recorded location.",
         .save: "Save",
+        .createCopy: "Create Copy…",
+        .createCopyAction: "Create Copy",
+        .copyPromptDetail: "Create a new Markdown file in:\n%@\n\nThe copy uses your current editor text, including unsaved edits. Existing images and attachments are shared; they will not be copied or deleted. The original document stays open and keeps any unresolved conflict.",
+        .copyNameSuffix: " copy",
+        .copyFilename: "Copy filename",
+        .copyCreated: "Created Markdown copy: %@",
+        .copyCreatedDetail: "The copy contains the text captured when you confirmed its name. Existing attachments are shared. Open it separately to continue editing the copy.",
+        .openCopy: "Open Copy",
+        .dismissCopyNotice: "Dismiss",
+        .copyFailed: "Could not create a copy.",
+        .copySaveFirst: "Save this untitled document first, then choose Create Copy. The original has not been saved by this command.",
+        .copyFinishComposition: "Finish your current input-method composition, then try again. Your provisional text has been kept.",
+        .copySourceChanged: "The source document or its location changed. Try Create Copy again from the document you want to copy.",
+        .copyInvalidName: "Enter a new filename ending in .md or .markdown, without folder separators or leading or trailing spaces.",
+        .copySourceUnavailable: "The source must be an existing local regular file. Reopen or save the document before creating a copy.",
+        .copyNameExists: "That filename already exists or refers to the original. Choose a different name; no existing file was replaced.",
+        .copyEncodingUnavailable: "The current text cannot be represented in %@. No copy was created and the original encoding is unchanged.",
         .exportTo: "Export To",
         .exportPDF: "Export as PDF…",
         .exportHTML: "Export as HTML…",
@@ -720,6 +741,23 @@ enum L10n {
         .clearMenu: "清除菜单",
         .recentDocumentMissingDetail: "文件已不在原来的位置（可能已被移动或删除）。",
         .save: "保存",
+        .createCopy: "创建副本…",
+        .createCopyAction: "创建副本",
+        .copyPromptDetail: "在以下文件夹中新建 Markdown 文件：\n%@\n\n副本包含当前编辑内容（包括未保存的修改）。现有图片和附件由两份文档共享，不会复制或删除。原文档保持打开，已有冲突仍需另行处理。",
+        .copyNameSuffix: " 副本",
+        .copyFilename: "副本文件名",
+        .copyCreated: "已创建 Markdown 副本：%@",
+        .copyCreatedDetail: "副本包含确认名称时的编辑内容，继续共享现有附件。可单独打开副本继续编辑。",
+        .openCopy: "打开副本",
+        .dismissCopyNotice: "关闭提示",
+        .copyFailed: "无法创建副本。",
+        .copySaveFirst: "请先保存未命名文档，再选择“创建副本”。此命令未保存原稿。",
+        .copyFinishComposition: "请先完成当前输入法组词，再重试。正在输入的文字已保留。",
+        .copySourceChanged: "原文档或位置已改变。请在要复制的文档中重新选择“创建副本”。",
+        .copyInvalidName: "请输入以 .md 或 .markdown 结尾的新文件名，不含文件夹分隔符及首尾空格。",
+        .copySourceUnavailable: "原稿必须是已存在的本地普通文件。请先重新打开或保存文档，再创建副本。",
+        .copyNameExists: "该名称已存在或指向原稿。请换一个名称；没有覆盖任何已有文件。",
+        .copyEncodingUnavailable: "当前内容含有 %@ 无法表示的字符。未创建副本，原稿编码保持不变。",
         .exportTo: "导出到",
         .exportPDF: "导出为 PDF…",
         .exportHTML: "导出为 HTML…",
