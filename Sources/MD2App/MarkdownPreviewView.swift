@@ -501,7 +501,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
                         done();
                     }
                 }
-                requestAnimationFrame(step);
+                // Explicit navigation must not wait for a paint. WebKit can
+                // suspend animation frames in a background or unpresented page;
+                // position once now, then track later reflow with the same RAF loop.
+                step();
             }
 
             window.__md2ScrollToHeading = function (id) {

@@ -62,6 +62,44 @@ final class DocumentHeadingNavigationGUITests: XCTestCase, RenderedPageTesting {
         }
     }
 
+    @MainActor func testExplicitScrollTargetsPositionBeforeAnimationFramesRun() throws {
+        try withDocument(mode: .read, fragment: nil) { _, host in
+            XCTAssertTrue(spin(15) { self.descendant(host, as: WKWebView.self) != nil })
+            let preview = try XCTUnwrap(descendant(host, as: WKWebView.self))
+            XCTAssertTrue(spin(20) { !preview.isLoading && (try? self.evaluate("document.readyState === 'complete' && !!document.getElementById('target')", in: preview)) as? Bool == true })
+            let result = try XCTUnwrap(try evaluate("""
+                (() => {
+                    // Background/not-yet-presented pages may receive no animation
+                    // frames. Hold them explicitly so this test is deterministic.
+                    const originalRAF = window.requestAnimationFrame;
+                    const frames = [];
+                    window.requestAnimationFrame = callback => { frames.push(callback); return frames.length; };
+                    try {
+                        const target = document.getElementById('target');
+                        window.scrollTo(0, 0);
+                        window.__md2ScrollToHeading('target');
+                        const heading = { y: window.scrollY, top: target.getBoundingClientRect().top };
+                        window.scrollTo(0, 0);
+                        window.__md2ScrollToViewportAnchor({ line: Number(target.dataset.md2SourceLine), headingId: 'target', fraction: 0 });
+                        const viewport = { y: window.scrollY, top: target.getBoundingClientRect().top };
+                        window.scrollTo(0, 0);
+                        window.__md2ScrollToFraction(0.75);
+                        const fraction = window.scrollY / (document.documentElement.scrollHeight - innerHeight);
+                        return { heading, viewport, fraction, pendingFrames: frames.length };
+                    } finally { window.requestAnimationFrame = originalRAF; }
+                })()
+                """, in: preview) as? [String: Any])
+            let heading = try XCTUnwrap(result["heading"] as? [String: Double])
+            let viewport = try XCTUnwrap(result["viewport"] as? [String: Double])
+            XCTAssertGreaterThan(try XCTUnwrap(heading["y"]), 500)
+            XCTAssertEqual(try XCTUnwrap(heading["top"]), 0, accuracy: 1)
+            XCTAssertGreaterThan(try XCTUnwrap(viewport["y"]), 500)
+            XCTAssertEqual(try XCTUnwrap(viewport["top"]), 20, accuracy: 1)
+            XCTAssertEqual(try XCTUnwrap(result["fraction"] as? Double), 0.75, accuracy: 0.001)
+            XCTAssertEqual(result["pendingFrames"] as? Int, 3, "each target still schedules reflow tracking")
+        }
+    }
+
     @MainActor private func withDocument(
         mode: EditorMode, fragment: String?,
         body: (DocumentStore, NSView) throws -> Void
