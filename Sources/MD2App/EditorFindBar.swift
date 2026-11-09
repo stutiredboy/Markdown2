@@ -14,6 +14,7 @@ struct EditorFindBar: View {
     let onReplace: () -> Void
     let onReplaceAll: () -> Void
     let onClose: () -> Void
+    var onFocusChange: (Bool) -> Void = { _ in }
 
     @FocusState private var focusedField: Field?
 
@@ -29,7 +30,9 @@ struct EditorFindBar: View {
                     Image(systemName: "magnifyingglass")
                         .foregroundStyle(.secondary)
 
-                    TextField(settings.text(.findPlaceholder), text: $query)
+                    TextField(settings.text(.findPlaceholder), text: $query, onEditingChanged: { editing in
+                        onFocusChange(editing)
+                    })
                         .textFieldStyle(.plain)
                         .focused($focusedField, equals: .query)
                         .frame(minWidth: 40, maxWidth: .infinity)
@@ -74,7 +77,9 @@ struct EditorFindBar: View {
                 }
                 if showsReplace {
                     HStack(spacing: 8) {
-                        TextField(settings.text(.replace), text: $replacement)
+                        TextField(settings.text(.replace), text: $replacement, onEditingChanged: { editing in
+                            onFocusChange(editing)
+                        })
                             .textFieldStyle(.plain)
                             .focused($focusedField, equals: .replacement)
                             .frame(minWidth: 40, maxWidth: .infinity)

@@ -159,6 +159,8 @@ struct ContentView: View {
     /// Edit-mode find/replace bar state (write mode).
     @State private var editorFindVisible = false
     @State private var editorFindShowsReplace = false
+    /// Last user query belongs to the document, independent of bar visibility.
+    @State private var lastFindQuery = ""
     @State private var editorFindQuery = ""
     @State private var editorFindReplacement = ""
     @State private var editorFindFocusToken = UUID()
@@ -178,6 +180,8 @@ struct ContentView: View {
     /// Side by Side: the pane that most recently had user interaction, so a
     /// menu-driven Find routes to the surface the user is actually working in.
     @State private var focusedPane: SplitPane = .editor
+    /// Native find-field focus outranks delayed scroll/selection reports.
+    @State private var focusedFindPane: SplitPane?
     /// Side by Side scroll-sync driver: the pane currently driving the other.
     /// While set, the follower's settle-time anchor reports are ignored so the
     /// two panes cannot oscillate against each other.
@@ -276,6 +280,9 @@ struct ContentView: View {
             editorSelection = nil
             previewSelection = nil
             selectionStats = nil
+            lastFindQuery = ""
+            editorFindQuery = ""
+            previewFindQuery = ""
             document.showsFormattingTargetNotice = false
             applyDefaultPresentation()
             showsFrontMatterMetadata = false
@@ -283,6 +290,8 @@ struct ContentView: View {
             dismissPreviewFind()
         }
         .onChange(of: mode) { _, _ in
+            editorFindQuery = lastFindQuery
+            previewFindQuery = lastFindQuery
             clickedOutlineHeadingID = nil
             editorSelection = nil
             previewSelection = nil
@@ -502,7 +511,7 @@ struct ContentView: View {
             handlePreviewFindAction(command.action)
         case .split:
             // Route a menu-driven Find to the pane the user last worked in.
-            if focusedPane == .preview {
+            if (focusedFindPane ?? focusedPane) == .preview {
                 handlePreviewFindAction(command.action)
             } else {
                 handleEditorFindAction(command.action)
@@ -511,6 +520,7 @@ struct ContentView: View {
     }
 
     private func handleEditorFindAction(_ action: FindCommand.Action) {
+        focusedPane = .editor
         document.showsFormattingTargetNotice = false
         switch action {
         case .show:
@@ -518,7 +528,8 @@ struct ContentView: View {
         case .showReplace:
             showEditorFind(showsReplace: true)
         case .next, .previous:
-            if editorFindVisible {
+            if !lastFindQuery.isEmpty {
+                editorFindQuery = lastFindQuery
                 editorFindNavigation = FindCommand(action)
             } else {
                 showEditorFind(showsReplace: editorFindShowsReplace)
@@ -531,6 +542,7 @@ struct ContentView: View {
     }
 
     private func showEditorFind(showsReplace: Bool) {
+        editorFindQuery = lastFindQuery
         withAnimation(findDialogEntranceAnimation) {
             editorFindVisible = true
             editorFindShowsReplace = showsReplace
@@ -539,29 +551,31 @@ struct ContentView: View {
     }
 
     private func dismissEditorFind(refocusEditor: Bool = false) {
+        if focusedFindPane == .editor { focusedFindPane = nil }
         if editorFindVisible {
             withAnimation(findDialogExitAnimation) {
                 editorFindVisible = false
             }
         }
-        editorFindQuery = ""
         editorFindNavigation = nil
         editorReplaceCommand = nil
-        editorMatchTotal = 0
-        editorMatchIndex = 0
         if refocusEditor {
             editorSurfaceFocusToken = UUID()
         }
     }
 
     private func handlePreviewFindAction(_ action: FindCommand.Action) {
+        focusedPane = .preview
         switch action {
         case .show, .showReplace:
             // Replace is unavailable in preview; both just open the find bar.
             showPreviewFind()
         case .next, .previous:
-            if previewFindVisible {
+            if !lastFindQuery.isEmpty {
+                previewFindQuery = lastFindQuery
                 previewFindNavigation = FindCommand(action)
+            } else {
+                showPreviewFind()
             }
         case .search:
             // Produced only by the find bar's Return, which routes directly to
@@ -571,6 +585,7 @@ struct ContentView: View {
     }
 
     private func showPreviewFind() {
+        previewFindQuery = lastFindQuery
         withAnimation(findDialogEntranceAnimation) {
             previewFindVisible = true
         }
@@ -578,18 +593,42 @@ struct ContentView: View {
     }
 
     private func dismissPreviewFind(refocusPreview: Bool = false) {
+        if focusedFindPane == .preview { focusedFindPane = nil }
         if previewFindVisible {
             withAnimation(findDialogExitAnimation) {
                 previewFindVisible = false
             }
         }
-        previewFindQuery = ""
         previewFindNavigation = nil
-        previewMatchTotal = 0
-        previewMatchIndex = 0
         if refocusPreview {
             previewSurfaceFocusToken = UUID()
         }
+    }
+
+    private func updateFindFieldFocus(_ pane: SplitPane, editing: Bool) {
+        if editing {
+            focusedFindPane = pane
+            focusedPane = pane
+        } else if focusedFindPane == pane {
+            focusedFindPane = nil
+        }
+    }
+
+    /// Only the pane the user searches drives query changes in Side by Side.
+    /// The other pane adopts the last query on Find/navigation or a mode switch.
+    private func findQueryBinding(for pane: SplitPane) -> Binding<String> {
+        Binding(
+            get: { pane == .editor ? editorFindQuery : previewFindQuery },
+            set: { query in
+                focusedPane = pane
+                lastFindQuery = query
+                if pane == .editor {
+                    document.showsFormattingTargetNotice = false
+                    editorFindQuery = query
+                }
+                else { previewFindQuery = query }
+            }
+        )
     }
 
     /// Localized "i of n" match status, "No results", or empty when idle.
@@ -791,18 +830,19 @@ struct ContentView: View {
 
             if editorFindVisible {
                 EditorFindBar(
-                    query: $editorFindQuery,
+                    query: findQueryBinding(for: .editor),
                     replacement: $editorFindReplacement,
                     showsReplace: editorFindShowsReplace,
                     focusToken: editorFindFocusToken,
                     statusText: editorStatusText,
                     settings: settings,
                     onSubmitQuery: { editorFindNavigation = FindCommand(.search) },
-                    onNext: { editorFindNavigation = FindCommand(.next) },
-                    onPrevious: { editorFindNavigation = FindCommand(.previous) },
+                    onNext: { handleEditorFindAction(.next) },
+                    onPrevious: { handleEditorFindAction(.previous) },
                     onReplace: { editorReplaceCommand = FindReplaceCommand(.current) },
                     onReplaceAll: { editorReplaceCommand = FindReplaceCommand(.all) },
-                    onClose: { dismissEditorFind(refocusEditor: true) }
+                    onClose: { dismissEditorFind(refocusEditor: true) },
+                    onFocusChange: { editing in updateFindFieldFocus(.editor, editing: editing) }
                 )
                 .transition(findDialogTransition)
                 .zIndex(1)
@@ -931,14 +971,15 @@ struct ContentView: View {
 
             if previewFindVisible {
                 PreviewFindBar(
-                    query: $previewFindQuery,
+                    query: findQueryBinding(for: .preview),
                     focusToken: previewFindFocusToken,
                     statusText: previewStatusText,
                     settings: settings,
                     onSubmitQuery: { previewFindNavigation = FindCommand(.search) },
-                    onNext: { previewFindNavigation = FindCommand(.next) },
-                    onPrevious: { previewFindNavigation = FindCommand(.previous) },
-                    onClose: { dismissPreviewFind(refocusPreview: true) }
+                    onNext: { handlePreviewFindAction(.next) },
+                    onPrevious: { handlePreviewFindAction(.previous) },
+                    onClose: { dismissPreviewFind(refocusPreview: true) },
+                    onFocusChange: { editing in updateFindFieldFocus(.preview, editing: editing) }
                 )
                 .transition(findDialogTransition)
                 .zIndex(1)

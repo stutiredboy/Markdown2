@@ -1515,6 +1515,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         private var pendingScroll: ModeSwitchAnchor?
         var lastScrollRequest: ModeSwitchAnchor?
         private var pendingFindQuery: String?
+        private var pendingFindNavigation: [FindCommand.Action] = []
         private var ignoreNextAnchorMessage = false
 
         /// The body the current page was loaded with, until a live update has
@@ -1810,6 +1811,12 @@ struct MarkdownPreviewView: NSViewRepresentable {
             case .search:
                 break
             case .next, .previous:
+                // A newly mounted page has not built its match list yet.
+                // Keep commands in order until the pending query is applied.
+                if pendingFindQuery != nil {
+                    pendingFindNavigation.append(action)
+                    return
+                }
                 let forward = action == .next
                 webView.evaluateJavaScript("window.__md2FindNext(\(forward));") { [weak self] result, _ in
                     self?.reportFindResult(result)
@@ -2044,8 +2051,12 @@ struct MarkdownPreviewView: NSViewRepresentable {
         private func applyPendingFind(in webView: WKWebView) {
             guard let query = pendingFindQuery else { return }
             pendingFindQuery = nil
-            MarkdownPreviewView.evaluateFind(query, in: webView) { [weak self] result in
-                self?.reportFindResult(result)
+            MarkdownPreviewView.evaluateFind(query, in: webView) { [weak self, weak webView] result in
+                guard let self, let webView else { return }
+                self.reportFindResult(result)
+                let navigation = self.pendingFindNavigation
+                self.pendingFindNavigation.removeAll()
+                for action in navigation { self.handleFindNavigation(action, in: webView) }
             }
         }
 

@@ -52,6 +52,13 @@ AppKit may dispatch it as `insertNewline:` rather than `insertLineBreak:`.
 
 ## Find and replace
 
+The last query stays with the document when its find bar closes or its mode
+changes. Cmd+G / Shift+Cmd+G continue forward/backward with the bar hidden;
+opening Find restores that query. The incoming surface computes its own matches
+from source or rendered text. In Side by Side, a search updates the pane you
+use; the other pane adopts the last query when you invoke Find or navigation
+there. Opening another document resets the query.
+
 Find and Replace use separate rows, with flexible fields at the 360-point
 minimum editor width. The bar occupies its own space above the source so it
 cannot cover the first line. Close the bar to return focus to the editor.
@@ -61,7 +68,7 @@ cannot cover the first line. Close the bar to return focus to the editor.
 ```sh
 swift test
 MD2_RUN_GUI_TESTS=1 swift test --filter MarkdownEditingGUITests --filter ReadFormattingSelectionGUITests
-MD2_RUN_GUI_TESTS=1 swift test --filter FindBarLayoutGUITests
+MD2_RUN_GUI_TESTS=1 swift test --filter FindBarLayoutGUITests --filter FindSessionGUITests
 MD2_RUN_GUI_TESTS=1 swift test --filter UndoHistoryGUITests --filter FindFindDeleteGUITests --filter SettingsWindowPresentationGUITests
 ```
 

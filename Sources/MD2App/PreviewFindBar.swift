@@ -15,13 +15,14 @@ struct PreviewFindBar: View {
     let onNext: () -> Void
     let onPrevious: () -> Void
     let onClose: () -> Void
+    var onFocusChange: (Bool) -> Void = { _ in }
 
     var body: some View {
         EditorFindBar(
             query: $query, replacement: .constant(""), showsReplace: false,
             focusToken: focusToken, statusText: statusText, settings: settings,
             onSubmitQuery: onSubmitQuery, onNext: onNext, onPrevious: onPrevious,
-            onReplace: {}, onReplaceAll: {}, onClose: onClose
+            onReplace: {}, onReplaceAll: {}, onClose: onClose, onFocusChange: onFocusChange
         )
     }
 }
