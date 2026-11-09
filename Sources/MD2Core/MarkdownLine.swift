@@ -25,17 +25,7 @@ enum MarkdownLine {
     }
 
     static func fenceMarker(in line: String) -> String? {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-
-        if trimmed.hasScalarPrefix("```") {
-            return "```"
-        }
-
-        if trimmed.hasScalarPrefix("~~~") {
-            return "~~~"
-        }
-
-        return nil
+        MarkdownFence.opening(in: line)?.marker
     }
 
     static func setextHeadingLevel(in line: String) -> Int? {

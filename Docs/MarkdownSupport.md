@@ -19,7 +19,7 @@ Markdown2 aims for a compact Typora-like writing and reading flow. It does not c
 - GitHub Alerts: `> [!NOTE]`, `TIP`, `IMPORTANT`, `WARNING`, and `CAUTION` on the first quoted line. Titles follow the app's English/Simplified Chinese language setting; light, dark, HTML, and PDF styles share the same renderer.
 - Lists: ordered, unordered, and GFM task lists.
 - Tables: GFM pipe tables with left, center, and right alignment.
-- Code: fenced code blocks, indented code blocks, and inline code.
+- Code: fenced code blocks, indented code blocks, and inline code. Fence character and full length are shared by rendering, outline, source styling, and editing commands: a closing fence must use the same character, be at least as long as its opener, and have only whitespace after it. Shorter or mismatched fences stay literal code; backtick-fence info strings cannot contain backticks.
 - Syntax highlighting: lightweight keyword/type/string/comment/number/function highlighting for Python, Java, Rust, C++, C, shell, Perl, Go, Swift, JavaScript, and TypeScript code fences.
 - Inline styles: strong, emphasis, strong-emphasis, strikethrough.
 - Optional inline styles: enable **Settings → Markdown Syntax** switches for `==highlight==`, `x^2^`, and `H~2~O`. Each defaults off and is saved independently. Subscript/superscript content may use escaped spaces (`X~long\ text~`); code, math, and link destinations remain protected.

@@ -313,17 +313,14 @@ public struct MarkdownRenderer: Sendable {
     // Structural pre-scans share the exact block boundaries but do not build
     // HTML or syntax-highlight code that they immediately discard.
     private func fencedCodeBlock(from lines: [String], startIndex: Int, renderContent: Bool = true) -> (html: String, nextIndex: Int)? {
-        guard let marker = MarkdownLine.fenceMarker(in: lines[startIndex]) else { return nil }
+        guard let fence = MarkdownFence.opening(in: lines[startIndex]) else { return nil }
 
-        let opening = lines[startIndex].trimmedMarkdownLine
-        let language = opening
-            .droppingScalars(marker.unicodeScalars.count)
-            .trimmingCharacters(in: .whitespaces)
+        let language = fence.info
         var code: [String] = []
         var index = startIndex + 1
 
         while index < lines.count {
-            if lines[index].trimmedMarkdownLine.hasScalarPrefix(marker) {
+            if fence.isClosed(by: lines[index]) {
                 return (renderContent ? fencedBlockHTML(language: language, code: code) : "", index + 1)
             }
 
@@ -932,7 +929,7 @@ public struct MarkdownRenderer: Sendable {
             }
 
             let indent = leadingIndentWidth(line)
-            if let marker = MarkdownLine.fenceMarker(in: line) {
+            if let fence = MarkdownFence.opening(in: line) {
                 // A real fence may have up to three extra structural columns.
                 // Normalize those along with the container before preserving
                 // its code; internally dedented fence lines remain supported.
@@ -944,7 +941,7 @@ public struct MarkdownRenderer: Sendable {
                     continuation.append(String(repeating: " ", count: contentIndent)
                         + dropIndentColumns(fenceLine, indent))
                     index += 1
-                    if fenceLine.trimmedMarkdownLine.hasScalarPrefix(marker) {
+                    if fence.isClosed(by: fenceLine) {
                         canStartCode = true // A closed fence also ends the preceding block.
                         break
                     }

@@ -268,7 +268,7 @@ public enum MarkdownEditing {
 
     private static func codeContext(_ source: NSString, through location: Int, current: Line,
                                     parent: Line?) -> CodeContext? {
-        var fence: (character: Character, count: Int, quotes: Int, indent: Int, line: Int)?
+        var fence: (marker: MarkdownFence, quotes: Int, indent: Int, line: Int)?
         var position = 0
         let limit = min(source.length, NSMaxRange(current.range))
         while position <= location {
@@ -299,9 +299,7 @@ public enum MarkdownEditing {
                     MarkdownIndentation.width(unquoted) < active.indent) {
                     fence = nil
                 } else {
-                    let trimmed = unquoted.trimmingCharacters(in: .whitespaces)
-                    let run = trimmed.prefix { $0 == active.character }
-                    if run.count >= active.count, trimmed.dropFirst(run.count).trimmingCharacters(in: .whitespaces).isEmpty {
+                    if active.marker.isClosed(by: unquoted) {
                         fence = nil
                     }
                     guard end > position else { break }
@@ -310,17 +308,14 @@ public enum MarkdownEditing {
                 }
             }
             let content = (scanned.body as NSString).substring(from: prefix.end)
-            if let first = content.first, first == "`" || first == "~" {
-                let count = content.prefix { $0 == first }.count
-                if count >= 3, first != "`" || !content.dropFirst(count).contains("`") {
-                    let required = prefix.list.flatMap { marker -> Int? in
-                        guard marker.range.location >= quoteEnd else { return nil }
-                        return MarkdownIndentation.width((scanned.body as NSString).substring(with:
-                            NSRange(location: quoteEnd, length: max(0, marker.range.location - quoteEnd))))
-                            + marker.continuation.count
-                    } ?? 0
-                    fence = (first, count, prefix.quoteCount, required, scanned.range.location)
-                }
+            if let marker = MarkdownFence.opening(in: content) {
+                let required = prefix.list.flatMap { marker -> Int? in
+                    guard marker.range.location >= quoteEnd else { return nil }
+                    return MarkdownIndentation.width((scanned.body as NSString).substring(with:
+                        NSRange(location: quoteEnd, length: max(0, marker.range.location - quoteEnd))))
+                        + marker.continuation.count
+                } ?? 0
+                fence = (marker, prefix.quoteCount, required, scanned.range.location)
             }
             guard end > position else { break }
             position = end
