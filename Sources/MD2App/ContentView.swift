@@ -778,7 +778,36 @@ struct ContentView: View {
     /// shortcut (Esc) is disabled so it cannot accidentally leave split.
     @ViewBuilder
     private func editorPane(inSplit: Bool) -> some View {
-        ZStack(alignment: .top) {
+        VStack(spacing: 0) {
+            if document.showsFormattingTargetNotice {
+                Text(settings.text(.formattingTargetNotice))
+                    .font(.callout)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.regularMaterial)
+                    .accessibilityIdentifier("formattingTargetNotice")
+                    .allowsHitTesting(false)
+            }
+
+            if editorFindVisible {
+                EditorFindBar(
+                    query: $editorFindQuery,
+                    replacement: $editorFindReplacement,
+                    showsReplace: editorFindShowsReplace,
+                    focusToken: editorFindFocusToken,
+                    statusText: editorStatusText,
+                    settings: settings,
+                    onSubmitQuery: { editorFindNavigation = FindCommand(.search) },
+                    onNext: { editorFindNavigation = FindCommand(.next) },
+                    onPrevious: { editorFindNavigation = FindCommand(.previous) },
+                    onReplace: { editorReplaceCommand = FindReplaceCommand(.current) },
+                    onReplaceAll: { editorReplaceCommand = FindReplaceCommand(.all) },
+                    onClose: { dismissEditorFind(refocusEditor: true) }
+                )
+                .transition(findDialogTransition)
+                .zIndex(1)
+            }
+
             MarkdownEditorView(
                 text: $document.text,
                 jumpLine: $document.jumpLine,
@@ -830,35 +859,6 @@ struct ContentView: View {
                     if inSplit, selection != nil { focusedPane = .editor }
                 }
             )
-
-            if document.showsFormattingTargetNotice {
-                Text(settings.text(.formattingTargetNotice))
-                    .font(.callout)
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.regularMaterial)
-                    .accessibilityIdentifier("formattingTargetNotice")
-                    .allowsHitTesting(false)
-            }
-
-            if editorFindVisible {
-                EditorFindBar(
-                    query: $editorFindQuery,
-                    replacement: $editorFindReplacement,
-                    showsReplace: editorFindShowsReplace,
-                    focusToken: editorFindFocusToken,
-                    statusText: editorStatusText,
-                    settings: settings,
-                    onSubmitQuery: { editorFindNavigation = FindCommand(.search) },
-                    onNext: { editorFindNavigation = FindCommand(.next) },
-                    onPrevious: { editorFindNavigation = FindCommand(.previous) },
-                    onReplace: { editorReplaceCommand = FindReplaceCommand(.current) },
-                    onReplaceAll: { editorReplaceCommand = FindReplaceCommand(.all) },
-                    onClose: { dismissEditorFind(refocusEditor: true) }
-                )
-                .transition(findDialogTransition)
-                .zIndex(1)
-            }
         }
     }
 

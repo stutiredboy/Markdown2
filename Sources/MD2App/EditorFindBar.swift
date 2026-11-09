@@ -24,60 +24,70 @@ struct EditorFindBar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-
-                TextField(settings.text(.findPlaceholder), text: $query)
-                    .textFieldStyle(.plain)
-                    .focused($focusedField, equals: .query)
-                    .frame(minWidth: 170)
-                    .onSubmit(onSubmitQuery)
-
-                if !statusText.isEmpty {
-                    Text(statusText)
-                        .font(.caption)
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
                         .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                        .frame(minWidth: 72, alignment: .trailing)
-                }
 
-                Divider().frame(height: 16)
+                    TextField(settings.text(.findPlaceholder), text: $query)
+                        .textFieldStyle(.plain)
+                        .focused($focusedField, equals: .query)
+                        .frame(minWidth: 40, maxWidth: .infinity)
+                        .onSubmit(onSubmitQuery)
 
-                Button(action: onPrevious) {
-                    Image(systemName: "chevron.up")
-                }
-                .accessibilityLabel(settings.text(.findPrevious))
-                .help(settings.text(.findPrevious))
-                .disabled(query.isEmpty)
+                    if !statusText.isEmpty {
+                        Text(statusText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                            .lineLimit(1)
+                            .frame(maxWidth: 88, alignment: .trailing)
+                    }
 
-                Button(action: onNext) {
-                    Image(systemName: "chevron.down")
-                }
-                .accessibilityLabel(settings.text(.findNext))
-                .help(settings.text(.findNext))
-                .disabled(query.isEmpty)
-
-                if showsReplace {
                     Divider().frame(height: 16)
 
-                    TextField(settings.text(.replace), text: $replacement)
-                        .textFieldStyle(.plain)
-                        .focused($focusedField, equals: .replacement)
-                        .frame(minWidth: 140)
+                    Button(action: onPrevious) {
+                        Image(systemName: "chevron.up")
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityLabel(settings.text(.findPrevious))
+                    .help(settings.text(.findPrevious))
+                    .disabled(query.isEmpty)
 
-                    Button(settings.text(.replace), action: onReplace)
-                        .disabled(query.isEmpty)
+                    Button(action: onNext) {
+                        Image(systemName: "chevron.down")
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityLabel(settings.text(.findNext))
+                    .help(settings.text(.findNext))
+                    .disabled(query.isEmpty)
 
-                    Button(settings.text(.replaceAll), action: onReplaceAll)
-                        .disabled(query.isEmpty)
+                    Button(action: onClose) {
+                        Image(systemName: "xmark")
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityLabel(settings.text(.closeFind))
+                    .help(settings.text(.closeFind))
                 }
+                if showsReplace {
+                    HStack(spacing: 8) {
+                        TextField(settings.text(.replace), text: $replacement)
+                            .textFieldStyle(.plain)
+                            .focused($focusedField, equals: .replacement)
+                            .frame(minWidth: 40, maxWidth: .infinity)
 
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
+                        Button(settings.text(.replace), action: onReplace)
+                            .fixedSize()
+                            .disabled(query.isEmpty)
+                        Button(settings.text(.replaceAll), action: onReplaceAll)
+                            .fixedSize()
+                            .disabled(query.isEmpty)
+                    }
+                    .padding(.top, 8)
                 }
-                .accessibilityLabel(settings.text(.closeFind))
-                .help(settings.text(.closeFind))
             }
             .buttonStyle(.borderless)
             .padding(.horizontal, 12)

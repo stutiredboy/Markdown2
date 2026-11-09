@@ -50,11 +50,18 @@ the input method. Return used to commit Latin letters from a Chinese IME must
 not also continue a list. Shift+Return's originating event is retained because
 AppKit may dispatch it as `insertNewline:` rather than `insertLineBreak:`.
 
+## Find and replace
+
+Find and Replace use separate rows, with flexible fields at the 360-point
+minimum editor width. The bar occupies its own space above the source so it
+cannot cover the first line. Close the bar to return focus to the editor.
+
 ## Verification
 
 ```sh
 swift test
 MD2_RUN_GUI_TESTS=1 swift test --filter MarkdownEditingGUITests --filter ReadFormattingSelectionGUITests
+MD2_RUN_GUI_TESTS=1 swift test --filter FindBarLayoutGUITests
 MD2_RUN_GUI_TESTS=1 swift test --filter UndoHistoryGUITests --filter FindFindDeleteGUITests --filter SettingsWindowPresentationGUITests
 ```
 
