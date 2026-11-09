@@ -68,18 +68,33 @@ Open a file directly:
 swift run Markdown2 path/to/file.md
 ```
 
-Build a local macOS app bundle:
+Build a local macOS app bundle (creates `dist` only; no installation or file-association changes):
 
 ```sh
 Scripts/package_app.sh
 open dist/Markdown2.app
 ```
 
-Run the full local verification suite:
+The default bundle uses `dev.codex.md2.development`, keeping preferences and recovered drafts separate from releases. `swift run` retains its own debug identity. Use `--release` for the distributed identity. Installation and default-handler changes are explicit:
+
+```sh
+# Install a development copy alongside the release
+Scripts/package_app.sh --install '/Applications/Markdown2 Development.app'
+# Explicitly replace the release installation and make it the default editor
+Scripts/package_app.sh --release --install /Applications/Markdown2.app --set-default
+```
+
+`--set-default` requires `--install`; the destination's parent must exist. The legacy `MARKDOWN2_INSTALL_APP` environment variable no longer triggers installation. CI packages with `--release` and rejects installation arguments. Ad-hoc signing remains supported; these changes do not require a developer account or notarization.
+
+Run local verification (default tests, isolated performance checks, workflow tests and development-bundle validation):
 
 ```sh
 Scripts/functional_test.sh
+# Also run native-window/WebKit tests; requires a usable desktop session and relevant Accessibility permissions
+Scripts/functional_test.sh --gui
 ```
+
+GUI skips are checked against the existing allowlist and are not counted as executed passes. The script no longer terminates the user's running application, rewrites app preferences or requires a different system default editor.
 
 ## Test
 

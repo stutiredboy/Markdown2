@@ -68,18 +68,33 @@ swift run Markdown2
 swift run Markdown2 path/to/file.md
 ```
 
-构建本地 macOS app 包：
+构建本地 macOS app 包（仅生成 `dist`，不安装、不改变默认打开程序）：
 
 ```sh
 Scripts/package_app.sh
 open dist/Markdown2.app
 ```
 
-运行完整本地验证套件：
+默认包使用独立的 `dev.codex.md2.development` 身份，设置和恢复草稿与正式版分开。`swift run` 继续使用自己的 debug 身份。需要正式版身份时使用 `--release`；安装和设置默认程序均需明确指定：
+
+```sh
+# 安装开发版到指定位置，保留正式版
+Scripts/package_app.sh --install '/Applications/Markdown2 Development.app'
+# 明确替换正式安装，并设为默认 Markdown 编辑器
+Scripts/package_app.sh --release --install /Applications/Markdown2.app --set-default
+```
+
+`--set-default` 必须与 `--install` 一起使用；安装目录的父目录须已存在。旧 `MARKDOWN2_INSTALL_APP` 环境变量不会触发安装。CI 仅使用 `--release` 打包，拒绝安装参数。签名仍沿用临时签名，本次不要求开发者账号或公证。
+
+运行本地验证（默认测试、独立性能检查、工作流测试及开发包校验）：
 
 ```sh
 Scripts/functional_test.sh
+# 另启用原生窗口/WebKit 测试，需要可用的桌面会话及相应辅助功能权限
+Scripts/functional_test.sh --gui
 ```
+
+GUI 跳过项会按现有清单检查，跳过不计为实际通过。脚本不再终止日常使用的应用、改写应用偏好或要求修改系统默认编辑器。
 
 ## 测试
 
