@@ -451,6 +451,7 @@ enum L10nKey: String, CaseIterable {
     case findPlaceholder
     case replace
     case replaceAll
+    case formattingTargetNotice
     case closeFind
     case matchStatus
     case noResults
@@ -643,6 +644,7 @@ enum L10n {
         .findPlaceholder: "Find",
         .replace: "Replace",
         .replaceAll: "Replace All",
+        .formattingTargetNotice: "Source selection shown. Select the text to format, then run the command again.",
         .closeFind: "Close find bar",
         .matchStatus: "%d of %d",
         .noResults: "No results",
@@ -817,6 +819,7 @@ enum L10n {
         .findPlaceholder: "查找",
         .replace: "替换",
         .replaceAll: "全部替换",
+        .formattingTargetNotice: "已显示源码选区。请选择要格式化的文字，再次执行命令。",
         .closeFind: "关闭查找栏",
         .matchStatus: "第 %d 个，共 %d 个",
         .noResults: "无结果",

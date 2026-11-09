@@ -276,6 +276,7 @@ struct ContentView: View {
             editorSelection = nil
             previewSelection = nil
             selectionStats = nil
+            document.showsFormattingTargetNotice = false
             applyDefaultPresentation()
             showsFrontMatterMetadata = false
             dismissEditorFind()
@@ -510,6 +511,7 @@ struct ContentView: View {
     }
 
     private func handleEditorFindAction(_ action: FindCommand.Action) {
+        document.showsFormattingTargetNotice = false
         switch action {
         case .show:
             showEditorFind(showsReplace: false)
@@ -651,7 +653,9 @@ struct ContentView: View {
             document.previewJumpAnchor = anchor
         case .write:
             document.previewJumpAnchor = nil
-            document.editorJumpAnchor = anchor
+            // A formatting request from Read reveals the retained source
+            // selection instead of scrolling back to the preview's viewport.
+            document.editorJumpAnchor = document.editorSession.revealSelectionOnNextHost ? nil : anchor
         case .split:
             // Land both freshly mounted panes on the same content so Side by
             // Side opens aligned to where the user was.
@@ -793,11 +797,13 @@ struct ContentView: View {
                     if inSplit, drivesPreviewSync { syncEditorToPreview(line: line) }
                 },
                 onTextEdit: { caretLine in
+                    document.showsFormattingTargetNotice = false
                     clickedOutlineHeadingID = nil
                     if inSplit { markEditorEditInSplit(caretLine: caretLine) }
                 },
                 onEnterPreview: { handleEditorEscape() },
                 findQuery: $editorFindQuery,
+                findMayRevealMatches: !document.showsFormattingTargetNotice,
                 findNavigation: $editorFindNavigation,
                 findReplacement: $editorFindReplacement,
                 replaceCommand: $editorReplaceCommand,
@@ -824,6 +830,16 @@ struct ContentView: View {
                     if inSplit, selection != nil { focusedPane = .editor }
                 }
             )
+
+            if document.showsFormattingTargetNotice {
+                Text(settings.text(.formattingTargetNotice))
+                    .font(.callout)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.regularMaterial)
+                    .accessibilityIdentifier("formattingTargetNotice")
+                    .allowsHitTesting(false)
+            }
 
             if editorFindVisible {
                 EditorFindBar(

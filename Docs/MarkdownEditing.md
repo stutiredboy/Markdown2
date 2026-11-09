@@ -2,7 +2,12 @@
 
 These commands work in Write and in the editor pane of Side by Side. Menu
 commands target the focused source editor and do not format a search field.
-Formatting from Read mode switches to the source editor, using its retained selection.
+The first formatting command from Read mode switches to the source editor and
+reveals its retained selection or caret **without changing the document**. A short
+notice asks you to select the source text and run the command again. Rendered text
+is not guessed back to a source range: repeated words, links, formulas and
+cross-paragraph selections can be ambiguous. Only a subsequent command in the
+focused source editor applies formatting.
 
 | Input | Behavior |
 | --- | --- |
@@ -49,7 +54,7 @@ AppKit may dispatch it as `insertNewline:` rather than `insertLineBreak:`.
 
 ```sh
 swift test
-MD2_RUN_GUI_TESTS=1 swift test --filter MarkdownEditingGUITests
+MD2_RUN_GUI_TESTS=1 swift test --filter MarkdownEditingGUITests --filter ReadFormattingSelectionGUITests
 MD2_RUN_GUI_TESTS=1 swift test --filter UndoHistoryGUITests --filter FindFindDeleteGUITests --filter SettingsWindowPresentationGUITests
 ```
 

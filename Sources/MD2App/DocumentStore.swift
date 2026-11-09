@@ -100,21 +100,25 @@ final class DocumentStore: ObservableObject {
     /// action through the same viewport-preserving transition path as the toolbar.
     @Published var modeCommand: ModeCommand?
     @Published var formatCommand: MarkdownFormatCommand?
+    /// Read-mode formatting first reveals the source target without editing it.
+    @Published var showsFormattingTargetNotice = false
 
     func requestFormat(_ action: MarkdownEditing.Action) {
         if editorSession.textView?.hasMarkedText() == true { return }
         if let editor = editorSession.textView, let window = editor.window {
             // A find field or Settings control owns the keyboard in Write mode.
             guard window.firstResponder === editor else { return }
+            showsFormattingTargetNotice = false
             formatCommand = MarkdownFormatCommand(action: action)
             return
         }
-        // In Read mode the source editor is unmounted. Format its kept text view
-        // now, at the selection it kept, and then switch to it. Leaving the
-        // request to the mounted editor made it depend on when that editor got
-        // its window and focus, which can be several run-loop turns later on a
-        // loaded machine.
-        editorSession.applyFormatWhileUnmounted(action, documentText: text)
+        // Rendered selection is not a source range: repeated text, links and
+        // formula output cannot be mapped by guessing. The first command only
+        // reveals the retained source selection. A new command after the user
+        // sees/focuses that target is required to edit it.
+        formatCommand = nil
+        showsFormattingTargetNotice = true
+        editorSession.revealSelectionOnNextHost = true
         requestMode(.write)
     }
 

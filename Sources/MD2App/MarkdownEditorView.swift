@@ -61,6 +61,8 @@ struct MarkdownEditorView: NSViewRepresentable {
     var onEnterPreview: () -> Void = {}
     /// The current edit-mode find query.
     @Binding var findQuery: String
+    /// Formatting reveal takes precedence over an automatic restored-query jump.
+    var findMayRevealMatches = true
     /// A next/previous navigation request; consumed once applied.
     @Binding var findNavigation: FindCommand?
     /// Replacement text for edit-mode replace actions.
@@ -152,6 +154,10 @@ struct MarkdownEditorView: NSViewRepresentable {
 
         DispatchQueue.main.async {
             textView.window?.makeFirstResponder(textView)
+            if session.revealSelectionOnNextHost {
+                session.revealSelectionOnNextHost = false
+                textView.scrollRangeToVisible(textView.selectedRange())
+            }
             coordinator.reportSelection(in: textView)
         }
 
@@ -197,7 +203,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             context.coordinator.session.resetText(to: text)
         }
 
-        context.coordinator.updateFind(query: findQuery, in: textView)
+        context.coordinator.updateFind(query: findQuery, in: textView, revealMatches: findMayRevealMatches)
 
         if let formatCommand, context.coordinator.session.lastFormatToken != formatCommand.token {
             context.coordinator.session.lastFormatToken = formatCommand.token
@@ -568,7 +574,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             lastFindMutationWasQueryChange = false
         }
 
-        @MainActor func updateFind(query: String, in textView: NSTextView) {
+        @MainActor func updateFind(query: String, in textView: NSTextView, revealMatches: Bool = true) {
             // Rebuilding highlights can select/reveal a match. Never do that
             // while the input method owns the selection for marked text.
             guard !textView.hasMarkedText() else { return }
@@ -597,7 +603,7 @@ struct MarkdownEditorView: NSViewRepresentable {
                 in: textView,
                 generation: generation,
                 preferredIndex: queryChanged ? 0 : currentMatchIndex,
-                shouldReveal: lastFindMutationWasQueryChange
+                shouldReveal: revealMatches && lastFindMutationWasQueryChange
             )
         }
 
