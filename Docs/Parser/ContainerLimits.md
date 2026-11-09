@@ -19,7 +19,7 @@ rewrite or a general time/memory limit on all inline syntax. Particularly large
 or repeatedly nested documents can intentionally receive the literal fallback.
 
 `MarkdownNestingSafetyTests` launches isolated XCTest child processes for quotes,
-lists and mixed containers at 128, 512 and 1024 levels on a detached task. It also
+lists, mixed containers and compact same-line lists at 128, 512 and 1024 levels on a detached task. It also
 checks a shallow but wide workload, escaping, text after the container, and that
 a subsequent ordinary render does not inherit exhausted state. The conformance
 baseline guards ordinary parser behavior independently.

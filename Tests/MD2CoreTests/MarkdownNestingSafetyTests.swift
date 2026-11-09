@@ -28,7 +28,7 @@ final class MarkdownNestingSafetyTests: XCTestCase {
     }
 
     private static func runIsolatedFixtures(variable: String) throws {
-        for kind in ["quote", "list", "mixed"] {
+        for kind in ["quote", "list", "mixed", "compact-list"] {
             for depth in [128, 512, 1_024] {
                 let fixture = "\(kind):\(depth)"
                 let process = Process()
@@ -86,6 +86,10 @@ final class MarkdownNestingSafetyTests: XCTestCase {
         let payload = "<script>literal</script> [link][hidden]"
         let nested: String
         switch kind {
+        case "compact-list":
+            // Metadata treats the remainder as item text; reference collection
+            // recursively inspects it. Exercise that pass independently.
+            nested = String(repeating: "- ", count: depth) + payload
         case "list":
             nested = (0..<depth).map { String(repeating: "  ", count: $0) + "- item" }
                 .joined(separator: "\n") + "\n" + String(repeating: "  ", count: depth) + payload
