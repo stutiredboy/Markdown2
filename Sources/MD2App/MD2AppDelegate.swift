@@ -250,11 +250,13 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// A newly committed copy must open its on-disk bytes in a fresh Store, not
     /// restore an older recovery draft that once happened to use this filename.
     private func openCreatedCopy(_ receipt: DocumentCopyReceipt, from source: DocumentStore) {
-        guard source.copyFlow.mayOpen(from: source, text: settings.text) else { return }
-        let store = DocumentCopyFlow.openFreshStore(receipt, makeStore: makeDocumentStore)
-        let documentWindow = makeDocumentWindow(store: store)
-        documentWindow.window.makeKeyAndOrderFront(nil)
-        source.copyFlow.dismiss()
+        Task {
+            guard let store = await source.copyFlow.openCreatedCopy(receipt, from: source,
+                text: settings.text, makeStore: makeDocumentStore) else { return }
+            let documentWindow = makeDocumentWindow(store: store)
+            documentWindow.window.makeKeyAndOrderFront(nil)
+            source.copyFlow.dismiss()
+        }
     }
 
     /// Loads `url` into a window. If it is already open, that window is brought

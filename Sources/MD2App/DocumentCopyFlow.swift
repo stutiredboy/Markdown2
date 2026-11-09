@@ -22,6 +22,7 @@ final class DocumentCopyFlow: ObservableObject {
     typealias Writer = @Sendable (DocumentCopySource, URL) async throws -> DocumentCopyReceipt
 
     @Published private(set) var isRunning = false
+    @Published private(set) var isOpening = false
     @Published private(set) var receipt: DocumentCopyReceipt?
     @Published private(set) var message: String?
     @Published private(set) var detail: String?
@@ -36,7 +37,7 @@ final class DocumentCopyFlow: ObservableObject {
         chooseName: (@MainActor (URL) -> String?)? = nil,
         write: @escaping Writer = DocumentCopyFlow.write
     ) async -> DocumentCopyReceipt? {
-        guard !isRunning else { return nil }
+        guard !isRunning, !isOpening else { return nil }
         isRunning = true
         defer { isRunning = false; worker = nil }
         var sourceFormat = store.fileFormat.encodingLabel
@@ -91,9 +92,42 @@ final class DocumentCopyFlow: ObservableObject {
         return true
     }
 
-    static func openFreshStore(_ receipt: DocumentCopyReceipt, makeStore: () -> DocumentStore) -> DocumentStore {
+    func openCreatedCopy(
+        _ receipt: DocumentCopyReceipt, from source: DocumentStore,
+        text: (L10nKey) -> String, makeStore: () -> DocumentStore,
+        reader: DocumentCopyReader = .init()
+    ) async -> DocumentStore? {
+        guard !isOpening, self.receipt == receipt, mayOpen(from: source, text: text) else { return nil }
+        isOpening = true
+        defer { isOpening = false }
+        do {
+            return try await Self.openFreshStore(receipt, reader: reader, beforeAdoption: {
+                guard self.receipt == receipt else { throw CancellationError() }
+                guard self.mayOpen(from: source, text: text) else { throw DocumentCopyFlowError.composing }
+            }, makeStore: makeStore)
+        } catch is CancellationError {
+            return nil
+        } catch DocumentCopyFlowError.composing {
+            detail = text(.copyFinishComposition)
+            return nil
+        } catch {
+            // Creation did succeed. Keep that receipt/message and distinguish
+            // this later open failure; the app must not show a starter window.
+            detail = text(.copyOpenFailed)
+            return nil
+        }
+    }
+
+    static func openFreshStore(
+        _ receipt: DocumentCopyReceipt, reader: DocumentCopyReader = .init(),
+        beforeAdoption: () throws -> Void = {}, makeStore: () -> DocumentStore
+    ) async throws -> DocumentStore {
+        let task = Task.detached(priority: .userInitiated) { try reader.read(receipt) }
+        let opened = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+        try Task.checkCancellation()
+        try beforeAdoption()
         let store = makeStore()
-        store.open(receipt.destinationURL)
+        try store.openVerifiedCopy(opened)
         return store
     }
 
@@ -176,6 +210,7 @@ struct DocumentCopyNotice: View {
                     if let receipt = flow.receipt {
                         Button(settings.text(.openCopy)) { onOpen(receipt) }
                             .accessibilityIdentifier("openCreatedCopy")
+                            .disabled(flow.isOpening)
                     }
                     Button(settings.text(.dismissCopyNotice)) { flow.dismiss() }
                         .accessibilityIdentifier("dismissCopyNotice")

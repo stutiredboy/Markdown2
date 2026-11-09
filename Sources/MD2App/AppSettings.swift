@@ -377,7 +377,7 @@ enum L10nKey: String, CaseIterable {
     case createCopy, createCopyAction, copyPromptDetail, copyNameSuffix, copyFilename
     case copyCreated, copyCreatedDetail, openCopy, dismissCopyNotice, copyFailed
     case copySaveFirst, copyFinishComposition, copySourceChanged, copyInvalidName
-    case copySourceUnavailable, copyNameExists, copyEncodingUnavailable
+    case copySourceUnavailable, copyNameExists, copyEncodingUnavailable, copyOpenFailed, copySaveUnavailable
     case exportTo
     case exportPDF
     case exportHTML
@@ -555,6 +555,8 @@ enum L10n {
         .copyNameSuffix: " copy",
         .copyFilename: "Copy filename",
         .copyCreated: "Created Markdown copy: %@",
+        .copySaveUnavailable: "The copy could not be verified at its current location. Your edits remain in this window. Locate the actual copy before saving again.",
+        .copyOpenFailed: "The copy was created, but it can no longer be opened safely at that location. It may have moved, changed, been removed, or become a link to another file. No new window was opened. Locate the copy in Finder or create a new copy.",
         .copyCreatedDetail: "The copy contains the text captured when you confirmed its name. Existing attachments are shared. Open it separately to continue editing the copy.",
         .openCopy: "Open Copy",
         .dismissCopyNotice: "Dismiss",
@@ -747,6 +749,8 @@ enum L10n {
         .copyNameSuffix: " 副本",
         .copyFilename: "副本文件名",
         .copyCreated: "已创建 Markdown 副本：%@",
+        .copySaveUnavailable: "无法在当前位置确认副本身份。编辑内容仍保留在当前窗口中；请先找到实际副本，再保存。",
+        .copyOpenFailed: "副本已创建，但目前无法在该位置安全打开：它可能已移动、更改、删除，或与其他文件建立了链接。未打开新窗口。请在 Finder 中查找副本，或重新创建副本。",
         .copyCreatedDetail: "副本包含确认名称时的编辑内容，继续共享现有附件。可单独打开副本继续编辑。",
         .openCopy: "打开副本",
         .dismissCopyNotice: "关闭提示",

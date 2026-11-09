@@ -323,7 +323,7 @@ struct DocumentCopyFlowTests {
         let oldRecovery = DocumentRecoverySnapshot(id: UUID(), text: "Obsolete draft", fileURL: receipt.destinationURL,
             identity: nil, format: .init(), fingerprint: nil, isDirty: true, windowFrame: nil)
         try fixture.repository.write(oldRecovery)
-        let copy = DocumentCopyFlow.openFreshStore(receipt) { DocumentStore(recoveryRepository: fixture.repository) }
+        let copy = try await DocumentCopyFlow.openFreshStore(receipt) { DocumentStore(recoveryRepository: fixture.repository) }
         defer { copy.closeDocument(discardRecovery: false) }
         #expect(copy.text == "Draft for copy" && !copy.isDirty)
         #expect(copy.fileURL == receipt.destinationURL)

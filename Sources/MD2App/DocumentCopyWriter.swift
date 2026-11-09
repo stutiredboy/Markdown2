@@ -50,7 +50,7 @@ struct DocumentCopyFileIdentity: Equatable, Sendable {
     let device: dev_t
     let inode: ino_t
 
-    fileprivate init(_ information: stat) {
+    init(_ information: stat) {
         device = information.st_dev
         inode = information.st_ino
     }
@@ -66,6 +66,8 @@ struct DocumentCopyReceipt: Equatable, Sendable {
     let documentID: UUID
     let revision: Int
     let destinationURL: URL
+    let fileReference: DocumentCopyFileReference
+    let directoryIdentity: DocumentCopyFileIdentity
     let writtenFormat: MarkdownFileFormat
     let byteCount: Int
     let contentHash: Data
@@ -126,10 +128,6 @@ struct DocumentCopyWriter: Sendable {
         guard let data = snapshot.format.encode(snapshot.text) else {
             throw DocumentCopyError.unrepresentableEncoding
         }
-        let receipt = DocumentCopyReceipt(
-            operationID: snapshot.operationID, documentID: snapshot.documentID, revision: snapshot.revision,
-            destinationURL: output, writtenFormat: snapshot.format, byteCount: data.count,
-            contentHash: Data(SHA256.hash(data: data)))
         try checkCancellation()
 
         let temporaryName = ".md2-copy-\(UUID().uuidString).tmp"
@@ -176,6 +174,14 @@ struct DocumentCopyWriter: Sendable {
         guard Self.identity(of: temporaryName, directory: descriptor) == temporaryIdentity else {
             throw DocumentCopyError.temporaryFileChanged
         }
+        // Open a separate, genuinely read-only descriptor while the private
+        // temporary entry still names our inode. Keep it alive in the receipt.
+        let reference = try DocumentCopyFileReference.open(at: descriptor, name: temporaryName, matching: temporaryIdentity)
+        let receipt = DocumentCopyReceipt(
+            operationID: snapshot.operationID, documentID: snapshot.documentID, revision: snapshot.revision,
+            destinationURL: output, fileReference: reference, directoryIdentity: snapshot.directoryIdentity,
+            writtenFormat: snapshot.format, byteCount: data.count, contentHash: Data(SHA256.hash(data: data)))
+        try checkCancellation()
         // The atomic operation, not the earlier existence check, closes the
         // collision race. No throws/cancellation checks after a successful commit.
         guard io.commit(descriptor, temporaryName, targetName) == 0 else {
