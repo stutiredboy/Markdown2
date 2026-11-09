@@ -35,16 +35,16 @@ public enum TextSearch {
         var previousWasWord = false
         for character in text {
             boundaries[offset] = true
-            let isWord = options.wholeWord && character.unicodeScalars.allSatisfy { scalar in
-                switch scalar.properties.generalCategory {
-                case .uppercaseLetter, .lowercaseLetter, .titlecaseLetter, .modifierLetter, .otherLetter,
-                     .nonspacingMark, .spacingMark, .enclosingMark,
-                     .decimalNumber, .letterNumber, .otherNumber, .connectorPunctuation: true
-                default: false
+            if options.wholeWord {
+                // A mixed grapheme may contain ZWJ without creating a word
+                // boundary at either edge (for example the Indic conjunct क्‍ष).
+                // Keep graphemes atomic, but classify the adjacent edge scalars.
+                let scalars = character.unicodeScalars
+                if previousWasWord, let first = scalars.first, isWordScalar(first) {
+                    wordInteriors[offset] = true
                 }
+                previousWasWord = scalars.last.map(isWordScalar) ?? false
             }
-            if previousWasWord && isWord { wordInteriors[offset] = true }
-            previousWasWord = isWord
             offset += character.utf16.count
         }
         boundaries[offset] = true
@@ -81,4 +81,14 @@ public enum TextSearch {
         }
         return results
     }
+
+    private static func isWordScalar(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.properties.generalCategory {
+        case .uppercaseLetter, .lowercaseLetter, .titlecaseLetter, .modifierLetter, .otherLetter,
+             .nonspacingMark, .spacingMark, .enclosingMark,
+             .decimalNumber, .letterNumber, .otherNumber, .connectorPunctuation: true
+        default: false
+        }
+    }
+
 }

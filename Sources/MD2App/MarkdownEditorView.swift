@@ -253,7 +253,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             // Editing publishes document/search state; do it outside SwiftUI's
             // update pass, after consuming the token exactly once. Revalidate the
             // exact invocation context so a new edit/query/host cannot be hit.
-            DispatchQueue.main.async { [weak textView, weak coordinator] in
+            coordinator.session.scheduleFindReplacement { [weak textView, weak coordinator] in
                 guard let textView, let coordinator, coordinator.session.isHosted(by: coordinator) else { return }
                 coordinator.replaceIfUnchanged(replaceCommand.action, snapshot: snapshot,
                     query: queryBinding.wrappedValue, replacement: replacementBinding.wrappedValue, in: textView)

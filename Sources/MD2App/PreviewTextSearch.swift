@@ -53,27 +53,35 @@ enum PreviewTextSearch {
         window.__md2FindSnapshot = function () {
             clearFind();
             var root = document.querySelector('main') || document.body;
-            var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+            var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, {
                 acceptNode: function (node) {
-                    var p = node.parentElement;
-                    if (!p || !node.nodeValue || p.closest('script,style,mark,[aria-hidden="true"],.md2-line-gutter'))
+                    // Formatting elements do not separate words, but a visible
+                    // BR contributes a real newline in rendered text.
+                    var isBreak = node.nodeType === Node.ELEMENT_NODE && node.tagName === 'BR';
+                    if (node.nodeType === Node.ELEMENT_NODE && !isBreak) return NodeFilter.FILTER_SKIP;
+                    var p = isBreak ? node : node.parentElement;
+                    if (!p || (!isBreak && !node.nodeValue) || p.closest('script,style,mark,[aria-hidden="true"],.md2-line-gutter'))
                         return NodeFilter.FILTER_REJECT;
                     if (!p.getClientRects().length || getComputedStyle(p).visibility === 'hidden') return NodeFilter.FILTER_REJECT;
                     return NodeFilter.FILTER_ACCEPT;
                 }
             });
-            var records = [], text = '', lastBlock = null, node;
+            var records = [], breaks = [], text = '', lastBlock = null, acceptedNodes = 0, node;
             while ((node = walker.nextNode())) {
+                var isBreak = node.nodeType === Node.ELEMENT_NODE;
+                var value = isBreak ? '\n' : node.nodeValue;
                 var block = node.parentElement.closest('p,div,li,pre,h1,h2,h3,h4,h5,h6,td,th,blockquote,section,main');
-                if (records.length && block !== lastBlock) text += '\n';
-                if (records.length >= 20000 || text.length + node.nodeValue.length > 2000000) {
+                if (acceptedNodes && block !== lastBlock) text += '\n';
+                if (acceptedNodes >= 20000 || text.length + value.length > 2000000) {
                     return { unavailable: true };
                 }
-                records.push({ node: node, start: text.length, text: node.nodeValue });
-                text += node.nodeValue; lastBlock = block;
+                if (isBreak) breaks.push(node);
+                else records.push({ node: node, start: text.length, text: value });
+                acceptedNodes++;
+                text += value; lastBlock = block;
             }
             var id = String(Date.now()) + '-' + String(Math.random());
-            findSnapshot = { id: id, records: records };
+            findSnapshot = { id: id, records: records, breaks: breaks };
             return { id: id, text: text };
         };
         window.__md2Find = function (query, payload) {
@@ -91,7 +99,8 @@ enum PreviewTextSearch {
             }
             if (!findSnapshot || payload.id !== findSnapshot.id) return { stale: true };
             var records = findSnapshot.records;
-            if (records.some(r => !r.node.isConnected || r.node.nodeValue !== r.text)) {
+            if (records.some(r => !r.node.isConnected || r.node.nodeValue !== r.text) ||
+                findSnapshot.breaks.some(node => !node.isConnected)) {
                 clearFind(); return { stale: true };
             }
             if (payload.unavailable) { clearFind(); return { total: 0, index: 0, unavailable: true }; }

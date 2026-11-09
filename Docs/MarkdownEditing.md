@@ -69,8 +69,13 @@ changes only case handling. Matches always cover complete Unicode grapheme
 clusters, including decomposed accents and emoji. Whole word treats consecutive
 Unicode letters, combining marks, numbers and connector punctuation (including
 `_`) as one token. It does not perform Chinese dictionary segmentation: `中文`
-does not whole-word-match part of `中文测试`. Inline Markdown formatting does
-not create an artificial word boundary in the preview.
+does not whole-word-match part of `中文测试`. Word boundaries inspect the
+adjacent Unicode scalars at each complete grapheme edge; an internal ZWJ does
+not turn an Indic conjunct into a separator between surrounding letters.
+Inline Markdown formatting does
+not create an artificial word boundary in the preview. Visible hard line breaks
+(`<br>`) remain newline separators, so text on either side is not joined into a
+word that the rendered page does not contain.
 
 Only selection freezes a single nonempty **source** selection when enabled. If
 you select text before opening Find, that selection remains available even after
@@ -96,7 +101,7 @@ remain usable at 360 points in both supported languages.
 
 Preview searches share the source matching engine and reject stale DOM results.
 To keep large rendered pages bounded, snapshots stop at 2,000,000 UTF-16 units,
-20,000 text nodes or 20,000 matches. Exceeding a limit shows an unavailable notice
+20,000 text/break nodes or 20,000 matches. Exceeding a limit shows an unavailable notice
 and no partial results. Source searching is not subject to these preview limits.
 Regular expressions remain deferred.
 

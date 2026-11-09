@@ -905,6 +905,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: .defaultClient))
 
         let webView = PreviewWebView(frame: .zero, configuration: configuration)
+        context.coordinator.attachFindHost(webView)
         webView.onFindAction = { action in
             context.coordinator.onFindShortcut(action)
         }
@@ -946,6 +947,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
         }
 
         return webView
+    }
+
+    static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
+        coordinator.detachFindHost(webView)
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
@@ -1393,6 +1398,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
         var lastFindQuery: String?
         var findOptions = TextSearch.Options()
         private var findGeneration = UUID()
+        private weak var findHost: WKWebView?
+        private var findHostIsActive = true
         private var findInFlight = false
         var onFindUnavailable: (Bool) -> Void = { _ in }
         var lastFocusToken: UUID?
@@ -1678,9 +1685,41 @@ struct MarkdownPreviewView: NSViewRepresentable {
             }
         }
 
+        /// Bind result delivery to the native preview host, including the gap
+        /// between SwiftUI dismantling it and WebKit returning pending callbacks.
+        func attachFindHost(_ webView: WKWebView) {
+            guard findHost !== webView || !findHostIsActive else { return }
+            findGeneration = UUID()
+            findHost = webView
+            findHostIsActive = true
+        }
+
+        func detachFindHost(_ webView: WKWebView) {
+            guard findHost === webView else { return }
+            findGeneration = UUID()
+            findHostIsActive = false
+            findHost = nil
+            findInFlight = false
+            pendingFindQuery = nil
+            pendingFindNavigation.removeAll()
+        }
+
+        private func acceptsFindHost(_ webView: WKWebView) -> Bool {
+            guard findHostIsActive else { return false }
+            // Standalone coordinator clients acquire their first host lazily;
+            // real SwiftUI views bind explicitly in makeNSView.
+            if findHost == nil { findHost = webView }
+            return findHost === webView
+        }
+
+        private func isCurrentFind(_ generation: UUID, in webView: WKWebView) -> Bool {
+            findHostIsActive && findHost === webView && findGeneration == generation
+        }
+
         /// Runs a preview search immediately when the page is ready, otherwise
         /// remembers the latest query and applies it after `didFinish`.
         func runFindWhenReady(_ query: String, in webView: WKWebView) {
+            guard acceptsFindHost(webView) else { return }
             pendingFindQuery = query
             findGeneration = UUID()
             if isLoaded {
@@ -1708,6 +1747,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// scroll — the same auto-jump this change removes, just backward.
         /// Internal so tests can drive the routing deterministically.
         @MainActor func handleFindNavigation(_ action: FindCommand.Action, in webView: WKWebView) {
+            guard acceptsFindHost(webView) else { return }
             switch action {
             case .search:
                 break
@@ -1719,8 +1759,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
                     return
                 }
                 let forward = action == .next
-                webView.evaluateJavaScript("window.__md2FindNext(\(forward));") { [weak self] result, _ in
-                    self?.reportFindResult(result)
+                let generation = findGeneration
+                webView.evaluateJavaScript("window.__md2FindNext(\(forward));") { [weak self, weak webView] result, _ in
+                    guard let self, let webView, self.isCurrentFind(generation, in: webView) else { return }
+                    self.reportFindResult(result)
                 }
             case .show, .showReplace:
                 break // bar presentation is handled at the ContentView level
@@ -1950,7 +1992,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         }
 
         private func applyPendingFind(in webView: WKWebView) {
-            guard let query = pendingFindQuery else { return }
+            guard acceptsFindHost(webView), let query = pendingFindQuery else { return }
             pendingFindQuery = nil
             findInFlight = true
             let generation = findGeneration
@@ -1960,7 +2002,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 return
             }
             webView.evaluateJavaScript("window.__md2FindSnapshot ? window.__md2FindSnapshot() : null;") { [weak self, weak webView] snapshot, _ in
-                guard let self, let webView, self.findGeneration == generation else { return }
+                guard let self, let webView, self.isCurrentFind(generation, in: webView) else { return }
                 guard let snapshot = snapshot as? [String: Any] else {
                     // Older page/test fixtures expose only the original API.
                     self.finishFind(script: "window.__md2Find('\(MarkdownPreviewView.escapeForJS(query))');", generation: generation, in: webView)
@@ -1978,7 +2020,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
                     let ranges = await Task.detached(priority: .userInitiated) {
                         PreviewTextSearch.ranges(query: query, text: text, options: options)
                     }.value
-                    guard let self, let webView, self.findGeneration == generation else { return }
+                    guard let self, let webView, self.isCurrentFind(generation, in: webView) else { return }
                     let payload: [String: Any] = ["id": id, "ranges": ranges ?? [], "unavailable": ranges == nil]
                     guard let data = try? JSONSerialization.data(withJSONObject: payload),
                           let json = String(data: data, encoding: .utf8) else {
@@ -1998,7 +2040,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         }
 
         private func completeFind(_ result: Any?, generation: UUID, in webView: WKWebView) {
-            guard findGeneration == generation else { return }
+            guard isCurrentFind(generation, in: webView) else { return }
             findInFlight = false
             if let dict = result as? [String: Any], dict["stale"] as? Bool == true {
                 // The normal content-update path schedules the latest snapshot;

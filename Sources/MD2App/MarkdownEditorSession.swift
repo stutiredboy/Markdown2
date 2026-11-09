@@ -28,6 +28,12 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
     let undoManager: UndoManager
     let find = FindSession()
     private var isApplyingFindEdit = false
+    /// Keep native edits outside SwiftUI updateNSView. An interaction harness
+    /// may hold this scheduling boundary without bypassing the real button,
+    /// click-time snapshot, host checks or replacement execution.
+    var scheduleFindReplacement: (@escaping @MainActor () -> Void) -> Void = { operation in
+        DispatchQueue.main.async { operation() }
+    }
     /// Receives the new text when the text view changes while no editor is
     /// mounted (undo/redo or a checkbox toggle in Read mode).
     var onUnmountedTextChange: ((String) -> Void)?
