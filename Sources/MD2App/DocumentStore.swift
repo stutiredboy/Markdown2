@@ -52,7 +52,11 @@ final class DocumentStore: ObservableObject {
 
     @Published private(set) var rendered: RenderedDocument
     let copyFlow = DocumentCopyFlow()
-    @Published private(set) var fileURL: URL?
+    @Published private(set) var fileURL: URL? {
+        didSet {
+            if oldValue != fileURL { editorSession.invalidatePasteContext() }
+        }
+    }
     @Published private(set) var isDirty = false
     @Published private(set) var fileFormat = MarkdownFileFormat()
     @Published private(set) var backingFileMissing = false
@@ -67,7 +71,11 @@ final class DocumentStore: ObservableObject {
     var windowFrame: String? { didSet { if windowFrame != oldValue { scheduleRecovery() } } }
     private var recoveryTask: Task<Void, Never>?
     private var recoveryErrorReported = false
-    private var isClosed = false
+    private var isClosed = false {
+        didSet {
+            if oldValue != isClosed { editorSession.invalidatePasteContext(isOpen: !isClosed) }
+        }
+    }
     @Published var alert: DocumentAlert?
     private var headingNavigationTask: Task<Void, Never>?
     @Published var jumpLine: Int?
@@ -82,7 +90,11 @@ final class DocumentStore: ObservableObject {
     /// A source line for the editor to select, sent by a preview gutter click;
     /// the editor clears it once applied.
     @Published var editorLineSelection: LineSelectionRequest?
-    @Published private(set) var documentIdentity = UUID()
+    @Published private(set) var documentIdentity = UUID() {
+        didSet {
+            if oldValue != documentIdentity { editorSession.invalidatePasteContext() }
+        }
+    }
     /// True while the backing file has changed on disk under unsaved edits and
     /// the user has not chosen a side yet. While set, autosave is suspended and
     /// every save request re-presents the conflict prompt instead of writing.

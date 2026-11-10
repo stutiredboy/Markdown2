@@ -31,6 +31,15 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
     private(set) var pasteHostGeneration: UInt64 = 0
     private(set) var pasteContextGeneration: UInt64 = 0
     var onPasteNotice: ((MarkdownPasteNotice?) -> Void)?
+    private(set) var isPasteTargetOpen = true
+
+    /// Text equality does not identify a document: opening identical bytes,
+    /// relocating its backing file, or closing it must invalidate captured work.
+    func invalidatePasteContext(isOpen: Bool? = nil) {
+        pasteContextGeneration &+= 1
+        if let isOpen { isPasteTargetOpen = isOpen }
+        (textView as? MarkdownSourceTextView)?.markdownPasteController.cancel()
+    }
     /// Keep native edits outside SwiftUI updateNSView. An interaction harness
     /// may hold this scheduling boundary without bypassing the real button,
     /// click-time snapshot, host checks or replacement execution.
@@ -188,6 +197,7 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
     /// editor applies the text once composition ends.
     @discardableResult
     func resetText(to newText: String) -> Bool {
+        invalidatePasteContext()
         guard let textView, let storage = textView.textStorage else {
             undoManager.removeAllActions()
             return true
@@ -195,7 +205,6 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
         guard !textView.hasMarkedText() else { return false }
 
         if let change = TextReplacement(from: storage.string, to: newText) {
-            pasteContextGeneration &+= 1
             find.invalidateSelection()
             storage.replaceCharacters(in: change.range, with: change.replacement)
             // TextKit moves the selection with the edit; clamp defensively, since

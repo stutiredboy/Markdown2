@@ -43,7 +43,7 @@ final class MarkdownPasteController {
     var canPerform: Bool {
         guard let editor, editor.isEditable, !editor.hasMarkedText(), editor.selectedRanges.count == 1,
               let session = editor.delegate as? MarkdownEditorSession,
-              !session.revealSelectionOnNextHost, isFocusedSource(editor) else { return false }
+              session.isPasteTargetOpen, !session.revealSelectionOnNextHost, isFocusedSource(editor) else { return false }
         return true
     }
 

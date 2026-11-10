@@ -34,7 +34,11 @@ enum HTMLPasteConverter {
                     index += 1
                 }
                 let value = String(decoding: bytes[start..<index], as: UTF8.self)
-                stack[stack.count - 1].children.append(.text(HTMLSafety.decodeHTMLAttributeEntities(value)))
+                let decoded = HTMLSafety.decodeHTMLAttributeEntities(value)
+                if stack.last?.name == "head", !decoded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    throw MarkdownPaste.Failure.malformed
+                }
+                stack[stack.count - 1].children.append(.text(decoded))
                 continue
             }
             if bytes[index...].starts(with: Array("<!--".utf8)) {
@@ -70,6 +74,21 @@ enum HTMLPasteConverter {
                 let frame = stack.removeLast()
                 stack[stack.count - 1].children.append(.element(frame.name, frame.attributes, frame.children))
             } else {
+                // A title in body content must not silently erase its text.
+                // Inert void meta markers have no content to discard and remain
+                // allowed in clipboard fragments after attribute validation.
+                if stack.last?.name == "title" || (stack.last?.name == "head" && !["title", "meta"].contains(tag.name)) {
+                    throw MarkdownPaste.Failure.malformed
+                }
+                if tag.name == "title", stack.last?.name != "head" {
+                    throw MarkdownPaste.Failure.malformed
+                }
+                if tag.name == "head" {
+                    guard let parent = stack.last,
+                          (parent.name == "root" && stack.count == 1) || (parent.name == "html" && stack.count == 2),
+                          isInertHeaderPrefix(parent.children),
+                          isInertHeaderPrefix(stack[0].children) else { throw MarkdownPaste.Failure.malformed }
+                }
                 try validate(tag.name, attributes: tag.attributes)
                 if ["br", "meta"].contains(tag.name) {
                     stack[stack.count - 1].children.append(.element(tag.name, tag.attributes, []))
@@ -84,6 +103,15 @@ enum HTMLPasteConverter {
         let result = try render(stack[0].children, budget: budget).trimmingCharacters(in: .whitespacesAndNewlines)
         try budget.output(result)
         return result
+    }
+
+    private static func isInertHeaderPrefix(_ nodes: [Node]) -> Bool {
+        nodes.allSatisfy { node in
+            switch node {
+            case .text(let text): return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            case .element(let name, _, _): return name == "meta"
+            }
+        }
     }
 
     private struct Tag {

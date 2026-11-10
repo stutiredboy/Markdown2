@@ -158,7 +158,12 @@ Empty input never deletes selected text.
 Markdown prefers HTML, then RTF. HTML converts semantic paragraphs, breaks,
 bold/italic, HTTP(S)/mailto links, headings, lists, quotes and code. CSS, fonts,
 colors, IDs and layout are not retained. RTF accepts only text, Unicode escapes,
-paragraph/line breaks, bold and italic plus known cosmetic metadata; fields,
+paragraph/line breaks, bold and italic plus known cosmetic metadata; Unicode
+fallback is consumed by token, and group boundaries end that fallback scan. HTML
+title metadata is accepted only in a leading document head containing metadata;
+inert void `meta` markers (such as a clipboard charset marker) remain allowed
+with safe attributes. RTF metadata destinations must be in the header before
+body text, and `\*` must name a supported destination. Fields,
 list/heading styles, images, objects and unknown semantic controls are unsupported.
 There is no browser or system HTML/RTF importer, network request, clipboard image
 fetch, script execution or arbitrary file access in capture, conversion or menu
@@ -172,7 +177,9 @@ non-whitespace source content, including an empty document. At other positions,
 the command leaves text, selection and undo unchanged and explains that the user
 can explicitly choose Plain Text. It never expands the selection to fit fallback.
 If no complete plain representation is available, nothing is pasted. A changed
-source, selection, editor host, focus or active input method cancels pending work;
+source, selection, document identity, backing-file path, editor host, focus or
+active input method cancels pending work. Identical-content resets, opening another
+file, first-save/relocation and closing also invalidate old requests;
 returning to the old target does not revive it.
 
 Table parses quoted TSV: the first row is the header, doubled quotes inside quoted
