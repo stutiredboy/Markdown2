@@ -33,8 +33,8 @@ batch, and neither package depends on the other's new parser or API.
 - Preserve unmodified cell Markdown, padding, alignment markers and surrounding
   text verbatim. New cells use ordinary padding; new delimiter cells use `---`.
   Add only necessary outer pipes for new empty rows, exposed empty edge cells
-  after column insertion/deletion, or one-column results when otherwise the
-  renderer would consume a separator as an outer pipe.
+  after column insertion/deletion, exposed terminal literal pipes, or one-column
+  results when otherwise the renderer would consume a pipe as an outer frame.
   Structural changes use one native replacement/undo step. Select the new cell
   after insertion or the nearest remaining cell after deletion.
 - Preserve mixed source line endings outside edits. New rows inherit the local
