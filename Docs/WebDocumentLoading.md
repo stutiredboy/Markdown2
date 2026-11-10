@@ -73,7 +73,7 @@ because an exported file has no response.
   that caller permission. Rule-compilation failure does not fall back to an
   unrestricted load. Data stores are nonpersistent and page referrers are disabled.
 - Portable HTML never inherits the grant. Its diagram output is sanitized before
-  use, retaining supported vector/fragment styles and omitting resource-dependent
+  the page is considered settled, retaining supported vector/fragment styles and omitting resource-dependent
   content; embedded image data is validated. See [resource policy](RemoteResources.md).
 - A plain click on a `javascript:` URL never reaches the navigation policy, and the
   page policy stops it. A new-window request reaches the navigation policy first, so
