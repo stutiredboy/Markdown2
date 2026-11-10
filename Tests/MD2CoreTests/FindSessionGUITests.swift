@@ -164,6 +164,9 @@ final class FindSessionGUITests: XCTestCase {
         let port = try XCTUnwrap(server.port)
         let original = "needle one\n\nneedle two\n\nneedle three\n\n![load barrier](http://127.0.0.1:\(port)/held.png)"
         harness.store.text = original
+        // This fixture deliberately waits on a real remote image. Grant through
+        // the Store so both the rendered CSP and native preview permit its load.
+        harness.store.setRemoteImagesAllowed(true)
         harness.host(ContentView(document: harness.store, settings: harness.settings, onOpen: {}))
         harness.store.requestFind(.show)
         try waitForNative(harness, "source query field is focused") {
