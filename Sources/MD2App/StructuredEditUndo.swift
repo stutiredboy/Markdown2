@@ -105,20 +105,92 @@ extension NSTextView {
         return true
     }
 
-    /// Preflight without AppKit's preliminary undo registration, matching the
-    /// table path. Refused edits never open a command group.
+    /// Pasting and table mutations share one inverse including selection.
+    /// Register it only after the native write. Automatic-group notifications
+    /// can then change the editor without a pending old insertion overwriting
+    /// their newer state. A unique target lets us discard only this inverse if
+    /// a registration/closing observer invalidates it.
     @MainActor
     @discardableResult
-    func insertStructuredText(_ replacement: String, range: NSRange,
-                              isCurrent: () -> Bool = { true }, didInsert: () -> Void = {}) -> Bool {
+    func insertStructuredText(_ replacement: String, range: NSRange, selection: NSRange? = nil,
+                              isCurrent additionalValidation: () -> Bool = { true }) -> Bool {
         let manager = undoManager
+        let source = string, oldSelection = selectedRange(), originalDelegate = delegate
+        let originalWindow = window, originalResponder = window?.firstResponder, wasKey = window?.isKeyWindow
+        let session = delegate as? MarkdownEditorSession
+        let generation = session?.pasteContextGeneration, host = session?.pasteHostGeneration
+        let unchangedContext = {
+            self.isEditable && !self.hasMarkedText() && self.selectedRanges.count == 1 &&
+            self.delegate === originalDelegate && self.window === originalWindow &&
+            self.window?.firstResponder === originalResponder && self.window?.isKeyWindow == wasKey &&
+            session?.pasteHostGeneration == host
+        }
+        func isCurrent() -> Bool {
+            additionalValidation() && unchangedContext() && self.selectedRange() == oldSelection &&
+            session?.pasteContextGeneration == generation && (self.string as NSString).isEqual(to: source)
+        }
+        let sourceLength = (source as NSString).length
+        guard range.location >= 0, range.location <= sourceLength, range.length >= 0,
+              range.length <= sourceLength - range.location, isCurrent() else { return false }
         manager?.disableUndoRegistration()
         let allowed = shouldChangeText(in: range, replacementString: replacement)
         manager?.enableUndoRegistration()
-        guard allowed else { return false }
-        return withStructuredEditUndo(isCurrent: isCurrent) {
+        guard allowed, isCurrent() else { return false }
+        let original = (source as NSString).substring(with: range)
+        let expected = (source as NSString).replacingCharacters(in: range, with: replacement)
+        let inverseRange = NSRange(location: range.location, length: replacement.utf16.count)
+        let nativeSelection = NSRange(location: NSMaxRange(inverseRange), length: 0)
+        let inverse = StructuredTextUndo(editor: self, range: inverseRange,
+            expected: replacement, replacement: original, selection: oldSelection)
+        var inserted = false
+        withStructuredEditUndo(isCurrent: isCurrent) {
+            manager?.disableUndoRegistration()
             insertText(replacement, replacementRange: range)
-            didInsert()
+            manager?.enableUndoRegistration()
+            inserted = (self.string as NSString).isEqual(to: expected)
+            guard inserted else { return }
+            // Selection is part of the edit, before Undo group notifications.
+            // A later registration/close observer retains its own selection.
+            if unchangedContext() {
+                self.setSelectedRange(selection ?? nativeSelection)
+                self.scrollRangeToVisible(selection ?? nativeSelection)
+            }
+            manager?.registerUndo(withTarget: inverse) { [inverse] _ in
+                MainActor.assumeIsolated { inverse.apply() }
+            }
         }
+        guard inserted else { return false }
+        if !(string as NSString).isEqual(to: expected) {
+            // Remove after the helper closes its group: removing a marker from
+            // an open automatic group would leave a phantom empty Undo step.
+            manager?.removeAllActions(withTarget: inverse)
+            return false
+        }
+        return true
+    }
+}
+
+@MainActor
+private final class StructuredTextUndo: NSObject {
+    private weak var editor: NSTextView?
+    private let range: NSRange
+    private let expected: String
+    private let replacement: String
+    private let selection: NSRange
+
+    init(editor: NSTextView, range: NSRange, expected: String, replacement: String, selection: NSRange) {
+        self.editor = editor
+        self.range = range
+        self.expected = expected
+        self.replacement = replacement
+        self.selection = selection
+    }
+
+    func apply() {
+        guard let editor else { return }
+        let source = editor.string as NSString
+        guard range.location <= source.length, range.length <= source.length - range.location,
+              (source.substring(with: range) as NSString).isEqual(to: expected) else { return }
+        editor.insertStructuredText(replacement, range: range, selection: selection)
     }
 }

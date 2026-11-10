@@ -90,21 +90,16 @@ final class MarkdownPasteController {
                 // Explicit replacement bypasses auto-pairing and ordinary Cmd+V.
                 // Native shouldChangeText decides whether mutation is permitted;
                 // never force a selection after an editor delegate rejects it.
-                let expected = (source as NSString).replacingCharacters(in: edit.range, with: edit.replacement)
                 var stale = false
-                editor.insertStructuredText(edit.replacement, range: edit.range, isCurrent: {
+                let inserted = editor.insertStructuredText(edit.replacement, range: edit.range, selection: edit.selection, isCurrent: {
                     let current = self.requestID == id && self.canPerform && editor.delegate === session &&
                     editor.window === window && session.pasteHostGeneration == host &&
                     session.pasteContextGeneration == generation && editor.selectedRange() == selection &&
                     (editor.string as NSString).isEqual(to: source)
                     stale = !current
                     return current
-                }, didInsert: {
-                    guard (editor.string as NSString).isEqual(to: expected) else { return }
-                    editor.setSelectedRange(edit.selection)
-                    editor.scrollRangeToVisible(edit.selection)
-                    if output.fallbackReason != nil { self.onNotice(.literalFallback) }
                 })
+                if inserted, output.fallbackReason != nil { self.onNotice(.literalFallback) }
                 if stale { self.onNotice(.cancelled) }
             }
         }

@@ -4,7 +4,7 @@ import Testing
 @testable import MD2Core
 
 // Regression for separate commands sharing Foundation's automatic event group.
-// No windows, AX, shared pasteboard or sleeps.
+// No AX, shared pasteboard or sleeps. The focus case uses an unshown window.
 @Suite(.serialized)
 @MainActor
 struct StructuredEditUndoTests {
@@ -68,6 +68,9 @@ struct StructuredEditUndoTests {
 
     @MainActor private final class Sentinels {
         var editor: NSTextView?
+        var window: NSWindow?
+        var field: NSTextField?
+        var observedSource: String?
         var defaultCallback = 0
         var mainQueueCallback = 0
         var commonModeCallback = 0
@@ -136,8 +139,127 @@ struct StructuredEditUndoTests {
         #expect(view.selectedRange() == NSRange(location: 0, length: 0))
         #expect(view.string.contains("BODY ab"))
         #expect(view.string.contains("| A |  | B |") == afterMutation)
-        #expect(manager.undoCount == (afterMutation ? 2 : 1), "cancellation must not create a phantom undo")
+        #expect(manager.undoCount == 1, "only prior typing remains; the observer invalidates this command's inverse")
         #expect(manager.groupsByEvent)
+    }
+
+    @Test(arguments: ["source", "selection", "short-source"])
+    func openingObserversKeepNewerStateWithoutInvalidHistory(_ change: String) async throws {
+        let (session, view) = try editor("TARGET!")
+        let manager = session.undoManager
+        if change != "short-source" {
+            view.setSelectedRange(NSRange(location: view.string.utf16.count, length: 0))
+            type("q", into: view)
+        }
+        let suffix = change == "short-source" ? "!" : "!q"
+        let trace = Sentinels()
+        trace.editor = view
+        let observer = NotificationCenter.default.addObserver(forName: .NSUndoManagerDidOpenUndoGroup,
+            object: manager, queue: nil) { _ in MainActor.assumeIsolated {
+                guard let editor = trace.editor, trace.defaultCallback == 0 else { return }
+                trace.defaultCallback += 1
+                trace.observedSource = editor.string
+                if change == "source" { editor.string = "ZARGET" + suffix }
+                if change == "short-source" { editor.string = "Z" }
+                editor.setSelectedRange(NSRange(location: change == "selection" ? 0 : editor.string.utf16.count, length: 0))
+            } }
+        defer { NotificationCenter.default.removeObserver(observer); manager.removeAllActions() }
+        view.setSelectedRange(NSRange(location: 0, length: 6))
+        view.markdownPasteController.capture = { _ in .success(.init(plainText: "NATIVE")) }
+        #expect(view.markdownPasteController.perform(.plainText))
+        await view.markdownPasteController.waitForPendingPaste()
+        #expect(trace.defaultCallback == 1)
+        #expect(trace.observedSource == "NATIVE" + suffix, "the real native write precedes inverse registration")
+        if change == "short-source" {
+            #expect(view.string == "Z" && view.selectedRange() == NSRange(location: 1, length: 0))
+            #expect(!manager.canUndo && !manager.canRedo, "no out-of-bounds inverse or phantom step")
+        } else if change == "source" {
+            #expect(view.string == "ZARGET!q" && view.selectedRange() == NSRange(location: 8, length: 0))
+            #expect(manager.undoCount == 1, "discard only the invalidated paste inverse")
+            manager.undo()
+            #expect(view.string == "ZARGET!" && !manager.canUndo)
+            manager.redo()
+            #expect(view.string == "ZARGET!q" && !manager.canRedo)
+        } else {
+            #expect(view.string == "NATIVE!q" && view.selectedRange() == NSRange(location: 0, length: 0))
+            manager.undo()
+            #expect(view.string == "TARGET!q" && view.selectedRange() == NSRange(location: 0, length: 6))
+            manager.undo()
+            #expect(view.string == "TARGET!" && !manager.canUndo)
+            manager.redo()
+            manager.redo()
+            #expect(view.string == "NATIVE!q" && view.selectedRange() == NSRange(location: 0, length: 0))
+            #expect(!manager.canRedo)
+        }
+    }
+
+    @Test func stalePasteBeforeWritingPreservesUndoAndRedo() async throws {
+        let (session, view) = try editor("TARGET!")
+        let manager = session.undoManager
+        #expect(view.insertStructuredText("1", range: NSRange(location: 7, length: 0)))
+        #expect(view.insertStructuredText("2", range: NSRange(location: 8, length: 0)))
+        manager.undo()
+        #expect(view.string == "TARGET!1" && manager.undoCount == 1 && manager.redoCount == 1)
+        let trace = Sentinels()
+        trace.editor = view
+        view.setSelectedRange(NSRange(location: 0, length: 6))
+        view.markdownPasteController.capture = { _ in .success(.init(plainText: "NATIVE")) }
+        view.markdownPasteController.convert = { kind, payload in
+            await MainActor.run {
+                trace.editor?.setSelectedRange(NSRange(location: 8, length: 0))
+                return MarkdownPaste.convert(kind, payload: payload)
+            }
+        }
+        #expect(view.markdownPasteController.perform(.plainText))
+        await view.markdownPasteController.waitForPendingPaste()
+        #expect(view.string == "TARGET!1" && manager.undoCount == 1 && manager.redoCount == 1)
+        manager.redo()
+        #expect(view.string == "TARGET!12")
+        manager.undo()
+        manager.undo()
+        #expect(view.string == "TARGET!" && !manager.canUndo)
+    }
+
+    @Test func focusChangeCancelsTableCommandWhileHistoryWorksFromOtherFields() throws {
+        _ = NSApplication.shared
+        let original = table + "\n\nbody "
+        let (session, view) = try editor(original)
+        let manager = session.undoManager
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 240),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 240))
+        window.contentView = container
+        view.frame = NSRect(x: 0, y: 40, width: 400, height: 200)
+        container.addSubview(view)
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 30))
+        container.addSubview(field)
+        defer { manager.removeAllActions(); window.close() }
+        #expect(window.makeFirstResponder(view))
+        view.setSelectedRange(NSRange(location: view.string.utf16.count, length: 0))
+        type("q", into: view)
+        let before = view.string
+        view.setSelectedRange((before as NSString).range(of: "中🙂"))
+        let trace = Sentinels()
+        trace.window = window
+        trace.field = field
+        let observer = NotificationCenter.default.addObserver(forName: .NSUndoManagerWillCloseUndoGroup,
+            object: manager, queue: nil) { _ in MainActor.assumeIsolated {
+                guard trace.defaultCallback == 0 else { return }
+                trace.defaultCallback += 1
+                _ = trace.window?.makeFirstResponder(trace.field)
+            } }
+        #expect(view.performMarkdownAction(.tableEdit(.insertColumnAfter)))
+        NotificationCenter.default.removeObserver(observer)
+        #expect(trace.defaultCallback == 1 && window.firstResponder !== view)
+        #expect(view.string == before && manager.undoCount == 1)
+        manager.undo()
+        #expect(view.string == original)
+        view.setSelectedRange((table as NSString).range(of: "中🙂"))
+        #expect(view.performMarkdownAction(.tableEdit(.insertColumnAfter)))
+        #expect(view.string != original)
+        manager.undo()
+        #expect(view.string == original, "history need not start with source focus")
     }
 
     @MainActor private final class EarlierCommand {
