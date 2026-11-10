@@ -37,6 +37,7 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
     /// Receives the new text when the text view changes while no editor is
     /// mounted (undo/redo or a checkbox toggle in Read mode).
     var onUnmountedTextChange: ((String) -> Void)?
+    var onTableEditingResult: ((MarkdownTableEditing.Rejection?) -> Void)?
 
     private(set) var textView: NSTextView?
     /// Keep consumption across re-hosting, just like the text and undo history.

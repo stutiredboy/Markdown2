@@ -105,6 +105,7 @@ final class DocumentStore: ObservableObject {
     @Published var formatCommand: MarkdownFormatCommand?
     /// Read-mode formatting first reveals the source target without editing it.
     @Published var showsFormattingTargetNotice = false
+    @Published var tableEditingRejection: MarkdownTableEditing.Rejection?
 
     func requestFormat(_ action: MarkdownEditing.Action) {
         if editorSession.textView?.hasMarkedText() == true { return }
@@ -129,6 +130,14 @@ final class DocumentStore: ObservableObject {
         requestMode(.write)
     }
 
+    /// Reuse Read's reveal-first rule; a native field must never route table
+    /// editing to the retained source text behind it.
+    func requestTableEdit(_ action: MarkdownTableEditing.Action) {
+        if let field = NSApp.keyWindow?.firstResponder as? NSTextView,
+           field !== editorSession.textView { return }
+        requestFormat(.tableEdit(action))
+    }
+
     /// The document's undo history. The window hands it to the Edit menu and the
     /// editor's text view registers its edits on it, so all three share one
     /// stack that belongs to the document rather than to any one view.
@@ -142,6 +151,9 @@ final class DocumentStore: ObservableObject {
         // text view; its text is the document's.
         session.onUnmountedTextChange = { [weak self] text in
             self?.text = text
+        }
+        session.onTableEditingResult = { [weak self] rejection in
+            self?.tableEditingRejection = rejection
         }
         return session
     }()

@@ -1724,15 +1724,71 @@ final class MarkdownSourceTextView: NSTextView {
         // Native shortcuts/context-menu actions can bypass DocumentStore.
         // Consume them during the reveal instead of bubbling into a menu or
         // modifying a focused but not-yet-visible retained source selection.
+        let explicitTable: MarkdownTableEditing.Action?
+        if case .tableEdit(let value) = action { explicitTable = value } else { explicitTable = nil }
         if (delegate as? MarkdownEditorSession)?.revealSelectionOnNextHost == true,
-           MarkdownFormatCommand.items.contains(where: { $0.action == action }) { return true }
+           explicitTable != nil || MarkdownFormatCommand.items.contains(where: { $0.action == action }) { return true }
         let selection = selectedRange()
+        guard isEditable, !hasMarkedText(), selectedRanges.count == 1 else { return false }
+        let tableAction = explicitTable ?? (action == .indent ? .nextCell : action == .outdent ? .previousCell : nil)
+        if let tableAction {
+            switch MarkdownTableEditing.result(string, selection: selection, action: tableAction) {
+            case .success(let edit):
+                (delegate as? MarkdownEditorSession)?.onTableEditingResult?(nil)
+                applyTableEdit(edit)
+                return true
+            case .failure(let rejection):
+                if explicitTable != nil {
+                    (delegate as? MarkdownEditorSession)?.onTableEditingResult?(rejection)
+                    return false
+                }
+            }
+        }
         guard isEditable, !hasMarkedText(), selectedRanges.count == 1,
               let edit = MarkdownEditing.edit(string, selection: selection, action: action,
                   clipboard: action == .link ? linkClipboardText() : nil,
                   autoClosingPositions: trackedCloser(at: selection.location)) else { return false }
         applyMarkdownEdit(edit)
         return true
+    }
+
+    /// Native insertion keeps binding/style/autosave notifications intact. A
+    /// single inverse also restores the cell selection, which native text-only
+    /// undo cannot promise after a navigation-selected range.
+    private func applyTableEdit(_ edit: MarkdownEditing.Edit) {
+        if edit.range.length == 0, edit.replacement.isEmpty {
+            setSelectedRange(edit.selection)
+            scrollRangeToVisible(edit.selection)
+            return
+        }
+        applyTableReplacement(range: edit.range, replacement: edit.replacement, selection: edit.selection)
+    }
+
+    private func applyTableReplacement(range: NSRange, replacement: String, selection: NSRange) {
+        let manager = undoManager
+        // shouldChangeText itself registers AppKit undo state. This operation
+        // owns one inverse including selection, so suppress that preliminary
+        // record as well as insertText's record.
+        manager?.disableUndoRegistration()
+        let allowed = shouldChangeText(in: range, replacementString: replacement)
+        manager?.enableUndoRegistration()
+        guard allowed else { return }
+        let original = (string as NSString).substring(with: range)
+        let oldSelection = selectedRange()
+        let inverseRange = NSRange(location: range.location, length: replacement.utf16.count)
+        let history = manager?.isUndoing == true || manager?.isRedoing == true
+        breakUndoCoalescing()
+        if !history { manager?.beginUndoGrouping() }
+        manager?.disableUndoRegistration()
+        insertText(replacement, replacementRange: range)
+        manager?.enableUndoRegistration()
+        manager?.registerUndo(withTarget: self) { target in
+            MainActor.assumeIsolated { target.applyTableReplacement(range: inverseRange, replacement: original, selection: oldSelection) }
+        }
+        setSelectedRange(selection)
+        scrollRangeToVisible(selection)
+        if !history { manager?.endUndoGrouping() }
+        breakUndoCoalescing()
     }
 
     private func applyMarkdownEdit(_ edit: MarkdownEditing.Edit) {

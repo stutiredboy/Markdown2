@@ -147,6 +147,13 @@ private struct AppCommands: Commands {
                 }
                 .keyboardShortcut(item.shortcut.keyEquivalent, modifiers: item.shortcut.modifiers.eventModifiers)
             }
+            Menu(settings.text(.tableOperations)) {
+                ForEach(MarkdownFormatCommand.tableItems, id: \.title) { item in
+                    TableEditingCommand(title: settings.text(item.title), state: appDelegate.attachmentCommandState) {
+                        appDelegate.currentDocumentStore?.requestTableEdit(item.action)
+                    }
+                }
+            }
         }
 
         CommandMenu(settings.text(.paragraphMenu)) {

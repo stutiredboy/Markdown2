@@ -77,6 +77,94 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
 
     // MARK: - Live list
 
+    // T package owns only these table-menu cases/helpers. The existing launch,
+    // AX prerequisites, waits and non-table cases remain shared and unchanged.
+    func testTableMenuFollowsOpeningSwitchingAndClosingDocuments() throws {
+        let first = try makeDocument("notes/TableFirst.md")
+        let second = try makeDocument("notes/TableSecond.md")
+        let pid = try launch(recents: [], language: "english", appleLanguages: ["en"])
+        try waitForEntries([], pid: pid)
+        XCTAssertTrue(Self.windows(pid: pid).isEmpty)
+        try waitForTableCommandsEnabled(false, pid: pid)
+        try open(first)
+        try waitForEntries([first], pid: pid)
+        try waitForTableCommandsEnabled(true, pid: pid)
+        try open(second)
+        try waitForEntries([second, first], pid: pid)
+        try waitForTableCommandsEnabled(true, pid: pid)
+        XCTAssertEqual(AXUIElementPerformAction(try menuItem(commandCharacter: "W", pid: pid), kAXPressAction as CFString), .success)
+        usleep(300_000)
+        try waitForTableCommandsEnabled(true, pid: pid)
+        XCTAssertEqual(AXUIElementPerformAction(try menuItem(commandCharacter: "W", pid: pid), kAXPressAction as CFString), .success)
+        try waitForTableCommandsEnabled(false, pid: pid)
+        try assertOpenedTableCommandsEnabled(false, pid: pid)
+    }
+
+    func testTableMenuEnablesAfterFirstOpenWithoutSettingsChange() throws {
+        let document = try makeDocument("notes/TableFirstOpen.md")
+        let pid = try launch(recents: [], language: "english", appleLanguages: ["en"])
+        try waitForEntries([], pid: pid)
+        try waitForTableCommandsEnabled(false, pid: pid)
+        try open(document)
+        try waitForEntries([document], pid: pid)
+        try waitForTableCommandsEnabled(true, pid: pid)
+        try assertOpenedTableCommandsEnabled(true, pid: pid)
+    }
+
+    func testTableMenuDisablesWhenSettingsTakesFocus() throws {
+        let document = try makeDocument("notes/TableBehindSettings.md")
+        let pid = try launch(recents: [], language: "english", appleLanguages: ["en"])
+        try open(document)
+        try waitForEntries([document], pid: pid)
+        try waitForTableCommandsEnabled(true, pid: pid)
+        NSRunningApplication(processIdentifier: pid)?.activate()
+        let settings = try menuItem(commandCharacter: ",", pid: pid)
+        AXUIElementSetMessagingTimeout(settings, 2)
+        XCTAssertEqual(AXUIElementPerformAction(settings, kAXPressAction as CFString), .success)
+        _ = try waitForWindow(pid: pid) {
+            Self.title(of: $0).contains("Settings") && Self.firstElement(ofRole: "AXPopUpButton", in: $0) != nil
+        }
+        try waitForTableCommandsEnabled(false, pid: pid)
+        try assertOpenedTableCommandsEnabled(false, pid: pid)
+    }
+
+    private func tableMenu(pid: pid_t) throws -> (bar: AXUIElement, menu: AXUIElement, item: AXUIElement, submenu: AXUIElement) {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXMenuBarAttribute as CFString, &value) == .success,
+              let bar = Self.element(value) else { throw GuardFailure("no menu bar for table commands") }
+        for item in Self.children(of: bar) {
+            for menu in Self.children(of: item) {
+                if let table = Self.children(of: menu).first(where: { Self.title(of: $0) == "Table Operations" }),
+                   let submenu = Self.children(of: table).first {
+                    return (item, menu, table, submenu)
+                }
+            }
+        }
+        throw GuardFailure("no Format > Table Operations submenu")
+    }
+
+    private func waitForTableCommandsEnabled(_ expected: Bool, pid: pid_t) throws {
+        let deadline = Date().addingTimeInterval(5)
+        repeat {
+            if let menu = try? tableMenu(pid: pid) {
+                let items = Self.children(of: menu.submenu)
+                if items.count == 6, items.allSatisfy({ Self.isEnabled($0) == expected }) { return }
+            }
+            usleep(50_000)
+        } while Date() < deadline
+        XCTFail("Table Operations enabled state did not become \(expected)")
+        throw GuardFailure("table menu state did not converge")
+    }
+
+    private func assertOpenedTableCommandsEnabled(_ expected: Bool, pid: pid_t) throws {
+        let menu = try tableMenu(pid: pid)
+        NSRunningApplication(processIdentifier: pid)?.activate()
+        XCTAssertEqual(AXUIElementPerformAction(menu.bar, kAXPressAction as CFString), .success)
+        defer { AXUIElementPerformAction(menu.menu, kAXCancelAction as CFString) }
+        XCTAssertEqual(AXUIElementPerformAction(menu.item, kAXPressAction as CFString), .success)
+        try waitForTableCommandsEnabled(expected, pid: pid)
+    }
+
     /// Real SwiftUI command state after a no-document launch (independent R4 regression).
     func testCollectionMenuEnablesAfterOpeningDocument() throws {
         let document = try makeDocument("notes/ReviewCollect.md")

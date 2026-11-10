@@ -14,7 +14,7 @@ focused source editor applies formatting.
 | Return | Continue `-`, `*`, `+`, `1.`, `1)`, task items and `>` quotes, including nested containers. Increment ordered markers and reset new tasks to unchecked. |
 | Return on an empty item | Remove the innermost marker; `> - [ ] ` becomes `> `, then another Return exits the quote. |
 | Shift+Return | Insert a source newline aligned with the list content column, retaining quote containers. This is a Markdown soft break, without trailing spaces or `<br>`. |
-| Tab / Shift+Tab | Indent/outdent list items, selected lines and their descendants. Indenting after a sibling uses its content column, including wide ordered markers. |
+| Tab / Shift+Tab | Move forward/backward between supported table cells, skipping the separator row. Elsewhere, retain list indentation or native Tab behavior. |
 | Cmd+B / Cmd+I | Wrap or unwrap the selected text with bold/italic markers. With no selection, insert markers around the caret. |
 | Cmd+K | Wrap/unwrap a link. Use an HTTP(S) or mailto URL from the clipboard when available; otherwise place the caret in the destination. |
 | Option+Cmd+1–6 / Cmd+0 | Set the selected lines' heading level / remove their ATX heading prefix. |
@@ -49,6 +49,40 @@ While `hasMarkedText()` is true, editing commands and automatic pairing yield to
 the input method. Return used to commit Latin letters from a Chinese IME must
 not also continue a list. Shift+Return's originating event is retained because
 AppKit may dispatch it as `insertNewline:` rather than `insertLineBreak:`.
+
+## Table editing
+
+Tab selects the next cell's source content; Shift+Tab selects the previous cell.
+The separator row is skipped. Tab from the last cell appends an empty body row;
+Shift+Tab from the first header cell leaves the selection in place. Navigation
+does not change the document or its undo history.
+
+Format > Table Operations inserts rows above/below or columns left/right, and
+deletes the current body row or column. The header and separator remain, and a
+table keeps at least one column. A header cell supports Insert Row Below. Each
+structure change is one undo step that restores both text and selection. These
+commands use the same focused-editor and Read-mode source-reveal rules as other
+formatting commands; native Find, filename and Settings fields keep ownership.
+
+The supported subset is a top-level rectangular pipe table with matching column
+counts, a header, a separator row and optional body rows. Select inside one cell;
+cross-cell selections and separator-row selections are rejected. Escaped pipes
+and closed single-backtick code spans follow the renderer's existing rules.
+Entity spellings such as `&#124;` remain literal source. Nested list/quote tables,
+code blocks, HTML blocks/comments, unclosed code spans and multiple-backtick
+spans are not structurally edited. A rejected explicit command explains why.
+
+Existing cell text, padding, alignment markers and line endings are retained.
+New empty rows use outer pipes. Adding an empty edge column or deleting down to
+one column adds any missing outer pipe needed to keep the renderer's column
+count. This does not align or reformat the other cells. List indentation retains
+its existing sibling-content-column behavior outside supported tables.
+
+To bound a key press, structural editing accepts at most 500,000 UTF-16 units and
+20,000 lines of source. A table and its replacement each accept 100,000 UTF-16
+units, 1,000 rows, 128 columns and 20,000 cells, counting the header and separator.
+Exceeding a limit produces a notice for explicit commands; unsupported Tab
+positions retain their existing behavior.
 
 ## Find and replace
 
@@ -123,5 +157,5 @@ real Pinyin test requires the Simplified Chinese Pinyin input source to be
 enabled; it reports a skip if unavailable. The deterministic marked-text test
 runs independently of installed input sources.
 
-Table cell navigation and row/column operations, rich-text-to-Markdown paste,
-and a dedicated Paste as Plain Text command are deferred to the second batch.
+Rich-text-to-Markdown paste and a dedicated Paste as Plain Text command are
+covered by the separate explicit-paste work package.

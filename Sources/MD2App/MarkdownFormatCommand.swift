@@ -34,7 +34,32 @@ struct MarkdownFormatCommand: Equatable {
     ]
     static var items: [Item] { formatItems + paragraphItems }
 
+    struct TableItem {
+        let title: L10nKey
+        let action: MarkdownTableEditing.Action
+    }
+    static let tableItems: [TableItem] = [
+        TableItem(title: .tableInsertRowAbove, action: .insertRowAbove),
+        TableItem(title: .tableInsertRowBelow, action: .insertRowBelow),
+        TableItem(title: .tableDeleteRow, action: .deleteRow),
+        TableItem(title: .tableInsertColumnBefore, action: .insertColumnBefore),
+        TableItem(title: .tableInsertColumnAfter, action: .insertColumnAfter),
+        TableItem(title: .tableDeleteColumn, action: .deleteColumn)
+    ]
+
     private static func headingShortcut(_ level: Int) -> ModeKeyboardShortcut {
         ModeKeyboardShortcut(key: String(level), modifiers: [.command, .option])
+    }
+}
+
+extension MarkdownTableEditing.Rejection {
+    var localizationKey: L10nKey {
+        switch self {
+        case .unsupported: .tableUnsupported
+        case .selection: .tableSelectCell
+        case .header: .tableKeepHeader
+        case .lastColumn: .tableKeepColumn
+        case .budget: .tableLimitReached
+        }
     }
 }
