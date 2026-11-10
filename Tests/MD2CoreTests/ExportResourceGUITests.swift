@@ -28,7 +28,7 @@ final class ExportResourceGUITests: XCTestCase {
             XCTAssertEqual(imagePresent, policy == .allowRemoteImages, "real PDF pixels did not match the captured policy")
             XCTAssertEqual(server.requests.contains { $0.path.contains(token) }, policy == .allowRemoteImages)
             XCTAssertNotNil(PDFDocument(url: destination)?.string?.range(of: "Export marker"))
-            if policy == .blocked { XCTAssertTrue(PDFDocument(url: destination)?.string?.contains("远程图片已阻止") == true) }
+            if policy == .blocked { XCTAssertTrue(PDFDocument(url: destination)?.string?.precomposedStringWithCompatibilityMapping.contains("远程图片已阻止") == true) }
         }
     }
 
@@ -46,7 +46,7 @@ final class ExportResourceGUITests: XCTestCase {
                 ExportTestEvidence.preservePrint(url)
                 presented += 1
                 XCTAssertEqual(try? self.containsMagenta(url), policy == .allowRemoteImages)
-                if policy == .blocked { XCTAssertTrue(PDFDocument(url: url)?.string?.contains("远程图片已阻止") == true) }
+                if policy == .blocked { XCTAssertTrue(PDFDocument(url: url)?.string?.precomposedStringWithCompatibilityMapping.contains("远程图片已阻止") == true) }
                 return .success(())
             })
             let done = expectation(description: "actual print preparation")
