@@ -8,24 +8,35 @@ struct DocumentRenderSnapshot: Sendable {
     let numberAllEquations: Bool
     var inlineFeatures: InlineFeatures = .init()
     var alertLanguage: AlertLanguage = .english
+    var remoteResourcePolicy: RemoteResourcePolicy = .blocked
+    var offlineHTMLLabels = OfflineHTMLLabels()
 }
 
 /// Serial, non-main-actor rendering keeps CPU work and bibliography IO away
 /// from input handling. DocumentStore coalesces pending preview revisions.
 actor DocumentRenderWorker {
+    private let beforeRendering: (@Sendable () async -> Void)?
+
+    init(beforeRendering: (@Sendable () async -> Void)? = nil) {
+        self.beforeRendering = beforeRendering
+    }
+
     /// Rendering, local file reads, image decoding and base64 encoding all stay
     /// on this worker; bounded image validation must not block editor input.
     func renderSelfContainedHTML(
         _ snapshot: DocumentRenderSnapshot,
-        builder: @Sendable (String, URL?) -> SelfContainedHTMLBuilder.Output = {
-            SelfContainedHTMLBuilder.build(html: $0, baseURL: $1)
-        }
-    ) -> SelfContainedHTMLBuilder.Output {
-        let rendered = render(snapshot, assetMode: .inline)
-        return builder(rendered.html, snapshot.baseURL)
+        builder: (@Sendable (String, URL?) -> SelfContainedHTMLBuilder.Output)? = nil
+    ) async -> SelfContainedHTMLBuilder.Output {
+        var offlineSnapshot = snapshot
+        offlineSnapshot.remoteResourcePolicy = .blocked
+        let rendered = await render(offlineSnapshot, assetMode: .inline)
+        if let builder { return builder(rendered.html, snapshot.baseURL) }
+        return SelfContainedHTMLBuilder.build(html: rendered.html, baseURL: snapshot.baseURL,
+                                             labels: snapshot.offlineHTMLLabels)
     }
 
-    func render(_ snapshot: DocumentRenderSnapshot, assetMode: RenderAssetMode = .appScheme) -> RenderedDocument {
+    func render(_ snapshot: DocumentRenderSnapshot, assetMode: RenderAssetMode = .appScheme) async -> RenderedDocument {
+        await beforeRendering?()
         let fields = FrontMatterReader.fields(in: snapshot.text)
         var bibliography: [String: BibEntry] = [:]
         if let baseURL = snapshot.baseURL {
@@ -39,6 +50,6 @@ actor DocumentRenderWorker {
             numberAllEquations: snapshot.numberAllEquations,
             mathMacros: FrontMatterReader.parseMathMacros(fields["math-macros"]),
             inlineFeatures: snapshot.inlineFeatures, alertLanguage: snapshot.alertLanguage),
-            assetMode: assetMode)
+            assetMode: assetMode, remoteResourcePolicy: snapshot.remoteResourcePolicy)
     }
 }

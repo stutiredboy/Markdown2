@@ -226,6 +226,12 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             DocumentCopyNotice(flow: document.copyFlow, settings: settings, onOpen: onOpenCreatedCopy)
+            RemoteResourceNotice(document: document, settings: settings) { allowed in
+                // Reuse the last reported anchor without awaiting the page that
+                // is about to be retired. The new safe host consumes this target.
+                if let previewAnchor { document.previewJumpAnchor = previewAnchor }
+                document.setRemoteImagesAllowed(allowed)
+            }
             HStack(spacing: 0) {
                 if showsOutline {
                     OutlineSidebar(
@@ -958,68 +964,81 @@ struct ContentView: View {
     /// click) is disabled so it cannot accidentally leave split.
     @ViewBuilder
     private func previewPane(inSplit: Bool) -> some View {
+        let resourceToken = document.remoteResourceContextToken
         ZStack(alignment: .top) {
-            MarkdownPreviewView(
-                html: document.rendered.html,
-                bodyHTML: document.rendered.body,
-                mathMacros: document.rendered.mathMacros,
-                baseURL: document.baseURL,
-                liveUpdate: inSplit,
-                showsFrontMatter: showsFrontMatterInPreview,
-                showsLineNumbers: settings.showsLineNumbersInPreview,
-                sourceLineRevision: document.renderedSourceLineRevision,
-                jumpHeadingID: $document.jumpHeadingID,
-                jumpFraction: $document.jumpFraction,
-                jumpAnchor: $document.previewJumpAnchor,
-                viewportReader: previewViewport,
-                onAnchorChange: { anchor, isUserInitiated in
-                    previewAnchor = anchor
-                    if !inSplit || splitSyncSource != .editor {
-                        outlineSourceLine = anchor.targetSourceLine
-                            ?? document.rendered.outline.heading(forID: anchor.fallbackHeadingID ?? "")?.line ?? 1
-                        if isUserInitiated { clickedOutlineHeadingID = nil }
-                    }
-                    if inSplit, isUserInitiated { syncPreviewToEditor(anchor: anchor) }
-                },
-                onEnterEdit: { if !inSplit { requestMode(.write) } },
-                onEscape: { handlePreviewEscape() },
-                onToggleTask: { line, checked, revision, restoreBoxes in
-                    if inSplit { focusedPane = .preview }
-                    // Capture the live viewport first so the re-render the
-                    // toggle triggers can land back where the user was.
-                    previewViewport.currentAnchor { fresh in
-                        guard document.toggleTask(atLine: line, to: checked, renderedAt: revision) else {
-                            restoreBoxes()
-                            return
+            if document.hasCurrentResourcePreview {
+                MarkdownPreviewView(
+                    html: document.rendered.html,
+                    bodyHTML: document.rendered.body,
+                    mathMacros: document.rendered.mathMacros,
+                    baseURL: document.baseURL,
+                    remoteResourcePolicy: document.remoteResourcePolicy,
+                    remoteResourceContextToken: resourceToken,
+                    onRegisterResourceInvalidator: { invalidate in
+                        document.registerRemoteResourceInvalidator(for: resourceToken, invalidate)
+                    },
+                    liveUpdate: inSplit,
+                    showsFrontMatter: showsFrontMatterInPreview,
+                    showsLineNumbers: settings.showsLineNumbersInPreview,
+                    sourceLineRevision: document.renderedSourceLineRevision,
+                    jumpHeadingID: $document.jumpHeadingID,
+                    jumpFraction: $document.jumpFraction,
+                    jumpAnchor: $document.previewJumpAnchor,
+                    viewportReader: previewViewport,
+                    onAnchorChange: { anchor, isUserInitiated in
+                        previewAnchor = anchor
+                        if !inSplit || splitSyncSource != .editor {
+                            outlineSourceLine = anchor.targetSourceLine
+                                ?? document.rendered.outline.heading(forID: anchor.fallbackHeadingID ?? "")?.line ?? 1
+                            if isUserInitiated { clickedOutlineHeadingID = nil }
                         }
-                        document.previewJumpAnchor = fresh ?? previewAnchor
+                        if inSplit, isUserInitiated { syncPreviewToEditor(anchor: anchor) }
+                    },
+                    onEnterEdit: { if !inSplit { requestMode(.write) } },
+                    onEscape: { handlePreviewEscape() },
+                    onToggleTask: { line, checked, revision, restoreBoxes in
+                        if inSplit { focusedPane = .preview }
+                        // Capture the live viewport first so the re-render the
+                        // toggle triggers can land back where the user was.
+                        previewViewport.currentAnchor { fresh in
+                            guard document.toggleTask(atLine: line, to: checked, renderedAt: revision) else {
+                                restoreBoxes()
+                                return
+                            }
+                            document.previewJumpAnchor = fresh ?? previewAnchor
+                        }
+                    },
+                    onRevealSourceLine: { line in revealSourceLineInEditor(line, inSplit: inSplit) },
+                    onOpenMarkdownLink: onOpenMarkdownLink,
+                    onMissingLocalLink: { document.reportMissingLocalLink($0) },
+                    findQuery: $previewFindQuery,
+                    findOptions: document.editorSession.find.options,
+                    findNavigation: $previewFindNavigation,
+                    focusToken: previewSurfaceFocusToken,
+                    onFindShortcut: { action in
+                        if inSplit { focusedPane = .preview }
+                        handlePreviewFindAction(action)
+                    },
+                    onFindResult: { total, index in
+                        previewMatchTotal = total
+                        previewMatchIndex = index
+                    },
+                    onFindUnavailable: { document.editorSession.find.previewUnavailable = $0 },
+                    localImageMissingLabel: settings.text(.imageNotFound),
+                    remoteImageUnavailableLabel: settings.text(.remoteImageUnavailable),
+                    remoteImageBlockedLabel: settings.text(.remoteImageBlocked),
+                    genericImageLoadFailedLabel: settings.text(.imageLoadFailed),
+                    typography: settings.typography,
+                    onSelectionChange: { selection in
+                        previewSelection = selection
+                        if inSplit, selection != nil { focusedPane = .preview }
                     }
-                },
-                onRevealSourceLine: { line in revealSourceLineInEditor(line, inSplit: inSplit) },
-                onOpenMarkdownLink: onOpenMarkdownLink,
-                onMissingLocalLink: { document.reportMissingLocalLink($0) },
-                findQuery: $previewFindQuery,
-                findOptions: document.editorSession.find.options,
-                findNavigation: $previewFindNavigation,
-                focusToken: previewSurfaceFocusToken,
-                onFindShortcut: { action in
-                    if inSplit { focusedPane = .preview }
-                    handlePreviewFindAction(action)
-                },
-                onFindResult: { total, index in
-                    previewMatchTotal = total
-                    previewMatchIndex = index
-                },
-                onFindUnavailable: { document.editorSession.find.previewUnavailable = $0 },
-                localImageMissingLabel: settings.text(.imageNotFound),
-                remoteImageUnavailableLabel: settings.text(.remoteImageUnavailable),
-                genericImageLoadFailedLabel: settings.text(.imageLoadFailed),
-                typography: settings.typography,
-                onSelectionChange: { selection in
-                    previewSelection = selection
-                    if inSplit, selection != nil { focusedPane = .preview }
-                }
-            )
+                )
+                .id(resourceToken)
+            } else {
+                ProgressView(settings.text(.remoteImagesPreparing))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
 
             if previewFindVisible {
                 NativeFindBar(pane: .preview) {
