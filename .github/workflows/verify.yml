@@ -38,19 +38,22 @@ jobs:
       - name: Test release artifact validation
         run: python3 -m unittest discover -s Tests/WorkflowTests -p 'test_*.py'
 
-      # The heartbeat benchmark has a 200 ms deadline, and the inline scaling
-      # suite compares a 500-fragment render against a 1,000-fragment one.
-      # Run each without other Swift Testing cases competing for the shared
-      # runner's three cores: under that load the longer sample rarely lands in
-      # a quiet slot, so a linear 2x path measured 3.2-3.6x.
+      # The render heartbeat has a 200 ms deadline and the HTML export heartbeat
+      # has a 2 s deadline. Run each in its own process so unrelated MainActor
+      # tests cannot consume its time budget. The inline scaling suite likewise
+      # needs isolation: a linear 2x path measured 3.2-3.6x under shared CPU load.
+      # Every exclusion below has a mandatory isolated gate before packaging.
       - name: Run default tests (GUI suites run in gui-tests)
-        run: swift test --skip 'P1RegressionTests.renderingYieldsMainActorAndLatestRevisionWins' --skip 'InlineRenderingPerformanceTests'
+        run: swift test --skip 'P1RegressionTests.renderingYieldsMainActorAndLatestRevisionWins' --skip 'InlineRenderingPerformanceTests' --skip 'SelfContainedHTMLExportTests.exportImageBuilderRunsOffMainActorWhileInputCanContinue'
 
       - name: Verify inline scaling ratios in isolation
         run: swift test --filter 'InlineRenderingPerformanceTests'
 
-      - name: Verify main actor heartbeat in isolation
-        run: swift test --filter 'P1RegressionTests.renderingYieldsMainActorAndLatestRevisionWins'
+      - name: Verify main actor heartbeats in isolation
+        run: |
+          set -euo pipefail
+          swift test --filter 'P1RegressionTests.renderingYieldsMainActorAndLatestRevisionWins'
+          swift test --filter 'SelfContainedHTMLExportTests.exportImageBuilderRunsOffMainActorWhileInputCanContinue'
 
       - name: Build and package without installing or publishing
         env:
