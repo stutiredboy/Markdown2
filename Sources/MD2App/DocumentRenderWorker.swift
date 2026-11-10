@@ -30,9 +30,17 @@ actor DocumentRenderWorker {
         var offlineSnapshot = snapshot
         offlineSnapshot.remoteResourcePolicy = .blocked
         let rendered = await render(offlineSnapshot, assetMode: .inline)
-        if let builder { return builder(rendered.html, snapshot.baseURL) }
-        return SelfContainedHTMLBuilder.build(html: rendered.html, baseURL: snapshot.baseURL,
-                                             labels: snapshot.offlineHTMLLabels)
+        var output = builder?(rendered.html, snapshot.baseURL)
+            ?? SelfContainedHTMLBuilder.build(html: rendered.html, baseURL: snapshot.baseURL,
+                                              labels: snapshot.offlineHTMLLabels)
+        // Match only the renderer's generated placeholder in the content body.
+        // Source/code mentions are escaped; bundled scripts are outside the body.
+        // Source-line attributes can follow the class attribute, before `>`.
+        output.containsDiagrams = [PreviewClass.diagramMermaid, PreviewClass.diagramFlow,
+                                   PreviewClass.diagramSequence].contains { kind in
+            rendered.body.contains("<div class=\"\(PreviewClass.diagram) \(kind) \(PreviewClass.diagramPending)\"")
+        }
+        return output
     }
 
     func render(_ snapshot: DocumentRenderSnapshot, assetMode: RenderAssetMode = .appScheme) async -> RenderedDocument {

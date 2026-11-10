@@ -442,6 +442,7 @@ enum L10nKey: String, CaseIterable, Sendable {
     case mixedLineEndings
     case alertCouldNotExport
     case alertHTMLExportIncomplete, alertHTMLExportRemoteImages, alertHTMLExportLocalImages, alertHTMLExportMoreImages
+    case alertHTMLExported, alertHTMLExportDiagramResources
     case alertCouldNotPrint
     case alertPandocRequired
     case alertPandocRequiredDetail
@@ -677,6 +678,8 @@ enum L10n {
 
         .alertCouldNotExport: "Could not export %@.",
         .alertHTMLExportIncomplete: "%@ was exported as offline HTML with some images omitted.",
+        .alertHTMLExported: "%@ was exported as offline HTML.",
+        .alertHTMLExportDiagramResources: "Images generated inside diagrams are not embedded in offline HTML. Unsupported resource styles may be omitted; ordinary vector geometry is retained.",
         .alertHTMLExportRemoteImages: "Remote images were replaced with inactive placeholders:",
         .alertHTMLExportLocalImages: "These local images could not be embedded and were replaced with inactive placeholders:",
         .alertHTMLExportMoreImages: "…and %@ more",
@@ -937,6 +940,8 @@ enum L10n {
 
         .alertCouldNotExport: "无法导出 %@。",
         .alertHTMLExportIncomplete: "%@ 已导出为离线 HTML，部分图片已省略。",
+        .alertHTMLExported: "%@ 已导出为离线 HTML。",
+        .alertHTMLExportDiagramResources: "离线 HTML 不会嵌入图表内部生成的图片；不支持的资源样式可能被省略，普通矢量图形会保留。",
         .alertHTMLExportRemoteImages: "以下远程图片已替换为不可加载的占位提示：",
         .alertHTMLExportLocalImages: "以下本地图片无法嵌入，已替换为不可加载的占位提示：",
         .alertHTMLExportMoreImages: "另有 %@ 张未列出",

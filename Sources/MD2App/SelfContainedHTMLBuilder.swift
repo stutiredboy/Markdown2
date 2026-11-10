@@ -27,6 +27,8 @@ enum SelfContainedHTMLBuilder {
         let unembeddedLocalImages: [String]
         /// Content/size rejections have a specific explanation in the export notice.
         var localImageFailures: [String: ImageFailure] = [:]
+        /// The worker observed a generated diagram placeholder, not a known image omission.
+        var containsDiagrams: Bool = false
     }
 
     typealias ImageFailure = LocalImageValidator.ImageFailure

@@ -569,6 +569,7 @@ final class DocumentStore: ObservableObject {
         let exportDocumentTitle = self.exportDocumentTitle
         let profile = exportProfileProvider()
         let snapshot = makeRenderSnapshot()
+        let remoteImageBlockedLabel = alertText(.remoteImageBlocked)
         let rendered = await renderWorker.render(snapshot)
         guard resourceContextIsCurrent(contextToken) else { return }
 
@@ -579,7 +580,8 @@ final class DocumentStore: ObservableObject {
             outline: rendered.outline,
             baseURL: baseURL,
             remoteResourcePolicy: snapshot.remoteResourcePolicy,
-            documentTitle: exportDocumentTitle
+            documentTitle: exportDocumentTitle,
+            remoteImageBlockedLabel: remoteImageBlockedLabel
         ) { [weak self] result in
             guard let self, self.resourceContextIsCurrent(contextToken) else { return }
             self.pdfExporter = nil
@@ -609,6 +611,7 @@ final class DocumentStore: ObservableObject {
         let exportDocumentTitle = self.exportDocumentTitle
         let profile = exportProfileProvider()
         let snapshot = makeRenderSnapshot()
+        let remoteImageBlockedLabel = alertText(.remoteImageBlocked)
         let rendered = await renderWorker.render(snapshot)
         guard resourceContextIsCurrent(contextToken) else { return }
 
@@ -620,7 +623,8 @@ final class DocumentStore: ObservableObject {
             baseURL: baseURL,
             remoteResourcePolicy: snapshot.remoteResourcePolicy,
             profile: profile,
-            documentTitle: exportDocumentTitle
+            documentTitle: exportDocumentTitle,
+            remoteImageBlockedLabel: remoteImageBlockedLabel
         ) { [weak self] result in
             guard let self, self.resourceContextIsCurrent(contextToken) else { return }
             self.documentPrinter = nil
@@ -674,9 +678,9 @@ final class DocumentStore: ObservableObject {
     /// How many image names each group of the HTML export notice lists.
     private static let maximumListedImages = 5
 
-    /// The notice for images replaced with inert placeholders in offline HTML,
-    /// or nil when everything is embedded. Each group lists a capped number of names,
-    /// so a long run of remote images cannot hide a missing local one.
+    /// Names known image omissions and explains the offline diagram boundary.
+    /// Diagram presence alone does not establish that an image was omitted.
+    /// Each image group is capped so remote images cannot hide a missing local one.
     private func htmlExportNotice(for export: SelfContainedHTMLBuilder.Output, fileName: String) -> DocumentAlert? {
         let localNames = export.unembeddedLocalImages.map { name in
             guard let reason = export.localImageFailures[name] else { return name }
@@ -686,17 +690,20 @@ final class DocumentStore: ObservableObject {
             (heading: alertText(.alertHTMLExportRemoteImages), names: export.remoteImages),
             (heading: alertText(.alertHTMLExportLocalImages), names: localNames)
         ].filter { !$0.names.isEmpty }
-        guard !groups.isEmpty else { return nil }
+        guard !groups.isEmpty || export.containsDiagrams else { return nil }
 
-        let sections = groups.map { group in
+        var sections = groups.map { group in
             var lines = [group.heading] + group.names.prefix(Self.maximumListedImages)
             if group.names.count > Self.maximumListedImages {
                 lines.append(alertText(.alertHTMLExportMoreImages, String(group.names.count - Self.maximumListedImages)))
             }
             return lines.joined(separator: "\n")
         }
+        if export.containsDiagrams {
+            sections.append(alertText(.alertHTMLExportDiagramResources))
+        }
         return DocumentAlert(
-            message: alertText(.alertHTMLExportIncomplete, fileName),
+            message: alertText(groups.isEmpty ? .alertHTMLExported : .alertHTMLExportIncomplete, fileName),
             detail: sections.joined(separator: "\n\n")
         )
     }

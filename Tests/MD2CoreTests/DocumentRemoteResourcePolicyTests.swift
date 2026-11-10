@@ -187,6 +187,34 @@ struct DocumentRemoteResourcePolicyTests {
         #expect(store.alert == nil)
     }
 
+    @Test(arguments: [false, true])
+    func nativeExportKeepsItsCapturedLabelWhenLanguageChangesDuringRendering(printing: Bool) async {
+        let gate = RemoteRenderingGate()
+        let worker = DocumentRenderWorker(beforeRendering: { await gate.pauseIfArmed() })
+        let exporter = DeferredRemoteExporter()
+        let printer = DeferredRemotePrinter()
+        let language = RemoteAlertLanguage()
+        let store = DocumentStore(pdfDestinationPicker: { _ in URL(fileURLWithPath: "/unused.pdf") },
+                                  pdfExporterFactory: { _, _ in exporter },
+                                  documentPrinterFactory: { printer },
+                                  alertTextProvider: { L10n.text($0, language: language.value) },
+                                  renderWorker: worker)
+        let capturedLabel = L10n.text(.remoteImageBlocked, language: language.value)
+        await store.flushPendingRender()
+        await gate.arm()
+        let job = Task {
+            if printing { await store.print() } else { await store.exportPDF() }
+        }
+        await gate.waitUntilStarted()
+        language.value = .english
+        #expect(L10n.text(.remoteImageBlocked, language: language.value) != capturedLabel)
+        #expect(exporter.labels.isEmpty && printer.labels.isEmpty)
+        await gate.release()
+        await job.value
+        #expect((printing ? printer.labels : exporter.labels) == [capturedLabel])
+        store.closeDocument(discardRecovery: true)
+    }
+
     @Test func oldPDFPreparationCannotStartAfterRevokeOrClearANewerJob() async {
         let gate = RemoteRenderingGate()
         let worker = DocumentRenderWorker(beforeRendering: { await gate.pauseIfArmed() })
@@ -301,6 +329,7 @@ struct DocumentRemoteResourcePolicyTests {
                               .remoteImagesAllowConfirm, .remoteImagesRevoke, .remoteImagesExplanation,
                               .remoteImagesPrivacy, .remoteImagesAllowedExplanation, .remoteImagesPreparing,
                               .remoteImageBlocked, .offlineHTMLRemoteImageBlocked, .offlineHTMLLocalImageUnavailable,
+                              .alertHTMLExported, .alertHTMLExportDiagramResources,
                               .alertExternalFormatExported, .alertExternalFormatNetworkBoundary]
         for key in keys {
             let english = L10n.text(key, language: .english), chinese = L10n.text(key, language: .zhHans)
@@ -309,6 +338,11 @@ struct DocumentRemoteResourcePolicyTests {
             #expect(chinese != english)
         }
     }
+}
+
+@MainActor
+private final class RemoteAlertLanguage {
+    var value = AppLanguage.zhHans
 }
 
 private actor RemoteRenderingGate {
@@ -335,11 +369,14 @@ private actor RemoteRenderingGate {
 @MainActor
 private final class DeferredRemoteExporter: PDFExporting {
     var policies: [RemoteResourcePolicy] = []
+    var labels: [String] = []
     var cancelCount = 0
     private var completion: ((Result<Void, Error>) -> Void)?
     func export(html: String, outline: [Heading], baseURL: URL?, remoteResourcePolicy: RemoteResourcePolicy,
-                documentTitle: String, completion: @escaping (Result<Void, Error>) -> Void) {
+                documentTitle: String, remoteImageBlockedLabel: String,
+                completion: @escaping (Result<Void, Error>) -> Void) {
         policies.append(remoteResourcePolicy)
+        labels.append(remoteImageBlockedLabel)
         self.completion = completion
     }
     func cancel() { cancelCount += 1 }
@@ -349,11 +386,14 @@ private final class DeferredRemoteExporter: PDFExporting {
 @MainActor
 private final class DeferredRemotePrinter: DocumentPrinting {
     var policy: RemoteResourcePolicy?
+    var labels: [String] = []
     var cancelCount = 0
     var completion: ((Result<Void, Error>) -> Void)?
     func print(html: String, outline: [Heading], baseURL: URL?, remoteResourcePolicy: RemoteResourcePolicy,
-               profile: ExportProfile, documentTitle: String, completion: @escaping (Result<Void, Error>) -> Void) {
+               profile: ExportProfile, documentTitle: String, remoteImageBlockedLabel: String,
+               completion: @escaping (Result<Void, Error>) -> Void) {
         policy = remoteResourcePolicy
+        labels.append(remoteImageBlockedLabel)
         self.completion = completion
     }
     func cancel() { cancelCount += 1 }
