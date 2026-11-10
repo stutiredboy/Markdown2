@@ -60,6 +60,7 @@ extension RenderedPageTesting {
         files: [String: Data] = [:],
         embedsFiles: Bool = false,
         baseURL: URL? = nil,
+        remoteResourcePolicy: RemoteResourcePolicy = .blocked,
         onOpenMarkdownLink: @escaping (URL) -> Void = { _ in },
         onMissingLocalLink: @escaping (URL) -> Void = { _ in },
         onOpenWithSystem: @escaping (URL) -> Void = { _ in },
@@ -79,9 +80,10 @@ extension RenderedPageTesting {
         let webView: WKWebView
         switch surface {
         case .preview:
-            let rendered = MarkdownRenderer().render(markdown, assetMode: .appScheme)
+            let rendered = MarkdownRenderer().render(markdown, assetMode: .appScheme, remoteResourcePolicy: remoteResourcePolicy)
             let hosting = NSHostingView(rootView: MarkdownPreviewView(
                 html: edit(rendered.html), bodyHTML: rendered.body, baseURL: baseURL,
+                remoteResourcePolicy: remoteResourcePolicy,
                 jumpHeadingID: .constant(nil), jumpFraction: .constant(nil), jumpAnchor: .constant(nil),
                 onOpenMarkdownLink: onOpenMarkdownLink,
                 onMissingLocalLink: onMissingLocalLink,
@@ -100,7 +102,8 @@ extension RenderedPageTesting {
             webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 800, height: 600), configuration: configuration)
             webView.navigationDelegate = delegate
             window.contentView = webView
-            loader.load(edit(MarkdownRenderer().render(markdown, assetMode: .appScheme).html), baseURL: nil, in: webView)
+            loader.load(edit(MarkdownRenderer().render(markdown, assetMode: .appScheme, remoteResourcePolicy: remoteResourcePolicy).html),
+                baseURL: nil, remoteResourcePolicy: remoteResourcePolicy, in: webView)
         case .exportedFile:
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent("md2-page-\(UUID())")
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

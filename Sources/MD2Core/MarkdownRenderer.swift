@@ -2844,7 +2844,9 @@ public struct MarkdownRenderer: Sendable {
         scripts.add(.katex)
         scripts.add(.mhchem)
         scripts.addInline(mathBootstrap(macros: config.mathMacros))
-        addDiagramScripts(for: body, to: &scripts)
+        addDiagramScripts(for: body, to: &scripts, offlineArtifact: assetMode == .inline && remoteResourcePolicy == .blocked,
+            imageLabel: config.alertLanguage == .simplifiedChinese
+            ? "离线导出已省略图片" : "Image omitted from offline export")
         return """
         <!doctype html>
         <html>
@@ -3380,7 +3382,7 @@ public struct MarkdownRenderer: Sendable {
     /// pay nothing — notably the large Mermaid bundle is never loaded unless a
     /// `mermaid` block is present. Shared dependencies are added once, in
     /// dependency order, before the engines that consume them.
-    private func addDiagramScripts(for body: String, to scripts: inout PageScripts) {
+    private func addDiagramScripts(for body: String, to scripts: inout PageScripts, offlineArtifact: Bool, imageLabel: String) {
         let hasMermaid = body.contains(PreviewClass.diagramMermaid)
         let hasFlow = body.contains(PreviewClass.diagramFlow)
         let hasSequence = body.contains(PreviewClass.diagramSequence)
@@ -3404,7 +3406,8 @@ public struct MarkdownRenderer: Sendable {
             scripts.add(.mermaid)
         }
 
-        scripts.addInline(diagramBootstrap)
+        let offline = offlineArtifact ? OfflineDiagramResources.script(imageLabel: imageLabel) : ""
+        scripts.addInline(offline + diagramBootstrap)
     }
 
     /// Client-side bootstrap that renders each diagram placeholder via its
@@ -3552,6 +3555,7 @@ public struct MarkdownRenderer: Sendable {
             try {
                 el.textContent = "";
                 flowchart.parse(source).drawSVG(el);
+                if (typeof md2OfflineDiagram === "function") { md2OfflineDiagram(el); }
                 reveal(el);
             } catch (err) {
                 fail(el, source);
@@ -3567,6 +3571,7 @@ public struct MarkdownRenderer: Sendable {
             try {
                 sel.textContent = "";
                 Diagram.parse(ssource).drawSVG(sel, { theme: "simple" });
+                if (typeof md2OfflineDiagram === "function") { md2OfflineDiagram(sel); }
                 reveal(sel);
             } catch (err) {
                 fail(sel, ssource);
@@ -3595,7 +3600,12 @@ public struct MarkdownRenderer: Sendable {
                     window.__md2DiagramPending++;
                     try {
                         mermaid.render("md2-mermaid-" + idx, source).then(function (result) {
-                            el.innerHTML = result.svg;
+                            if (typeof md2OfflineDiagram === "function") {
+                                var template = document.createElement('template');
+                                template.innerHTML = result.svg;
+                                md2OfflineDiagram(template.content);
+                                el.replaceChildren(template.content);
+                            } else { el.innerHTML = result.svg; }
                             reveal(el);
                         }).catch(function () {
                             fail(el, source);

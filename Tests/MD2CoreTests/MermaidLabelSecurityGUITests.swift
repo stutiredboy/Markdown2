@@ -117,9 +117,9 @@ final class MermaidLabelSecurityGUITests: XCTestCase, RenderedPageTesting {
         }
     }
 
-    /// A stated limit, like a Markdown image: `strict` does not stop a label
-    /// loading a remote image. The `diagram-rendering` spec records why.
-    @MainActor func testImageInLabelIsStillLoadedAsAStatedLimit() throws {
+    /// Mermaid retains an image label; the shared resource policy is responsible
+    /// for refusing its request. Request counting is in RemoteResourcePolicyGUITests.
+    @MainActor func testImageInLabelRemainsSubjectToTheResourcePolicy() throws {
         let source = "graph TD\n A[\"<img src='https://example.invalid/label.png'>\"]"
         try withPage("```mermaid\n\(source)\n```", on: .offscreen) { webView in
             try assertRendered(webView)

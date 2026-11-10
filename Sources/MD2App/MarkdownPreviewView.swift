@@ -1970,7 +1970,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             // Taken for loaded, a page on its way out would receive an edit that
             // the load then overwrites with older text.
-            guard !isAwaitingCommit else { return }
+            guard resourceContextIsActive, !isAwaitingCommit,
+                  documentLoader.currentNavigation == nil || navigation === documentLoader.currentNavigation else { return }
             isLoaded = true
             applyTypography(in: webView)
             applyFrontMatterVisibility(in: webView)
@@ -1980,6 +1981,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            guard resourceContextIsActive else { return }
             (webView as? PreviewWebView)?.invalidateContextMenu()
             // A new document started loading; hold scrolling until it finishes.
             isLoaded = false
