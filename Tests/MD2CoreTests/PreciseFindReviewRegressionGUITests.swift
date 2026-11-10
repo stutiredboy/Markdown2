@@ -129,7 +129,8 @@ final class PreciseFindReviewRegressionGUITests: XCTestCase {
         for change in ["options", "reload", "host"] {
             let harness = InteractionTestWindow()
             defer { harness.close() }
-            let coordinator = MarkdownPreviewView.Coordinator()
+            let originalCoordinator = MarkdownPreviewView.Coordinator()
+            var coordinator = originalCoordinator
             let configuration = WKWebViewConfiguration()
             coordinator.documentLoader.install(on: configuration)
             let oldWeb = HeldFindNavigationResultWebView(frame: .zero, configuration: configuration)
@@ -174,10 +175,21 @@ final class PreciseFindReviewRegressionGUITests: XCTestCase {
                 let countAtDetach = observed.count
                 late()
                 XCTAssertEqual(observed.count, countAtDetach, "detached host must not publish a pending completion")
-                web = WKWebView(frame: .zero)
-                _ = try harness.js(script.replacingOccurrences(of: "searchTotal = 9", with: "searchTotal = 3"), web)
+                // SwiftUI replaces the entire host and Coordinator after
+                // dismantling its security context; that context stays retired.
+                coordinator = MarkdownPreviewView.Coordinator()
+                let replacementConfiguration = WKWebViewConfiguration()
+                coordinator.documentLoader.install(on: replacementConfiguration)
+                web = WKWebView(frame: .zero, configuration: replacementConfiguration)
+                web.navigationDelegate = coordinator
+                coordinator.onFindResult = { observed.append(($0, $1)) }
                 coordinator.attachFindHost(web)
+                coordinator.lastFindQuery = "needle"
+                coordinator.beginLoading()
                 coordinator.runFindWhenReady("needle", in: web)
+                coordinator.documentLoader.load("<html><head><script>" + script.replacingOccurrences(of: "searchTotal = 9", with: "searchTotal = 3") + "</script></head><body>replacement page</body></html>", baseURL: nil, in: web)
+                XCTAssertFalse(originalCoordinator.resourceContextIsActive, "the retired security context must remain invalid")
+                XCTAssertFalse(coordinator.isLoaded, "queue navigation before the replacement page's real commit/finish")
             }
             // These are current-generation commands, queued behind the new
             // search/page. All three must run once and in order.
@@ -189,7 +201,7 @@ final class PreciseFindReviewRegressionGUITests: XCTestCase {
             XCTAssertEqual(Array(observed.suffix(4)).map { $0.0 }, [3, 3, 3, 3], change)
             XCTAssertEqual(Array(observed.suffix(4)).map { $0.1 }, [1, 2, 3, 2], change)
             let acceptedCount = observed.count
-            late()
+            withExtendedLifetime(originalCoordinator) { late() }
             XCTAssertEqual(observed.count, acceptedCount, "\(change): old completion must not publish")
             XCTAssertEqual(observed.last?.0, 3, change)
             XCTAssertEqual(observed.last?.1, 2, change)
