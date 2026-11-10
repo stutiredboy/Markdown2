@@ -46,7 +46,8 @@ change the appearance of resource-dependent diagrams. The notice distinguishes
 omissions from a fully embedded export; it does not claim to enumerate every
 future image a diagram engine could create. User-activated hyperlinks remain links.
 
-PDF/Print wait for supported HTML images and rendered CSS/SVG image references.
+PDF/Print wait for supported HTML images, video poster images and rendered
+CSS/SVG image references, including SVG filter images.
 The latter may need an additional in-page image decode request, bounded to 256
 unique URLs and the same total deadline. This is not a downloaded-byte quota.
 Unsupported or unverifiable image work fails visibly rather than producing a

@@ -1,6 +1,6 @@
 # Remote resources: policy and acceptance contract
 
-Baseline: main `8f8df8a8d24ba65ec667293bb4e9d2ed6d3c1cde` (PR57 merged). Status: contract frozen; implementation and independent acceptance pending.
+Baseline: main `8f8df8a8d24ba65ec667293bb4e9d2ed6d3c1cde` (PR57 merged). Contract frozen. Package reviews and acceptance results are recorded in the pull request; this plan is not a test report.
 
 ## Priorities and behavior
 
