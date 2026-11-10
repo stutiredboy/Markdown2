@@ -7,7 +7,7 @@ import Testing
 @MainActor
 struct MarkdownTableNativeTests {
     @Test(arguments: ["rows", "cells", "table", "source", "lines"])
-    func recognizedTableGrowthBudgetConsumesTab(_ limit: String) throws {
+    func recognizedTableGrowthBudgetConsumesTab(_ limit: String) async throws {
         let shortTable = "| A |\n| - |\n| z |"
         let source: String
         switch limit {
@@ -29,6 +29,7 @@ struct MarkdownTableNativeTests {
         #expect(MarkdownTableEditing.result(source, selection: target, action: .nextCell) == .failure(.budget))
         let pureTab = try #require(MarkdownEditing.edit(source, selection: target, action: .indent))
         #expect(pureTab.range.length == 0 && pureTab.replacement.isEmpty && pureTab.selection == target)
+        await allowQueuedMainCallbacks()
         let session = MarkdownEditorSession()
         session.undoManager.groupsByEvent = false
         var rejection: MarkdownTableEditing.Rejection?
@@ -54,18 +55,28 @@ struct MarkdownTableNativeTests {
         #expect(rejection == .budget)
         #expect(changes == 0)
         #expect(!session.undoManager.canUndo)
+        await allowQueuedMainCallbacks()
         // Navigation within the same supported table does not grow it.
         #expect(editor.performMarkdownAction(.outdent))
         #expect(editor.selectedRange() != target)
         #expect(editor.string == source)
         #expect(rejection == nil)
         #expect(!session.undoManager.canUndo)
+        await allowQueuedMainCallbacks()
         #expect(session.textView(editor, doCommandBy: tab))
         let returnedCell = editor.selectedRange()
         #expect(returnedCell.location <= target.location && NSMaxRange(returnedCell) == NSMaxRange(target))
         #expect(editor.string == source)
         #expect(changes == 0)
         #expect(!session.undoManager.canUndo)
+    }
+
+    /// These are separate user commands; allow the real main queue to service
+    /// pending callbacks between them without yielding inside a tested command.
+    private func allowQueuedMainCallbacks() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
     }
 
     @Test(arguments: [false, true])
