@@ -85,6 +85,12 @@ public enum MarkdownEditing {
         return prefix.indent + marker.continuation.count
     }
 
+    static func tableListOpeningFence(_ body: String) -> MarkdownFence? {
+        let prefix = Prefix(body)
+        guard prefix.list != nil, prefix.quoteCount == 0 else { return nil }
+        return MarkdownFence.opening(in: (body as NSString).substring(from: prefix.end))
+    }
+
     private struct Line {
         let range: NSRange
         let body: String

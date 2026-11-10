@@ -111,12 +111,10 @@ public enum MarkdownTableEditing {
     /// Conservatively excludes raw block containers. Fence/list semantics are
     /// delegated to MarkdownEditing's existing shared context checks.
     private static func safeBlockContext(_ lines: [Line]) -> Bool {
-        let codeMasked = maskingParagraphCode(lines)
+        let context = paragraphContext(lines)
         var comment = false
         var tags: [String] = []
         var math: String?
-        var fence: MarkdownFence?
-        var listIndent: Int?
         var frontMatter = lines.first?.body == "---"
         let expression = try! NSRegularExpression(pattern: #"</?(?:address|article|aside|blockquote|body|details|dialog|div|dl|fieldset|figure|footer|form|h[1-6]|header|html|iframe|main|nav|ol|p|pre|script|section|style|summary|table|ul)(?=[\s/>]|$)[^>]*(?:>|$)"#, options: [.caseInsensitive])
         for (index, line) in lines.enumerated() {
@@ -125,25 +123,12 @@ public enum MarkdownTableEditing {
                 if index > 0, ["---", "..."].contains(body.trimmingCharacters(in: .whitespaces)) { frontMatter = false }
                 continue
             }
-            if let active = fence {
-                if active.isClosed(by: body) { fence = nil }
-                continue
-            }
-            if !comment, tags.isEmpty, math == nil {
-                let trimmed = body.trimmingCharacters(in: .whitespaces)
-                // These are completed outer containers/literal blocks. Their
-                // HTML-looking contents cannot open a top-level HTML block.
-                if MarkdownLine.isBlockquote(trimmed) || MarkdownLine.isIndentedCode(body) { continue }
-                if let column = MarkdownEditing.tableListContentColumn(body) {
-                    listIndent = min(listIndent ?? column, column)
-                    continue
-                }
-                if let column = listIndent, trimmed.isEmpty || MarkdownIndentation.width(body) >= column { continue }
-                listIndent = nil
-            }
-            if !comment, tags.isEmpty, let opening = MarkdownFence.opening(in: body) { fence = opening; continue }
+            // Tags inside completed blocks do not open a later top-level HTML
+            // block. An already-open raw HTML/comment scope still owns its
+            // contents, including any Markdown-looking closing-tag line.
+            if !comment, tags.isEmpty, math == nil, !context.inspectHTML[index] { continue }
             var visible = ""
-            let prose = !comment && tags.isEmpty ? codeMasked[index] : body
+            let prose = !comment && tags.isEmpty ? context.masked[index] : body
             var remainder = prose[...]
             while !remainder.isEmpty {
                 if comment {
@@ -174,43 +159,137 @@ public enum MarkdownTableEditing {
         return !comment && tags.isEmpty && math == nil && !frontMatter
     }
 
-    /// Inline code can cross source lines inside one paragraph. Keep completed
-    /// block/container boundaries out of that paragraph so an unmatched tick in
-    /// an earlier quote/list cannot claim later top-level HTML.
-    private static func maskingParagraphCode(_ lines: [Line]) -> [String] {
-        var result = lines.map(\.body)
-        var paragraph: [Int] = []
-        var listIndent: Int?
-        func flush() {
-            guard !paragraph.isEmpty else { return }
-            let text = paragraph.map { lines[$0].body }.joined(separator: "\n")
+    /// Locate inline ownership using the renderer's block ordering and shared
+    /// line grammar. Only an ordinary paragraph can own a code span across
+    /// lines; headings, tables, rules and containers are completed scopes.
+    /// Indented lines do not interrupt an already-started paragraph, matching
+    /// MarkdownRenderer.paragraphBlock rather than treating every indent as code.
+    private static func paragraphContext(_ lines: [Line]) -> (masked: [String], inspectHTML: [Bool]) {
+        let bodies = lines.map(\.body)
+        let trimmed = bodies.map { $0.trimmingCharacters(in: .whitespaces) }
+        var result = bodies, inspectHTML = Array(repeating: false, count: lines.count)
+        let headings = bodies.map { MarkdownLine.heading(in: $0) != nil }
+        let rules = bodies.map(MarkdownLine.isHorizontalRule)
+        let quotes = trimmed.map(MarkdownLine.isBlockquote)
+        let indented = bodies.map(MarkdownLine.isIndentedCode)
+        let fences = bodies.map(MarkdownFence.opening)
+        let listColumns = bodies.map(MarkdownEditing.tableListContentColumn)
+        let footnotes = bodies.map { $0.range(of: #"^ {0,3}\[\^([^\]\s]+)\]:"#, options: .regularExpression) != nil }
+        var tableStarts = Array(repeating: false, count: lines.count)
+        var setextStarts = tableStarts
+        for index in lines.indices where index + 1 < lines.count {
+            tableStarts[index] = bodies[index].contains("|") && MarkdownTableSyntax.row(bodies[index + 1])?.isDelimiter == true
+            setextStarts[index] = !trimmed[index].isEmpty && !headings[index] && fences[index] == nil
+                && !rules[index] && listColumns[index] == nil && !quotes[index]
+                && MarkdownLine.setextHeadingLevel(in: bodies[index + 1]) != nil
+        }
+        // Precompute closers so many unmatched math openers cannot cause
+        // quadratic lookahead. These are the same fixed block delimiters.
+        var mathEnds: [Int: Int] = [:]
+        for (opening, closing) in [("$$", "$$"), (#"\["#, #"\]"#)] {
+            var nextClose: Int?
+            for index in lines.indices.reversed() {
+                if trimmed[index].hasPrefix(opening) {
+                    let rest = trimmed[index].dropFirst(opening.count)
+                    if rest.hasSuffix(closing) { mathEnds[index] = index + 1 }
+                    else if let nextClose { mathEnds[index] = nextClose + 1 }
+                }
+                if trimmed[index].hasSuffix(closing) { nextClose = index }
+            }
+        }
+        func paragraphBreak(_ index: Int) -> Bool {
+            trimmed[index].isEmpty || headings[index] || fences[index] != nil || rules[index]
+                || setextStarts[index] || trimmed[index] == "[TOC]" || quotes[index]
+                || footnotes[index] || listColumns[index] != nil || mathEnds[index] != nil || tableStarts[index]
+        }
+        func mask(_ range: Range<Int>) {
+            let text = range.map { bodies[$0] }.joined(separator: "\n")
             let masked = maskingInlineCode(text) as NSString
             var offset = 0
-            for index in paragraph {
-                let length = lines[index].body.utf16.count
+            for index in range {
+                let length = bodies[index].utf16.count
                 result[index] = masked.substring(with: NSRange(location: offset, length: length))
+                inspectHTML[index] = true
                 offset += length + 1
             }
-            paragraph.removeAll(keepingCapacity: true)
         }
-        for (index, line) in lines.enumerated() {
-            let body = line.body, trimmed = body.trimmingCharacters(in: .whitespaces)
-            if let column = MarkdownEditing.tableListContentColumn(body) {
-                listIndent = min(listIndent ?? column, column)
-                flush(); continue
+        var index = 0
+        while index < lines.count {
+            if trimmed[index].isEmpty { index += 1; continue }
+            if let fence = fences[index] {
+                index += 1
+                while index < lines.count {
+                    let closed = fence.isClosed(by: bodies[index]); index += 1
+                    if closed { break }
+                }
+                continue
             }
-            if let column = listIndent, trimmed.isEmpty || MarkdownIndentation.width(body) >= column {
-                flush(); continue
+            if quotes[index] {
+                repeat { index += 1 } while index < lines.count && quotes[index]
+                continue
             }
-            listIndent = nil
-            if trimmed.isEmpty || MarkdownLine.isBlockquote(trimmed) || MarkdownLine.isIndentedCode(body)
-                || MarkdownFence.opening(in: body) != nil {
-                flush(); continue
+            if indented[index] {
+                repeat { index += 1 } while index < lines.count && (indented[index] || trimmed[index].isEmpty)
+                continue
             }
-            paragraph.append(index)
+            if let end = mathEnds[index] { index = end; continue }
+            if trimmed[index].hasPrefix("["), let definition = LinkReference.parse(bodies, at: index) {
+                index = definition.next; continue
+            }
+            if trimmed[index] == "[TOC]" { index += 1; continue }
+            if tableStarts[index] {
+                index += 2
+                while index < lines.count, bodies[index].contains("|") { index += 1 }
+                // A labeled caption is rendered inside the preceding table,
+                // so its inline span cannot extend into the next paragraph.
+                if index < lines.count,
+                   bodies[index].range(of: #"^\s*:\s+(.+?)\s*\{#(tbl:[A-Za-z0-9_.\-]+)\}\s*$"#, options: .regularExpression) != nil {
+                    mask(index..<(index + 1)); index += 1
+                }
+                continue
+            }
+            // Headings own inline spans only within their title. Retain the
+            // conservative raw-HTML refusal even for a raw tag in that title;
+            // an unmatched title tick may never claim the next block.
+            if setextStarts[index] { mask(index..<(index + 1)); index += 2; continue }
+            if headings[index] { mask(index..<(index + 1)); index += 1; continue }
+            if rules[index] { index += 1; continue }
+            if footnotes[index] {
+                index += 1
+                while index < lines.count {
+                    var next = index
+                    while next < lines.count, trimmed[next].isEmpty { next += 1 }
+                    guard next < lines.count, MarkdownIndentation.width(bodies[next]) >= 2 else { break }
+                    index = next + 1
+                }
+                continue
+            }
+            if let column = listColumns[index] {
+                var fence = MarkdownEditing.tableListOpeningFence(bodies[index])
+                index += 1
+                while index < lines.count {
+                    if let active = fence {
+                        if active.isClosed(by: bodies[index]) { fence = nil }
+                        index += 1; continue
+                    }
+                    var next = index
+                    while next < lines.count, trimmed[next].isEmpty { next += 1 }
+                    guard next < lines.count, MarkdownIndentation.width(bodies[next]) >= column else { break }
+                    fence = fences[next]
+                    index = next + 1
+                }
+                continue
+            }
+            if trimmed[index].hasPrefix("!["), trimmed[index].contains("#fig:"),
+               trimmed[index].range(of: #"^!\[[^\]]*\]\([^)]*\)\{[^}]*#fig:[^}]*\}$"#, options: .regularExpression) != nil {
+                index += 1; continue
+            }
+            let start = index
+            index += 1
+            while index < lines.count, !paragraphBreak(index) { index += 1 }
+            mask(start..<index)
         }
-        flush()
-        return result
+        return (result, inspectHTML)
     }
 
     /// Ignore closed code spans when looking for raw block HTML. Pair maximal
@@ -319,8 +398,11 @@ public enum MarkdownTableEditing {
                     // A removed edge may expose an empty cell at any width.
                     // Preserve its separator as structure, and retain leading
                     // cell padding as padding rather than block indentation.
+                    // A literal ending pipe also needs a rail: the renderer
+                    // otherwise strips that content pipe as its optional rail.
+                    let lastContent = nextLast.trimmingCharacters(in: .whitespaces)
                     if !parsed.trailingPipe,
-                       columns == 2 || (column == columns - 1 && nextLast.trimmingCharacters(in: .whitespaces).isEmpty) {
+                       columns == 2 || (column == columns - 1 && (lastContent.isEmpty || lastContent.last == "|")) {
                         mutable.append("|")
                     }
                     if !parsed.leadingPipe,
