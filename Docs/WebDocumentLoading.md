@@ -35,7 +35,7 @@ updates, Cmd+click and new-window targets. Fragment and web links keep their
 normal navigation path.
 
 `DocumentRenderWorker` defaults to `.appScheme`. Standalone HTML export explicitly
-uses `.inline`, then embeds local images with `SelfContainedHTMLBuilder`, preserving
+uses `.inline` with the blocked policy, then validates and embeds local/data images with `SelfContainedHTMLBuilder`, preserving
 the portable single-file export. The public renderer's default remains `.inline`
 for callers that do not install the application scheme handlers.
 
@@ -56,7 +56,7 @@ because an exported file has no response.
 | `default-src`, `base-uri`, `form-action` | `'none'` | `'none'` |
 | `script-src` | each served engine's exact URL, and a hash of each inline bootstrap | a hash of each inline script |
 | `style-src` | `'unsafe-inline'` and KaTeX's stylesheet URL | `'unsafe-inline'` |
-| `img-src` | `http:`, `https:`, `data:`, `md2-local-image:` | `http:`, `https:`, `data:`, `file:` |
+| `img-src` | `data:`, `md2-local-image:`; adds `http:`, `https:` only with the document-session image grant | `data:` |
 | `font-src` | `data:` | `data:` |
 
 - Scripts use hashes rather than a nonce because the renderer is pure, and the
@@ -65,10 +65,16 @@ because an exported file has no response.
   Mermaid diagram type renders with no policy violation.
 - `WKUserScript`s and `evaluateJavaScript` calls run under no page policy themselves,
   but what they do in the page does: a `<style>` they add answers to `style-src`.
-- A live update keeps the page's policy. A body that needs a new engine is already a
-  full load, and that page's policy names the engine.
-- `img-src` is open on purpose. Remote Markdown images load, and so does an image a
-  diagram label or CSS names. Only script is shut out.
+- A live update keeps its current page policy. An engine change needs a full load.
+  A policy or document-identity change retires the old host synchronously and
+  creates a new security context, even when its body text is identical.
+- Native WebKit content rules independently enforce default HTTP(S) denial or the
+  explicit image-only exception. A missing or permissive page CSP cannot widen
+  that caller permission. Rule-compilation failure does not fall back to an
+  unrestricted load. Data stores are nonpersistent and page referrers are disabled.
+- Portable HTML never inherits the grant. Its diagram output is sanitized before
+  use, retaining supported vector/fragment styles and omitting resource-dependent
+  content; embedded image data is validated. See [resource policy](RemoteResources.md).
 - A plain click on a `javascript:` URL never reaches the navigation policy, and the
   page policy stops it. A new-window request reaches the navigation policy first, so
   `PreviewLinkRouter` ignores the scheme itself.

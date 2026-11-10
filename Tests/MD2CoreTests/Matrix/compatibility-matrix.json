@@ -363,7 +363,7 @@
       "tier": "Supported",
       "baselineRelationship": "not-in-corpus",
       "declaredBehavior": "`mermaid`, `flow`, and `sequence` fenced blocks render offline with bundled engines in the Read-mode preview.",
-      "boundary": "Invalid diagram source falls back to showing its raw text instead of blanking the preview. The page's Content-Security-Policy stops script on every engine, so a `flow` block's `javascript:` link does nothing. A link in a diagram opens only what a Markdown link can, so a click on any other scheme does nothing. Mermaid runs at its `strict` security level, so a sequence actor's link menu does not open. A remote image or CSS `url()` in diagram source loads when the diagram is shown; a `<video>` or `<audio>` in a Mermaid label does not.",
+      "boundary": "Invalid diagram source falls back to showing its raw text instead of blanking the preview. The page's Content-Security-Policy stops script on every engine, so a `flow` block's `javascript:` link does nothing. A link in a diagram opens only what a Markdown link can, so a click on any other scheme does nothing. Mermaid runs at its `strict` security level, so a sequence actor's link menu does not open. Remote diagram/CSS images are blocked by default and follow the explicit document-session image permission in preview, PDF and Print. Remote video/audio and other resource types remain blocked. Offline HTML omits generated images and unsupported resource styles, retaining supported vector styling and local fragment paint references.",
       "docLabel": "Supported",
       "localTests": ["DiagramRenderingTests", "MermaidOffscreenRenderingTests"]
     },
