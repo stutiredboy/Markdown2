@@ -1,7 +1,8 @@
 # Structured source editing: tables and explicit paste
 
-Status: both packages independently approved and integrated; unified acceptance
-and final-source CI pending.
+Status: implementation complete; both packages independently reviewed and
+integrated. This document records the contract; final acceptance results and
+source/artifact identities are recorded with the pull request.
 Baseline: `a95388427ec6dbd4f6ea4a4f542472557eb73ac7` (PR #56 merged).
 
 ## Priority and outcome

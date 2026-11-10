@@ -63,10 +63,48 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         try open(document)
         try waitForEntries([document], pid: pid)
 
+        var commandWindow: AXUIElement?
+        var commandSource: AXUIElement?
+        func role(_ element: AXUIElement) -> String {
+            var value: CFTypeRef?
+            AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &value)
+            return value as? String ?? "?"
+        }
+        func diagnose(_ stage: String, menu: AXUIElement? = nil) {
+            var focused: CFTypeRef?
+            AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXFocusedUIElementAttribute as CFString, &focused)
+            let owner = Self.element(focused)
+            var details: [String: Any] = ["stage": stage,
+                "appActive": NSRunningApplication(processIdentifier: pid)?.isActive == true,
+                "focusedRole": owner.map(role) ?? "?",
+                "focusedTitle": owner.map(Self.title) ?? "?",
+                "sourceOwnsFocus": commandSource.map { source in owner.map { CFEqual(source, $0) } == true } ?? false]
+            if let source = commandSource {
+                var raw: CFTypeRef?
+                AXUIElementCopyAttributeValue(source, kAXSelectedTextRangeAttribute as CFString, &raw)
+                if let raw, CFGetTypeID(raw) == AXValueGetTypeID() {
+                    var range = CFRange()
+                    if AXValueGetValue(raw as! AXValue, .cfRange, &range) { details["selection"] = [range.location, range.length] }
+                }
+            }
+            if let menu {
+                var actions: CFArray?
+                AXUIElementCopyActionNames(menu, &actions)
+                details["menuRole"] = role(menu)
+                details["menuActions"] = actions as? [String] ?? []
+                details["menuChildCount"] = Self.children(of: menu).count
+            }
+            if let data = try? JSONSerialization.data(withJSONObject: details, options: [.sortedKeys]),
+               let text = String(data: data, encoding: .utf8) { print("StructuredIntegration " + text) }
+        }
         // Open each ancestor, then fetch its current item. This also refreshes
         // native Undo/Redo targets; do not reuse a closed Edit menu's old item.
         func press(_ barTitle: String, _ path: [String]) throws {
             NSRunningApplication(processIdentifier: pid)?.activate()
+            if let commandWindow {
+                XCTAssertEqual(AXUIElementPerformAction(commandWindow, kAXRaiseAction as CFString), .success)
+            }
+            diagnose("before " + path.joined(separator: " > "))
             var value: CFTypeRef?
             guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid),
                 kAXMenuBarAttribute as CFString, &value) == .success,
@@ -77,12 +115,19 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             guard AXUIElementPerformAction(entry, kAXPressAction as CFString) == .success else {
                 throw GuardFailure("cannot open \(barTitle)")
             }
-            defer { AXUIElementPerformAction(entry, kAXCancelAction as CFString) }
+            diagnose("opened bar " + barTitle, menu: entry)
             usleep(200_000)
-            var parent = entry
+            let rootMenu = try XCTUnwrap(Self.children(of: entry).first { role($0) == (kAXMenuRole as String) })
+            defer {
+                // AXCancel belongs to AXMenu, not its AXMenuBarItem owner.
+                let result = AXUIElementPerformAction(rootMenu, kAXCancelAction as CFString)
+                print("StructuredIntegration cancel actual menu result=\(result.rawValue)")
+                diagnose("after " + path.joined(separator: " > "), menu: rootMenu)
+            }
+            var parent = rootMenu
             for (index, title) in path.enumerated() {
                 func currentItem() -> AXUIElement? {
-                    let items = Self.children(of: parent).flatMap { Self.children(of: $0) }
+                    let items = Self.children(of: parent)
                     return items.first { Self.title(of: $0) == title }
                         ?? items.first { Self.title(of: $0).hasPrefix(title + " ") }
                 }
@@ -91,10 +136,14 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
                 let target = try XCTUnwrap(currentItem(), "\(barTitle) > \(title)")
                 XCTAssertTrue(Self.isEnabled(target), title)
                 guard Self.isEnabled(target) else { throw GuardFailure("disabled command: \(title)") }
+                diagnose("press " + title, menu: parent)
                 guard AXUIElementPerformAction(target, kAXPressAction as CFString) == .success else {
                     throw GuardFailure("cannot press command: \(title)")
                 }
-                if index < path.count - 1 { parent = target; usleep(200_000) }
+                if index < path.count - 1 {
+                    usleep(200_000)
+                    parent = try XCTUnwrap(Self.children(of: target).first { role($0) == (kAXMenuRole as String) })
+                }
             }
         }
         try press("Mode", ["Edit"])
@@ -105,6 +154,8 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         NSRunningApplication(processIdentifier: pid)?.activate()
         XCTAssertEqual(AXUIElementPerformAction(window, kAXRaiseAction as CFString), .success)
         let source = try XCTUnwrap(Self.firstElement(ofRole: kAXTextAreaRole as String, in: window))
+        commandWindow = window
+        commandSource = source
         func sourceText() throws -> String {
             var value: CFTypeRef?
             guard AXUIElementCopyAttributeValue(source, kAXValueAttribute as CFString, &value) == .success,
@@ -142,6 +193,7 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             let deadline = Date().addingTimeInterval(5)
             while !(try sourceText()).utf16.elementsEqual(expected.utf16), Date() < deadline { usleep(50_000) }
             let actual = try sourceText()
+            diagnose("source check " + stage)
             XCTAssertEqual(Array(actual.utf16), Array(expected.utf16), stage)
             guard actual.utf16.elementsEqual(expected.utf16) else { throw GuardFailure("source mismatch at \(stage)") }
             XCTAssertTrue(actual.hasPrefix(prefix) && actual.hasSuffix(suffix), "sentinels: \(stage)")
