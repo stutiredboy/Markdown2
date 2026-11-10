@@ -118,51 +118,74 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
                 XCTAssertEqual(AXUIElementPerformAction(commandWindow, kAXRaiseAction as CFString), .success)
             }
             diagnose("before " + path.joined(separator: " > "))
-            var value: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid),
-                kAXMenuBarAttribute as CFString, &value) == .success,
-                let bar = Self.element(value),
-                let entry = Self.children(of: bar).first(where: { Self.title(of: $0) == barTitle }) else {
-                throw GuardFailure("structured integration menu bar unavailable: \(barTitle)")
+            // SwiftUI may replace AX containers when tracking a submenu starts.
+            // Every query walks the live app tree; never reuse an item/menu
+            // obtained before an AXPress to query the resulting menu state.
+            func currentBarItem() -> AXUIElement? {
+                var value: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid),
+                    kAXMenuBarAttribute as CFString, &value) == .success,
+                    let bar = Self.element(value) else { return nil }
+                return Self.children(of: bar).first { Self.title(of: $0) == barTitle }
             }
-            guard AXUIElementPerformAction(entry, kAXPressAction as CFString) == .success else {
-                throw GuardFailure("cannot open \(barTitle)")
+            func namedItem(_ title: String, in menu: AXUIElement) -> AXUIElement? {
+                let items = Self.children(of: menu)
+                return items.first { Self.title(of: $0) == title }
+                    ?? items.first { Self.title(of: $0).hasPrefix(title + " ") }
             }
-            diagnose("opened bar " + barTitle, menu: entry)
-            usleep(200_000)
-            let rootMenu = try XCTUnwrap(Self.children(of: entry).first { role($0) == (kAXMenuRole as String) })
+            func currentMenu(_ ancestors: [String]) -> AXUIElement? {
+                guard let bar = currentBarItem(),
+                      var menu = Self.children(of: bar).first(where: { role($0) == (kAXMenuRole as String) }) else { return nil }
+                for title in ancestors {
+                    guard let item = namedItem(title, in: menu),
+                          let submenu = Self.children(of: item).first(where: { role($0) == (kAXMenuRole as String) }) else { return nil }
+                    menu = submenu
+                }
+                return menu
+            }
+            func waitForMenu(_ ancestors: [String]) throws {
+                let deadline = Date().addingTimeInterval(5)
+                while currentMenu(ancestors) == nil, Date() < deadline { usleep(50_000) }
+                _ = try XCTUnwrap(currentMenu(ancestors), "fresh submenu: \(barTitle) > \(ancestors.joined(separator: " > "))")
+            }
             var dispatchedLeaf = false
             defer {
-                // Successful menu selection dismisses itself. An extra cancel
-                // can race the queued edit; only abandoned menus need cleanup.
-                if !dispatchedLeaf {
-                    let result = AXUIElementPerformAction(rootMenu, kAXCancelAction as CFString)
+                // Successful selection dismisses itself. Cleanup only failed
+                // navigation, resolving the current actual menu again first.
+                if !dispatchedLeaf, let menu = currentMenu([]) {
+                    let result = AXUIElementPerformAction(menu, kAXCancelAction as CFString)
                     print("StructuredIntegration failure cleanup result=\(result.rawValue)")
                 }
-                diagnose("after " + path.joined(separator: " > "), menu: rootMenu)
+                diagnose("after " + path.joined(separator: " > "), menu: currentMenu([]))
             }
-            var parent = rootMenu
+            do {
+                let entry = try XCTUnwrap(currentBarItem(), "menu bar: " + barTitle)
+                guard AXUIElementPerformAction(entry, kAXPressAction as CFString) == .success else {
+                    throw GuardFailure("cannot open " + barTitle)
+                }
+            }
+            try waitForMenu([])
+            diagnose("opened bar " + barTitle, menu: currentMenu([]))
             for (index, title) in path.enumerated() {
+                let ancestors = Array(path.prefix(index))
                 func currentItem() -> AXUIElement? {
-                    let items = Self.children(of: parent)
-                    return items.first { Self.title(of: $0) == title }
-                        ?? items.first { Self.title(of: $0).hasPrefix(title + " ") }
+                    guard let menu = currentMenu(ancestors) else { return nil }
+                    return namedItem(title, in: menu)
                 }
                 let deadline = Date().addingTimeInterval(5)
                 while currentItem().map(Self.isEnabled) != true, Date() < deadline { usleep(50_000) }
-                let target = try XCTUnwrap(currentItem(), "\(barTitle) > \(title)")
-                XCTAssertTrue(Self.isEnabled(target), title)
-                guard Self.isEnabled(target) else { throw GuardFailure("disabled command: \(title)") }
-                diagnose("press " + title, menu: parent)
-                guard AXUIElementPerformAction(target, kAXPressAction as CFString) == .success else {
-                    throw GuardFailure("cannot press command: \(title)")
+                diagnose("press " + title, menu: currentMenu(ancestors))
+                do {
+                    let target = try XCTUnwrap(currentItem(), "\(barTitle) > \(title)")
+                    XCTAssertTrue(Self.isEnabled(target), title)
+                    guard Self.isEnabled(target) else { throw GuardFailure("disabled command: " + title) }
+                    guard AXUIElementPerformAction(target, kAXPressAction as CFString) == .success else {
+                        throw GuardFailure("cannot press command: " + title)
+                    }
                 }
                 if index == path.count - 1 { dispatchedLeaf = true }
-                diagnose("after leaf-or-submenu press " + title, menu: parent)
-                if index < path.count - 1 {
-                    usleep(200_000)
-                    parent = try XCTUnwrap(Self.children(of: target).first { role($0) == (kAXMenuRole as String) })
-                }
+                else { try waitForMenu(Array(path.prefix(index + 1))) }
+                diagnose("after leaf-or-submenu press " + title, menu: currentMenu(ancestors))
             }
         }
         try press("Mode", ["Edit"])
