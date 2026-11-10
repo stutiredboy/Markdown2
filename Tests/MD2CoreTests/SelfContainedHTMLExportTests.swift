@@ -63,41 +63,46 @@ struct SelfContainedHTMLExportTests {
         #expect(!result.contains(absolutePath))
     }
 
-    @Test func leavesRemoteImagesUntouched() {
+    @Test func remoteImagesBecomeInertPlaceholders() {
         let html = #"<img src="https://example.com/pic.png">"#
         let result = SelfContainedHTMLBuilder.build(html: html, baseURL: nil).html
-        #expect(result == html)
+        #expect(result.contains("md2-export-image-placeholder"))
+        #expect(!result.contains("<img"))
     }
 
-    @Test func leavesExistingDataURIUntouched() {
+    @Test func invalidExistingDataURIBecomesInertPlaceholder() {
         let html = #"<img src="data:image/gif;base64,R0lGODlhAQ==">"#
         let result = SelfContainedHTMLBuilder.build(html: html, baseURL: nil).html
-        #expect(result == html)
+        #expect(result.contains("md2-export-image-placeholder"))
+        #expect(!result.contains("<img"))
     }
 
-    @Test func untitledDocumentLeavesRelativeImageAsIs() {
+    @Test func untitledDocumentMakesRelativeImageInert() {
         // No baseURL: a relative path cannot be resolved, so it is left as-is
         // rather than failing the export.
         let html = #"<main><img src="pic.png"></main>"#
         let result = SelfContainedHTMLBuilder.build(html: html, baseURL: nil).html
-        #expect(result == html)
+        #expect(result.contains("md2-export-image-placeholder"))
+        #expect(!result.contains("<img"))
     }
 
-    @Test func missingRelativeFileIsLeftAsIs() throws {
+    @Test func missingRelativeFileBecomesInert() throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         let html = #"<img src="does-not-exist.png">"#
         let result = SelfContainedHTMLBuilder.build(html: html, baseURL: dir).html
-        #expect(result == html)
+        #expect(result.contains("md2-export-image-placeholder"))
+        #expect(!result.contains("<img"))
     }
 
     // MARK: - Builder: report of images left outside the page
 
-    @Test func reportsRemoteImagesAndKeepsTheirURLs() {
+    @Test func reportsRemoteImageURLsAsInertText() {
         let html = #"<main><img src="https://example.com/a.png"><img src="HTTP://example.com/b.png"></main>"#
         let output = SelfContainedHTMLBuilder.build(html: html, baseURL: nil)
 
-        #expect(output.html == html)
+        #expect(output.html.contains("md2-export-image-placeholder"))
+        #expect(!output.html.contains("<img"))
         #expect(output.remoteImages == ["https://example.com/a.png", "HTTP://example.com/b.png"])
         #expect(output.unembeddedLocalImages.isEmpty)
     }
@@ -109,7 +114,8 @@ struct SelfContainedHTMLExportTests {
         let html = #"<main><img src="missing.png"><img src="/no/such/dir/abs.png"></main>"#
         let output = SelfContainedHTMLBuilder.build(html: html, baseURL: dir)
 
-        #expect(output.html == html)
+        #expect(output.html.contains("md2-export-image-placeholder"))
+        #expect(!output.html.contains("<img"))
         #expect(output.remoteImages.isEmpty)
         #expect(output.unembeddedLocalImages == ["missing.png", "/no/such/dir/abs.png"])
     }
@@ -122,7 +128,8 @@ struct SelfContainedHTMLExportTests {
         let html = #"<main><img src="pic.png"></main>"#
         let output = SelfContainedHTMLBuilder.build(html: html, baseURL: nil)
 
-        #expect(output.html == html)
+        #expect(output.html.contains("md2-export-image-placeholder"))
+        #expect(!output.html.contains("<img"))
         #expect(output.unembeddedLocalImages == ["pic.png"])
     }
 
@@ -155,7 +162,7 @@ struct SelfContainedHTMLExportTests {
         defer { try? FileManager.default.removeItem(at: dir) }
         try writePNG(named: "pic.png", into: dir)
 
-        let html = #"<main><img src="pic.png"><img src="DATA:image/gif;base64,R0lGODlhAQ=="><img src=""></main>"#
+        let html = "<main><img src=\"pic.png\"><img src=\"DATA:image/png;base64,\(Self.pngBase64)\"></main>"
         let output = SelfContainedHTMLBuilder.build(html: html, baseURL: dir)
 
         #expect(output.html.contains("data:image/png;base64,"))
@@ -180,7 +187,8 @@ struct SelfContainedHTMLExportTests {
         // The embedded image sits between sources that stay, so inlining it must
         // not disturb them.
         #expect(output.html.contains("data:image/png;base64,"))
-        #expect(output.html.contains(#"<img src="second.png">"#))
+        #expect(!output.html.contains(#"<img src="second.png">"#))
+        #expect(output.html.contains("second.png</span>"))
     }
 
     @Test func reportNamesAreReadableNotEscaped() {
@@ -208,7 +216,8 @@ struct SelfContainedHTMLExportTests {
 
         let output = SelfContainedHTMLBuilder.build(html: html, baseURL: dir)
 
-        #expect(output.html == html)
+        #expect(output.html.contains("md2-export-image-placeholder"))
+        #expect(!output.html.contains("<img"))
         #expect(!output.html.contains(secret.base64EncodedString()))
         #expect(output.unembeddedLocalImages == ["disguised.png", "innocent.png"])
     }
@@ -247,12 +256,14 @@ struct SelfContainedHTMLExportTests {
             try contents.write(to: dir.appendingPathComponent(name), atomically: true, encoding: .utf8)
             let html = "<img src=\"\(name)\">"
             let output = SelfContainedHTMLBuilder.build(html: html, baseURL: dir)
-            #expect(output.html == html)
+            #expect(output.html.contains("md2-export-image-placeholder"))
+        #expect(!output.html.contains("<img"))
             #expect(output.unembeddedLocalImages == [name])
             // XML declarations/entities cannot bypass validation through UTF-16.
             try contents.data(using: .utf16)!.write(to: dir.appendingPathComponent(name))
             let utf16 = SelfContainedHTMLBuilder.build(html: html, baseURL: dir)
-            #expect(utf16.html == html)
+            #expect(utf16.html.contains("md2-export-image-placeholder"))
+        #expect(!utf16.html.contains("<img"))
             #expect(utf16.unembeddedLocalImages == [name])
         }
     }
@@ -315,7 +326,8 @@ struct SelfContainedHTMLExportTests {
         let html = #"<img src="image.png">"#
         for limits in cases {
             let output = SelfContainedHTMLBuilder.build(html: html, baseURL: dir, limits: limits)
-            #expect(output.html == html)
+            #expect(output.html.contains("md2-export-image-placeholder"))
+        #expect(!output.html.contains("<img"))
             #expect(output.localImageFailures["image.png"] == .resourceLimit)
         }
         total.totalBytes = png.count
@@ -336,7 +348,8 @@ struct SelfContainedHTMLExportTests {
         #expect(mkfifo(dir.appendingPathComponent("pipe.png").path, 0o600) == 0)
         let html = #"<img src="truncated.png"><img src="pipe.png">"#
         let output = SelfContainedHTMLBuilder.build(html: html, baseURL: dir)
-        #expect(output.html == html)
+        #expect(output.html.contains("md2-export-image-placeholder"))
+        #expect(!output.html.contains("<img"))
         #expect(output.unembeddedLocalImages == ["truncated.png", "pipe.png"])
     }
 
@@ -468,8 +481,8 @@ struct SelfContainedHTMLExportTests {
         await store.exportHTML()
 
         let exported = try String(contentsOf: destination, encoding: .utf8)
-        #expect(exported.contains(#"src="https://example.com/r.png""#))
-        #expect(exported.contains(#"src="missing.png""#))
+        #expect(!exported.contains(#"src="https://example.com/r.png""#))
+        #expect(!exported.contains(#"src="missing.png""#))
 
         let alert = try #require(store.alert)
         #expect(alert.message == "notes.html was exported, but some images are not embedded.")
@@ -620,7 +633,7 @@ struct SelfContainedHTMLExportTests {
         let exported = try String(contentsOf: destination, encoding: .utf8)
         // The relative reference is preserved (cannot be resolved without a dir)
         // and named in the notice, because it is not in the file.
-        #expect(exported.contains(#"src="pic.png""#))
+        #expect(!exported.contains(#"src="pic.png""#))
         let alert = try #require(store.alert)
         #expect(alert.detail.contains("pic.png"))
     }

@@ -27,11 +27,14 @@ final class DocumentPrinter: DocumentPrinting {
     private var exporter: PDFExporting?
     private var temporaryPDFURL: URL?
     private var pendingCompletion: ((Result<Void, Error>) -> Void)?
+    private let printPresenter: (@MainActor (URL, ExportProfile) -> Result<Void, Error>)?
 
     init(
-        exporterFactory: @escaping @MainActor (URL, ExportProfile) -> PDFExporting = { PDFExporter(destinationURL: $0, profile: $1) }
+        exporterFactory: @escaping @MainActor (URL, ExportProfile) -> PDFExporting = { PDFExporter(destinationURL: $0, profile: $1) },
+        printPresenter: (@MainActor (URL, ExportProfile) -> Result<Void, Error>)? = nil
     ) {
         self.exporterFactory = exporterFactory
+        self.printPresenter = printPresenter
     }
 
     func print(
@@ -67,7 +70,7 @@ final class DocumentPrinter: DocumentPrinting {
                 self.cleanUpTemporaryPDF()
                 completion(.failure(error))
             case .success:
-                let printResult = self.runPrintOperation(pdfURL: pdfURL, profile: profile)
+                let printResult = self.printPresenter?(pdfURL, profile) ?? self.runPrintOperation(pdfURL: pdfURL, profile: profile)
                 self.cleanUpTemporaryPDF()
                 completion(printResult)
             }
