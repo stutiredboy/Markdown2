@@ -197,6 +197,7 @@ private final class FakeDocumentPrinter: DocumentPrinting {
         remoteResourcePolicy: RemoteResourcePolicy,
         profile: ExportProfile,
         documentTitle: String,
+        remoteImageBlockedLabel: String,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         printCallCount += 1
@@ -229,6 +230,7 @@ private final class DeferringFakePDFExporter: PDFExporting {
         baseURL: URL?,
         remoteResourcePolicy: RemoteResourcePolicy,
         documentTitle: String,
+        remoteImageBlockedLabel: String,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         exportCallCount += 1

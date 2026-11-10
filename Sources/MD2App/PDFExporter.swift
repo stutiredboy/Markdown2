@@ -91,6 +91,7 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
     private var timeoutWorkItem: DispatchWorkItem?
     private var hasFinished = false
     private var remoteResourcePolicy: RemoteResourcePolicy = .blocked
+    private var remoteImageBlockedLabel = "Remote image blocked"
     /// When the post-`didFinish` diagram-settle wait began, used to bound it.
     private var settleWaitStart: Date?
     /// Document title used to resolve the `{title}` running-text token. Set in
@@ -193,11 +194,13 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
         baseURL: URL?,
         remoteResourcePolicy: RemoteResourcePolicy = .blocked,
         documentTitle: String = "",
+        remoteImageBlockedLabel: String = "Remote image blocked",
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         guard !hasFinished, self.completion == nil else { return }
         self.completion = completion
         self.remoteResourcePolicy = remoteResourcePolicy
+        self.remoteImageBlockedLabel = remoteImageBlockedLabel
         self.outline = outline
         self.documentTitle = documentTitle
 
@@ -266,7 +269,7 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
 
     private func waitForImagesToSettle() {
         guard !hasFinished else { return }
-        webView.evaluateJavaScript(ExportImageReadiness.script(policy: remoteResourcePolicy)) { [weak self] value, error in
+        webView.evaluateJavaScript(ExportImageReadiness.script(policy: remoteResourcePolicy, blockedImageLabel: remoteImageBlockedLabel)) { [weak self] value, error in
             Task { @MainActor in
                 guard let self, !self.hasFinished else { return }
                 guard error == nil, let status = value as? [String: Bool], status["failed"] == false else {

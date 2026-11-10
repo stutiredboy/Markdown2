@@ -100,6 +100,7 @@ private final class CapturingExporter: PDFExporting {
         baseURL: URL?,
         remoteResourcePolicy: RemoteResourcePolicy,
         documentTitle: String,
+        remoteImageBlockedLabel: String,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         completion(.success(()))
@@ -118,6 +119,7 @@ private final class CapturingPrinter: DocumentPrinting {
         remoteResourcePolicy: RemoteResourcePolicy,
         profile: ExportProfile,
         documentTitle: String,
+        remoteImageBlockedLabel: String,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         capturedProfile = profile

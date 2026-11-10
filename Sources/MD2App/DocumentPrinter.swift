@@ -44,6 +44,7 @@ final class DocumentPrinter: DocumentPrinting {
         remoteResourcePolicy: RemoteResourcePolicy = .blocked,
         profile: ExportProfile,
         documentTitle: String,
+        remoteImageBlockedLabel: String = "Remote image blocked",
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         pendingCompletion = completion
@@ -60,7 +61,8 @@ final class DocumentPrinter: DocumentPrinting {
             outline: outline,
             baseURL: baseURL,
             remoteResourcePolicy: remoteResourcePolicy,
-            documentTitle: documentTitle
+            documentTitle: documentTitle,
+            remoteImageBlockedLabel: remoteImageBlockedLabel
         ) { [weak self] result in
             guard let self, let completion = self.pendingCompletion else { return }
             self.pendingCompletion = nil

@@ -22,12 +22,13 @@ final class ExportResourceGUITests: XCTestCase {
             let token = UUID().uuidString
             let source = "# Export marker\n\n<img src=\"\(server.baseURL)/\(token).png\" width=\"100\" height=\"100\" alt=\"remote marker\">"
             let destination = dir.appendingPathComponent("\(token).pdf")
-            let result = runPDF(source, policy: policy, destination: destination)
+            let result = runPDF(source, policy: policy, destination: destination, blockedLabel: "远程图片已阻止")
             guard case .success = result else { XCTFail("PDF: \(result)"); continue }
             let imagePresent = try containsMagenta(destination)
             XCTAssertEqual(imagePresent, policy == .allowRemoteImages, "real PDF pixels did not match the captured policy")
             XCTAssertEqual(server.requests.contains { $0.path.contains(token) }, policy == .allowRemoteImages)
             XCTAssertNotNil(PDFDocument(url: destination)?.string?.range(of: "Export marker"))
+            if policy == .blocked { XCTAssertTrue(PDFDocument(url: destination)?.string?.contains("远程图片已阻止") == true) }
         }
     }
 
@@ -45,11 +46,12 @@ final class ExportResourceGUITests: XCTestCase {
                 ExportTestEvidence.preservePrint(url)
                 presented += 1
                 XCTAssertEqual(try? self.containsMagenta(url), policy == .allowRemoteImages)
+                if policy == .blocked { XCTAssertTrue(PDFDocument(url: url)?.string?.contains("远程图片已阻止") == true) }
                 return .success(())
             })
             let done = expectation(description: "actual print preparation")
             printer.print(html: rendered.html, outline: rendered.outline, baseURL: nil,
-                remoteResourcePolicy: policy, profile: .default, documentTitle: "Print marker") { result in
+                remoteResourcePolicy: policy, profile: .default, documentTitle: "Print marker", remoteImageBlockedLabel: "远程图片已阻止") { result in
                 if case .failure(let error) = result { XCTFail("print: \(error)") }
                 done.fulfill()
             }
@@ -278,13 +280,14 @@ final class ExportResourceGUITests: XCTestCase {
         XCTAssertGreaterThan(server.requests.filter { $0.path.contains(token) }.count, 0)
     }
 
-    @MainActor private func runPDF(_ markdown: String, policy: RemoteResourcePolicy, destination: URL) -> Result<Void, Error> {
+    @MainActor private func runPDF(_ markdown: String, policy: RemoteResourcePolicy, destination: URL,
+                                 blockedLabel: String = "Remote image blocked") -> Result<Void, Error> {
         let rendered = MarkdownRenderer().render(markdown, assetMode: .appScheme, remoteResourcePolicy: policy)
         let exporter = PDFExporter(destinationURL: destination)
         let done = expectation(description: "actual PDF completion")
         var outcome: Result<Void, Error> = .failure(PDFExporter.ExportError.timedOut)
         exporter.export(html: rendered.html, outline: rendered.outline, baseURL: nil,
-            remoteResourcePolicy: policy, documentTitle: "Export") { outcome = $0; done.fulfill() }
+            remoteResourcePolicy: policy, documentTitle: "Export", remoteImageBlockedLabel: blockedLabel) { outcome = $0; done.fulfill() }
         wait(for: [done], timeout: 35)
         return outcome
     }

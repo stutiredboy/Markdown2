@@ -341,6 +341,7 @@ private final class FakePDFExporter: PDFExporting {
         baseURL: URL?,
         remoteResourcePolicy: RemoteResourcePolicy,
         documentTitle: String,
+        remoteImageBlockedLabel: String,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         exportCallCount += 1
