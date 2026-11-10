@@ -57,7 +57,7 @@ enum ExportImageReadiness {
                     else pending = true;
                 }
             });
-            document.querySelectorAll('svg image').forEach(function (image) {
+            document.querySelectorAll('svg image, svg feImage').forEach(function (image) {
                 probe(image.getAttribute('href') || image.getAttributeNS('http://www.w3.org/1999/xlink', 'href'));
             });
             // getComputedStyle supplies canonical CSS serialization. Unsupported

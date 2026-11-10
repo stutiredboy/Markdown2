@@ -109,6 +109,38 @@ final class ExportResourceGUITests: XCTestCase {
     }
 
     @MainActor
+    func testMermaidFilterImageFailurePreservesTargetAndValidImageStillRenders() throws {
+        _ = NSApplication.shared
+        let server = try ExportNetworkTestServer(image: magentaPNG())
+        defer { server.stop() }
+        let dir = try directory()
+        defer { ExportTestEvidence.preserveThenRemove(dir) }
+        for broken in [false, true] {
+            let token = (broken ? "broken" : "valid") + "-feimage-\(UUID())"
+            let markdown = """
+            # Mermaid filter image
+            ```mermaid
+            graph TD
+            A["<svg width='30' height='30'><filter id='tested-filter'><feImage href='\(server.baseURL)/\(token).png' width='30' height='30'/></filter><rect width='30' height='30' filter='url(#tested-filter)'/></svg>"] --> B["FILTER marker"]
+            ```
+            """
+            try markdown.write(to: dir.appendingPathComponent("\(token).md"), atomically: true, encoding: .utf8)
+            let destination = dir.appendingPathComponent("\(token).pdf")
+            let sentinel = Data("before-feimage-export-sentinel".utf8)
+            try sentinel.write(to: destination)
+            let result = runPDF(markdown, policy: .allowRemoteImages, destination: destination)
+            XCTAssertTrue(server.requests.contains { $0.path.contains(token) }, "the real Mermaid image source must reach WebKit")
+            if broken {
+                guard case .failure = result else { XCTFail("invalid feImage silently exported"); continue }
+                XCTAssertEqual(try Data(contentsOf: destination), sentinel)
+            } else {
+                guard case .success = result else { XCTFail("valid feImage failed: \(result)"); continue }
+                XCTAssertTrue(try containsMagenta(destination), "valid filter image must remain visible in the PDF")
+            }
+        }
+    }
+
+    @MainActor
     func testUnsupportedCSSImageExpressionFailsInsteadOfClaimingReadiness() throws {
         _ = NSApplication.shared
         let server = try ExportNetworkTestServer(image: magentaPNG())
