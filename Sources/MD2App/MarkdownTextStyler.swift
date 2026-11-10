@@ -181,7 +181,12 @@ final class MarkdownStylingController {
                 let origin = clip == nil ? nil : textView.visibleRect.origin
                 let line = clip == nil ? nil : ViewportLine(of: textView)
                 MarkdownTextStyler.apply(plan, range: chunk, to: textView)
-                textView.selectedRanges = selection
+                // AppKit emits a selection notification even for an identical
+                // assignment. Attribute-only styling must not invalidate a
+                // structured command waiting for its native event boundary.
+                if textView.selectedRanges != selection {
+                    textView.selectedRanges = selection
+                }
                 if var origin {
                     // The first asynchronous font reflow can grow a previously
                     // short text view with a negative frame origin. Keep the

@@ -64,6 +64,84 @@ final class AsyncStructuredNativeGUITests: XCTestCase {
         ])
     }
 
+    @MainActor func testAttributeStylingBetweenAcceptanceAndAdoptionPreservesTableCommand() throws {
+        let h = try AsyncNativeHost(AsyncFixture.original)
+        defer { h.close() }
+        let styling = MarkdownStylingController()
+        let state = AsyncStylingState()
+        h.view.setSelectedRange(AsyncFixture.originalSelection)
+        try AsyncNativeEvents.run([
+            .async { next in
+                h.requireNativePremise()
+                // This is the real styling controller's chunk boundary. The
+                // accepted command cannot be adopted until this synchronous
+                // chunk, including selection restoration, returns to AppKit.
+                // No test sleep or event pump creates the ordering premise.
+                styling.schedule(in: h.view, willApply: {
+                    state.applications += 1
+                    XCTAssertTrue(h.view.performMarkdownAction(.tableEdit(.insertColumnAfter)))
+                    XCTAssertTrue(h.session.structuredCommands.hasPendingCommands)
+                    h.assert(AsyncFixture.original, selection: AsyncFixture.originalSelection)
+                    state.acceptedGeneration = h.session.pasteContextGeneration
+                    state.acceptedRevision = h.session.structuredSourceRevision
+                }, didApply: {
+                    state.styledGeneration = h.session.pasteContextGeneration
+                    state.styledRevision = h.session.structuredSourceRevision
+                    h.assert(AsyncFixture.original, selection: AsyncFixture.originalSelection)
+                    XCTAssertTrue(h.session.structuredCommands.hasPendingCommands)
+                    XCTAssertTrue(h.textChanges.isEmpty)
+                    h.finishCommands(next)
+                })
+            },
+            .sync {
+                XCTAssertEqual(state.applications, 1)
+                XCTAssertEqual(state.styledGeneration, state.acceptedGeneration,
+                               "attribute-only styling must not emit a selection mutation")
+                XCTAssertEqual(state.styledRevision, state.acceptedRevision)
+                h.assert(AsyncFixture.widened, selection: AsyncFixture.emptyColumn)
+                XCTAssertEqual(h.textChanges.map { Array($0.utf16) }, [Array(AsyncFixture.widened.utf16)])
+                XCTAssertEqual(h.manager.undoCount, 1)
+                XCTAssertEqual(h.manager.redoCount, 0)
+                h.history(undo: [(AsyncFixture.original, AsyncFixture.originalSelection)],
+                          redo: [(AsyncFixture.widened, AsyncFixture.emptyColumn)])
+            }
+        ])
+    }
+
+    @MainActor func testActualSelectionAwayAndBackDuringStylingStillCancelsPendingCommand() throws {
+        let h = try AsyncNativeHost(AsyncFixture.original)
+        defer { h.close() }
+        let styling = MarkdownStylingController()
+        let state = AsyncStylingState()
+        h.view.setSelectedRange(AsyncFixture.originalSelection)
+        try AsyncNativeEvents.run([
+            .async { next in
+                h.requireNativePremise()
+                styling.schedule(in: h.view, willApply: {
+                    state.applications += 1
+                    XCTAssertTrue(h.view.performMarkdownAction(.tableEdit(.insertColumnAfter)))
+                    XCTAssertTrue(h.session.structuredCommands.hasPendingCommands)
+                    state.acceptedGeneration = h.session.pasteContextGeneration
+                    h.view.setSelectedRange(NSRange(location: 0, length: 0))
+                    h.view.setSelectedRange(AsyncFixture.originalSelection)
+                }, didApply: {
+                    state.styledGeneration = h.session.pasteContextGeneration
+                    h.assert(AsyncFixture.original, selection: AsyncFixture.originalSelection)
+                    XCTAssertTrue(h.session.structuredCommands.hasPendingCommands)
+                    h.finishCommands(next)
+                })
+            },
+            .sync {
+                XCTAssertEqual(state.applications, 1)
+                XCTAssertGreaterThan(state.styledGeneration, state.acceptedGeneration)
+                h.assert(AsyncFixture.original, selection: AsyncFixture.originalSelection)
+                XCTAssertTrue(h.textChanges.isEmpty)
+                XCTAssertFalse(h.manager.canUndo)
+                XCTAssertFalse(h.manager.canRedo)
+            }
+        ])
+    }
+
     @MainActor func testLastCellTabThenTabAppendsOneRowAndNavigatesProjectedRow() throws {
         let source = "| A | B |\r\n| - | - |\r\n| x | y |"
         let appended = source + "\r\n|  |  |"
@@ -383,6 +461,59 @@ final class AsyncStructuredNativeGUITests: XCTestCase {
         ])
     }
 
+    @MainActor func testConvertedUnadoptedPasteIsCancelledBeforeLaterTablePlanning() throws {
+        let h = try AsyncNativeHost(AsyncFixture.original)
+        defer { h.close() }
+        h.view.setSelectedRange(AsyncFixture.originalSelection)
+        let convertedSource = "| A | B |\r\n| --- | --- |\r\n| READY | é |"
+        let convertedSelection = NSRange(location: AsyncFixture.originalSelection.location + 5, length: 0)
+        try AsyncNativeEvents.run([
+            .async { next in
+                h.requireNativePremise()
+                let queue = h.session.structuredCommands
+                let target = try XCTUnwrap(queue.captureTarget(in: h.view))
+                // This is the real queue producer boundary after conversion,
+                // not the earlier converter-await phase covered above. Submit
+                // and the following table command share this one native event.
+                let paste = try XCTUnwrap(queue.submit(edit: StructuredCommandEdit(
+                    range: AsyncFixture.originalSelection, replacement: "READY", selection: convertedSelection),
+                    target: target, pasteRequest: UUID(), origin: .pasteConversion))
+                XCTAssertTrue(queue.hasPendingCommands)
+                h.assert(AsyncFixture.original, selection: AsyncFixture.originalSelection)
+                XCTAssertTrue(h.textChanges.isEmpty)
+                XCTAssertFalse(h.manager.canUndo)
+                XCTAssertFalse(h.manager.canRedo)
+                // Its projected result is in the pending chain while the
+                // editor still contains the original bytes: it has not adopted.
+                let pendingProjection = try XCTUnwrap(queue.captureTarget(in: h.view))
+                XCTAssertEqual(Array(pendingProjection.source.utf16), Array(convertedSource.utf16))
+                XCTAssertEqual(pendingProjection.selection, convertedSelection)
+
+                XCTAssertTrue(h.view.performMarkdownAction(.tableEdit(.insertColumnAfter)))
+                h.assert(AsyncFixture.original, selection: AsyncFixture.originalSelection)
+                XCTAssertTrue(h.textChanges.isEmpty)
+                XCTAssertFalse(h.manager.canUndo)
+                // Only after both submissions may the test await completion.
+                // No yield, sleep or event pump can let READY write first.
+                Task { @MainActor in
+                    let outcome = await paste.value()
+                    XCTAssertEqual(outcome, .cancelled)
+                    await QueueAPI.wait(h.session)
+                    next()
+                }
+            },
+            .sync {
+                h.assert(AsyncFixture.widened, selection: AsyncFixture.emptyColumn)
+                XCTAssertEqual(h.textChanges.map { Array($0.utf16) }, [Array(AsyncFixture.widened.utf16)])
+                XCTAssertEqual(h.manager.undoCount, 1, "only the table action adopts and records an inverse")
+                XCTAssertEqual(h.manager.redoCount, 0)
+                XCTAssertEqual(h.manager.groupingLevel, 0)
+                h.history(undo: [(AsyncFixture.original, AsyncFixture.originalSelection)],
+                          redo: [(AsyncFixture.widened, AsyncFixture.emptyColumn)])
+            }
+        ])
+    }
+
     @MainActor func testRefusedOrNoOpTableActionDoesNotCancelPendingPaste() throws {
         for action in [MarkdownEditing.Action.tableEdit(.deleteRow), .outdent] {
             let h = try AsyncNativeHost(AsyncFixture.original), gate = AsyncConversionGate()
@@ -487,6 +618,13 @@ final class AsyncStructuredNativeGUITests: XCTestCase {
 }
 
 private enum AsyncMutation { case string, storage, selection }
+@MainActor private final class AsyncStylingState {
+    var applications = 0
+    var acceptedGeneration: UInt64 = 0
+    var acceptedRevision: UInt64 = 0
+    var styledGeneration: UInt64 = 0
+    var styledRevision: UInt64 = 0
+}
 private enum AsyncFixture {
     static let original = "| A | B |\r\n| --- | --- |\r\n| 中🙂 | é |"
     static let widened = "| A |  | B |\r\n| --- | --- | --- |\r\n| 中🙂 |  | é |"
