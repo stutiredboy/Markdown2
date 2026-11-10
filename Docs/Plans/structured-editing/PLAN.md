@@ -32,8 +32,9 @@ batch, and neither package depends on the other's new parser or API.
   the last body row leaves a valid header/delimiter table.
 - Preserve unmodified cell Markdown, padding, alignment markers and surrounding
   text verbatim. New cells use ordinary padding; new delimiter cells use `---`.
-  Add only necessary outer pipes for new empty rows, edge columns or one-column
-  results when otherwise the renderer would consume a separator as an outer pipe.
+  Add only necessary outer pipes for new empty rows, exposed empty edge cells
+  after column insertion/deletion, or one-column results when otherwise the
+  renderer would consume a separator as an outer pipe.
   Structural changes use one native replacement/undo step. Select the new cell
   after insertion or the nearest remaining cell after deletion.
 - Preserve mixed source line endings outside edits. New rows inherit the local
@@ -78,8 +79,12 @@ batch, and neither package depends on the other's new parser or API.
   image/raw-HTML/link syntax, including bare URLs and entity-like text. Capturing
   the entire plain representation does not prove it is equivalent to the rich
   representation; do not call this lossless rich conversion. Without a plain
-  representation, leave the source unchanged and explain why. Never truncate.
-  Any budget overflow, deadline, stale state or cancellation rejects the whole
+  representation, leave the source unchanged and explain why. Literal fallback
+  is allowed only when the user's existing selection leaves whitespace outside
+  it (including an empty document); otherwise reject with a notice. Do not expand
+  a selection to enable fallback. This avoids activating syntax from surrounding
+  image destinations or HTML attributes; explicit Plain Text remains available.
+  Never truncate. Any budget overflow, deadline, stale state or cancellation rejects the whole
   action without fallback or insertion.
 - No-resource-loading claims apply to capture/conversion/menu validation, not
   the application's general preview policy. Explicit Plain Text and plain-only
@@ -103,7 +108,9 @@ batch, and neither package depends on the other's new parser or API.
   ((input rows + 1) times widest column count); generated table output also
   cannot exceed 100,000 UTF-16 units, aligning with T's table limits. Rich Data
   budgets count original bytes; other String and generated-output byte budgets
-  count UTF-8 bytes, not grapheme counts. Conversion runs off-main with cooperative cancellation and a one-second
+  count UTF-8 bytes, not grapheme counts. Recheck generated replacement budgets
+  after local line-ending conversion and block separators, including CRLF growth.
+  Conversion runs off-main with cooperative cancellation and a one-second
   deadline. Synchronous OS clipboard provision is outside that deadline.
 - Capture clipboard value data consistently using changeCount, never promised
   files/URLs/RTFD/image objects. Capture source identity, exact UTF-16 bytes,
