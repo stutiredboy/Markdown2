@@ -144,7 +144,11 @@ def validate_local_lanes(script):
             nesting.append("done")
         elif re.search(r"\(\)\s*\{\s*$", line) or first == "{":
             nesting.append("}")
-        elif first in {"esac", "fi", "done", "}"}:
+        elif first == "(":
+            nesting.append(")")
+        elif first in {"esac", "fi", "done", "}"} or (
+            first == ")" and line.lstrip().startswith(")")
+        ):
             if not nesting or nesting.pop() != first:
                 raise AssertionError("Unexpected local script control layout")
     expected = [default_command()] + [
@@ -216,6 +220,12 @@ class TestLaneTests(unittest.TestCase):
         for index, changed in enumerate(mutations):
             with self.subTest(mutation=index), self.assertRaises(AssertionError):
                 validate_local_lanes(changed)
+
+    def test_local_subshell_cannot_swallow_a_failed_gate(self):
+        command = f"swift test --filter '{BLOCK}'\n"
+        changed = self.local.replace(command, "(\n" + command + ") || true\n", 1)
+        with self.assertRaises(AssertionError):
+            validate_local_lanes(changed)
 
     def test_exclusion_without_executable_isolated_filter_is_rejected(self):
         command = f"          swift test --filter '{EXPORT}'\n"
