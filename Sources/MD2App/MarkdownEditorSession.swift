@@ -22,11 +22,14 @@ import MD2Core
 /// supplies the document's undo manager and hands the changed text straight to
 /// the document, and Edit ▸ Undo keeps working there.
 @MainActor
-final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
+final class MarkdownEditorSession: NSObject, NSTextViewDelegate, @preconcurrency NSTextStorageDelegate {
     /// The document's undo manager: the window returns it to the Edit menu and
     /// the text view registers its edits on it.
     let undoManager: UndoManager
     let structuredEditUndo: StructuredEditUndo
+    lazy var structuredCommands = StructuredCommandQueue(session: self)
+    private(set) var structuredSourceRevision: UInt64 = 0
+    private(set) var structuredIntentGeneration: UInt64 = 0
     let find = FindSession()
     private var isApplyingFindEdit = false
     private(set) var pasteHostGeneration: UInt64 = 0
@@ -38,9 +41,15 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
     /// relocating its backing file, or closing it must invalidate captured work.
     func invalidatePasteContext(isOpen: Bool? = nil) {
         pasteContextGeneration &+= 1
+        structuredCommands.cancelPending()
         if let isOpen { isPasteTargetOpen = isOpen }
         (textView as? MarkdownSourceTextView)?.markdownPasteController.cancel()
     }
+
+    /// A real accepted table transition invalidates an earlier conversion even
+    /// before its native event applies. Keep its request ID so stale conversion
+    /// retains the existing cancelled notice; refusals do not call this method.
+    func acceptedStructuredTableTransition() { structuredIntentGeneration &+= 1 }
     /// Keep native edits outside SwiftUI updateNSView. An interaction harness
     /// may hold this scheduling boundary without bypassing the real button,
     /// click-time snapshot, host checks or replacement execution.
@@ -81,6 +90,7 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
         // Build the TextKit 1 stack manually so the editor uses a custom layout
         // manager that paints continuous code-block backgrounds.
         let textStorage = NSTextStorage()
+        textStorage.delegate = self
         let layoutManager = CodeBlockLayoutManager()
         textStorage.addLayoutManager(layoutManager)
         let textContainer = NSTextContainer(
@@ -125,6 +135,7 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
     func host(in scrollView: NSScrollView, coordinator: MarkdownEditorView.Coordinator) {
         guard let textView else { return }
         pasteHostGeneration &+= 1
+        structuredCommands.cancelPending()
         if let previous = textView.enclosingScrollView, previous !== scrollView {
             previous.documentView = nil
         }
@@ -154,6 +165,7 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
         guard let textView, self.coordinator === coordinator else { return }
         self.coordinator = nil
         pasteHostGeneration &+= 1
+        structuredCommands.cancelPending()
         (textView as? MarkdownSourceTextView)?.markdownPasteController.cancel()
         if textView.enclosingScrollView === scrollView {
             scrollView.documentView = nil
@@ -280,18 +292,27 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
 
     func textViewDidChangeSelection(_ notification: Notification) {
         pasteContextGeneration &+= 1
+        if let textView { structuredCommands.observedContextChange(in: textView, selectionChanged: true) }
         if let textView, textView.window?.firstResponder === textView { find.rememberSelection(in: textView) }
         coordinator?.textViewDidChangeSelection(notification)
     }
 
     func textDidChange(_ notification: Notification) {
         pasteContextGeneration &+= 1
+        if let textView { structuredCommands.observedContextChange(in: textView, selectionChanged: false) }
         if let textView, !textView.hasMarkedText(), !isApplyingFindEdit { find.invalidateSelection() }
         if let coordinator {
             coordinator.textDidChange(notification)
         } else if let textView, !textView.hasMarkedText() {
             onUnmountedTextChange?(textView.string)
         }
+    }
+
+    func textStorage(_ textStorage: NSTextStorage, didProcessEditing editedMask: NSTextStorageEditActions,
+                     range editedRange: NSRange, changeInLength delta: Int) {
+        guard editedMask.contains(.editedCharacters) else { return }
+        structuredSourceRevision &+= 1
+        if let textView { structuredCommands.observedCharacterChange(in: textView, range: editedRange, delta: delta) }
     }
 }
 
