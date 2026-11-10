@@ -54,6 +54,28 @@ final class RemoteResourcePolicyGUITests: XCTestCase, RenderedPageTesting {
         XCTAssertTrue(server.requests.filter { $0.path.hasPrefix(prefix) }.allSatisfy { $0.headers["referer"] == nil })
     }
 
+    @MainActor func testNativeImageGrantRefusesNonImagesWhenPageCSPIsAbsent() throws {
+        let server = try ResourceRequestServer()
+        defer { server.stop() }
+        XCTAssertTrue(spin { server.port != nil })
+        try positiveControl(server)
+        let prefix = "/without-csp-\(UUID())"
+        let loader = WebDocumentLoader()
+        let config = WKWebViewConfiguration(); loader.install(on: config)
+        let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 300, height: 200), configuration: config)
+        defer { loader.invalidate(in: web) }
+        let html = MarkdownRenderer().render("# Native boundary", assetMode: .appScheme, remoteResourcePolicy: .allowRemoteImages).html
+        loader.load(RenderedPageEdit.removingPolicy(html), baseURL: nil, remoteResourcePolicy: .allowRemoteImages, in: web)
+        XCTAssertTrue(try waitFor("!!document.querySelector('h1')", in: web))
+        XCTAssertEqual(try js("document.querySelectorAll('meta[http-equiv=\"Content-Security-Policy\"]').length", in: web) as? Int, 0)
+        try injectResourceMatrix(server.base + prefix, in: web)
+        XCTAssertTrue(spin { server.requests.contains { $0.path == prefix + "/srcset.png" } })
+        XCTAssertTrue(spin { server.requests.contains { $0.path == prefix + "/css.png" } })
+        _ = spin(0.6) { false }
+        let nonImages = ["/sheet.css", "/font.woff2", "/script.js", "/frame.html", "/media.mp4", "/fetch", "/object.html", "/svg-use.svg"]
+        XCTAssertEqual(server.requests.filter { record in nonImages.contains { record.path == prefix + $0 } }.map(\.path), [])
+    }
+
     @MainActor func testPolicyOnlyTransitionsAndPendingLiveUpdateCannotRestorePermission() throws {
         let server = try ResourceRequestServer()
         defer { server.stop() }
