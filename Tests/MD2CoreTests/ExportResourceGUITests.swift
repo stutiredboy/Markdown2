@@ -17,7 +17,7 @@ final class ExportResourceGUITests: XCTestCase {
         let server = try ExportNetworkTestServer(image: magentaPNG())
         defer { server.stop() }
         let dir = try directory()
-        defer { try? FileManager.default.removeItem(at: dir) }
+        defer { ExportTestEvidence.preserveThenRemove(dir) }
         for policy in [RemoteResourcePolicy.blocked, .allowRemoteImages] {
             let token = UUID().uuidString
             let source = "# Export marker\n\n<img src=\"\(server.baseURL)/\(token).png\" width=\"100\" height=\"100\" alt=\"remote marker\">"
@@ -42,6 +42,7 @@ final class ExportResourceGUITests: XCTestCase {
             let rendered = MarkdownRenderer().render(source, assetMode: .appScheme, remoteResourcePolicy: policy)
             var presented = 0
             let printer = DocumentPrinter(printPresenter: { url, _ in
+                ExportTestEvidence.preservePrint(url)
                 presented += 1
                 XCTAssertEqual(try? self.containsMagenta(url), policy == .allowRemoteImages)
                 return .success(())
@@ -64,7 +65,7 @@ final class ExportResourceGUITests: XCTestCase {
         let server = try ExportNetworkTestServer(image: magentaPNG())
         defer { server.stop() }
         let dir = try directory()
-        defer { try? FileManager.default.removeItem(at: dir) }
+        defer { ExportTestEvidence.preserveThenRemove(dir) }
         let css = UUID().uuidString, svg = UUID().uuidString
         let rendered = MarkdownRenderer().render("# CSS and SVG", assetMode: .appScheme, remoteResourcePolicy: .allowRemoteImages)
         // Intentional post-sanitizer fixture: exercises the actual exporter for
@@ -94,7 +95,7 @@ final class ExportResourceGUITests: XCTestCase {
         let server = try ExportNetworkTestServer()
         defer { server.stop() }
         let dir = try directory()
-        defer { try? FileManager.default.removeItem(at: dir) }
+        defer { ExportTestEvidence.preserveThenRemove(dir) }
         let destination = dir.appendingPathComponent("existing.pdf")
         let sentinel = Data("before-failed-image".utf8)
         try sentinel.write(to: destination)
@@ -110,7 +111,7 @@ final class ExportResourceGUITests: XCTestCase {
         let server = try ExportNetworkTestServer()
         defer { server.stop() }
         let dir = try directory()
-        defer { try? FileManager.default.removeItem(at: dir) }
+        defer { ExportTestEvidence.preserveThenRemove(dir) }
         let destination = dir.appendingPathComponent("existing.pdf")
         let sentinel = Data("original-pdf-sentinel".utf8)
         try sentinel.write(to: destination)
@@ -140,7 +141,7 @@ final class ExportResourceGUITests: XCTestCase {
         let server = try ExportNetworkTestServer()
         defer { server.stop() }
         let dir = try directory()
-        defer { try? FileManager.default.removeItem(at: dir) }
+        defer { ExportTestEvidence.preserveThenRemove(dir) }
         let destination = dir.appendingPathComponent("out.pdf")
         let started = Date()
         let result = runPDF("![slow](\(server.baseURL)/slow-\(UUID()).png)", policy: .allowRemoteImages, destination: destination)
@@ -152,12 +153,12 @@ final class ExportResourceGUITests: XCTestCase {
     }
 
     @MainActor
-    func testActualHTMLExportReopensOfflineAndMissingLocalImageCannotRevive() async throws {
+    func testActualHTMLExportReopensOfflineAndMissingLocalImageCannotRevive() throws {
         _ = NSApplication.shared
         let server = try ExportNetworkTestServer()
         defer { server.stop() }
         let dir = try directory()
-        defer { try? FileManager.default.removeItem(at: dir) }
+        defer { ExportTestEvidence.preserveThenRemove(dir) }
         let source = dir.appendingPathComponent("source.md"), destination = dir.appendingPathComponent("out.html")
         try ExportNetworkTestServer.png.write(to: dir.appendingPathComponent("local.png"))
         let markdown = """
@@ -185,7 +186,9 @@ final class ExportResourceGUITests: XCTestCase {
         let store = DocumentStore(htmlDestinationPicker: { _ in destination })
         store.open(source)
         defer { _ = store.closeDocument(discardRecovery: false) }
-        await store.exportHTML()
+        let exported = expectation(description: "actual HTML export")
+        Task { await store.exportHTML(); exported.fulfill() }
+        wait(for: [exported], timeout: 10)
         XCTAssertTrue(server.requests.isEmpty)
         // The reader now has this path and a broad directory grant. It must
         // remain an inert explanation, not resume the original relative src.

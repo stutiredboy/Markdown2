@@ -73,7 +73,38 @@ final class ExportNetworkTestServer: @unchecked Sendable {
     }
 
     func stop() {
+        ExportTestEvidence.saveRequests(requests, port: port)
         listener.cancel()
         lock.withLock { connections.forEach { $0.cancel() }; connections.removeAll(); delayed.removeAll() }
+    }
+}
+
+enum ExportTestEvidence {
+    private static var root: URL? {
+        ProcessInfo.processInfo.environment["MD2_EXPORT_EVIDENCE_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+    }
+
+    static func preserveThenRemove(_ directory: URL) {
+        if let root {
+            try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            try? FileManager.default.copyItem(at: directory, to: root.appendingPathComponent(directory.lastPathComponent))
+        }
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    static func preservePrint(_ url: URL) {
+        guard let root else { return }
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try? FileManager.default.copyItem(at: url, to: root.appendingPathComponent(url.lastPathComponent))
+    }
+
+    static func saveRequests(_ requests: [ExportNetworkTestServer.Request], port: UInt16) {
+        guard let root else { return }
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let object: [String: Any] = ["port": port, "count": requests.count,
+            "requests": requests.map { ["path": $0.path, "header": $0.header, "date": $0.date.timeIntervalSince1970] as [String: Any] }]
+        if let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: root.appendingPathComponent("requests-\(port)-\(UUID()).json"))
+        }
     }
 }
