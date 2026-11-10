@@ -175,6 +175,7 @@ struct ContentView: View {
     @State private var previewFindFocusToken = UUID()
     @State private var previewFindNavigation: FindCommand?
     @State private var previewSurfaceFocusToken = UUID()
+    @State private var previewFocusState = PreviewFocusState()
     @State private var previewMatchTotal = 0
     @State private var previewMatchIndex = 0
     /// Side by Side: the pane that most recently had user interaction, so a
@@ -442,6 +443,7 @@ struct ContentView: View {
 
     private func applyDefaultPresentation() {
         mode = settings.presentationMode(isFileBacked: document.fileURL != nil)
+        if mode != .write { previewSurfaceFocusToken = UUID() }
         showsOutline = settings.showsOutlineByDefault
     }
 
@@ -714,6 +716,7 @@ struct ContentView: View {
         document.jumpFraction = nil
         switch newMode {
         case .read:
+            previewSurfaceFocusToken = UUID()
             document.editorJumpAnchor = nil
             document.previewJumpAnchor = anchor
         case .write:
@@ -722,6 +725,7 @@ struct ContentView: View {
             // selection instead of scrolling back to the preview's viewport.
             document.editorJumpAnchor = document.editorSession.revealSelectionOnNextHost ? nil : anchor
         case .split:
+            previewSurfaceFocusToken = UUID()
             // Land both freshly mounted panes on the same content so Side by
             // Side opens aligned to where the user was.
             document.editorJumpAnchor = anchor
@@ -1015,6 +1019,7 @@ struct ContentView: View {
                     findOptions: document.editorSession.find.options,
                     findNavigation: $previewFindNavigation,
                     focusToken: previewSurfaceFocusToken,
+                    focusState: previewFocusState,
                     onFindShortcut: { action in
                         if inSplit { focusedPane = .preview }
                         handlePreviewFindAction(action)

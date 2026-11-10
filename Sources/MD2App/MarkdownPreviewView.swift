@@ -112,6 +112,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
     @Binding var findNavigation: FindCommand?
     /// Changes whenever the preview surface should become first responder.
     let focusToken: UUID
+    /// Kept by ContentView across resource-context replacements. Legacy direct
+    /// callers without a session retain the coordinator-local focus behavior.
+    var focusState: PreviewFocusState? = nil
     /// Called when the web view receives a standard Find key/menu action before
     /// SwiftUI commands can route it through `DocumentStore`.
     var onFindShortcut: (_ action: FindCommand.Action) -> Void = { _ in }
@@ -1116,12 +1119,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             context.coordinator.handleFindNavigation(navigation.action, in: webView)
         }
 
-        if context.coordinator.lastFocusToken != focusToken {
-            context.coordinator.lastFocusToken = focusToken
-            DispatchQueue.main.async {
-                webView.window?.makeFirstResponder(webView)
-            }
-        }
+        context.coordinator.updateFocusRequest(focusToken, state: focusState, in: webView)
     }
 
     /// Whether `newBody` needs a diagram engine that the currently-loaded page
@@ -1355,6 +1353,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator {
         let coordinator = Coordinator()
+        coordinator.focusState = focusState
         coordinator.typography = typography
         coordinator.onSelectionChange = onSelectionChange
         coordinator.onEnterEdit = onEnterEdit
@@ -1398,8 +1397,12 @@ struct MarkdownPreviewView: NSViewRepresentable {
         var remoteResourcePolicy: RemoteResourcePolicy = .blocked
         var remoteResourceContextToken: UUID?
         var resourceContextIsActive = true
+        var focusState: PreviewFocusState?
 
         func invalidateResourceContext(in webView: WKWebView) {
+            if resourceContextIsActive, !lastHTML.isEmpty {
+                focusState?.preserveFocus(from: webView)
+            }
             resourceContextIsActive = false
             beginLoading()
             documentLoader.invalidate(in: webView)
@@ -1437,6 +1440,23 @@ struct MarkdownPreviewView: NSViewRepresentable {
         private var findInFlight = false
         var onFindUnavailable: (Bool) -> Void = { _ in }
         var lastFocusToken: UUID?
+
+        func updateFocusRequest(_ token: UUID, state: PreviewFocusState?, in webView: WKWebView) {
+            guard resourceContextIsActive, acceptsFindHost(webView) else { return }
+            focusState = state
+            let changed = lastFocusToken != token
+            lastFocusToken = token
+            let requested = changed && (state?.consume(token) ?? true)
+            guard requested || state?.hasPendingRestoration == true else { return }
+            DispatchQueue.main.async { [weak self, weak webView] in
+                guard let self, let webView, self.resourceContextIsActive,
+                      self.lastFocusToken == token, self.acceptsFindHost(webView),
+                      state == nil || state?.lastConsumedToken == token else { return }
+                if requested || state?.consumeRestoration(in: webView) == true {
+                    webView.window?.makeFirstResponder(webView)
+                }
+            }
+        }
         /// Token of the most recently consumed find-navigation command, so it runs
         /// exactly once even if `updateNSView` re-runs while the binding still holds
         /// the same command. See the consumption site for why clearing the binding
