@@ -236,6 +236,7 @@ enum ModeShortcutValidator {
         .command("a"): "Select All",
         .command("c"): "Copy",
         .command("v"): "Paste",
+        MarkdownPasteCommand.plainShortcut: "Paste as Plain Text",
         .command("x"): "Cut",
         .command("z"): "Undo",
         ModeKeyboardShortcut(key: "z", modifiers: [.command, .shift]): "Redo"

@@ -847,6 +847,19 @@ struct ContentView: View {
                     .accessibilityIdentifier("tableEditingNotice")
                     .allowsHitTesting(false)
             }
+            if let notice = document.pasteNotice {
+                HStack {
+                    Text(settings.text(notice.title)).font(.callout)
+                    Spacer()
+                    Button { document.pasteNotice = nil } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(settings.text(.close))
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.regularMaterial)
+                .accessibilityIdentifier("pasteNotice")
+            }
             if document.showsFormattingTargetNotice {
                 Text(settings.text(.formattingTargetNotice))
                     .font(.callout)

@@ -28,6 +28,9 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
     let undoManager: UndoManager
     let find = FindSession()
     private var isApplyingFindEdit = false
+    private(set) var pasteHostGeneration: UInt64 = 0
+    private(set) var pasteContextGeneration: UInt64 = 0
+    var onPasteNotice: ((MarkdownPasteNotice?) -> Void)?
     /// Keep native edits outside SwiftUI updateNSView. An interaction harness
     /// may hold this scheduling boundary without bypassing the real button,
     /// click-time snapshot, host checks or replacement execution.
@@ -99,6 +102,7 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
         )
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
+        textView.markdownPasteController.onNotice = { [weak self] notice in self?.onPasteNotice?(notice) }
         self.textView = textView
         return textView
     }
@@ -109,6 +113,7 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
     /// previous one, so this does not wait for `unhost`.
     func host(in scrollView: NSScrollView, coordinator: MarkdownEditorView.Coordinator) {
         guard let textView else { return }
+        pasteHostGeneration &+= 1
         if let previous = textView.enclosingScrollView, previous !== scrollView {
             previous.documentView = nil
         }
@@ -137,6 +142,8 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
     func unhost(from scrollView: NSScrollView, coordinator: MarkdownEditorView.Coordinator) {
         guard let textView, self.coordinator === coordinator else { return }
         self.coordinator = nil
+        pasteHostGeneration &+= 1
+        (textView as? MarkdownSourceTextView)?.markdownPasteController.cancel()
         if textView.enclosingScrollView === scrollView {
             scrollView.documentView = nil
         }
@@ -188,6 +195,7 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
         guard !textView.hasMarkedText() else { return false }
 
         if let change = TextReplacement(from: storage.string, to: newText) {
+            pasteContextGeneration &+= 1
             find.invalidateSelection()
             storage.replaceCharacters(in: change.range, with: change.replacement)
             // TextKit moves the selection with the edit; clamp defensively, since
@@ -260,11 +268,13 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
     }
 
     func textViewDidChangeSelection(_ notification: Notification) {
+        pasteContextGeneration &+= 1
         if let textView, textView.window?.firstResponder === textView { find.rememberSelection(in: textView) }
         coordinator?.textViewDidChangeSelection(notification)
     }
 
     func textDidChange(_ notification: Notification) {
+        pasteContextGeneration &+= 1
         if let textView, !textView.hasMarkedText(), !isApplyingFindEdit { find.invalidateSelection() }
         if let coordinator {
             coordinator.textDidChange(notification)

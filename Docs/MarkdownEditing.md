@@ -139,6 +139,61 @@ To keep large rendered pages bounded, snapshots stop at 2,000,000 UTF-16 units,
 and no partial results. Source searching is not subject to these preview limits.
 Regular expressions remain deferred.
 
+## Explicit paste
+
+Edit offers **Paste as Plain Text** (`Option+Shift+Cmd+V`), **Paste as Markdown**,
+and **Paste as Table**. The last two require the focused source editor in Write
+or Side by Side. They are unavailable in Read, Find, filename fields and Settings;
+they never edit a hidden source selection. Plain Text follows the focused native
+text field when one has focus. Source commands are unavailable during input-method
+composition or multiple selection.
+
+Plain Text inserts the clipboard string exactly, including Markdown syntax,
+spacing and line endings. Markdown with only a plain string also inserts that
+string unchanged. These explicit source pastes use the existing preview policy.
+Ordinary Cmd+V keeps its existing image-first behavior and selected-label + URL
+link creation; the new commands do not inspect images or invoke attachment import.
+Empty input never deletes selected text.
+
+Markdown prefers HTML, then RTF. HTML converts semantic paragraphs, breaks,
+bold/italic, HTTP(S)/mailto links, headings, lists, quotes and code. CSS, fonts,
+colors, IDs and layout are not retained. RTF accepts only text, Unicode escapes,
+paragraph/line breaks, bold and italic plus known cosmetic metadata; fields,
+list/heading styles, images, objects and unknown semantic controls are unsupported.
+There is no browser or system HTML/RTF importer, network request, clipboard image
+fetch, script execution or arbitrary file access in capture, conversion or menu
+validation. The existing trusted bundled HTML-entity table is reused.
+
+For unsupported, unsafe or malformed rich content, Markdown can escape the complete
+captured plain representation as literal prose and show **Formatting was not
+preserved**. This representation is not a guarantee of equivalence to the rich
+content. Fallback is available only when the original selection includes all
+non-whitespace source content, including an empty document. At other positions,
+the command leaves text, selection and undo unchanged and explains that the user
+can explicitly choose Plain Text. It never expands the selection to fit fallback.
+If no complete plain representation is available, nothing is pasted. A changed
+source, selection, editor host, focus or active input method cancels pending work;
+returning to the old target does not revive it.
+
+Table parses quoted TSV: the first row is the header, doubled quotes inside quoted
+fields represent one quote, and embedded tabs/newlines stay within their cell.
+Empty cells and trailing columns are retained; short rows are padded. One final
+record separator does not create an extra row. Malformed quoting rejects the
+whole conversion. Markdown punctuation is escaped as literal cell content;
+newlines become `<br>`, embedded tabs become `&#9;`, and edge spaces become `&#32;`.
+ASCII spaces are not replaced with nonbreaking spaces. Normal HTML layout can
+collapse spaces visually; the source/DOM text retains those characters.
+
+Structured output is separated from surrounding text as a Markdown block and
+uses the document's local line ending. One Undo reverses the insertion. Conversion
+limits are 1 MiB raw rich data, 2 MiB plain/TSV UTF-8, 2 MiB generated UTF-8,
+20,000 parser tokens, 64 nesting levels and a one-second cooperative deadline.
+TSV additionally allows 999 input rows, 128 columns, 20,000 padded cells including
+the generated separator row, and 100,000 UTF-16 units in the final insertion
+including CRLF expansion and surrounding block separators. These limits reject
+without fallback or partial insertion. Table editing also has its own
+whole-document source limit.
+
 ## Verification
 
 ```sh
@@ -157,5 +212,6 @@ real Pinyin test requires the Simplified Chinese Pinyin input source to be
 enabled; it reports a skip if unavailable. The deterministic marked-text test
 runs independently of installed input sources.
 
-Rich-text-to-Markdown paste and a dedicated Paste as Plain Text command are
-covered by the separate explicit-paste work package.
+Table editing and explicit paste have separate bounded parsers. Generated TSV
+tables are covered by integration tests for navigation, column edits and native
+Undo/Redo.

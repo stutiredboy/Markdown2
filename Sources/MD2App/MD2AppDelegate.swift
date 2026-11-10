@@ -7,6 +7,7 @@ import SwiftUI
 final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let settings = AppSettings()
     let attachmentCommandState = AttachmentCommandState()
+    let pasteCommandState = MarkdownPasteCommandState()
 
     /// Recent-documents list (persists across launches). Noted on every
     /// successful open and first save.

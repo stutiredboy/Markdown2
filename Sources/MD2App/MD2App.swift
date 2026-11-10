@@ -198,6 +198,10 @@ private struct AppCommands: Commands {
             .keyboardShortcut(splitShortcut.keyEquivalent, modifiers: splitShortcut.modifiers.eventModifiers)
         }
 
+        CommandGroup(after: .pasteboard) {
+            MarkdownPasteCommandButtons(state: appDelegate.pasteCommandState, settings: settings)
+        }
+
         CommandGroup(after: .textEditing) {
             Divider()
             Button(settings.text(.find)) {

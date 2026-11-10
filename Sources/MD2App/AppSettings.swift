@@ -463,6 +463,8 @@ enum L10nKey: String, CaseIterable, Sendable {
     case replace
     case replaceAll
     case formattingTargetNotice
+    case pasteAsPlainText, pasteAsMarkdown, pasteAsTable
+    case pasteLiteralFallbackNotice, pasteUnavailableNotice, pasteLimitNotice, pasteCancelledNotice, pasteUnsafeContextNotice
     case findMatchCase
     case findWholeWord
     case findOnlySelection
@@ -717,6 +719,14 @@ enum L10n {
         .findPlaceholder: "Find",
         .replace: "Replace",
         .replaceAll: "Replace All",
+        .pasteAsPlainText: "Paste as Plain Text",
+        .pasteAsMarkdown: "Paste as Markdown",
+        .pasteAsTable: "Paste as Table",
+        .pasteLiteralFallbackNotice: "Formatting was not preserved. The captured plain text was pasted as literal text.",
+        .pasteUnavailableNotice: "This clipboard content cannot be converted. Nothing was pasted.",
+        .pasteLimitNotice: "Clipboard content exceeds the conversion limit. Nothing was pasted.",
+        .pasteUnsafeContextNotice: "Cannot safely paste literal text at this position. Use Paste as Plain Text to insert source text explicitly.",
+        .pasteCancelledNotice: "The editing target changed. Paste was canceled.",
         .formattingTargetNotice: "Source selection shown. Select the text to format, then run the command again.",
         .findMatchCase: "Match case",
         .findWholeWord: "Whole word",
@@ -954,6 +964,14 @@ enum L10n {
         .findPlaceholder: "查找",
         .replace: "替换",
         .replaceAll: "全部替换",
+        .pasteAsPlainText: "粘贴为纯文本",
+        .pasteAsMarkdown: "粘贴为 Markdown",
+        .pasteAsTable: "粘贴为表格",
+        .pasteLiteralFallbackNotice: "未保留格式，已将捕获的纯文本表示作为字面文字粘贴。",
+        .pasteUnavailableNotice: "无法转换此剪贴板内容，未粘贴任何内容。",
+        .pasteLimitNotice: "剪贴板内容超出转换限制，未粘贴任何内容。",
+        .pasteUnsafeContextNotice: "无法在此位置安全地粘贴字面文字。如需插入源码，请显式选择“粘贴为纯文本”。",
+        .pasteCancelledNotice: "编辑目标已变化，粘贴已取消。",
         .formattingTargetNotice: "已显示源码选区。请选择要格式化的文字，再次执行命令。",
         .findMatchCase: "区分大小写",
         .findWholeWord: "整词",

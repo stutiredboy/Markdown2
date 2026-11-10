@@ -106,6 +106,7 @@ final class DocumentStore: ObservableObject {
     /// Read-mode formatting first reveals the source target without editing it.
     @Published var showsFormattingTargetNotice = false
     @Published var tableEditingRejection: MarkdownTableEditing.Rejection?
+    @Published var pasteNotice: MarkdownPasteNotice?
 
     func requestFormat(_ action: MarkdownEditing.Action) {
         if editorSession.textView?.hasMarkedText() == true { return }
@@ -149,6 +150,7 @@ final class DocumentStore: ObservableObject {
         let session = MarkdownEditorSession(undoManager: undoManager)
         // Read mode: undo/redo (and checkbox toggles) still edit the unmounted
         // text view; its text is the document's.
+        session.onPasteNotice = { [weak self] notice in self?.pasteNotice = notice }
         session.onUnmountedTextChange = { [weak self] text in
             self?.text = text
         }

@@ -1692,6 +1692,7 @@ final class MarkdownSourceTextView: NSTextView {
             invalidateGutter()
         }
     }
+    lazy var markdownPasteController = MarkdownPasteController(editor: self)
     private var isPasting = false
     private var isSoftReturnEvent = false
     /// Isolated command input keeps editor tests off the user's shared clipboard.
@@ -2016,6 +2017,10 @@ final class MarkdownSourceTextView: NSTextView {
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if window?.firstResponder === self, ModeKeyboardShortcut(event: event) == MarkdownPasteCommand.plainShortcut {
+            pasteAsPlainText(nil)
+            return true
+        }
         guard !hasMarkedText() else { return super.performKeyEquivalent(with: event) }
         if window?.firstResponder === self, let shortcut = ModeKeyboardShortcut(event: event),
            let item = MarkdownFormatCommand.items.first(where: { $0.shortcut == shortcut }) {
@@ -2027,6 +2032,16 @@ final class MarkdownSourceTextView: NSTextView {
         }
         return super.performKeyEquivalent(with: event)
     }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned { markdownPasteController.cancel() }
+        return resigned
+    }
+
+    override func pasteAsPlainText(_ sender: Any?) { markdownPasteController.perform(.plainText) }
+    @objc func pasteAsMarkdown(_ sender: Any?) { markdownPasteController.perform(.markdown) }
+    @objc func pasteAsTable(_ sender: Any?) { markdownPasteController.perform(.table) }
 
     // MARK: - Image paste / drop
 
@@ -2065,6 +2080,11 @@ final class MarkdownSourceTextView: NSTextView {
     /// paste as invalid for an image-only clipboard — there is no string type — so
     /// `Cmd+V` would be a no-op and `paste(_:)` above would never run.
     override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if [#selector(pasteAsPlainText(_:)), #selector(pasteAsMarkdown(_:)), #selector(pasteAsTable(_:))].contains(menuItem.action) {
+            guard markdownPasteController.canPerform else { return false }
+            let types = Set(NSPasteboard.general.types ?? [])
+            return menuItem.action == #selector(pasteAsMarkdown(_:)) ? !types.isDisjoint(with: [.string, .html, .rtf]) : types.contains(.string)
+        }
         if menuItem.action == #selector(NSText.paste(_:)) {
             let pasteboard = NSPasteboard.general
             let options: [NSPasteboard.ReadingOptionKey: Any] = [
