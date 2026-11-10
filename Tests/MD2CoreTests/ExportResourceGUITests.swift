@@ -59,6 +59,52 @@ final class ExportResourceGUITests: XCTestCase {
     }
 
     @MainActor
+    func testActualPDFSettlesSVGAndCSSImageClassResources() throws {
+        _ = NSApplication.shared
+        let server = try ExportNetworkTestServer(image: magentaPNG())
+        defer { server.stop() }
+        let dir = try directory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let css = UUID().uuidString, svg = UUID().uuidString
+        let rendered = MarkdownRenderer().render("# CSS and SVG", assetMode: .appScheme, remoteResourcePolicy: .allowRemoteImages)
+        // Intentional post-sanitizer fixture: exercises the actual exporter for
+        // both image classes, without mistaking a removed authored style for deny.
+        let fragment = "<div style=\"width:100px;height:100px;background-image:url('\(server.baseURL)/\(css).png')\"></div>" +
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\"><image href=\"\(server.baseURL)/\(svg).png\" width=\"100\" height=\"100\"/></svg>"
+        let html = rendered.html.replacingOccurrences(of: "<main>", with: "<main>" + fragment)
+        let destination = dir.appendingPathComponent("styles.pdf")
+        let exporter = PDFExporter(destinationURL: destination)
+        let done = expectation(description: "CSS and SVG PDF")
+        exporter.export(html: html, outline: [], baseURL: nil, remoteResourcePolicy: .allowRemoteImages) { result in
+            if case .failure(let error) = result { XCTFail("image class readiness failed: \(error)") }
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 35)
+        XCTAssertTrue(try containsMagenta(destination))
+        for token in [css, svg] {
+            let count = server.requests.filter { $0.path.contains(token) }.count
+            XCTAssertGreaterThan(count, 0)
+            XCTAssertLessThanOrEqual(count, 3, "readiness must reuse its finite per-source probe")
+        }
+    }
+
+    @MainActor
+    func testAuthorizedImageFailureCannotOverwriteExistingPDF() throws {
+        _ = NSApplication.shared
+        let server = try ExportNetworkTestServer()
+        defer { server.stop() }
+        let dir = try directory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let destination = dir.appendingPathComponent("existing.pdf")
+        let sentinel = Data("before-failed-image".utf8)
+        try sentinel.write(to: destination)
+        let result = runPDF("![broken](\(server.baseURL)/broken-\(UUID()).png)", policy: .allowRemoteImages, destination: destination)
+        guard case .failure = result else { return XCTFail("failed image silently exported") }
+        XCTAssertFalse(server.requests.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: destination), sentinel)
+    }
+
+    @MainActor
     func testCanceledDelayedImageCannotPublishOrOverwriteAnExistingPDF() throws {
         _ = NSApplication.shared
         let server = try ExportNetworkTestServer()
