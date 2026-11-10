@@ -201,7 +201,7 @@ final class PreciseFindReviewRegressionGUITests: XCTestCase {
             XCTAssertEqual(Array(observed.suffix(4)).map { $0.0 }, [3, 3, 3, 3], change)
             XCTAssertEqual(Array(observed.suffix(4)).map { $0.1 }, [1, 2, 3, 2], change)
             let acceptedCount = observed.count
-            withExtendedLifetime(originalCoordinator) { late() }
+            withExtendedLifetime((originalCoordinator, oldWeb)) { late() }
             XCTAssertEqual(observed.count, acceptedCount, "\(change): old completion must not publish")
             XCTAssertEqual(observed.last?.0, 3, change)
             XCTAssertEqual(observed.last?.1, 2, change)
