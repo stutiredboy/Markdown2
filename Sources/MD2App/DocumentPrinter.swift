@@ -26,6 +26,7 @@ final class DocumentPrinter: DocumentPrinting {
     /// Retains the exporter for its asynchronous lifetime; cleared on completion.
     private var exporter: PDFExporting?
     private var temporaryPDFURL: URL?
+    private var pendingCompletion: ((Result<Void, Error>) -> Void)?
 
     init(
         exporterFactory: @escaping @MainActor (URL, ExportProfile) -> PDFExporting = { PDFExporter(destinationURL: $0, profile: $1) }
@@ -37,10 +38,12 @@ final class DocumentPrinter: DocumentPrinting {
         html: String,
         outline: [Heading],
         baseURL: URL?,
+        remoteResourcePolicy: RemoteResourcePolicy = .blocked,
         profile: ExportProfile,
         documentTitle: String,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
+        pendingCompletion = completion
         // Render the print artifact in the system temp directory, independent
         // of the source location. This PDF is cleaned up explicitly after printing.
         let pdfURL = FileManager.default.temporaryDirectory
@@ -53,9 +56,11 @@ final class DocumentPrinter: DocumentPrinting {
             html: html,
             outline: outline,
             baseURL: baseURL,
+            remoteResourcePolicy: remoteResourcePolicy,
             documentTitle: documentTitle
         ) { [weak self] result in
-            guard let self else { return }
+            guard let self, let completion = self.pendingCompletion else { return }
+            self.pendingCompletion = nil
             self.exporter = nil
             switch result {
             case let .failure(error):
@@ -67,6 +72,15 @@ final class DocumentPrinter: DocumentPrinting {
                 completion(printResult)
             }
         }
+    }
+
+    func cancel() {
+        let completion = pendingCompletion
+        pendingCompletion = nil
+        exporter?.cancel()
+        exporter = nil
+        cleanUpTemporaryPDF()
+        completion?(.failure(CancellationError()))
     }
 
     /// Loads the rendered PDF and runs PDFKit's standard print operation, which

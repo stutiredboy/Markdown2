@@ -328,6 +328,7 @@ struct DocumentStoreTests {
 
 @MainActor
 private final class FakePDFExporter: PDFExporting {
+    func cancel() {}
     private(set) var exportCallCount = 0
     private(set) var html: String?
     private(set) var outline: [Heading]?
@@ -338,6 +339,7 @@ private final class FakePDFExporter: PDFExporting {
         html: String,
         outline: [Heading],
         baseURL: URL?,
+        remoteResourcePolicy: RemoteResourcePolicy,
         documentTitle: String,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {

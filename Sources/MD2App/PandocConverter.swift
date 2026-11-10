@@ -18,6 +18,7 @@ enum DocumentExportFormat: Sendable {
 /// protocol so the export flow is testable without a real Pandoc binary.
 @MainActor
 protocol DocumentConverting: AnyObject {
+    func cancel()
     func convert(
         markdown: String,
         format: DocumentExportFormat,
@@ -25,6 +26,11 @@ protocol DocumentConverting: AnyObject {
         destination: URL,
         completion: @escaping (Result<Void, Error>) -> Void
     )
+}
+
+extension DocumentConverting {
+    // Test adapters that synchronously complete have no work to cancel.
+    func cancel() {}
 }
 
 /// Produces DOCX/EPUB by invoking an external, user-installed Pandoc binary on the

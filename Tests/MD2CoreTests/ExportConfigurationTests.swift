@@ -93,10 +93,12 @@ struct ExportConfigurationTests {
 
 @MainActor
 private final class CapturingExporter: PDFExporting {
+    func cancel() {}
     func export(
         html: String,
         outline: [Heading],
         baseURL: URL?,
+        remoteResourcePolicy: RemoteResourcePolicy,
         documentTitle: String,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
@@ -106,12 +108,14 @@ private final class CapturingExporter: PDFExporting {
 
 @MainActor
 private final class CapturingPrinter: DocumentPrinting {
+    func cancel() {}
     private(set) var capturedProfile: ExportProfile?
 
     func print(
         html: String,
         outline: [Heading],
         baseURL: URL?,
+        remoteResourcePolicy: RemoteResourcePolicy,
         profile: ExportProfile,
         documentTitle: String,
         completion: @escaping (Result<Void, Error>) -> Void

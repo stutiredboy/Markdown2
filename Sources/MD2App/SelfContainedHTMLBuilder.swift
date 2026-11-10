@@ -1,5 +1,10 @@
 import Foundation
 
+struct OfflineHTMLLabels: Sendable {
+    var remoteImageBlocked: String = "Remote image omitted from offline HTML"
+    var localImageUnavailable: String = "Image could not be embedded in offline HTML"
+}
+
 /// Produces a single HTML document by inlining every locally-stored image
 /// referenced by an `<img>` tag as a base64 `data:` URI, so the exported file is
 /// portable and opens with no sidecar files. Styles and the math/diagram engines
@@ -36,7 +41,8 @@ enum SelfContainedHTMLBuilder {
 
     /// Returns `html` with each `<img>` that points at a local image file replaced
     /// by an inlined `data:` URI, and reports the images it left outside the page.
-    static func build(html: String, baseURL: URL?, limits: Limits = Limits()) -> Output {
+    static func build(html: String, baseURL: URL?, limits: Limits = Limits(),
+                      labels: OfflineHTMLLabels = .init()) -> Output {
         guard let regex = try? NSRegularExpression(pattern: imgTagPattern, options: [.caseInsensitive]) else {
             return Output(html: html, remoteImages: [], unembeddedLocalImages: [])
         }

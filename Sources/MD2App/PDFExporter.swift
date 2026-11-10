@@ -186,6 +186,7 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
         html: String,
         outline: [Heading],
         baseURL: URL?,
+        remoteResourcePolicy: RemoteResourcePolicy = .blocked,
         documentTitle: String = "",
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
@@ -203,6 +204,11 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.overallTimeout, execute: timeout)
 
         documentLoader.load(html, baseURL: baseURL, in: webView)
+    }
+
+    func cancel() {
+        webView.stopLoading()
+        finish(.failure(CancellationError()))
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

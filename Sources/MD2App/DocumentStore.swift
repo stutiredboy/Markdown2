@@ -5,29 +5,6 @@ import MD2Core
 import UniformTypeIdentifiers
 
 @MainActor
-protocol PDFExporting: AnyObject {
-    func export(
-        html: String,
-        outline: [Heading],
-        baseURL: URL?,
-        documentTitle: String,
-        completion: @escaping (Result<Void, Error>) -> Void
-    )
-}
-
-@MainActor
-protocol DocumentPrinting: AnyObject {
-    func print(
-        html: String,
-        outline: [Heading],
-        baseURL: URL?,
-        profile: ExportProfile,
-        documentTitle: String,
-        completion: @escaping (Result<Void, Error>) -> Void
-    )
-}
-
-@MainActor
 final class DocumentStore: ObservableObject {
     @Published var text: String {
         didSet {
