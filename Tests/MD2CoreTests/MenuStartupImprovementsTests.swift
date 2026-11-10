@@ -220,7 +220,6 @@ private final class FakeDocumentPrinter: DocumentPrinting {
 @MainActor
 private final class DeferringFakePDFExporter: PDFExporting {
     func cancel() {}
-    func cancel() {}
     private(set) var exportCallCount = 0
     private var pendingCompletion: ((Result<Void, Error>) -> Void)?
 
