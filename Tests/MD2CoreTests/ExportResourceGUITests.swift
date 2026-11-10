@@ -107,6 +107,38 @@ final class ExportResourceGUITests: XCTestCase {
     }
 
     @MainActor
+    func testUnsupportedCSSImageExpressionFailsInsteadOfClaimingReadiness() throws {
+        _ = NSApplication.shared
+        let server = try ExportNetworkTestServer(image: magentaPNG())
+        defer { server.stop() }
+        let dir = try directory()
+        defer { ExportTestEvidence.preserveThenRemove(dir) }
+        let token = UUID().uuidString
+        let fragment = "<div id=\"css-expression\" style=\"width:100px;height:100px;background-image:image-set('\(server.baseURL)/\(token).png' 1x)\"></div>"
+        let controlHTML = MarkdownRenderer().render("# CSS expression", remoteResourcePolicy: .allowRemoteImages).html
+            .replacingOccurrences(of: "<main>", with: "<main>" + fragment)
+        let control = dir.appendingPathComponent("css-control.html")
+        try controlHTML.write(to: control, atomically: true, encoding: .utf8)
+        try withFile(control) { webView in
+            let serialization = try self.evaluate("getComputedStyle(document.getElementById('css-expression')).backgroundImage", in: webView) as? String
+            XCTAssertTrue(serialization?.contains("image-set") == true, "positive control expression must be supported by this WebKit")
+            try serialization?.write(to: dir.appendingPathComponent("computed-css.txt"), atomically: true, encoding: .utf8)
+        }
+        XCTAssertTrue(server.requests.contains { $0.path.contains(token) })
+        let html = MarkdownRenderer().render("# CSS expression", assetMode: .appScheme, remoteResourcePolicy: .allowRemoteImages).html
+            .replacingOccurrences(of: "<main>", with: "<main>" + fragment)
+        let destination = dir.appendingPathComponent("unsupported.pdf")
+        let exporter = PDFExporter(destinationURL: destination)
+        let done = expectation(description: "unsupported image expression")
+        exporter.export(html: html, outline: [], baseURL: nil, remoteResourcePolicy: .allowRemoteImages) { result in
+            if case .success = result { XCTFail("unknown image-bearing CSS silently claimed readiness") }
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 35)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    @MainActor
     func testCanceledDelayedImageCannotPublishOrOverwriteAnExistingPDF() throws {
         _ = NSApplication.shared
         let server = try ExportNetworkTestServer()
