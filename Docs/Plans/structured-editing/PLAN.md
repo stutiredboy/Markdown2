@@ -8,7 +8,7 @@ Baseline: `a95388427ec6dbd4f6ea4a4f542472557eb73ac7` (PR #56 merged).
 | Package | Priority | Deliverable | Acceptance outcome |
 | --- | --- | --- | --- |
 | T: table editing | First | Tab/Shift-Tab cell navigation, append a row at the last cell, six explicit row/column commands. | Edit a supported source table without losing existing cell text, alignment, adjacent source or line endings. Native one-step Undo/Redo; navigation does not dirty the document. |
-| P: explicit paste | Second | Paste as Plain Text, Paste as Markdown, Paste as Table (TSV). | Preserve ordinary Cmd-V behavior. Explicit conversion produces predictable Markdown or a clearly reported whole-input fallback; untrusted clipboard content cannot load resources. Native focus, stale-request and undo rules hold. |
+| P: explicit paste | Second | Paste as Plain Text, Paste as Markdown, Paste as Table (TSV). | Preserve ordinary Cmd-V behavior. Explicit conversion produces predictable Markdown or a clearly reported whole-input fallback; clipboard capture/conversion does not load resources. Native focus, stale-request and undo rules hold. |
 
 T and P can implement independently after their contracts are frozen. Table
 editing has acceptance priority. The existing renderer is not changed in this
@@ -32,6 +32,8 @@ batch, and neither package depends on the other's new parser or API.
   the last body row leaves a valid header/delimiter table.
 - Preserve unmodified cell Markdown, padding, alignment markers and surrounding
   text verbatim. New cells use ordinary padding; new delimiter cells use `---`.
+  Add only necessary outer pipes for new empty rows, edge columns or one-column
+  results when otherwise the renderer would consume a separator as an outer pipe.
   Structural changes use one native replacement/undo step. Select the new cell
   after insertion or the nearest remaining cell after deletion.
 - Preserve mixed source line endings outside edits. New rows inherit the local
@@ -66,10 +68,19 @@ batch, and neither package depends on the other's new parser or API.
   literal Markdown syntax; validate decoded links against the existing safe
   HTTP(S)/mailto policy. Active/resource content and malformed input are not
   partially converted.
-- Unsupported rich input may fall back to the complete captured plain string
-  with a clear localized notice. Without a complete plain representation, leave
-  the source unchanged and explain why. Never truncate or silently discard
-  text. Stale/canceled requests must not fall back and insert later.
+- Unsupported or malformed rich input may fall back to its complete captured
+  plain representation, escaped as literal Markdown prose with a localized
+  notice that formatting was not retained. Literal fallback cannot activate
+  image/raw-HTML/link syntax, including bare URLs and entity-like text. Capturing
+  the entire plain representation does not prove it is equivalent to the rich
+  representation; do not call this lossless rich conversion. Without a plain
+  representation, leave the source unchanged and explain why. Never truncate.
+  Any budget overflow, deadline, stale state or cancellation rejects the whole
+  action without fallback or insertion.
+- No-resource-loading claims apply to capture/conversion/menu validation, not
+  the application's general preview policy. Explicit Plain Text and plain-only
+  Markdown retain existing source semantics and may contain resource references;
+  a consistent preview/export resource policy remains a separate batch.
 - **Paste as Table** consumes TSV plain text. Its first row is the header;
   pad ragged rows to the widest row, preserving empty cells. Support quoted
   fields, doubled quotes and embedded tabs/newlines. A quote can open only at
@@ -83,8 +94,10 @@ batch, and neither package depends on the other's new parser or API.
 - Insert generated tables as standalone blocks separated from surrounding
   nonempty source, using local line endings. Surrounding source remains intact.
 - Initial limits: 1 MiB rich input, 2 MiB plain/TSV input and generated output,
-  20,000 rich tokens, depth 64; TSV 2,000 rows, 256 columns, 50,000 cells.
-  Conversion runs off-main with cooperative cancellation and a one-second
+  20,000 rich tokens, depth 64; TSV 2,000 rows, 256 columns, 50,000 cells after
+  rectangular padding (rows times widest column count, including the header).
+  Rich Data budgets count original bytes; String and generated-output budgets
+  count UTF-8 bytes, not grapheme counts. Conversion runs off-main with cooperative cancellation and a one-second
   deadline. Synchronous OS clipboard provision is outside that deadline.
 - Capture clipboard value data consistently using changeCount, never promised
   files/URLs/RTFD/image objects. Capture source identity, exact UTF-16 bytes,
