@@ -38,7 +38,18 @@ public enum MarkdownTableEditing {
     }
 
     public static func result(_ text: String, selection: NSRange, action: Action) -> Result<MarkdownEditing.Edit, Rejection> {
-        do { return .success(try transform(text, selection: selection, action: action)) }
+        do { return .success(try transform(table(text, selection: selection), selection: selection, action: action)) }
+        catch let reason as Rejection { return .failure(reason) }
+        catch { return .failure(.unsupported) }
+    }
+
+    /// Nil leaves unsupported or uninspectable input to the ordinary Tab path.
+    /// Once a table is recognized, its navigation owns the command even if
+    /// appending a row would exceed an output budget. Parse exactly once so the
+    /// AppKit adapter does not duplicate either grammar or budget decisions.
+    public static func navigationResult(_ text: String, selection: NSRange, backwards: Bool) -> Result<MarkdownEditing.Edit, Rejection>? {
+        guard let table = try? table(text, selection: selection) else { return nil }
+        do { return .success(try transform(table, selection: selection, action: backwards ? .previousCell : .nextCell)) }
         catch let reason as Rejection { return .failure(reason) }
         catch { return .failure(.unsupported) }
     }
@@ -128,7 +139,7 @@ public enum MarkdownTableEditing {
             // contents, including any Markdown-looking closing-tag line.
             if !comment, tags.isEmpty, math == nil, !context.inspectHTML[index] { continue }
             var visible = ""
-            let prose = !comment && tags.isEmpty ? context.masked[index] : body
+            let prose = maskingEscapedHTMLPunctuation(!comment && tags.isEmpty ? context.masked[index] : body)
             var remainder = prose[...]
             while !remainder.isEmpty {
                 if comment {
@@ -152,6 +163,9 @@ public enum MarkdownTableEditing {
                 let closing = token.hasPrefix("</")
                 let name = String(token.dropFirst(closing ? 2 : 1).prefix { $0.isLetter || $0.isNumber })
                 if closing {
+                    // An escaped or missing closing bracket cannot close a raw
+                    // container. Incomplete opening tags remain conservative.
+                    guard token.hasSuffix(">") else { continue }
                     if let position = tags.lastIndex(of: name) { tags.removeSubrange(position...) }
                 } else if !token.hasSuffix("/>") { tags.append(name) }
             }
@@ -292,6 +306,25 @@ public enum MarkdownTableEditing {
         return (result, inspectHTML)
     }
 
+    // Match the renderer's punctuation escape pass, including escaped
+    // backslashes, so a marker is protected exactly for an odd backslash run.
+    // Only HTML punctuation is masked: math delimiters keep their own grammar.
+    // The opaque replacement preserves UTF-16 offsets without making whitespace
+    // that could accidentally form a tag-name boundary.
+    private static let punctuationEscape = try! NSRegularExpression(pattern: ##"\\([!"#$%&'()*+,\-./:;<=>?@\[\]\\^_`{|}~])"##)
+
+    private static func maskingEscapedHTMLPunctuation(_ text: String) -> String {
+        let source = text as NSString
+        let masked = NSMutableString(string: text)
+        for match in punctuationEscape.matches(in: text, range: NSRange(location: 0, length: source.length)) {
+            let punctuation = match.range(at: 1)
+            if "<>!-/".contains(source.substring(with: punctuation)) {
+                masked.replaceCharacters(in: punctuation, with: "\u{FFFD}")
+            }
+        }
+        return masked as String
+    }
+
     /// Ignore closed code spans when looking for raw block HTML. Pair maximal
     /// backtick runs once, including multiple-backtick spans in preceding prose;
     /// unmatched runs stay literal and comments retain their own delimiters.
@@ -313,12 +346,13 @@ public enum MarkdownTableEditing {
             latest[length] = index
         }
         let masked = NSMutableString(string: text)
+        let html = maskingEscapedHTMLPunctuation(text) as NSString
         cursor = 0
         while cursor < source.length {
             if cursor + 4 <= source.length,
-               source.character(at: cursor) == 60, source.character(at: cursor + 1) == 33,
-               source.character(at: cursor + 2) == 45, source.character(at: cursor + 3) == 45 {
-                let closing = source.range(of: "-->", range: NSRange(location: cursor + 4, length: source.length - cursor - 4))
+               html.character(at: cursor) == 60, html.character(at: cursor + 1) == 33,
+               html.character(at: cursor + 2) == 45, html.character(at: cursor + 3) == 45 {
+                let closing = html.range(of: "-->", range: NSRange(location: cursor + 4, length: source.length - cursor - 4))
                 guard closing.location != NSNotFound else { break }
                 cursor = NSMaxRange(closing)
             } else if let end = closers[cursor] {
@@ -330,8 +364,7 @@ public enum MarkdownTableEditing {
         return masked as String
     }
 
-    private static func transform(_ text: String, selection: NSRange, action: Action) throws -> MarkdownEditing.Edit {
-        let table = try table(text, selection: selection)
+    private static func transform(_ table: Table, selection: NSRange, action: Action) throws -> MarkdownEditing.Edit {
         let rows = table.rows, lines = table.lines
         let row = table.row, column = table.column, columns = rows[0].cells.count
         var bodies = lines.map(\.body), endings = lines.map(\.ending)

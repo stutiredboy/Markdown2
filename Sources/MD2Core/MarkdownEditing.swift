@@ -36,8 +36,11 @@ public enum MarkdownEditing {
         case .newline, .softNewline:
             return newline(source, selection, soft: action == .softNewline)
         case .indent, .outdent:
-            if let edit = MarkdownTableEditing.edit(text, selection: selection,
-                action: action == .outdent ? .previousCell : .nextCell) { return edit }
+            if let result = MarkdownTableEditing.navigationResult(text, selection: selection, backwards: action == .outdent) {
+                // A recognized table owns Tab even when growth is refused.
+                // Return a no-op so callers cannot fall back to native typing.
+                return (try? result.get()) ?? replacing(NSRange(location: selection.location, length: 0), with: "", selection: selection)
+            }
             return indent(source, selection, outdent: action == .outdent)
         case .tableEdit(let tableAction):
             return MarkdownTableEditing.edit(text, selection: selection, action: tableAction)

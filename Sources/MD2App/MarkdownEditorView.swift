@@ -1732,18 +1732,23 @@ final class MarkdownSourceTextView: NSTextView {
             MarkdownFormatCommand.items.contains(where: { $0.action == action }) { return true }
         let selection = selectedRange()
         guard isEditable, !hasMarkedText(), selectedRanges.count == 1 else { return false }
-        let tableAction = explicitTable ?? (action == .indent ? .nextCell : action == .outdent ? .previousCell : nil)
-        if let tableAction {
-            switch MarkdownTableEditing.result(string, selection: selection, action: tableAction) {
+        let tableResult: Result<MarkdownEditing.Edit, MarkdownTableEditing.Rejection>?
+        if let explicitTable {
+            tableResult = MarkdownTableEditing.result(string, selection: selection, action: explicitTable)
+        } else if action == .indent || action == .outdent {
+            tableResult = MarkdownTableEditing.navigationResult(string, selection: selection, backwards: action == .outdent)
+        } else { tableResult = nil }
+        if let tableResult {
+            switch tableResult {
             case .success(let edit):
                 (delegate as? MarkdownEditorSession)?.onTableEditingResult?(nil)
                 applyTableEdit(edit)
                 return true
             case .failure(let rejection):
-                if explicitTable != nil {
-                    (delegate as? MarkdownEditorSession)?.onTableEditingResult?(rejection)
-                    return false
-                }
+                (delegate as? MarkdownEditorSession)?.onTableEditingResult?(rejection)
+                // A recognized table must consume a refused Tab; otherwise
+                // NSTextView inserts whitespace into the selected source cell.
+                return explicitTable == nil
             }
         }
         guard isEditable, !hasMarkedText(), selectedRanges.count == 1,
