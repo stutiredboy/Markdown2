@@ -29,7 +29,7 @@ enum InlineScript {
 /// no response. The tag must stay ahead of everything it governs: a policy
 /// applies only to what the parser reaches after it.
 enum PageContentSecurityPolicy {
-    static func metaTag(scriptSources: [String], assetMode: RenderAssetMode) -> String {
+    static func metaTag(scriptSources: [String], assetMode: RenderAssetMode, remoteResourcePolicy: RemoteResourcePolicy) -> String {
         let directives = [
             "default-src 'none'",
             // Hashes and exact URLs only. `'unsafe-inline'` would let handlers
@@ -39,8 +39,11 @@ enum PageContentSecurityPolicy {
             // diagram, KaTeX and the engines set `style` attributes, and the app
             // adds its typography and print overrides as `<style>` elements.
             "style-src 'unsafe-inline'" + (assetMode.stylesheetSource.map { " \($0)" } ?? ""),
-            // Open on purpose: Markdown images load from the network.
-            "img-src http: https: data: \(assetMode.localImageSource)",
+            // The caller's session permission is independent of author data.
+            // Portable inline pages have no file/relative resource permission.
+            "img-src data:"
+                + (assetMode == .appScheme ? " \(RenderAssetMode.localImageScheme):" : "")
+                + (remoteResourcePolicy == .allowRemoteImages ? " http: https:" : ""),
             // KaTeX's fonts are embedded in its stylesheet.
             "font-src data:",
             // Neither falls back to `default-src`.
