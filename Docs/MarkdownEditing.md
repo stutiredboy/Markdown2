@@ -159,7 +159,9 @@ Markdown prefers HTML, then RTF. HTML converts semantic paragraphs, breaks,
 bold/italic, HTTP(S)/mailto links, headings, lists, quotes and code. CSS, fonts,
 colors, IDs and layout are not retained. RTF accepts only text, Unicode escapes,
 paragraph/line breaks, bold and italic plus known cosmetic metadata; Unicode
-fallback is consumed by token, and group boundaries end that fallback scan. HTML
+fallback is consumed by token, and group boundaries end that fallback scan.
+Decoded RTF CR/CRLF becomes a Markdown line break, including a CRLF pair split
+across formatting runs. Plain-source commands preserve the captured text exactly. HTML
 title metadata is accepted only in a leading document head containing metadata;
 inert void `meta` markers (such as a clipboard charset marker) remain allowed
 with safe attributes. RTF metadata destinations must be in the header before

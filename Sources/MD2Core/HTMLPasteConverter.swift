@@ -215,77 +215,124 @@ enum HTMLPasteConverter {
         for character in text { run = character == "`" ? run + 1 : 0; longest = max(longest, run) }
         return longest
     }
+    private final class RenderBuffer {
+        let budget: PasteBudget
+        let boundaryAllowance: Int
+        var text = ""
+        private var bytes = 0, leadingBytes = 0, trailingBytes = 0
+        private var hasContent = false
+
+        init(budget: PasteBudget) throws {
+            self.budget = budget
+            let limits = budget.limits
+            guard limits.outputBytes >= 0, limits.richBytes >= 0, limits.tokens >= 0 else { throw MarkdownPaste.Failure.limit }
+            // Copied boundary whitespace is bounded by raw input; each parsed
+            // block adds at most four boundary LFs. Final output stays capped.
+            let (generated, overflow) = limits.tokens.multipliedReportingOverflow(by: 4)
+            let (allowance, addedOverflow) = limits.richBytes.addingReportingOverflow(generated)
+            guard !overflow, !addedOverflow else { throw MarkdownPaste.Failure.limit }
+            boundaryAllowance = allowance
+        }
+
+        func append(_ fragment: String) throws {
+            try budget.check()
+            let addedBytes = fragment.utf8.count
+            let (total, overflow) = bytes.addingReportingOverflow(addedBytes)
+            guard !overflow,
+                  total <= budget.limits.outputBytes || total - budget.limits.outputBytes <= boundaryAllowance else { throw MarkdownPaste.Failure.limit }
+            let whitespace = CharacterSet.whitespacesAndNewlines
+            // Scan only the new fragment's edges, never the accumulated output.
+            // Pending trailing whitespace becomes interior when content arrives.
+            if let first = fragment.unicodeScalars.firstIndex(where: { !whitespace.contains($0) }),
+               let last = fragment.unicodeScalars.lastIndex(where: { !whitespace.contains($0) }) {
+                if !hasContent { leadingBytes += fragment[..<first].utf8.count }
+                trailingBytes = fragment[fragment.unicodeScalars.index(after: last)...].utf8.count
+                hasContent = true
+            } else if hasContent { trailingBytes += addedBytes }
+            else { leadingBytes += addedBytes }
+            guard total - leadingBytes - trailingBytes <= budget.limits.outputBytes else { throw MarkdownPaste.Failure.limit }
+            bytes = total
+            text += fragment
+        }
+    }
+    // Keep recursive traversal frames small at the supported depth of 64.
+    // Serialization temporaries live in non-recursive wrapping helpers.
     private static func render(_ nodes: [Node], budget: PasteBudget, bold: Bool = false, italic: Bool = false) throws -> String {
-        var output = ""
+        let output = try RenderBuffer(budget: budget)
         for node in nodes {
             try budget.check()
             switch node {
-            case .text(let value): output += PasteLiteral.escape(collapse(value))
+            case .text(let value): try output.append(PasteLiteral.escape(collapse(value)))
             case .element(let name, let attributes, let children):
-                if name == "head" {
-                    for child in children {
-                        switch child {
-                        case .text(let value) where value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty: break
-                        case .element(let childName, _, _) where ["meta", "title"].contains(childName): break
-                        default: throw MarkdownPaste.Failure.unsupported
-                        }
-                    }
-                    continue
-                }
-                if ["meta", "title"].contains(name) { continue }
-                if name == "pre" {
-                    let literal = rawText(children)
-                    let fence = String(repeating: "`", count: max(3, maxTicks(literal) + 1))
-                    output += "\n\n" + fence + "\n" + literal + (literal.hasSuffix("\n") ? "" : "\n") + fence + "\n\n"
-                    continue
-                }
-                if name == "code" {
-                    let literal = collapse(rawText(children))
-                    guard !literal.isEmpty else { continue }
-                    let delimiter = String(repeating: "`", count: maxTicks(literal) + 1)
-                    let pad = literal.hasPrefix("`") || literal.hasSuffix("`") || (literal.hasPrefix(" ") && literal.hasSuffix(" ") && !literal.allSatisfy({ $0 == " " })) ? " " : ""
-                    output += delimiter + pad + literal + pad + delimiter
-                    continue
-                }
-                let isBold = ["b", "strong"].contains(name), isItalic = ["i", "em"].contains(name)
-                let content = ["ul", "ol"].contains(name) ? "" : try render(children, budget: budget, bold: bold || isBold, italic: italic || isItalic)
-                let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-                switch name {
-                case "b", "strong", "i", "em":
-                    guard !content.contains("\n") else { throw MarkdownPaste.Failure.unsupported }
-                    if (isBold && bold) || (isItalic && italic) || trimmed.isEmpty { output += content }
-                    else {
-                        let marker = isBold ? "**" : "*"
-                        output += (content.first?.isWhitespace == true ? " " : "") + marker + trimmed + marker + (content.last?.isWhitespace == true ? " " : "")
-                    }
-                case "a":
-                    guard !content.contains("\n"), !content.contains("](") else { throw MarkdownPaste.Failure.unsupported }
-                    if let href = attributes["href"], let url = MarkdownEditing.clipboardURL(href) { output += "[" + content + "](" + url + ")" }
-                    else { output += content }
-                case "br": output += "<br>"
-                case "p", "div": output += trimmed.isEmpty ? "" : "\n\n" + trimmed + "\n\n"
-                case "h1", "h2", "h3", "h4", "h5", "h6":
-                    guard !trimmed.contains("\n") else { throw MarkdownPaste.Failure.unsupported }
-                    output += "\n\n" + String(repeating: "#", count: Int(name.dropFirst())!) + " " + trimmed + "\n\n"
-                case "blockquote": output += "\n\n" + trimmed.components(separatedBy: "\n").map { "> " + $0 }.joined(separator: "\n") + "\n\n"
-                case "ul", "ol":
-                    var items: [String] = [], number = Int(attributes["start"] ?? "1") ?? 1
-                    for child in children {
-                        if case .text(let value) = child, value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
-                        guard case .element("li", _, let itemChildren) = child else { throw MarkdownPaste.Failure.unsupported }
-                        let item = try render(itemChildren, budget: budget).trimmingCharacters(in: .whitespacesAndNewlines)
-                        let marker = name == "ul" ? "- " : "\(number). "
-                        let lines = item.components(separatedBy: "\n")
-                        items.append(marker + (lines.first ?? "") + lines.dropFirst().map { "\n" + String(repeating: " ", count: marker.count) + $0 }.joined())
-                        number += 1
-                    }
-                    output += "\n\n" + items.joined(separator: "\n") + "\n\n"
-                case "li": throw MarkdownPaste.Failure.unsupported // only list parent may consume li
-                default: output += content
-                }
+                try output.append(renderElement(name, attributes: attributes, children: children, budget: budget, bold: bold, italic: italic))
             }
-            try budget.output(output)
         }
-        return output
+        return output.text
+    }
+    private static func renderElement(_ name: String, attributes: [String: String], children: [Node], budget: PasteBudget, bold: Bool, italic: Bool) throws -> String {
+        if name == "head" { try validateHead(children); return "" }
+        if ["meta", "title"].contains(name) { return "" }
+        if ["pre", "code"].contains(name) { return renderCode(children, block: name == "pre") }
+        if ["ul", "ol"].contains(name) { return try renderList(children, ordered: name == "ol", start: Int(attributes["start"] ?? "1") ?? 1, budget: budget) }
+        let isBold = ["b", "strong"].contains(name), isItalic = ["i", "em"].contains(name)
+        let content = try render(children, budget: budget, bold: bold || isBold, italic: italic || isItalic)
+        return try wrap(content, name: name, attributes: attributes, bold: bold, italic: italic)
+    }
+    private static func validateHead(_ children: [Node]) throws {
+        for child in children {
+            switch child {
+            case .text(let value) where value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty: break
+            case .element(let name, _, _) where ["meta", "title"].contains(name): break
+            default: throw MarkdownPaste.Failure.unsupported
+            }
+        }
+    }
+    private static func renderCode(_ children: [Node], block: Bool) -> String {
+        if block {
+            let literal = rawText(children)
+            let fence = String(repeating: "`", count: max(3, maxTicks(literal) + 1))
+            return "\n\n" + fence + "\n" + literal + (literal.hasSuffix("\n") ? "" : "\n") + fence + "\n\n"
+        }
+        let literal = collapse(rawText(children))
+        guard !literal.isEmpty else { return "" }
+        let delimiter = String(repeating: "`", count: maxTicks(literal) + 1)
+        let pad = literal.hasPrefix("`") || literal.hasSuffix("`") || (literal.hasPrefix(" ") && literal.hasSuffix(" ") && !literal.allSatisfy({ $0 == " " })) ? " " : ""
+        return delimiter + pad + literal + pad + delimiter
+    }
+    private static func renderList(_ children: [Node], ordered: Bool, start: Int, budget: PasteBudget) throws -> String {
+        var items: [String] = [], number = start
+        for child in children {
+            if case .text(let value) = child, value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
+            guard case .element("li", _, let itemChildren) = child else { throw MarkdownPaste.Failure.unsupported }
+            let item = try render(itemChildren, budget: budget).trimmingCharacters(in: .whitespacesAndNewlines)
+            let marker = ordered ? "\(number). " : "- "
+            let lines = item.components(separatedBy: "\n")
+            items.append(marker + (lines.first ?? "") + lines.dropFirst().map { "\n" + String(repeating: " ", count: marker.count) + $0 }.joined())
+            number += 1
+        }
+        return "\n\n" + items.joined(separator: "\n") + "\n\n"
+    }
+    private static func wrap(_ content: String, name: String, attributes: [String: String], bold: Bool, italic: Bool) throws -> String {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch name {
+        case "b", "strong", "i", "em":
+            guard !content.contains("\n") else { throw MarkdownPaste.Failure.unsupported }
+            let isBold = ["b", "strong"].contains(name)
+            if (isBold && bold) || (!isBold && italic) || trimmed.isEmpty { return content }
+            let marker = isBold ? "**" : "*"
+            return (content.first?.isWhitespace == true ? " " : "") + marker + trimmed + marker + (content.last?.isWhitespace == true ? " " : "")
+        case "a":
+            guard !content.contains("\n"), !content.contains("](") else { throw MarkdownPaste.Failure.unsupported }
+            if let href = attributes["href"], let url = MarkdownEditing.clipboardURL(href) { return "[" + content + "](" + url + ")" }
+            return content
+        case "br": return "<br>"
+        case "p", "div": return trimmed.isEmpty ? "" : "\n\n" + trimmed + "\n\n"
+        case "h1", "h2", "h3", "h4", "h5", "h6":
+            guard !trimmed.contains("\n") else { throw MarkdownPaste.Failure.unsupported }
+            return "\n\n" + String(repeating: "#", count: Int(name.dropFirst())!) + " " + trimmed + "\n\n"
+        case "blockquote": return "\n\n" + trimmed.components(separatedBy: "\n").map { "> " + $0 }.joined(separator: "\n") + "\n\n"
+        case "li": throw MarkdownPaste.Failure.unsupported // only list parent may consume li
+        default: return content
+        }
     }
 }

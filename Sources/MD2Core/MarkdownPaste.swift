@@ -201,7 +201,10 @@ enum PasteLiteral {
             case "|": result += "&#124;"
             case "`": result += "&#96;"
             case "(", ")", "[", "]", "$": result += "&#\(scalar.value);"
-            case "\r": break // callers normalize CR before escaping
+            case "\r":
+                // Keep bare CR even if a rich caller did not normalize first;
+                // the following LF, when present, emits the one shared break.
+                if index + 1 == units.count || units[index + 1] != "\n" { result += table ? "<br>" : "\n" }
             case "\n": result += table ? "<br>" : "\n"
             case "\t": result += table ? "&#9;" : "\t"
             case " " where table && (index < firstNonSpace || index > lastNonSpace): result += "&#32;"

@@ -16,6 +16,15 @@ enum RTFPasteConverter {
         guard bytes.starts(with: Array("{\\rtf1".utf8)) else { throw MarkdownPaste.Failure.malformed }
         var stack: [State] = [], state = State(), index = 0, output = "", units: [UInt16] = []
         var pendingFallback = 0, sawRoot = false, closedRoot = false, bodyStarted = false
+        var previousWasCR = false
+        func appendDecodedUnit(_ unit: UInt16) {
+            // Formatting/group boundaries may flush between the CR and LF of
+            // one textual line ending. Normalize the decoded character stream,
+            // not individual formatting runs or transport wrapping bytes.
+            if unit == 10, previousWasCR { previousWasCR = false; return }
+            previousWasCR = unit == 13
+            units.append(unit == 13 ? 10 : unit)
+        }
         func flush() throws {
             guard !units.isEmpty else { return }
             // Reject broken Unicode rather than silently substituting U+FFFD.
@@ -30,11 +39,14 @@ enum RTFPasteConverter {
                 }
             }
             let literal = PasteLiteral.escape(String(decoding: units, as: UTF16.self))
-            let trimmed = literal.trimmingCharacters(in: .whitespaces)
-            if trimmed.isEmpty || (!state.bold && !state.italic) { output += literal }
+            let leading = literal.prefix(while: \.isWhitespace)
+            let remainder = literal.dropFirst(leading.count)
+            let trailingCount = remainder.reversed().prefix(while: \.isWhitespace).count
+            let content = remainder.dropLast(trailingCount)
+            if content.isEmpty || (!state.bold && !state.italic) { output += literal }
             else {
                 let marker = state.bold ? (state.italic ? "***" : "**") : "*"
-                output += (literal.first?.isWhitespace == true ? " " : "") + marker + trimmed + marker + (literal.last?.isWhitespace == true ? " " : "")
+                output += leading + marker + content + marker + remainder.suffix(trailingCount)
             }
             units.removeAll(keepingCapacity: true)
             try budget.output(output)
@@ -44,7 +56,7 @@ enum RTFPasteConverter {
             guard !state.requiresDestination else { throw MarkdownPaste.Failure.malformed }
             if pendingFallback > 0 { pendingFallback -= 1; return }
             guard let string = String(bytes: [byte], encoding: .windowsCP1252) else { throw MarkdownPaste.Failure.unsupported }
-            units.append(contentsOf: string.utf16)
+            for unit in string.utf16 { appendDecodedUnit(unit) }
             state.destinationPosition = false
             bodyStarted = true
         }
@@ -99,8 +111,8 @@ enum RTFPasteConverter {
                 }
                 state.destinationPosition = false
                 bodyStarted = true
-                if control == 126 { units.append(0xA0); continue }
-                if control == 95 { units.append(0x2011); continue }
+                if control == 126 { appendDecodedUnit(0xA0); continue }
+                if control == 95 { appendDecodedUnit(0x2011); continue }
                 throw MarkdownPaste.Failure.unsupported
             }
             let start = index - 1
@@ -139,12 +151,12 @@ enum RTFPasteConverter {
             case "uc": guard let number, (0...16).contains(number) else { throw MarkdownPaste.Failure.unsupported }; state.unicodeFallback = number
             case "u":
                 guard let number, (-32768...65535).contains(number), pendingFallback == 0 else { throw MarkdownPaste.Failure.malformed }
-                units.append(UInt16(truncatingIfNeeded: number)); pendingFallback = state.unicodeFallback; bodyStarted = true
+                appendDecodedUnit(UInt16(truncatingIfNeeded: number)); pendingFallback = state.unicodeFallback; bodyStarted = true
             case "b": try flush(); state.bold = number != 0
             case "i": try flush(); state.italic = number != 0
             case "plain": try flush(); state.bold = false; state.italic = false
-            case "par", "line": try flush(); output += word == "par" ? "\n\n" : "\n"; bodyStarted = true
-            case "tab": units.append(9); bodyStarted = true
+            case "par", "line": try flush(); output += word == "par" ? "\n\n" : "\n"; previousWasCR = false; bodyStarted = true
+            case "tab": appendDecodedUnit(9); bodyStarted = true
             default:
                 guard cosmetic.contains(word) else { throw MarkdownPaste.Failure.unsupported }
             }
