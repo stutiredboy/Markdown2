@@ -82,10 +82,9 @@ enum OfflineDiagramResources {
                         node.removeAttribute(attr.name); omitted = true; continue;
                     }
                     // SVG presentation attributes can also carry CSS resources.
-                    if (/[\\:@]/.test(value) || /\burl\s*\(/i.test(value)) {
-                        if (name !== 'xmlns' && name !== 'xmlns:xlink' && !safeValue(value)) {
-                            node.removeAttribute(attr.name); omitted = true;
-                        }
+                    if (/^(fill|stroke|filter|clip-path|mask|cursor|marker-start|marker-mid|marker-end)$/.test(name)
+                        && !safeValue(value)) {
+                        node.removeAttribute(attr.name); omitted = true;
                     }
                 }
             }
