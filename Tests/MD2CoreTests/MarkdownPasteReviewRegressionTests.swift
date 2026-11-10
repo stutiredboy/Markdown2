@@ -66,6 +66,60 @@ struct MarkdownPasteConversionReviewRegressionTests {
             #expect(body.contains("<strong>A</strong>"))
         }
     }
+
+    @Test(arguments: ["\n", "\r\n", "\r"])
+    func pN2WholeSelectionRetainsSourceLineEndings(_ ending: String) throws {
+        let source = "old\(ending)line\(ending)"
+        let inputs: [(MarkdownPaste.Kind, MarkdownPaste.Payload, String)] = [
+            (.table, .init(plainText: "A\tB\nx\ty"), "| A | B |\(ending)| --- | --- |\(ending)| x | y |"),
+            // Existing paragraph serialization emits two breaks on each side.
+            (.markdown, .init(html: Data("<p>A</p><p>B</p>".utf8)), "A\(ending)\(ending)\(ending)\(ending)B"),
+            (.markdown, .init(plainText: "A\nB", html: Data("<img>".utf8)), "A\(ending)B")
+        ]
+        for (kind, payload, expected) in inputs {
+            let output = try MarkdownPaste.convert(kind, payload: payload).get()
+            let edit = try #require(MarkdownPaste.edit(source, selection: NSRange(location: 0, length: source.utf16.count), output: output))
+            #expect(edit.replacement == expected)
+            #expect(edit.selection == NSRange(location: expected.utf16.count, length: 0))
+        }
+    }
+
+    @Test func pN2OutsideLineEndingsTakePriorityThenSelectedSourceThenLF() throws {
+        let table = try MarkdownPaste.convert(.table, payload: .init(plainText: "A\tB\nx\ty")).get()
+        for (outside, inside) in [("\r\n", "\n"), ("\n", "\r\n"), ("\r", "\r\n")] {
+            let selected = "OLD\(inside)CONTENT"
+            let source = "before\(outside)\(outside)\(selected)\(outside)\(outside)after"
+            let range = (source as NSString).range(of: selected)
+            let edit = try #require(MarkdownPaste.edit(source, selection: range, output: table))
+            #expect(edit.replacement == "| A | B |\(outside)| --- | --- |\(outside)| x | y |")
+        }
+        // No outside ending: selected CRLF also controls new block separators.
+        let edit = try #require(MarkdownPaste.edit("leftOLD\r\nCONTENTright", selection: NSRange(location: 4, length: 12), output: table))
+        #expect(edit.replacement == "\r\n\r\n| A | B |\r\n| --- | --- |\r\n| x | y |\r\n\r\n")
+        let fallback = try MarkdownPaste.convert(.markdown, payload: .init(plainText: "A\nB", html: Data("<img>".utf8))).get()
+        #expect(MarkdownPaste.edit(" \tOLD\r\nCONTENT  ", selection: NSRange(location: 2, length: 12), output: fallback)?.replacement == "\r\n\r\nA\r\nB\r\n\r\n")
+        #expect(MarkdownPaste.edit("OLD", selection: NSRange(location: 0, length: 3), output: table)?.replacement == "| A | B |\n| --- | --- |\n| x | y |")
+    }
+
+    @Test func pN2WholeSelectionCRLFGrowthStillUsesFinalBudgets() throws {
+        let source = "old\r\nline\r\n", range = NSRange(location: 0, length: 11)
+        // Three output lines: LF intermediate is two units shorter than CRLF.
+        for finalSize in [99_999, 100_000, 100_001] {
+            let payload = MarkdownPaste.Payload(plainText: "H\n" + String(repeating: "x", count: finalSize - 20))
+            let output = try MarkdownPaste.convert(.table, payload: payload).get()
+            #expect(output.text.utf16.count == finalSize - 2)
+            let edit = MarkdownPaste.edit(source, selection: range, output: output)
+            if finalSize <= 100_000 { #expect(edit?.replacement.utf16.count == finalSize) }
+            else { #expect(edit == nil) }
+        }
+        for byteLimit in [34, 35, 36] {
+            var limits = MarkdownPaste.Limits(); limits.outputBytes = byteLimit
+            let output = try MarkdownPaste.convert(.table, payload: .init(plainText: "A\tB\nx\ty"), limits: limits).get()
+            let edit = MarkdownPaste.edit(source, selection: range, output: output)
+            if byteLimit < 35 { #expect(edit == nil) }
+            else { #expect(edit?.replacement.utf8.count == 35) }
+        }
+    }
 }
 
 @MainActor

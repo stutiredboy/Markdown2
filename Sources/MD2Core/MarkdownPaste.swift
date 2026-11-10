@@ -94,8 +94,8 @@ public enum MarkdownPaste {
         return text
     }
 
-    /// Wrap structured output as a standalone block. Plain/fallback text stays
-    /// byte-for-byte equivalent at the String UTF-16 boundary.
+    /// Wrap structured output as a standalone block. Explicit plain-source
+    /// output stays byte-for-byte equivalent at the String UTF-16 boundary.
     public static func edit(_ source: String, selection: NSRange, output: Output) -> Edit? {
         let ns = source as NSString
         guard selection.location != NSNotFound, selection.location >= 0, selection.length >= 0,
@@ -116,6 +116,14 @@ public enum MarkdownPaste {
             let start = selection.location, end = NSMaxRange(selection)
             let beforeRange = NSRange(location: 0, length: start)
             let afterRange = NSRange(location: end, length: ns.length - end)
+            func firstEnding(in range: NSRange) -> String? {
+                let lf = ns.range(of: "\n", range: range).location
+                let cr = ns.range(of: "\r", range: range).location
+                if cr != NSNotFound, lf == NSNotFound || cr < lf {
+                    return cr + 1 < ns.length && ns.character(at: cr + 1) == 10 ? "\r\n" : "\r"
+                }
+                return lf == NSNotFound ? nil : "\n"
+            }
             let previousLF = ns.range(of: "\n", options: .backwards, range: beforeRange).location
             let previousCR = ns.range(of: "\r", options: .backwards, range: beforeRange).location
             let lastLF = previousLF == NSNotFound ? -1 : previousLF
@@ -124,11 +132,9 @@ public enum MarkdownPaste {
             if lastLF >= 0, lastLF > lastCR { ending = lastLF > 0 && ns.character(at: lastLF - 1) == 13 ? "\r\n" : "\n" }
             else if lastCR >= 0 { ending = "\r" }
             else {
-                let nextLF = ns.range(of: "\n", range: afterRange).location
-                let nextCR = ns.range(of: "\r", range: afterRange).location
-                if nextCR != NSNotFound, nextLF == NSNotFound || nextCR < nextLF {
-                    ending = nextCR + 1 < ns.length && ns.character(at: nextCR + 1) == 10 ? "\r\n" : "\r"
-                } else { ending = "\n" }
+                // A whole-document replacement has no outside hint. Preserve
+                // its selected source's existing ending before defaulting to LF.
+                ending = firstEnding(in: afterRange) ?? firstEnding(in: selection) ?? "\n"
             }
             replacement = output.text.replacingOccurrences(of: "\r\n", with: "\n")
                 .replacingOccurrences(of: "\r", with: "\n").replacingOccurrences(of: "\n", with: ending)

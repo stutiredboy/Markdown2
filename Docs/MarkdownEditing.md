@@ -182,6 +182,12 @@ active input method cancels pending work. Identical-content resets, opening anot
 file, first-save/relocation and closing also invalidate old requests;
 returning to the old target does not revive it.
 
+Structured paste uses the preceding source line ending, or a following one if
+none precedes the selection. With no surrounding clue, it uses the first ending in
+the selected source, preserving CRLF/CR when replacing the whole document. Only
+source with no line-ending clue defaults to LF; final size checks include this
+conversion and any block separators.
+
 Table parses quoted TSV: the first row is the header, doubled quotes inside quoted
 fields represent one quote, and embedded tabs/newlines stay within their cell.
 Empty cells and trailing columns are retained; short rows are padded. One final
