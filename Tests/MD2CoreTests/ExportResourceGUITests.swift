@@ -71,7 +71,8 @@ final class ExportResourceGUITests: XCTestCase {
         // Intentional post-sanitizer fixture: exercises the actual exporter for
         // both image classes, without mistaking a removed authored style for deny.
         let fragment = "<div style=\"width:100px;height:100px;background-image:url('\(server.baseURL)/\(css).png')\"></div>" +
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\"><image href=\"\(server.baseURL)/\(svg).png\" width=\"100\" height=\"100\"/></svg>"
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\"><defs><mask id=\"local-mask\"><rect width=\"100\" height=\"100\" fill=\"white\"/></mask></defs><image href=\"\(server.baseURL)/\(svg).png\" width=\"100\" height=\"100\"/></svg>" +
+            "<div style=\"width:10px;height:10px;mask-image:url(#local-mask)\"></div>"
         let html = rendered.html.replacingOccurrences(of: "<main>", with: "<main>" + fragment)
         let destination = dir.appendingPathComponent("styles.pdf")
         let exporter = PDFExporter(destinationURL: destination)
@@ -203,6 +204,46 @@ final class ExportResourceGUITests: XCTestCase {
             XCTAssertEqual(try self.evaluate("document.querySelectorAll('.md2-export-image-placeholder').length", in: webView) as? Int, 2)
         }
         XCTAssertTrue(server.requests.isEmpty)
+    }
+
+    @MainActor
+    func testReopenedHTMLValidatesExistingDataAndNestedSVGResources() throws {
+        _ = NSApplication.shared
+        let server = try ExportNetworkTestServer()
+        defer { server.stop() }
+        let dir = try directory()
+        defer { ExportTestEvidence.preserveThenRemove(dir) }
+        let token = UUID().uuidString
+        let safeSVG = #"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><defs><linearGradient id="g"><stop offset="0" stop-color="red"/></linearGradient></defs><rect width="2" height="2" fill="url(#g)"/></svg>"#
+        let unsafeSVG = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"2\" height=\"2\"><image href=\"\(server.baseURL)/\(token).png\" width=\"2\" height=\"2\"/></svg>"
+        try safeSVG.write(to: dir.appendingPathComponent("safe.svg"), atomically: true, encoding: .utf8)
+        try unsafeSVG.write(to: dir.appendingPathComponent("unsafe.svg"), atomically: true, encoding: .utf8)
+        let rendered = MarkdownRenderer().render("![safe](safe.svg) ![unsafe](unsafe.svg)")
+        let dataImages = "<img src=\"data:image/svg+xml;base64,\(Data(unsafeSVG.utf8).base64EncodedString())\">" +
+            "<img src=\"data:image/png;base64,\(ExportNetworkTestServer.png.base64EncodedString())\">"
+        let output = SelfContainedHTMLBuilder.build(html: rendered.html.replacingOccurrences(of: "<main>", with: "<main>" + dataImages), baseURL: dir)
+        XCTAssertEqual(Set(output.unembeddedLocalImages), ["Embedded image", "unsafe.svg"])
+        let artifact = dir.appendingPathComponent("validated.html")
+        try output.html.write(to: artifact, atomically: true, encoding: .utf8)
+        try withFile(artifact) { webView in
+            XCTAssertEqual(try self.evaluate("document.images.length", in: webView) as? Int, 2)
+            XCTAssertEqual(try self.evaluate("Array.from(document.images).every(i => i.complete && i.naturalWidth > 0 && i.src.startsWith('data:'))", in: webView) as? Bool, true)
+            XCTAssertEqual(try self.evaluate("document.querySelectorAll('.md2-export-image-placeholder').length", in: webView) as? Int, 2)
+        }
+        XCTAssertTrue(server.requests.isEmpty)
+        // An inline SVG image in an otherwise identical unconstrained file is
+        // a resource-capable positive control. A data-SVG image has additional
+        // browser restrictions; this is not claimed as a data-SVG exploit.
+        let policy = try XCTUnwrap(rendered.html.range(of: #"<meta http-equiv="Content-Security-Policy"[^>]*>"#, options: .regularExpression))
+        let control = dir.appendingPathComponent("control.html")
+        var controlHTML = rendered.html
+        controlHTML.removeSubrange(policy)
+        let mainStart = try XCTUnwrap(controlHTML.range(of: "<main>"))
+        let mainEnd = try XCTUnwrap(controlHTML.range(of: "</main>"))
+        controlHTML.replaceSubrange(mainStart.upperBound..<mainEnd.lowerBound, with: unsafeSVG)
+        try controlHTML.write(to: control, atomically: true, encoding: .utf8)
+        try withFile(control) { _ in }
+        XCTAssertGreaterThan(server.requests.filter { $0.path.contains(token) }.count, 0)
     }
 
     @MainActor private func runPDF(_ markdown: String, policy: RemoteResourcePolicy, destination: URL) -> Result<Void, Error> {
