@@ -17,6 +17,8 @@
 - **Three presentation modes** — `Write`, `Read`, and `Side by Side` (split editor + live preview).
 - **Native AppKit text editing** with lightweight Markdown styling.
 - **Markdown-aware editing** — Return continues lists, tasks, and quotes; Return on an empty item exits it. `Shift+Return` continues at the content column, and `Tab` / `Shift+Tab` adjust list nesting. Brackets, quotes, and backticks pair automatically, with closing-character skip and paired Backspace.
+- **Source table editing** — `Tab` / `Shift+Tab` move between cells in supported top-level tables; Tab at the last cell adds a row. Format > Table Operations inserts or deletes rows and columns, preserving existing cell text and alignment with one-step Undo.
+- **Explicit paste** — choose Plain Text (`Option+Shift+Cmd+V`), Markdown from supported HTML/RTF, or Table from TSV in Edit. Ordinary `Cmd+V` keeps its existing behavior. Rich conversion does not fetch clipboard resources; unsupported content offers a clearly reported literal-text fallback only where it can be inserted safely. See [paste behavior and limits](Docs/MarkdownEditing.md#explicit-paste).
 - **Live-rendered HTML** reading mode.
 - **Outline sidebar** generated from headings, with the current section following the top visible source line in Edit, Preview, and Side by Side.
 - **Document recovery and format preservation**: follow Finder renames/moves, preserve encoding/BOM/line endings, autosave after 5 seconds idle or 30 seconds of continuous editing, and restore windows and untitled drafts on ordinary app launch. Opening a specific file restores only that file's draft; other recovery records are retained. Explicit close still confirms unsaved changes. See [document lifecycle](Docs/DocumentLifecycle.md).

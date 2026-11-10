@@ -29,6 +29,160 @@ import XCTest
 ///   contents after that reconcile, not its pixels, and the missing-file and
 ///   language cases need an unlocked session.
 final class RecentDocumentsMenuGUITests: XCTestCase {
+    /// Cross-package regression: real menu dispatch, document-owned history,
+    /// and saved bytes. Goldens are handwritten from the TSV below; neither
+    /// converter nor table transformer computes an expected value.
+    func testStructuredPasteTableColumnsKeepCRLFAndIndependentUndo() throws {
+        let board = NSPasteboard.general
+        let saved = board.pasteboardItems?.map { item in
+            item.types.compactMap { type in item.data(forType: type).map { (type, $0) } }
+        } ?? []
+        defer {
+            board.clearContents()
+            board.writeObjects(saved.map { values in
+                let item = NSPasteboardItem()
+                for (type, data) in values { item.setData(data, forType: type) }
+                return item
+            })
+        }
+
+        let prefix = "BEFORE_SENTINEL 文😀\r\n"
+        let suffix = "\r\nAFTER_SENTINEL e\u{301}" // Deliberately no final newline.
+        let original = prefix + "PASTE_HERE" + suffix
+        let tsv = "Name\tNote\n中文😀\tunchanged"
+        let pasted = prefix + "\r\n"
+            + "| Name | Note |\r\n| --- | --- |\r\n| 中文😀 | unchanged |"
+            + "\r\n" + suffix
+        let widened = prefix + "\r\n"
+            + "| Name |  | Note |\r\n| --- | --- | --- |\r\n| 中文😀 |  | unchanged |"
+            + "\r\n" + suffix
+        let document = try makeDocument("notes/StructuredIntegrationCRLF.md")
+        try Data(original.utf8).write(to: document)
+        let pid = try launch(recents: [], language: "english", appleLanguages: ["en"])
+        try waitForEntries([], pid: pid)
+        try open(document)
+        try waitForEntries([document], pid: pid)
+
+        // Open each ancestor, then fetch its current item. This also refreshes
+        // native Undo/Redo targets; do not reuse a closed Edit menu's old item.
+        func press(_ barTitle: String, _ path: [String]) throws {
+            NSRunningApplication(processIdentifier: pid)?.activate()
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid),
+                kAXMenuBarAttribute as CFString, &value) == .success,
+                let bar = Self.element(value),
+                let entry = Self.children(of: bar).first(where: { Self.title(of: $0) == barTitle }) else {
+                throw GuardFailure("structured integration menu bar unavailable: \(barTitle)")
+            }
+            guard AXUIElementPerformAction(entry, kAXPressAction as CFString) == .success else {
+                throw GuardFailure("cannot open \(barTitle)")
+            }
+            defer { AXUIElementPerformAction(entry, kAXCancelAction as CFString) }
+            usleep(200_000)
+            var parent = entry
+            for (index, title) in path.enumerated() {
+                func currentItem() -> AXUIElement? {
+                    let items = Self.children(of: parent).flatMap { Self.children(of: $0) }
+                    return items.first { Self.title(of: $0) == title }
+                        ?? items.first { Self.title(of: $0).hasPrefix(title + " ") }
+                }
+                let deadline = Date().addingTimeInterval(5)
+                while currentItem().map(Self.isEnabled) != true, Date() < deadline { usleep(50_000) }
+                let target = try XCTUnwrap(currentItem(), "\(barTitle) > \(title)")
+                XCTAssertTrue(Self.isEnabled(target), title)
+                guard Self.isEnabled(target) else { throw GuardFailure("disabled command: \(title)") }
+                guard AXUIElementPerformAction(target, kAXPressAction as CFString) == .success else {
+                    throw GuardFailure("cannot press command: \(title)")
+                }
+                if index < path.count - 1 { parent = target; usleep(200_000) }
+            }
+        }
+        try press("Mode", ["Edit"])
+        let window = try waitForWindow(pid: pid) {
+            Self.title(of: $0).contains(document.deletingPathExtension().lastPathComponent)
+                && Self.firstElement(ofRole: kAXTextAreaRole as String, in: $0) != nil
+        }
+        NSRunningApplication(processIdentifier: pid)?.activate()
+        XCTAssertEqual(AXUIElementPerformAction(window, kAXRaiseAction as CFString), .success)
+        let source = try XCTUnwrap(Self.firstElement(ofRole: kAXTextAreaRole as String, in: window))
+        func sourceText() throws -> String {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(source, kAXValueAttribute as CFString, &value) == .success,
+                  let text = value as? String else { throw GuardFailure("source AX value unavailable") }
+            return text
+        }
+        func selectedRange() throws -> CFRange {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(source, kAXSelectedTextRangeAttribute as CFString, &value) == .success,
+                  let value, CFGetTypeID(value) == AXValueGetTypeID() else {
+                throw GuardFailure("source AX selection unavailable")
+            }
+            var range = CFRange()
+            guard AXValueGetValue(value as! AXValue, .cfRange, &range) else {
+                throw GuardFailure("source AX selection is not a range")
+            }
+            return range
+        }
+        func select(_ marker: String) throws {
+            XCTAssertEqual(AXUIElementSetAttributeValue(source, kAXFocusedAttribute as CFString, kCFBooleanTrue), .success)
+            let found = (try sourceText() as NSString).range(of: marker)
+            guard found.location != NSNotFound else { throw GuardFailure("missing source marker: \(marker)") }
+            var range = CFRange(location: found.location, length: found.length)
+            let value = try XCTUnwrap(AXValueCreate(.cfRange, &range))
+            XCTAssertEqual(AXUIElementSetAttributeValue(source, kAXSelectedTextRangeAttribute as CFString, value), .success)
+            let deadline = Date().addingTimeInterval(5)
+            while Date() < deadline {
+                let actual = try selectedRange()
+                if actual.location == range.location && actual.length == range.length { return }
+                usleep(50_000)
+            }
+            throw GuardFailure("source selection did not converge")
+        }
+        func waitSource(_ expected: String, stage: String) throws {
+            let deadline = Date().addingTimeInterval(5)
+            while !(try sourceText()).utf16.elementsEqual(expected.utf16), Date() < deadline { usleep(50_000) }
+            let actual = try sourceText()
+            XCTAssertEqual(Array(actual.utf16), Array(expected.utf16), stage)
+            guard actual.utf16.elementsEqual(expected.utf16) else { throw GuardFailure("source mismatch at \(stage)") }
+            XCTAssertTrue(actual.hasPrefix(prefix) && actual.hasSuffix(suffix), "sentinels: \(stage)")
+        }
+        try waitSource(original, stage: "original CRLF source")
+        board.clearContents()
+        XCTAssertTrue(board.setString(tsv, forType: .string))
+        try select("PASTE_HERE")
+        try press("Edit", ["Paste as Table"])
+        try waitSource(pasted, stage: "P: table paste")
+        try select("中文😀")
+        try press("Format", ["Table Operations", "Insert Column Right"])
+        try waitSource(widened, stage: "T1: insert column")
+        // Delete the cell chosen by insertion, without replacing its selection.
+        let bodyStart = (widened as NSString).range(of: "| 中文😀 |  | unchanged |").location
+        let emptyStart = bodyStart + "| 中文😀 |".utf16.count
+        let selection = try selectedRange()
+        XCTAssertGreaterThanOrEqual(selection.location, emptyStart)
+        XCTAssertLessThanOrEqual(selection.location + selection.length, emptyStart + 2)
+        guard selection.location >= emptyStart, selection.location + selection.length <= emptyStart + 2 else {
+            throw GuardFailure("insertion did not select the new body cell")
+        }
+        try press("Format", ["Table Operations", "Delete Column"])
+        try waitSource(pasted, stage: "T2: delete inserted column")
+        for (label, expected) in [("undo T2", widened), ("undo T1", pasted), ("undo P", original)] {
+            try press("Edit", ["Undo"])
+            try waitSource(expected, stage: label)
+        }
+        for (label, expected) in [("redo P", pasted), ("redo T1", widened), ("redo T2", pasted)] {
+            try press("Edit", ["Redo"])
+            try waitSource(expected, stage: label)
+        }
+        try press("File", ["Save"])
+        let expectedBytes = Data(pasted.utf8)
+        let deadline = Date().addingTimeInterval(5)
+        while (try? Data(contentsOf: document)) != expectedBytes, Date() < deadline { usleep(50_000) }
+        XCTAssertEqual(try Data(contentsOf: document), expectedBytes,
+            "saved UTF-8 bytes must retain CRLF, Unicode, both sentinels and no final newline")
+        try waitSource(pasted, stage: "source after save")
+    }
+
     private static let guardBundleIdentifier = "dev.codex.md2.recent-documents-guard"
     private static let recentsKey = "MD2.RecentDocuments"
 

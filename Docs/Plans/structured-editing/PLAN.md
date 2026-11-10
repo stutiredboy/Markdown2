@@ -1,6 +1,7 @@
 # Structured source editing: tables and explicit paste
 
-Status: implementation in isolated packages; acceptance pending.
+Status: both packages independently approved and integrated; unified acceptance
+and final-source CI pending.
 Baseline: `a95388427ec6dbd4f6ea4a4f542472557eb73ac7` (PR #56 merged).
 
 ## Priority and outcome
