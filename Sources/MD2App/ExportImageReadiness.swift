@@ -60,6 +60,9 @@ enum ExportImageReadiness {
             document.querySelectorAll('svg image, svg feImage').forEach(function (image) {
                 probe(image.getAttribute('href') || image.getAttributeNS('http://www.w3.org/1999/xlink', 'href'));
             });
+            document.querySelectorAll('video[poster]').forEach(function (video) {
+                probe(video.getAttribute('poster'));
+            });
             // getComputedStyle supplies canonical CSS serialization. Unsupported
             // resource expressions fail rather than being assumed settled.
             const properties = ['background-image', 'mask-image', '-webkit-mask-image', 'border-image-source',

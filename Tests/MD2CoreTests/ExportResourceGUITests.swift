@@ -141,6 +141,38 @@ final class ExportResourceGUITests: XCTestCase {
     }
 
     @MainActor
+    func testMermaidPosterFailurePreservesTargetAndValidImageStillRenders() throws {
+        _ = NSApplication.shared
+        let server = try ExportNetworkTestServer(image: magentaPNG())
+        defer { server.stop() }
+        let dir = try directory()
+        defer { ExportTestEvidence.preserveThenRemove(dir) }
+        for broken in [false, true] {
+            let token = (broken ? "broken" : "valid") + "-poster-\(UUID())"
+            let markdown = """
+            # Mermaid poster image
+            ```mermaid
+            graph TD
+            A["<video poster='\(server.baseURL)/\(token).png' width='30' height='30'></video>"] --> B["POSTER marker"]
+            ```
+            """
+            try markdown.write(to: dir.appendingPathComponent("\(token).md"), atomically: true, encoding: .utf8)
+            let destination = dir.appendingPathComponent("\(token).pdf")
+            let sentinel = Data("before-poster-export-sentinel".utf8)
+            try sentinel.write(to: destination)
+            let result = runPDF(markdown, policy: .allowRemoteImages, destination: destination)
+            XCTAssertTrue(server.requests.contains { $0.path.contains(token) }, "the real Mermaid poster source must reach WebKit")
+            if broken {
+                guard case .failure = result else { XCTFail("invalid poster silently exported"); continue }
+                XCTAssertEqual(try Data(contentsOf: destination), sentinel)
+            } else {
+                guard case .success = result else { XCTFail("valid poster failed: \(result)"); continue }
+                XCTAssertTrue(try containsMagenta(destination), "valid poster must remain visible in the PDF")
+            }
+        }
+    }
+
+    @MainActor
     func testUnsupportedCSSImageExpressionFailsInsteadOfClaimingReadiness() throws {
         _ = NSApplication.shared
         let server = try ExportNetworkTestServer(image: magentaPNG())
