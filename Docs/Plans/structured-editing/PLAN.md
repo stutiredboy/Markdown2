@@ -38,13 +38,17 @@ batch, and neither package depends on the other's new parser or API.
   after insertion or the nearest remaining cell after deletion.
 - Preserve mixed source line endings outside edits. New rows inherit the local
   LF/CRLF/CR style; an EOF without a newline remains without a trailing newline.
-  Validate UTF-16/grapheme boundaries and retain Chinese, emoji and combining text.
+  Validate UTF-16 ranges and retain Chinese, emoji and combining text.
 - Reject ambiguous or unsupported structure rather than repair it: nested
   list/quote containers, code/HTML blocks, ragged rows, cross-cell/multiple
   selections, delimiter-row positions, unclosed or multi-backtick spans, and
   trailing nonstructural pipe cases where renderer interpretation differs.
   Explicit commands explain refusal. Unsupported Tab positions keep existing
-  editor/list behavior. Bound scanning and transformation work.
+  editor/list behavior. Bound scanning and transformation work: at most 500,000
+  UTF-16 units and 20,000 physical source lines; a table and replacement each
+  at most 100,000 UTF-16 units, 1,000 physical rows, 128 columns and 20,000
+  cells, counting header and delimiter. Recheck limits after structural growth.
+  Menu validation must not repeatedly scan the source.
 - Read's first formatting action only reveals source. Find, filename and
   Settings fields must never cause edits to a hidden source selection. Marked
   text and pending reveal suppress commands without delayed replay.
@@ -94,9 +98,11 @@ batch, and neither package depends on the other's new parser or API.
 - Insert generated tables as standalone blocks separated from surrounding
   nonempty source, using local line endings. Surrounding source remains intact.
 - Initial limits: 1 MiB rich input, 2 MiB plain/TSV input and generated output,
-  20,000 rich tokens, depth 64; TSV 2,000 rows, 256 columns, 50,000 cells after
-  rectangular padding (rows times widest column count, including the header).
-  Rich Data budgets count original bytes; String and generated-output budgets
+  20,000 rich tokens, depth 64. TSV has at most 999 input rows, 128 columns,
+  20,000 cells after rectangular padding and the generated delimiter row
+  ((input rows + 1) times widest column count); generated table output also
+  cannot exceed 100,000 UTF-16 units, aligning with T's table limits. Rich Data
+  budgets count original bytes; other String and generated-output byte budgets
   count UTF-8 bytes, not grapheme counts. Conversion runs off-main with cooperative cancellation and a one-second
   deadline. Synchronous OS clipboard provision is outside that deadline.
 - Capture clipboard value data consistently using changeCount, never promised
