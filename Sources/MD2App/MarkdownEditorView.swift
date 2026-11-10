@@ -1774,29 +1774,34 @@ final class MarkdownSourceTextView: NSTextView {
 
     private func applyTableReplacement(range: NSRange, replacement: String, selection: NSRange) {
         let manager = undoManager
+        let source = string, oldSelection = selectedRange(), originalDelegate = delegate
+        let session = delegate as? MarkdownEditorSession
+        let generation = session?.pasteContextGeneration, host = session?.pasteHostGeneration
+        let isCurrent = {
+            self.isEditable && !self.hasMarkedText() && self.selectedRanges.count == 1 &&
+            self.delegate === originalDelegate && self.selectedRange() == oldSelection &&
+            session?.pasteContextGeneration == generation && session?.pasteHostGeneration == host &&
+            (self.string as NSString).isEqual(to: source)
+        }
         // shouldChangeText itself registers AppKit undo state. This operation
         // owns one inverse including selection, so suppress that preliminary
         // record as well as insertText's record.
         manager?.disableUndoRegistration()
         let allowed = shouldChangeText(in: range, replacementString: replacement)
         manager?.enableUndoRegistration()
-        guard allowed else { return }
-        let original = (string as NSString).substring(with: range)
-        let oldSelection = selectedRange()
+        guard allowed, isCurrent() else { return }
+        let original = (source as NSString).substring(with: range)
         let inverseRange = NSRange(location: range.location, length: replacement.utf16.count)
-        let history = manager?.isUndoing == true || manager?.isRedoing == true
-        breakUndoCoalescing()
-        if !history { manager?.beginUndoGrouping() }
-        manager?.disableUndoRegistration()
-        insertText(replacement, replacementRange: range)
-        manager?.enableUndoRegistration()
-        manager?.registerUndo(withTarget: self) { target in
-            MainActor.assumeIsolated { target.applyTableReplacement(range: inverseRange, replacement: original, selection: oldSelection) }
+        withStructuredEditUndo(isCurrent: isCurrent) {
+            manager?.disableUndoRegistration()
+            insertText(replacement, replacementRange: range)
+            manager?.enableUndoRegistration()
+            manager?.registerUndo(withTarget: self) { target in
+                MainActor.assumeIsolated { target.applyTableReplacement(range: inverseRange, replacement: original, selection: oldSelection) }
+            }
+            setSelectedRange(selection)
+            scrollRangeToVisible(selection)
         }
-        setSelectedRange(selection)
-        scrollRangeToVisible(selection)
-        if !history { manager?.endUndoGrouping() }
-        breakUndoCoalescing()
     }
 
     private func applyMarkdownEdit(_ edit: MarkdownEditing.Edit) {

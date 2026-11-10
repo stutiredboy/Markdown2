@@ -154,7 +154,7 @@ final class DocumentStore: ObservableObject {
     /// The document's undo history. The window hands it to the Edit menu and the
     /// editor's text view registers its edits on it, so all three share one
     /// stack that belongs to the document rather than to any one view.
-    let undoManager = UndoManager()
+    let undoManager = StructuredEditUndoManager()
     /// The editor text system — one text view for the document's lifetime,
     /// re-hosted by every editor it mounts. Its undo actions target that view,
     /// so keeping it here is what keeps them valid across mode switches.

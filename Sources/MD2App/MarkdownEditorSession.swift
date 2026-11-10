@@ -26,6 +26,7 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
     /// The document's undo manager: the window returns it to the Edit menu and
     /// the text view registers its edits on it.
     let undoManager: UndoManager
+    let structuredEditUndo: StructuredEditUndo
     let find = FindSession()
     private var isApplyingFindEdit = false
     private(set) var pasteHostGeneration: UInt64 = 0
@@ -68,8 +69,9 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate {
     /// document's own edit from typing.
     private(set) var isApplyingDocumentEdit = false
 
-    init(undoManager: UndoManager = UndoManager()) {
+    init(undoManager: UndoManager = StructuredEditUndoManager()) {
         self.undoManager = undoManager
+        self.structuredEditUndo = StructuredEditUndo(manager: undoManager)
     }
 
     /// The session's text view, built on first use with `text` as its content.
