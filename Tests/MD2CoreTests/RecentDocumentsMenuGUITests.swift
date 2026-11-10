@@ -3,6 +3,7 @@ import ApplicationServices
 import XCTest
 
 @testable import MD2App
+@testable import MD2Core
 
 /// Guards File ▸ Open Recent against going stale within a session.
 ///
@@ -28,6 +29,254 @@ import XCTest
 ///   contents after that reconcile, not its pixels, and the missing-file and
 ///   language cases need an unlocked session.
 final class RecentDocumentsMenuGUITests: XCTestCase {
+    /// Cross-package regression: real menu dispatch, document-owned history,
+    /// and saved bytes. Goldens are handwritten from the TSV below; neither
+    /// converter nor table transformer computes an expected value.
+    func testStructuredPasteTableColumnsKeepCRLFAndIndependentUndo() throws {
+        let board = NSPasteboard.general
+        let saved = board.pasteboardItems?.map { item in
+            item.types.compactMap { type in item.data(forType: type).map { (type, $0) } }
+        } ?? []
+        defer {
+            board.clearContents()
+            board.writeObjects(saved.map { values in
+                let item = NSPasteboardItem()
+                for (type, data) in values { item.setData(data, forType: type) }
+                return item
+            })
+        }
+
+        let prefix = "BEFORE_SENTINEL 文😀\r\n"
+        let suffix = "\r\nAFTER_SENTINEL e\u{301}" // Deliberately no final newline.
+        let original = prefix + "PASTE_HERE" + suffix
+        let tsv = "Name\tNote\n中文😀\tunchanged"
+        let pasted = prefix + "\r\n"
+            + "| Name | Note |\r\n| --- | --- |\r\n| 中文😀 | unchanged |"
+            + "\r\n" + suffix
+        let widened = prefix + "\r\n"
+            + "| Name |  | Note |\r\n| --- | --- | --- |\r\n| 中文😀 |  | unchanged |"
+            + "\r\n" + suffix
+        let document = try makeDocument("notes/StructuredIntegrationCRLF.md")
+        try Data(original.utf8).write(to: document)
+        let pid = try launch(recents: [], language: "english", appleLanguages: ["en"])
+        try waitForEntries([], pid: pid)
+        try open(document)
+        try waitForEntries([document], pid: pid)
+
+        var commandWindow: AXUIElement?
+        var commandSource: AXUIElement?
+        func role(_ element: AXUIElement) -> String {
+            var value: CFTypeRef?
+            AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &value)
+            return value as? String ?? "?"
+        }
+        func diagnose(_ stage: String, menu: AXUIElement? = nil) {
+            var focused: CFTypeRef?
+            AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXFocusedUIElementAttribute as CFString, &focused)
+            let owner = Self.element(focused)
+            let observedSource = commandSource ?? Self.windows(pid: pid)
+                .filter { Self.title(of: $0).contains(document.deletingPathExtension().lastPathComponent) }
+                .compactMap { Self.firstElement(ofRole: kAXTextAreaRole as String, in: $0) }.first
+            var details: [String: Any] = ["stage": stage,
+                "appActive": NSRunningApplication(processIdentifier: pid)?.isActive == true,
+                "focusedRole": owner.map(role) ?? "?",
+                "focusedTitle": owner.map(Self.title) ?? "?",
+                "sourceOwnsFocus": observedSource.map { source in owner.map { CFEqual(source, $0) } == true } ?? false]
+            if let source = observedSource {
+                var rawText: CFTypeRef?
+                let status = AXUIElementCopyAttributeValue(source, kAXValueAttribute as CFString, &rawText)
+                details["sourceValueStatus"] = status.rawValue
+                if let text = rawText as? String { details["sourceUTF16"] = Array(text.utf16) }
+                var raw: CFTypeRef?
+                AXUIElementCopyAttributeValue(source, kAXSelectedTextRangeAttribute as CFString, &raw)
+                if let raw, CFGetTypeID(raw) == AXValueGetTypeID() {
+                    var range = CFRange()
+                    if AXValueGetValue(raw as! AXValue, .cfRange, &range) { details["selection"] = [range.location, range.length] }
+                }
+            }
+            if let menu {
+                var actions: CFArray?
+                AXUIElementCopyActionNames(menu, &actions)
+                details["menuRole"] = role(menu)
+                details["menuActions"] = actions as? [String] ?? []
+                details["menuChildCount"] = Self.children(of: menu).count
+                var visible: CFTypeRef?
+                details["menuVisibleStatus"] = AXUIElementCopyAttributeValue(menu, "AXVisible" as CFString, &visible).rawValue
+                details["menuVisible"] = (visible as? NSNumber)?.boolValue
+            }
+            if let bytes = try? Data(contentsOf: document), let text = String(data: bytes, encoding: .utf8) {
+                details["diskUTF16"] = Array(text.utf16)
+            }
+            if let data = try? JSONSerialization.data(withJSONObject: details, options: [.sortedKeys]),
+               let text = String(data: data, encoding: .utf8) { print("StructuredIntegration " + text) }
+        }
+        // Open each ancestor, then fetch its current item. This also refreshes
+        // native Undo/Redo targets; do not reuse a closed Edit menu's old item.
+        func press(_ barTitle: String, _ path: [String]) throws {
+            NSRunningApplication(processIdentifier: pid)?.activate()
+            if let commandWindow {
+                XCTAssertEqual(AXUIElementPerformAction(commandWindow, kAXRaiseAction as CFString), .success)
+            }
+            diagnose("before " + path.joined(separator: " > "))
+            // SwiftUI may replace AX containers when tracking a submenu starts.
+            // Every query walks the live app tree; never reuse an item/menu
+            // obtained before an AXPress to query the resulting menu state.
+            func currentBarItem() -> AXUIElement? {
+                var value: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid),
+                    kAXMenuBarAttribute as CFString, &value) == .success,
+                    let bar = Self.element(value) else { return nil }
+                return Self.children(of: bar).first { Self.title(of: $0) == barTitle }
+            }
+            func namedItem(_ title: String, in menu: AXUIElement) -> AXUIElement? {
+                let items = Self.children(of: menu)
+                return items.first { Self.title(of: $0) == title }
+                    ?? items.first { Self.title(of: $0).hasPrefix(title + " ") }
+            }
+            func currentMenu(_ ancestors: [String]) -> AXUIElement? {
+                guard let bar = currentBarItem(),
+                      var menu = Self.children(of: bar).first(where: { role($0) == (kAXMenuRole as String) }) else { return nil }
+                for title in ancestors {
+                    guard let item = namedItem(title, in: menu),
+                          let submenu = Self.children(of: item).first(where: { role($0) == (kAXMenuRole as String) }) else { return nil }
+                    menu = submenu
+                }
+                return menu
+            }
+            func waitForMenu(_ ancestors: [String]) throws {
+                let deadline = Date().addingTimeInterval(5)
+                while currentMenu(ancestors) == nil, Date() < deadline { usleep(50_000) }
+                _ = try XCTUnwrap(currentMenu(ancestors), "fresh submenu: \(barTitle) > \(ancestors.joined(separator: " > "))")
+            }
+            var dispatchedLeaf = false
+            defer {
+                // Successful selection dismisses itself. Cleanup only failed
+                // navigation, resolving the current actual menu again first.
+                if !dispatchedLeaf, let menu = currentMenu([]) {
+                    let result = AXUIElementPerformAction(menu, kAXCancelAction as CFString)
+                    print("StructuredIntegration failure cleanup result=\(result.rawValue)")
+                }
+                diagnose("after " + path.joined(separator: " > "), menu: currentMenu([]))
+            }
+            do {
+                let entry = try XCTUnwrap(currentBarItem(), "menu bar: " + barTitle)
+                guard AXUIElementPerformAction(entry, kAXPressAction as CFString) == .success else {
+                    throw GuardFailure("cannot open " + barTitle)
+                }
+            }
+            try waitForMenu([])
+            diagnose("opened bar " + barTitle, menu: currentMenu([]))
+            for (index, title) in path.enumerated() {
+                let ancestors = Array(path.prefix(index))
+                func currentItem() -> AXUIElement? {
+                    guard let menu = currentMenu(ancestors) else { return nil }
+                    return namedItem(title, in: menu)
+                }
+                let deadline = Date().addingTimeInterval(5)
+                while currentItem().map(Self.isEnabled) != true, Date() < deadline { usleep(50_000) }
+                diagnose("press " + title, menu: currentMenu(ancestors))
+                do {
+                    let target = try XCTUnwrap(currentItem(), "\(barTitle) > \(title)")
+                    XCTAssertTrue(Self.isEnabled(target), title)
+                    guard Self.isEnabled(target) else { throw GuardFailure("disabled command: " + title) }
+                    guard AXUIElementPerformAction(target, kAXPressAction as CFString) == .success else {
+                        throw GuardFailure("cannot press command: " + title)
+                    }
+                }
+                if index == path.count - 1 { dispatchedLeaf = true }
+                else { try waitForMenu(Array(path.prefix(index + 1))) }
+                diagnose("after leaf-or-submenu press " + title, menu: currentMenu(ancestors))
+            }
+        }
+        try press("Mode", ["Edit"])
+        let window = try waitForWindow(pid: pid) {
+            Self.title(of: $0).contains(document.deletingPathExtension().lastPathComponent)
+                && Self.firstElement(ofRole: kAXTextAreaRole as String, in: $0) != nil
+        }
+        NSRunningApplication(processIdentifier: pid)?.activate()
+        XCTAssertEqual(AXUIElementPerformAction(window, kAXRaiseAction as CFString), .success)
+        let source = try XCTUnwrap(Self.firstElement(ofRole: kAXTextAreaRole as String, in: window))
+        commandWindow = window
+        commandSource = source
+        func sourceText() throws -> String {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(source, kAXValueAttribute as CFString, &value) == .success,
+                  let text = value as? String else { throw GuardFailure("source AX value unavailable") }
+            return text
+        }
+        func selectedRange() throws -> CFRange {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(source, kAXSelectedTextRangeAttribute as CFString, &value) == .success,
+                  let value, CFGetTypeID(value) == AXValueGetTypeID() else {
+                throw GuardFailure("source AX selection unavailable")
+            }
+            var range = CFRange()
+            guard AXValueGetValue(value as! AXValue, .cfRange, &range) else {
+                throw GuardFailure("source AX selection is not a range")
+            }
+            return range
+        }
+        func select(_ marker: String) throws {
+            XCTAssertEqual(AXUIElementSetAttributeValue(source, kAXFocusedAttribute as CFString, kCFBooleanTrue), .success)
+            let found = (try sourceText() as NSString).range(of: marker)
+            guard found.location != NSNotFound else { throw GuardFailure("missing source marker: \(marker)") }
+            var range = CFRange(location: found.location, length: found.length)
+            let value = try XCTUnwrap(AXValueCreate(.cfRange, &range))
+            XCTAssertEqual(AXUIElementSetAttributeValue(source, kAXSelectedTextRangeAttribute as CFString, value), .success)
+            let deadline = Date().addingTimeInterval(5)
+            while Date() < deadline {
+                let actual = try selectedRange()
+                if actual.location == range.location && actual.length == range.length { return }
+                usleep(50_000)
+            }
+            throw GuardFailure("source selection did not converge")
+        }
+        func waitSource(_ expected: String, stage: String) throws {
+            let deadline = Date().addingTimeInterval(5)
+            while !(try sourceText()).utf16.elementsEqual(expected.utf16), Date() < deadline { usleep(50_000) }
+            let actual = try sourceText()
+            diagnose("source check " + stage)
+            XCTAssertEqual(Array(actual.utf16), Array(expected.utf16), stage)
+            guard actual.utf16.elementsEqual(expected.utf16) else { throw GuardFailure("source mismatch at \(stage)") }
+            XCTAssertTrue(actual.hasPrefix(prefix) && actual.hasSuffix(suffix), "sentinels: \(stage)")
+        }
+        try waitSource(original, stage: "original CRLF source")
+        board.clearContents()
+        XCTAssertTrue(board.setString(tsv, forType: .string))
+        try select("PASTE_HERE")
+        try press("Edit", ["Paste as Table"])
+        try waitSource(pasted, stage: "P: table paste")
+        try select("中文😀")
+        try press("Format", ["Table Operations", "Insert Column Right"])
+        try waitSource(widened, stage: "T1: insert column")
+        // Delete the cell chosen by insertion, without replacing its selection.
+        let bodyStart = (widened as NSString).range(of: "| 中文😀 |  | unchanged |").location
+        let emptyStart = bodyStart + "| 中文😀 |".utf16.count
+        let selection = try selectedRange()
+        XCTAssertGreaterThanOrEqual(selection.location, emptyStart)
+        XCTAssertLessThanOrEqual(selection.location + selection.length, emptyStart + 2)
+        guard selection.location >= emptyStart, selection.location + selection.length <= emptyStart + 2 else {
+            throw GuardFailure("insertion did not select the new body cell")
+        }
+        try press("Format", ["Table Operations", "Delete Column"])
+        try waitSource(pasted, stage: "T2: delete inserted column")
+        for (label, expected) in [("undo T2", widened), ("undo T1", pasted), ("undo P", original)] {
+            try press("Edit", ["Undo"])
+            try waitSource(expected, stage: label)
+        }
+        for (label, expected) in [("redo P", pasted), ("redo T1", widened), ("redo T2", pasted)] {
+            try press("Edit", ["Redo"])
+            try waitSource(expected, stage: label)
+        }
+        try press("File", ["Save"])
+        let expectedBytes = Data(pasted.utf8)
+        let deadline = Date().addingTimeInterval(5)
+        while (try? Data(contentsOf: document)) != expectedBytes, Date() < deadline { usleep(50_000) }
+        XCTAssertEqual(try Data(contentsOf: document), expectedBytes,
+            "saved UTF-8 bytes must retain CRLF, Unicode, both sentinels and no final newline")
+        try waitSource(pasted, stage: "source after save")
+    }
+
     private static let guardBundleIdentifier = "dev.codex.md2.recent-documents-guard"
     private static let recentsKey = "MD2.RecentDocuments"
 
@@ -75,7 +324,284 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         Self.removeGuardPreferences()
     }
 
+    // MARK: - Explicit paste menus
+
+    func testPasteMenusFollowSourceFindSettingsAndPlainShortcut() throws {
+        let board = NSPasteboard.general
+        let saved = board.pasteboardItems?.map { item in item.types.compactMap { type in item.data(forType: type).map { (type, $0) } } } ?? []
+        defer {
+            board.clearContents()
+            board.writeObjects(saved.map { values in
+                let item = NSPasteboardItem()
+                for (type, data) in values { item.setData(data, forType: type) }
+                return item
+            })
+        }
+        board.clearContents(); board.setString("PASTE_NATIVE_FIELD", forType: .string)
+        let document = try makeDocument("notes/PasteMenu.md")
+        let pid = try launch(recents: [], language: "english", appleLanguages: ["en"])
+        try waitForEntries([], pid: pid)
+        func item(_ title: String) throws -> AXUIElement {
+            var barValue: CFTypeRef?
+            let app = AXUIElementCreateApplication(pid)
+            guard AXUIElementCopyAttributeValue(app, kAXMenuBarAttribute as CFString, &barValue) == .success,
+                  let bar = Self.element(barValue) else { throw GuardFailure("paste menu bar unavailable") }
+            for entry in Self.children(of: bar) {
+                for menu in Self.children(of: entry) {
+                    if let result = Self.children(of: menu).first(where: { Self.title(of: $0) == title }) { return result }
+                }
+            }
+            throw GuardFailure("paste menu item missing: \(title)")
+        }
+        func waitEnabled(_ title: String, _ expected: Bool) throws {
+            let deadline = Date().addingTimeInterval(5)
+            repeat {
+                if let target = try? item(title), Self.isEnabled(target) == expected { return }
+                usleep(50_000)
+            } while Date() < deadline
+            XCTAssertEqual(Self.isEnabled(try item(title)), expected, title)
+        }
+        for title in ["Paste as Plain Text", "Paste as Markdown", "Paste as Table"] { try waitEnabled(title, false) }
+        try open(document); try waitForEntries([document], pid: pid)
+        XCTAssertEqual(AXUIElementPerformAction(try item("Edit"), kAXPressAction as CFString), .success)
+        let sourceWindow = try waitForWindow(pid: pid) { Self.firstElement(ofRole: kAXTextAreaRole as String, in: $0) != nil }
+        let source = try XCTUnwrap(Self.firstElement(ofRole: kAXTextAreaRole as String, in: sourceWindow))
+        XCTAssertEqual(AXUIElementSetAttributeValue(source, kAXFocusedAttribute as CFString, kCFBooleanTrue), .success)
+        for title in ["Paste as Plain Text", "Paste as Markdown", "Paste as Table"] { try waitEnabled(title, true) }
+        let plainItem = try item("Paste as Plain Text")
+        XCTAssertEqual(Self.commandCharacter(of: plainItem)?.lowercased(), "v")
+        var modifiers: CFTypeRef?
+        AXUIElementCopyAttributeValue(plainItem, kAXMenuItemCmdModifiersAttribute as CFString, &modifiers)
+        // AX uses Shift=1, Option=2, Control=4, NoCommand=8.
+        XCTAssertEqual((modifiers as? NSNumber)?.intValue, 3)
+        // Actual Find focus must disable the source-only commands.
+        XCTAssertEqual(AXUIElementPerformAction(try menuItem(commandCharacter: "F", pid: pid), kAXPressAction as CFString), .success)
+        try waitEnabled("Paste as Markdown", false); try waitEnabled("Paste as Table", false)
+        try waitEnabled("Paste as Plain Text", true)
+        XCTAssertEqual(AXUIElementPerformAction(try item("Paste as Plain Text"), kAXPressAction as CFString), .success)
+        let fieldDeadline = Date().addingTimeInterval(5)
+        var fieldValue = ""
+        repeat {
+            var focusedValue: CFTypeRef?
+            AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXFocusedUIElementAttribute as CFString, &focusedValue)
+            if let focused = Self.element(focusedValue) {
+                var value: CFTypeRef?
+                AXUIElementCopyAttributeValue(focused, kAXValueAttribute as CFString, &value)
+                fieldValue = value as? String ?? ""
+            }
+            if fieldValue == "PASTE_NATIVE_FIELD" { break }
+            usleep(50_000)
+        } while Date() < fieldDeadline
+        XCTAssertEqual(fieldValue, "PASTE_NATIVE_FIELD", "plain paste belongs to the focused Find field")
+        var sourceValue: CFTypeRef?
+        AXUIElementCopyAttributeValue(source, kAXValueAttribute as CFString, &sourceValue)
+        XCTAssertFalse((sourceValue as? String ?? "").contains("PASTE_NATIVE_FIELD"))
+        XCTAssertEqual(AXUIElementPerformAction(try menuItem(commandCharacter: ",", pid: pid), kAXPressAction as CFString), .success)
+        _ = try waitForWindow(pid: pid) { Self.title(of: $0).contains("Settings") || Self.title(of: $0).contains("设置") }
+        try waitEnabled("Paste as Markdown", false); try waitEnabled("Paste as Table", false)
+    }
+
+    func testPasteSourceCommandsUndoFallbackAndReadSplitBoundaries() throws {
+        let board = NSPasteboard.general
+        let saved = board.pasteboardItems?.map { item in item.types.compactMap { type in item.data(forType: type).map { (type, $0) } } } ?? []
+        defer {
+            board.clearContents()
+            board.writeObjects(saved.map { values in
+                let item = NSPasteboardItem()
+                for (type, data) in values { item.setData(data, forType: type) }
+                return item
+            })
+        }
+        let document = try makeDocument("notes/PasteRoundTrip.md")
+        let pid = try launch(recents: [], language: "english", appleLanguages: ["en"])
+        try waitForEntries([], pid: pid)
+        try open(document); try waitForEntries([document], pid: pid)
+        func sourceEditor() throws -> AXUIElement {
+            let window = try waitForWindow(pid: pid) { Self.firstElement(ofRole: kAXTextAreaRole as String, in: $0) != nil }
+            return try XCTUnwrap(Self.firstElement(ofRole: kAXTextAreaRole as String, in: window))
+        }
+        func sourceText(_ source: AXUIElement) -> String {
+            var value: CFTypeRef?
+            AXUIElementCopyAttributeValue(source, kAXValueAttribute as CFString, &value)
+            return value as? String ?? ""
+        }
+        func command(_ title: String) throws -> AXUIElement {
+            var barValue: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXMenuBarAttribute as CFString, &barValue) == .success,
+                  let bar = Self.element(barValue) else { throw GuardFailure("paste menu bar unavailable") }
+            for entry in Self.children(of: bar) { for menu in Self.children(of: entry) {
+                if let item = Self.children(of: menu).first(where: { Self.title(of: $0) == title || Self.title(of: $0).hasPrefix(title + " ") }) { return item }
+            } }
+            throw GuardFailure("paste command unavailable: \(title)")
+        }
+        func press(_ title: String) throws {
+            let deadline = Date().addingTimeInterval(5)
+            while !(try Self.isEnabled(command(title))), Date() < deadline { usleep(50_000) }
+            let target = try command(title)
+            print("PasteRoundTrip press \(Self.title(of: target)) enabled=\(Self.isEnabled(target))")
+            XCTAssertTrue(Self.isEnabled(target))
+            XCTAssertEqual(AXUIElementPerformAction(target, kAXPressAction as CFString), .success)
+        }
+        func select(_ source: AXUIElement, range: CFRange? = nil) throws {
+            XCTAssertEqual(AXUIElementSetAttributeValue(source, kAXFocusedAttribute as CFString, kCFBooleanTrue), .success)
+            var selection = range ?? CFRange(location: 0, length: (sourceText(source) as NSString).length)
+            let value = try XCTUnwrap(AXValueCreate(.cfRange, &selection))
+            XCTAssertEqual(AXUIElementSetAttributeValue(source, kAXSelectedTextRangeAttribute as CFString, value), .success)
+        }
+        func waitText(_ expected: String, source: AXUIElement) {
+            let deadline = Date().addingTimeInterval(5)
+            while sourceText(source) != expected, Date() < deadline { usleep(50_000) }
+            XCTAssertEqual(sourceText(source), expected)
+        }
+        func paste(_ title: String, plain: String, html: String? = nil, source: AXUIElement) throws {
+            board.clearContents()
+            let item = NSPasteboardItem(); item.setString(plain, forType: .string)
+            if let html { item.setData(Data(html.utf8), forType: .html) }
+            board.writeObjects([item])
+            try select(source)
+            let deadline = Date().addingTimeInterval(5)
+            while !(try Self.isEnabled(command(title))), Date() < deadline { usleep(50_000) }
+            XCTAssertTrue(try Self.isEnabled(command(title)))
+            XCTAssertEqual(AXUIElementPerformAction(try command(title), kAXPressAction as CFString), .success)
+        }
+        try press("Edit")
+        var source = try sourceEditor()
+        let original = sourceText(source)
+        try paste("Paste as Plain Text", plain: "https://example.com", source: source)
+        waitText("https://example.com", source: source)
+        try press("Undo")
+        waitText(original, source: source)
+        try press("Redo")
+        waitText("https://example.com", source: source)
+        try paste("Paste as Table", plain: "H\tB\n1\t2", source: source)
+        let table = "| H | B |\n| --- | --- |\n| 1 | 2 |"
+        waitText(table, source: source)
+        XCTAssertTrue(MarkdownRenderer().render(sourceText(source)).body.contains("<table"))
+        try press("Undo")
+        waitText("https://example.com", source: source)
+        try paste("Paste as Markdown", plain: "Bold", html: "<p><strong>Bold</strong></p>", source: source)
+        waitText("**Bold**", source: source)
+        try paste("Paste as Markdown", plain: "![x](https://example.com)", html: "<img src='https://example.com'>", source: source)
+        let literal = #"\!&#91;x&#93;&#40;https\://example\.com&#41;"#
+        waitText(literal, source: source)
+        XCTAssertEqual(RenderedPlainText.extract(from: MarkdownRenderer().render(sourceText(source)).body), "![x](https://example.com)")
+        XCTAssertFalse(MarkdownRenderer().render(sourceText(source)).body.contains("<img"))
+        func containsFallbackNotice(_ element: AXUIElement) -> Bool {
+            var value: CFTypeRef?
+            AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &value)
+            if (value as? String ?? Self.title(of: element)).contains("Formatting was not preserved") { return true }
+            return Self.children(of: element).contains(where: containsFallbackNotice)
+        }
+        let noticeDeadline = Date().addingTimeInterval(5)
+        while !Self.windows(pid: pid).contains(where: containsFallbackNotice), Date() < noticeDeadline { usleep(50_000) }
+        XCTAssertTrue(Self.windows(pid: pid).contains(where: containsFallbackNotice), "whole-input fallback must be disclosed visibly")
+        // Empty input must not delete a full selection or create an undo step.
+        try paste("Paste as Plain Text", plain: "", source: source)
+        usleep(200_000); waitText(literal, source: source)
+        try press("Undo")
+        waitText("**Bold**", source: source)
+        // Read retains source but offers no source-only paste command.
+        try press("Preview")
+        let readDeadline = Date().addingTimeInterval(5)
+        while (try Self.isEnabled(command("Paste as Markdown"))), Date() < readDeadline { usleep(50_000) }
+        XCTAssertFalse(try Self.isEnabled(command("Paste as Markdown")))
+        XCTAssertFalse(try Self.isEnabled(command("Paste as Table")))
+        // Split re-hosts the retained editor and accepts a fresh command.
+        try press("Side by Side")
+        source = try sourceEditor()
+        try paste("Paste as Plain Text", plain: "split source", source: source)
+        waitText("split source", source: source)
+    }
+
     // MARK: - Live list
+
+    // T package owns only these table-menu cases/helpers. The existing launch,
+    // AX prerequisites, waits and non-table cases remain shared and unchanged.
+    func testTableMenuFollowsOpeningSwitchingAndClosingDocuments() throws {
+        let first = try makeDocument("notes/TableFirst.md")
+        let second = try makeDocument("notes/TableSecond.md")
+        let pid = try launch(recents: [], language: "english", appleLanguages: ["en"])
+        try waitForEntries([], pid: pid)
+        XCTAssertTrue(Self.windows(pid: pid).isEmpty)
+        try waitForTableCommandsEnabled(false, pid: pid)
+        try open(first)
+        try waitForEntries([first], pid: pid)
+        try waitForTableCommandsEnabled(true, pid: pid)
+        try open(second)
+        try waitForEntries([second, first], pid: pid)
+        try waitForTableCommandsEnabled(true, pid: pid)
+        XCTAssertEqual(AXUIElementPerformAction(try menuItem(commandCharacter: "W", pid: pid), kAXPressAction as CFString), .success)
+        usleep(300_000)
+        try waitForTableCommandsEnabled(true, pid: pid)
+        XCTAssertEqual(AXUIElementPerformAction(try menuItem(commandCharacter: "W", pid: pid), kAXPressAction as CFString), .success)
+        try waitForTableCommandsEnabled(false, pid: pid)
+        try assertOpenedTableCommandsEnabled(false, pid: pid)
+    }
+
+    func testTableMenuEnablesAfterFirstOpenWithoutSettingsChange() throws {
+        let document = try makeDocument("notes/TableFirstOpen.md")
+        let pid = try launch(recents: [], language: "english", appleLanguages: ["en"])
+        try waitForEntries([], pid: pid)
+        try waitForTableCommandsEnabled(false, pid: pid)
+        try open(document)
+        try waitForEntries([document], pid: pid)
+        try waitForTableCommandsEnabled(true, pid: pid)
+        try assertOpenedTableCommandsEnabled(true, pid: pid)
+    }
+
+    func testTableMenuDisablesWhenSettingsTakesFocus() throws {
+        let document = try makeDocument("notes/TableBehindSettings.md")
+        let pid = try launch(recents: [], language: "english", appleLanguages: ["en"])
+        try open(document)
+        try waitForEntries([document], pid: pid)
+        try waitForTableCommandsEnabled(true, pid: pid)
+        NSRunningApplication(processIdentifier: pid)?.activate()
+        let settings = try menuItem(commandCharacter: ",", pid: pid)
+        AXUIElementSetMessagingTimeout(settings, 2)
+        XCTAssertEqual(AXUIElementPerformAction(settings, kAXPressAction as CFString), .success)
+        _ = try waitForWindow(pid: pid) {
+            Self.title(of: $0).contains("Settings") && Self.firstElement(ofRole: "AXPopUpButton", in: $0) != nil
+        }
+        try waitForTableCommandsEnabled(false, pid: pid)
+        try assertOpenedTableCommandsEnabled(false, pid: pid)
+    }
+
+    private func tableMenu(pid: pid_t) throws -> (bar: AXUIElement, menu: AXUIElement, item: AXUIElement, submenu: AXUIElement) {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXMenuBarAttribute as CFString, &value) == .success,
+              let bar = Self.element(value) else { throw GuardFailure("no menu bar for table commands") }
+        for item in Self.children(of: bar) {
+            for menu in Self.children(of: item) {
+                if let table = Self.children(of: menu).first(where: { Self.title(of: $0) == "Table Operations" }),
+                   let submenu = Self.children(of: table).first {
+                    return (item, menu, table, submenu)
+                }
+            }
+        }
+        throw GuardFailure("no Format > Table Operations submenu")
+    }
+
+    private func waitForTableCommandsEnabled(_ expected: Bool, pid: pid_t) throws {
+        let deadline = Date().addingTimeInterval(5)
+        repeat {
+            if let menu = try? tableMenu(pid: pid) {
+                let items = Self.children(of: menu.submenu)
+                if items.count == 6, items.allSatisfy({ Self.isEnabled($0) == expected }) { return }
+            }
+            usleep(50_000)
+        } while Date() < deadline
+        XCTFail("Table Operations enabled state did not become \(expected)")
+        throw GuardFailure("table menu state did not converge")
+    }
+
+    private func assertOpenedTableCommandsEnabled(_ expected: Bool, pid: pid_t) throws {
+        let menu = try tableMenu(pid: pid)
+        NSRunningApplication(processIdentifier: pid)?.activate()
+        XCTAssertEqual(AXUIElementPerformAction(menu.bar, kAXPressAction as CFString), .success)
+        defer { AXUIElementPerformAction(menu.menu, kAXCancelAction as CFString) }
+        XCTAssertEqual(AXUIElementPerformAction(menu.item, kAXPressAction as CFString), .success)
+        try waitForTableCommandsEnabled(expected, pid: pid)
+    }
 
     /// Real SwiftUI command state after a no-document launch (independent R4 regression).
     func testCollectionMenuEnablesAfterOpeningDocument() throws {

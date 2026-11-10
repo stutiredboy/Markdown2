@@ -451,6 +451,9 @@ enum L10nKey: String, CaseIterable, Sendable {
     case alertExternalReloadFailedDetail
     case formatMenu, paragraphMenu
     case formatBold, formatItalic, formatLink, formatCodeBlock, formatTable, formatBody
+    case tableOperations, tableInsertRowAbove, tableInsertRowBelow, tableDeleteRow
+    case tableInsertColumnBefore, tableInsertColumnAfter, tableDeleteColumn
+    case tableUnsupported, tableSelectCell, tableKeepHeader, tableKeepColumn, tableLimitReached
     case formatHeading1, formatHeading2, formatHeading3, formatHeading4, formatHeading5, formatHeading6
     case find
     case findNext
@@ -460,6 +463,8 @@ enum L10nKey: String, CaseIterable, Sendable {
     case replace
     case replaceAll
     case formattingTargetNotice
+    case pasteAsPlainText, pasteAsMarkdown, pasteAsTable
+    case pasteLiteralFallbackNotice, pasteUnavailableNotice, pasteLimitNotice, pasteCancelledNotice, pasteUnsafeContextNotice
     case findMatchCase
     case findWholeWord
     case findOnlySelection
@@ -688,6 +693,18 @@ enum L10n {
         .formatLink: "Link",
         .formatCodeBlock: "Code Block",
         .formatTable: "Table",
+        .tableOperations: "Table Operations",
+        .tableInsertRowAbove: "Insert Row Above",
+        .tableInsertRowBelow: "Insert Row Below",
+        .tableDeleteRow: "Delete Row",
+        .tableInsertColumnBefore: "Insert Column Left",
+        .tableInsertColumnAfter: "Insert Column Right",
+        .tableDeleteColumn: "Delete Column",
+        .tableUnsupported: "This table cannot be edited structurally. Use a top-level rectangular pipe table with closed single-backtick code spans.",
+        .tableSelectCell: "Place the caret or a single selection inside one table cell, outside the separator row.",
+        .tableKeepHeader: "The header and separator rows must remain. Insert below the header to add a body row.",
+        .tableKeepColumn: "A table must keep at least one column.",
+        .tableLimitReached: "Table editing limit reached: source 500,000 UTF-16 units / 20,000 lines; table 100,000 UTF-16 units, 1,000 rows, 128 columns or 20,000 cells. Edit a smaller table or document.",
         .formatBody: "Body",
         .formatHeading1: "Heading 1",
         .formatHeading2: "Heading 2",
@@ -702,6 +719,14 @@ enum L10n {
         .findPlaceholder: "Find",
         .replace: "Replace",
         .replaceAll: "Replace All",
+        .pasteAsPlainText: "Paste as Plain Text",
+        .pasteAsMarkdown: "Paste as Markdown",
+        .pasteAsTable: "Paste as Table",
+        .pasteLiteralFallbackNotice: "Formatting was not preserved. The captured plain text was pasted as literal text.",
+        .pasteUnavailableNotice: "This clipboard content cannot be converted. Nothing was pasted.",
+        .pasteLimitNotice: "Clipboard content exceeds the conversion limit. Nothing was pasted.",
+        .pasteUnsafeContextNotice: "Cannot safely paste literal text at this position. Use Paste as Plain Text to insert source text explicitly.",
+        .pasteCancelledNotice: "The editing target changed. Paste was canceled.",
         .formattingTargetNotice: "Source selection shown. Select the text to format, then run the command again.",
         .findMatchCase: "Match case",
         .findWholeWord: "Whole word",
@@ -913,6 +938,18 @@ enum L10n {
         .formatLink: "链接",
         .formatCodeBlock: "代码块",
         .formatTable: "表格",
+        .tableOperations: "表格操作",
+        .tableInsertRowAbove: "在上方插入行",
+        .tableInsertRowBelow: "在下方插入行",
+        .tableDeleteRow: "删除行",
+        .tableInsertColumnBefore: "在左侧插入列",
+        .tableInsertColumnAfter: "在右侧插入列",
+        .tableDeleteColumn: "删除列",
+        .tableUnsupported: "此处暂不支持结构编辑。请使用顶层、各行列数一致的竖线表格；代码片段需使用闭合的单反引号。",
+        .tableSelectCell: "请将光标或单一选区放在一个内容单元格内，避开分隔行。",
+        .tableKeepHeader: "必须保留表头和分隔行。可在表头下方插入正文行。",
+        .tableKeepColumn: "表格必须至少保留一列。",
+        .tableLimitReached: "已达到表格编辑上限：全文 500,000 个 UTF-16 单元 / 20,000 行；表格 100,000 个 UTF-16 单元、1,000 行、128 列或 20,000 格。请缩小表格或文档后操作。",
         .formatBody: "正文",
         .formatHeading1: "一级标题",
         .formatHeading2: "二级标题",
@@ -927,6 +964,14 @@ enum L10n {
         .findPlaceholder: "查找",
         .replace: "替换",
         .replaceAll: "全部替换",
+        .pasteAsPlainText: "粘贴为纯文本",
+        .pasteAsMarkdown: "粘贴为 Markdown",
+        .pasteAsTable: "粘贴为表格",
+        .pasteLiteralFallbackNotice: "未保留格式，已将捕获的纯文本表示作为字面文字粘贴。",
+        .pasteUnavailableNotice: "无法转换此剪贴板内容，未粘贴任何内容。",
+        .pasteLimitNotice: "剪贴板内容超出转换限制，未粘贴任何内容。",
+        .pasteUnsafeContextNotice: "无法在此位置安全地粘贴字面文字。如需插入源码，请显式选择“粘贴为纯文本”。",
+        .pasteCancelledNotice: "编辑目标已变化，粘贴已取消。",
         .formattingTargetNotice: "已显示源码选区。请选择要格式化的文字，再次执行命令。",
         .findMatchCase: "区分大小写",
         .findWholeWord: "整词",

@@ -7,6 +7,7 @@ public enum MarkdownEditing {
         case newline, softNewline, indent, outdent, deleteBackward
         case type(String)
         case bold, italic, link, heading(Int), codeBlock, table
+        case tableEdit(MarkdownTableEditing.Action)
     }
 
     public struct Edit: Equatable, Sendable {
@@ -35,7 +36,14 @@ public enum MarkdownEditing {
         case .newline, .softNewline:
             return newline(source, selection, soft: action == .softNewline)
         case .indent, .outdent:
+            if let result = MarkdownTableEditing.navigationResult(text, selection: selection, backwards: action == .outdent) {
+                // A recognized table owns Tab even when growth is refused.
+                // Return a no-op so callers cannot fall back to native typing.
+                return (try? result.get()) ?? replacing(NSRange(location: selection.location, length: 0), with: "", selection: selection)
+            }
             return indent(source, selection, outdent: action == .outdent)
+        case .tableEdit(let tableAction):
+            return MarkdownTableEditing.edit(text, selection: selection, action: tableAction)
         case .bold: return wrap(source, selection, marker: "**")
         case .italic: return wrap(source, selection, marker: "*")
         case .link: return link(source, selection, clipboard: clipboard)
@@ -59,6 +67,31 @@ public enum MarkdownEditing {
         Edit(range: range, replacement: replacement,
              selection: selection ?? NSRange(location: range.location + replacement.utf16.count, length: 0),
              autoClosingPosition: autoClosingPosition)
+    }
+
+    static func supportsTopLevelTable(_ source: NSString, at location: Int) -> Bool {
+        // NSString's native line API additionally splits NEL/LS/PS, while the
+        // renderer only splits LF/CRLF/CR. Keep this context-only view at the
+        // same UTF-16 offsets without inventing Markdown lines at those units.
+        let source = (source as String).replacingOccurrences(of: "\u{0085}", with: "\u{FFFD}")
+            .replacingOccurrences(of: "\u{2028}", with: "\u{FFFD}")
+            .replacingOccurrences(of: "\u{2029}", with: "\u{FFFD}") as NSString
+        let current = line(source, at: location)
+        let parent = enclosingList(source, current: current)
+        return current.prefix.markers.isEmpty && parent == nil
+            && codeContext(source, through: location, current: current, parent: parent) == nil
+    }
+
+    static func tableListContentColumn(_ body: String) -> Int? {
+        let prefix = Prefix(body)
+        guard let marker = prefix.list else { return nil }
+        return prefix.indent + marker.continuation.count
+    }
+
+    static func tableListOpeningFence(_ body: String) -> MarkdownFence? {
+        let prefix = Prefix(body)
+        guard prefix.list != nil, prefix.quoteCount == 0 else { return nil }
+        return MarkdownFence.opening(in: (body as NSString).substring(from: prefix.end))
     }
 
     private struct Line {

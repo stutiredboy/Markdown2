@@ -52,7 +52,11 @@ final class DocumentStore: ObservableObject {
 
     @Published private(set) var rendered: RenderedDocument
     let copyFlow = DocumentCopyFlow()
-    @Published private(set) var fileURL: URL?
+    @Published private(set) var fileURL: URL? {
+        didSet {
+            if oldValue != fileURL { editorSession.invalidatePasteContext() }
+        }
+    }
     @Published private(set) var isDirty = false
     @Published private(set) var fileFormat = MarkdownFileFormat()
     @Published private(set) var backingFileMissing = false
@@ -67,7 +71,11 @@ final class DocumentStore: ObservableObject {
     var windowFrame: String? { didSet { if windowFrame != oldValue { scheduleRecovery() } } }
     private var recoveryTask: Task<Void, Never>?
     private var recoveryErrorReported = false
-    private var isClosed = false
+    private var isClosed = false {
+        didSet {
+            if oldValue != isClosed { editorSession.invalidatePasteContext(isOpen: !isClosed) }
+        }
+    }
     @Published var alert: DocumentAlert?
     private var headingNavigationTask: Task<Void, Never>?
     @Published var jumpLine: Int?
@@ -82,7 +90,11 @@ final class DocumentStore: ObservableObject {
     /// A source line for the editor to select, sent by a preview gutter click;
     /// the editor clears it once applied.
     @Published var editorLineSelection: LineSelectionRequest?
-    @Published private(set) var documentIdentity = UUID()
+    @Published private(set) var documentIdentity = UUID() {
+        didSet {
+            if oldValue != documentIdentity { editorSession.invalidatePasteContext() }
+        }
+    }
     /// True while the backing file has changed on disk under unsaved edits and
     /// the user has not chosen a side yet. While set, autosave is suspended and
     /// every save request re-presents the conflict prompt instead of writing.
@@ -105,6 +117,8 @@ final class DocumentStore: ObservableObject {
     @Published var formatCommand: MarkdownFormatCommand?
     /// Read-mode formatting first reveals the source target without editing it.
     @Published var showsFormattingTargetNotice = false
+    @Published var tableEditingRejection: MarkdownTableEditing.Rejection?
+    @Published var pasteNotice: MarkdownPasteNotice?
 
     func requestFormat(_ action: MarkdownEditing.Action) {
         if editorSession.textView?.hasMarkedText() == true { return }
@@ -129,10 +143,18 @@ final class DocumentStore: ObservableObject {
         requestMode(.write)
     }
 
+    /// Reuse Read's reveal-first rule; a native field must never route table
+    /// editing to the retained source text behind it.
+    func requestTableEdit(_ action: MarkdownTableEditing.Action) {
+        if let field = NSApp.keyWindow?.firstResponder as? NSTextView,
+           field !== editorSession.textView { return }
+        requestFormat(.tableEdit(action))
+    }
+
     /// The document's undo history. The window hands it to the Edit menu and the
     /// editor's text view registers its edits on it, so all three share one
     /// stack that belongs to the document rather than to any one view.
-    let undoManager = UndoManager()
+    let undoManager = StructuredEditUndoManager()
     /// The editor text system — one text view for the document's lifetime,
     /// re-hosted by every editor it mounts. Its undo actions target that view,
     /// so keeping it here is what keeps them valid across mode switches.
@@ -140,8 +162,12 @@ final class DocumentStore: ObservableObject {
         let session = MarkdownEditorSession(undoManager: undoManager)
         // Read mode: undo/redo (and checkbox toggles) still edit the unmounted
         // text view; its text is the document's.
+        session.onPasteNotice = { [weak self] notice in self?.pasteNotice = notice }
         session.onUnmountedTextChange = { [weak self] text in
             self?.text = text
+        }
+        session.onTableEditingResult = { [weak self] rejection in
+            self?.tableEditingRejection = rejection
         }
         return session
     }()

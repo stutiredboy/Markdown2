@@ -1692,6 +1692,7 @@ final class MarkdownSourceTextView: NSTextView {
             invalidateGutter()
         }
     }
+    lazy var markdownPasteController = MarkdownPasteController(editor: self)
     private var isPasting = false
     private var isSoftReturnEvent = false
     /// Isolated command input keeps editor tests off the user's shared clipboard.
@@ -1721,18 +1722,58 @@ final class MarkdownSourceTextView: NSTextView {
 
     @discardableResult
     func performMarkdownAction(_ action: MarkdownEditing.Action) -> Bool {
+        guard !hasMarkedText() else { return false }
         // Native shortcuts/context-menu actions can bypass DocumentStore.
         // Consume them during the reveal instead of bubbling into a menu or
         // modifying a focused but not-yet-visible retained source selection.
+        let explicitTable: MarkdownTableEditing.Action?
+        if case .tableEdit(let value) = action { explicitTable = value } else { explicitTable = nil }
         if (delegate as? MarkdownEditorSession)?.revealSelectionOnNextHost == true,
-           MarkdownFormatCommand.items.contains(where: { $0.action == action }) { return true }
+           explicitTable != nil || action == .indent || action == .outdent ||
+            MarkdownFormatCommand.items.contains(where: { $0.action == action }) { return true }
         let selection = selectedRange()
+        guard isEditable, !hasMarkedText(), selectedRanges.count == 1 else { return false }
+        let tableResult: Result<MarkdownEditing.Edit, MarkdownTableEditing.Rejection>?
+        if let explicitTable {
+            tableResult = MarkdownTableEditing.result(string, selection: selection, action: explicitTable)
+        } else if action == .indent || action == .outdent {
+            tableResult = MarkdownTableEditing.navigationResult(string, selection: selection, backwards: action == .outdent)
+        } else { tableResult = nil }
+        if let tableResult {
+            switch tableResult {
+            case .success(let edit):
+                (delegate as? MarkdownEditorSession)?.onTableEditingResult?(nil)
+                applyTableEdit(edit)
+                return true
+            case .failure(let rejection):
+                (delegate as? MarkdownEditorSession)?.onTableEditingResult?(rejection)
+                // A recognized table must consume a refused Tab; otherwise
+                // NSTextView inserts whitespace into the selected source cell.
+                return explicitTable == nil
+            }
+        }
         guard isEditable, !hasMarkedText(), selectedRanges.count == 1,
               let edit = MarkdownEditing.edit(string, selection: selection, action: action,
                   clipboard: action == .link ? linkClipboardText() : nil,
                   autoClosingPositions: trackedCloser(at: selection.location)) else { return false }
         applyMarkdownEdit(edit)
         return true
+    }
+
+    /// Native insertion keeps binding/style/autosave notifications intact. A
+    /// single inverse also restores the cell selection, which native text-only
+    /// undo cannot promise after a navigation-selected range.
+    private func applyTableEdit(_ edit: MarkdownEditing.Edit) {
+        if edit.range.length == 0, edit.replacement.isEmpty {
+            setSelectedRange(edit.selection)
+            scrollRangeToVisible(edit.selection)
+            return
+        }
+        applyTableReplacement(range: edit.range, replacement: edit.replacement, selection: edit.selection)
+    }
+
+    private func applyTableReplacement(range: NSRange, replacement: String, selection: NSRange) {
+        insertStructuredText(replacement, range: range, selection: selection)
     }
 
     private func applyMarkdownEdit(_ edit: MarkdownEditing.Edit) {
@@ -1953,6 +1994,10 @@ final class MarkdownSourceTextView: NSTextView {
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if window?.firstResponder === self, ModeKeyboardShortcut(event: event) == MarkdownPasteCommand.plainShortcut {
+            pasteAsPlainText(nil)
+            return true
+        }
         guard !hasMarkedText() else { return super.performKeyEquivalent(with: event) }
         if window?.firstResponder === self, let shortcut = ModeKeyboardShortcut(event: event),
            let item = MarkdownFormatCommand.items.first(where: { $0.shortcut == shortcut }) {
@@ -1964,6 +2009,16 @@ final class MarkdownSourceTextView: NSTextView {
         }
         return super.performKeyEquivalent(with: event)
     }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned { markdownPasteController.cancel() }
+        return resigned
+    }
+
+    override func pasteAsPlainText(_ sender: Any?) { markdownPasteController.perform(.plainText) }
+    @objc func pasteAsMarkdown(_ sender: Any?) { markdownPasteController.perform(.markdown) }
+    @objc func pasteAsTable(_ sender: Any?) { markdownPasteController.perform(.table) }
 
     // MARK: - Image paste / drop
 
@@ -2002,6 +2057,11 @@ final class MarkdownSourceTextView: NSTextView {
     /// paste as invalid for an image-only clipboard — there is no string type — so
     /// `Cmd+V` would be a no-op and `paste(_:)` above would never run.
     override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if [#selector(pasteAsPlainText(_:)), #selector(pasteAsMarkdown(_:)), #selector(pasteAsTable(_:))].contains(menuItem.action) {
+            guard markdownPasteController.canPerform else { return false }
+            let types = Set(NSPasteboard.general.types ?? [])
+            return menuItem.action == #selector(pasteAsMarkdown(_:)) ? !types.isDisjoint(with: [.string, .html, .rtf]) : types.contains(.string)
+        }
         if menuItem.action == #selector(NSText.paste(_:)) {
             let pasteboard = NSPasteboard.general
             let options: [NSPasteboard.ReadingOptionKey: Any] = [
