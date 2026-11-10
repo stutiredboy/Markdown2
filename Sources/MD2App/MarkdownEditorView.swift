@@ -1721,13 +1721,15 @@ final class MarkdownSourceTextView: NSTextView {
 
     @discardableResult
     func performMarkdownAction(_ action: MarkdownEditing.Action) -> Bool {
+        guard !hasMarkedText() else { return false }
         // Native shortcuts/context-menu actions can bypass DocumentStore.
         // Consume them during the reveal instead of bubbling into a menu or
         // modifying a focused but not-yet-visible retained source selection.
         let explicitTable: MarkdownTableEditing.Action?
         if case .tableEdit(let value) = action { explicitTable = value } else { explicitTable = nil }
         if (delegate as? MarkdownEditorSession)?.revealSelectionOnNextHost == true,
-           explicitTable != nil || MarkdownFormatCommand.items.contains(where: { $0.action == action }) { return true }
+           explicitTable != nil || action == .indent || action == .outdent ||
+            MarkdownFormatCommand.items.contains(where: { $0.action == action }) { return true }
         let selection = selectedRange()
         guard isEditable, !hasMarkedText(), selectedRanges.count == 1 else { return false }
         let tableAction = explicitTable ?? (action == .indent ? .nextCell : action == .outdent ? .previousCell : nil)

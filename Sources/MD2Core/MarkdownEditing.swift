@@ -67,10 +67,22 @@ public enum MarkdownEditing {
     }
 
     static func supportsTopLevelTable(_ source: NSString, at location: Int) -> Bool {
+        // NSString's native line API additionally splits NEL/LS/PS, while the
+        // renderer only splits LF/CRLF/CR. Keep this context-only view at the
+        // same UTF-16 offsets without inventing Markdown lines at those units.
+        let source = (source as String).replacingOccurrences(of: "\u{0085}", with: "\u{FFFD}")
+            .replacingOccurrences(of: "\u{2028}", with: "\u{FFFD}")
+            .replacingOccurrences(of: "\u{2029}", with: "\u{FFFD}") as NSString
         let current = line(source, at: location)
         let parent = enclosingList(source, current: current)
         return current.prefix.markers.isEmpty && parent == nil
             && codeContext(source, through: location, current: current, parent: parent) == nil
+    }
+
+    static func tableListContentColumn(_ body: String) -> Int? {
+        let prefix = Prefix(body)
+        guard let marker = prefix.list else { return nil }
+        return prefix.indent + marker.continuation.count
     }
 
     private struct Line {

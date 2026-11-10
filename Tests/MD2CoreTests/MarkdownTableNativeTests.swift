@@ -83,4 +83,29 @@ struct MarkdownTableNativeTests {
         #expect(editor.performMarkdownAction(.tableEdit(.insertRowBelow)))
         #expect(editor.string == "plain")
     }
+
+    @Test func pendingReadRevealConsumesBothTableTabDirections() throws {
+        let source = "| A | B |\n| - | - |\n| x | y |"
+        let session = MarkdownEditorSession()
+        session.undoManager.groupsByEvent = false
+        let editor = try #require(session.loadTextView(text: source) as? MarkdownSourceTextView)
+        let target = (source as NSString).range(of: "y")
+        editor.setSelectedRange(target)
+        session.revealSelectionOnNextHost = true
+        for action in [MarkdownEditing.Action.indent, .outdent] {
+            #expect(editor.performMarkdownAction(action))
+            #expect(editor.string == source)
+            #expect(editor.selectedRange() == target)
+            #expect(!session.undoManager.canUndo)
+        }
+        session.undoManager.beginUndoGrouping()
+        editor.setMarkedText("pin", selectedRange: NSRange(location: 3, length: 0),
+                             replacementRange: NSRange(location: NSNotFound, length: 0))
+        session.undoManager.endUndoGrouping()
+        let marked = editor.markedRange(), sourceWithComposition = editor.string
+        #expect(!editor.performMarkdownAction(.indent), "IME still owns Tab during a pending reveal")
+        #expect(!editor.performMarkdownAction(.outdent))
+        #expect(editor.markedRange() == marked)
+        #expect(editor.string == sourceWithComposition)
+    }
 }

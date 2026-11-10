@@ -29,6 +29,8 @@ public enum MarkdownTableEditing {
         let rows: [MarkdownTableSyntax.Row]
         let row: Int
         let column: Int
+        let sourceUnits: Int
+        let sourceLines: Int
     }
 
     public static func edit(_ text: String, selection: NSRange, action: Action) -> MarkdownEditing.Edit? {
@@ -51,17 +53,23 @@ public enum MarkdownTableEditing {
                 throw Rejection.selection
             }
         }
-        let currentLine = source.lineRange(for: NSRange(location: selection.location, length: 0))
-        guard source.substring(with: currentLine).contains("|") else { throw Rejection.unsupported }
+        guard text.contains("|") else { throw Rejection.unsupported }
         var lines: [Line] = []
-        var position = 0
+        var position = 0, start = 0
         while position < source.length {
-            var start = 0, end = 0, contentEnd = 0
-            source.getLineStart(&start, end: &end, contentsEnd: &contentEnd, for: NSRange(location: position, length: 0))
+            let unit = source.character(at: position)
+            guard unit == 10 || unit == 13 else { position += 1; continue }
+            let contentEnd = position
+            position += 1
+            if unit == 13, position < source.length, source.character(at: position) == 10 { position += 1 }
             lines.append(Line(start: start, body: source.substring(with: NSRange(location: start, length: contentEnd - start)),
-                              ending: source.substring(with: NSRange(location: contentEnd, length: end - contentEnd))))
+                              ending: source.substring(with: NSRange(location: contentEnd, length: position - contentEnd))))
             guard lines.count <= maximumSourceLines else { throw Rejection.budget }
-            position = end
+            start = position
+        }
+        if start < source.length {
+            lines.append(Line(start: start, body: source.substring(from: start), ending: ""))
+            guard lines.count <= maximumSourceLines else { throw Rejection.budget }
         }
         guard let current = lines.firstIndex(where: {
             selection.location >= $0.start && selection.location <= $0.start + $0.body.utf16.count
@@ -96,16 +104,19 @@ public enum MarkdownTableEditing {
         guard let column = rows[rowIndex].cells.firstIndex(where: {
             local.location >= $0.location && NSMaxRange(local) <= NSMaxRange($0)
         }) else { throw Rejection.selection }
-        return Table(lines: selected, rows: rows, row: rowIndex, column: column)
+        return Table(lines: selected, rows: rows, row: rowIndex, column: column,
+                     sourceUnits: source.length, sourceLines: lines.count)
     }
 
     /// Conservatively excludes raw block containers. Fence/list semantics are
     /// delegated to MarkdownEditing's existing shared context checks.
     private static func safeBlockContext(_ lines: [Line]) -> Bool {
+        let codeMasked = maskingParagraphCode(lines)
         var comment = false
         var tags: [String] = []
         var math: String?
         var fence: MarkdownFence?
+        var listIndent: Int?
         var frontMatter = lines.first?.body == "---"
         let expression = try! NSRegularExpression(pattern: #"</?(?:address|article|aside|blockquote|body|details|dialog|div|dl|fieldset|figure|footer|form|h[1-6]|header|html|iframe|main|nav|ol|p|pre|script|section|style|summary|table|ul)(?=[\s/>]|$)[^>]*(?:>|$)"#, options: [.caseInsensitive])
         for (index, line) in lines.enumerated() {
@@ -118,9 +129,22 @@ public enum MarkdownTableEditing {
                 if active.isClosed(by: body) { fence = nil }
                 continue
             }
+            if !comment, tags.isEmpty, math == nil {
+                let trimmed = body.trimmingCharacters(in: .whitespaces)
+                // These are completed outer containers/literal blocks. Their
+                // HTML-looking contents cannot open a top-level HTML block.
+                if MarkdownLine.isBlockquote(trimmed) || MarkdownLine.isIndentedCode(body) { continue }
+                if let column = MarkdownEditing.tableListContentColumn(body) {
+                    listIndent = min(listIndent ?? column, column)
+                    continue
+                }
+                if let column = listIndent, trimmed.isEmpty || MarkdownIndentation.width(body) >= column { continue }
+                listIndent = nil
+            }
             if !comment, tags.isEmpty, let opening = MarkdownFence.opening(in: body) { fence = opening; continue }
             var visible = ""
-            var remainder = body[...]
+            let prose = !comment && tags.isEmpty ? codeMasked[index] : body
+            var remainder = prose[...]
             while !remainder.isEmpty {
                 if comment {
                     guard let end = remainder.range(of: "-->") else { break }
@@ -148,6 +172,83 @@ public enum MarkdownTableEditing {
             }
         }
         return !comment && tags.isEmpty && math == nil && !frontMatter
+    }
+
+    /// Inline code can cross source lines inside one paragraph. Keep completed
+    /// block/container boundaries out of that paragraph so an unmatched tick in
+    /// an earlier quote/list cannot claim later top-level HTML.
+    private static func maskingParagraphCode(_ lines: [Line]) -> [String] {
+        var result = lines.map(\.body)
+        var paragraph: [Int] = []
+        var listIndent: Int?
+        func flush() {
+            guard !paragraph.isEmpty else { return }
+            let text = paragraph.map { lines[$0].body }.joined(separator: "\n")
+            let masked = maskingInlineCode(text) as NSString
+            var offset = 0
+            for index in paragraph {
+                let length = lines[index].body.utf16.count
+                result[index] = masked.substring(with: NSRange(location: offset, length: length))
+                offset += length + 1
+            }
+            paragraph.removeAll(keepingCapacity: true)
+        }
+        for (index, line) in lines.enumerated() {
+            let body = line.body, trimmed = body.trimmingCharacters(in: .whitespaces)
+            if let column = MarkdownEditing.tableListContentColumn(body) {
+                listIndent = min(listIndent ?? column, column)
+                flush(); continue
+            }
+            if let column = listIndent, trimmed.isEmpty || MarkdownIndentation.width(body) >= column {
+                flush(); continue
+            }
+            listIndent = nil
+            if trimmed.isEmpty || MarkdownLine.isBlockquote(trimmed) || MarkdownLine.isIndentedCode(body)
+                || MarkdownFence.opening(in: body) != nil {
+                flush(); continue
+            }
+            paragraph.append(index)
+        }
+        flush()
+        return result
+    }
+
+    /// Ignore closed code spans when looking for raw block HTML. Pair maximal
+    /// backtick runs once, including multiple-backtick spans in preceding prose;
+    /// unmatched runs stay literal and comments retain their own delimiters.
+    private static func maskingInlineCode(_ text: String) -> String {
+        let source = text as NSString
+        var runs: [(start: Int, end: Int)] = []
+        var cursor = 0
+        while cursor < source.length {
+            guard source.character(at: cursor) == 96 else { cursor += 1; continue }
+            let start = cursor
+            while cursor < source.length, source.character(at: cursor) == 96 { cursor += 1 }
+            runs.append((start, cursor))
+        }
+        guard runs.count > 1 else { return text }
+        var latest: [Int: Int] = [:], closers: [Int: Int] = [:]
+        for index in runs.indices.reversed() {
+            let length = runs[index].end - runs[index].start
+            if let next = latest[length] { closers[runs[index].start] = runs[next].end }
+            latest[length] = index
+        }
+        let masked = NSMutableString(string: text)
+        cursor = 0
+        while cursor < source.length {
+            if cursor + 4 <= source.length,
+               source.character(at: cursor) == 60, source.character(at: cursor + 1) == 33,
+               source.character(at: cursor + 2) == 45, source.character(at: cursor + 3) == 45 {
+                let closing = source.range(of: "-->", range: NSRange(location: cursor + 4, length: source.length - cursor - 4))
+                guard closing.location != NSNotFound else { break }
+                cursor = NSMaxRange(closing)
+            } else if let end = closers[cursor] {
+                masked.replaceCharacters(in: NSRange(location: cursor, length: end - cursor),
+                                         with: String(repeating: " ", count: end - cursor))
+                cursor = end
+            } else { cursor += 1 }
+        }
+        return masked as String
     }
 
     private static func transform(_ text: String, selection: NSRange, action: Action) throws -> MarkdownEditing.Edit {
@@ -212,9 +313,19 @@ public enum MarkdownTableEditing {
                         ? NSRange(location: cell.location, length: cell.length + 1)
                         : NSRange(location: cell.location - 1, length: cell.length + 1)
                     mutable.deleteCharacters(in: range)
-                    if columns == 2 {
-                        if !parsed.trailingPipe { mutable.append("|") }
-                        if !parsed.leadingPipe { mutable.insert("|", at: parsed.indent.utf16.count) }
+                    let original = parsed.body as NSString
+                    let nextFirst = original.substring(with: parsed.cells[column == 0 ? 1 : 0])
+                    let nextLast = original.substring(with: parsed.cells[column == columns - 1 ? columns - 2 : columns - 1])
+                    // A removed edge may expose an empty cell at any width.
+                    // Preserve its separator as structure, and retain leading
+                    // cell padding as padding rather than block indentation.
+                    if !parsed.trailingPipe,
+                       columns == 2 || (column == columns - 1 && nextLast.trimmingCharacters(in: .whitespaces).isEmpty) {
+                        mutable.append("|")
+                    }
+                    if !parsed.leadingPipe,
+                       columns == 2 || (column == 0 && (nextFirst.isEmpty || nextFirst.first?.isWhitespace == true)) {
+                        mutable.insert("|", at: parsed.indent.utf16.count)
                     }
                 } else {
                     let value = index == 1 ? " --- " : "  "
@@ -227,16 +338,26 @@ public enum MarkdownTableEditing {
             }
             targetColumn = action == .deleteColumn ? min(column, columns - 2) : insertion
         }
+        let outputColumns = columns + (action == .insertColumnBefore || action == .insertColumnAfter ? 1 : action == .deleteColumn ? -1 : 0)
         guard bodies.count <= maximumRows,
-              bodies.count <= maximumCells / (action == .insertColumnBefore || action == .insertColumnAfter ? columns + 1 : columns) else {
+              bodies.count <= maximumCells / outputColumns,
+              table.sourceLines - lines.count + bodies.count <= maximumSourceLines else {
             throw Rejection.budget
         }
-        guard let target = MarkdownTableSyntax.row(bodies[targetRow]), targetColumn < target.contents.count else { throw Rejection.unsupported }
+        let outputRows = try bodies.map { body -> MarkdownTableSyntax.Row in
+            guard let parsed = MarkdownTableSyntax.row(body), parsed.cells.count == outputColumns,
+                  parsed.indent == rows[0].indent else { throw Rejection.unsupported }
+            return parsed
+        }
+        let target = outputRows[targetRow]
+        guard targetColumn < target.contents.count else { throw Rejection.unsupported }
         let replacement = zip(bodies, endings).map(+).joined()
-        guard replacement.utf16.count <= maximumTableUTF16 else { throw Rejection.budget }
+        let replacedUnits = lines.last!.end - lines[0].start
+        guard replacement.utf16.count <= maximumTableUTF16,
+              table.sourceUnits - replacedUnits + replacement.utf16.count <= maximumSourceUTF16 else { throw Rejection.budget }
         let targetOffset = zip(bodies.prefix(targetRow), endings.prefix(targetRow)).reduce(lines[0].start) { $0 + $1.0.utf16.count + $1.1.utf16.count }
         let content = target.contents[targetColumn]
-        return MarkdownEditing.Edit(range: NSRange(location: lines[0].start, length: lines.last!.end - lines[0].start),
+        return MarkdownEditing.Edit(range: NSRange(location: lines[0].start, length: replacedUnits),
             replacement: replacement, selection: NSRange(location: targetOffset + content.location, length: content.length), autoClosingPosition: nil)
     }
 }

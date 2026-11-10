@@ -28,24 +28,27 @@ enum MarkdownTableSyntax {
         var separators: [Int] = []
         var escaped = false, code = false
         var position = bounds.location
-        while position < NSMaxRange(bounds) {
-            let character = source.character(at: position)
-            if escaped { escaped = false; position += 1; continue }
-            if character == 92 { escaped = true; position += 1; continue }
-            if character == 96 {
+        let characters = Array(trimmed)
+        for (index, character) in characters.enumerated() {
+            // The renderer recognizes whole Characters, not ASCII scalars
+            // inside a grapheme (for example a pipe followed by U+0301).
+            // Ranges still address the original UTF-16 source.
+            defer { position += character.utf16.count }
+            if escaped { escaped = false; continue }
+            if character == "\\" { escaped = true; continue }
+            if character == "`" {
                 // The renderer toggles per character. Multi-backtick runs are
                 // intentionally outside the safe editing subset.
-                if position + 1 < NSMaxRange(bounds), source.character(at: position + 1) == 96 { return nil }
+                if index + 1 < characters.count, characters[index + 1] == "`" { return nil }
                 code.toggle()
             }
-            if character == 124, !code { separators.append(position) }
-            position += 1
+            if character == "|", !code { separators.append(position) }
         }
         guard !code, !separators.isEmpty else { return nil }
         let leading = separators.first == bounds.location
         let trailing = separators.last == NSMaxRange(bounds) - 1
         // splitTableLine strips an ending pipe even when escaped/code-owned.
-        guard source.character(at: NSMaxRange(bounds) - 1) != 124 || trailing else { return nil }
+        guard trimmed.last != "|" || trailing else { return nil }
         let start = bounds.location + (leading ? 1 : 0)
         // Without a closing rail, trailing whitespace belongs to the last
         // cell. Keep it in that cell's raw range so column edits cannot move
