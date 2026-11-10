@@ -74,12 +74,19 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             var focused: CFTypeRef?
             AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXFocusedUIElementAttribute as CFString, &focused)
             let owner = Self.element(focused)
+            let observedSource = commandSource ?? Self.windows(pid: pid)
+                .filter { Self.title(of: $0).contains(document.deletingPathExtension().lastPathComponent) }
+                .compactMap { Self.firstElement(ofRole: kAXTextAreaRole as String, in: $0) }.first
             var details: [String: Any] = ["stage": stage,
                 "appActive": NSRunningApplication(processIdentifier: pid)?.isActive == true,
                 "focusedRole": owner.map(role) ?? "?",
                 "focusedTitle": owner.map(Self.title) ?? "?",
-                "sourceOwnsFocus": commandSource.map { source in owner.map { CFEqual(source, $0) } == true } ?? false]
-            if let source = commandSource {
+                "sourceOwnsFocus": observedSource.map { source in owner.map { CFEqual(source, $0) } == true } ?? false]
+            if let source = observedSource {
+                var rawText: CFTypeRef?
+                let status = AXUIElementCopyAttributeValue(source, kAXValueAttribute as CFString, &rawText)
+                details["sourceValueStatus"] = status.rawValue
+                if let text = rawText as? String { details["sourceUTF16"] = Array(text.utf16) }
                 var raw: CFTypeRef?
                 AXUIElementCopyAttributeValue(source, kAXSelectedTextRangeAttribute as CFString, &raw)
                 if let raw, CFGetTypeID(raw) == AXValueGetTypeID() {
@@ -93,6 +100,12 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
                 details["menuRole"] = role(menu)
                 details["menuActions"] = actions as? [String] ?? []
                 details["menuChildCount"] = Self.children(of: menu).count
+                var visible: CFTypeRef?
+                details["menuVisibleStatus"] = AXUIElementCopyAttributeValue(menu, "AXVisible" as CFString, &visible).rawValue
+                details["menuVisible"] = (visible as? NSNumber)?.boolValue
+            }
+            if let bytes = try? Data(contentsOf: document), let text = String(data: bytes, encoding: .utf8) {
+                details["diskUTF16"] = Array(text.utf16)
             }
             if let data = try? JSONSerialization.data(withJSONObject: details, options: [.sortedKeys]),
                let text = String(data: data, encoding: .utf8) { print("StructuredIntegration " + text) }
@@ -118,10 +131,14 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             diagnose("opened bar " + barTitle, menu: entry)
             usleep(200_000)
             let rootMenu = try XCTUnwrap(Self.children(of: entry).first { role($0) == (kAXMenuRole as String) })
+            var dispatchedLeaf = false
             defer {
-                // AXCancel belongs to AXMenu, not its AXMenuBarItem owner.
-                let result = AXUIElementPerformAction(rootMenu, kAXCancelAction as CFString)
-                print("StructuredIntegration cancel actual menu result=\(result.rawValue)")
+                // Successful menu selection dismisses itself. An extra cancel
+                // can race the queued edit; only abandoned menus need cleanup.
+                if !dispatchedLeaf {
+                    let result = AXUIElementPerformAction(rootMenu, kAXCancelAction as CFString)
+                    print("StructuredIntegration failure cleanup result=\(result.rawValue)")
+                }
                 diagnose("after " + path.joined(separator: " > "), menu: rootMenu)
             }
             var parent = rootMenu
@@ -140,6 +157,8 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
                 guard AXUIElementPerformAction(target, kAXPressAction as CFString) == .success else {
                     throw GuardFailure("cannot press command: \(title)")
                 }
+                if index == path.count - 1 { dispatchedLeaf = true }
+                diagnose("after leaf-or-submenu press " + title, menu: parent)
                 if index < path.count - 1 {
                     usleep(200_000)
                     parent = try XCTUnwrap(Self.children(of: target).first { role($0) == (kAXMenuRole as String) })
