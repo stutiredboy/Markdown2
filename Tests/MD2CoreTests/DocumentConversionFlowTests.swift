@@ -75,7 +75,7 @@ struct DocumentConversionFlowTests {
         // Derived artifact: document state is untouched.
         #expect(store.fileURL == fileURLBefore)
         #expect(store.isDirty == dirtyBefore)
-        #expect(store.alert == nil)
+        #expect(store.alert?.detail.contains("readers are outside this app’s policy") == true)
     }
 
     @Test func exportEPUBUsesEpubFormat() throws {
@@ -144,7 +144,7 @@ struct DocumentConversionFlowTests {
         #expect(converter.callCount == 1)
 
         converter.finish(.success(()))
-        #expect(store.alert == nil)
+        #expect(store.alert?.detail.contains("readers are outside this app’s policy") == true)
     }
 }
 

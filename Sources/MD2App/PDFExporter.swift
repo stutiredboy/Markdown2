@@ -22,6 +22,7 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
         case timedOut
         case renderFailed
         case writeFailed
+        case imageFailed
 
         var errorDescription: String? {
             switch self {
@@ -31,6 +32,8 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
                 return "The document could not be rendered to PDF."
             case .writeFailed:
                 return "The PDF could not be written."
+            case .imageFailed:
+                return "An image could not be loaded or verified before export. No PDF was written."
             }
         }
     }
@@ -87,6 +90,8 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
     private var completion: ((Result<Void, Error>) -> Void)?
     private var timeoutWorkItem: DispatchWorkItem?
     private var hasFinished = false
+    private var remoteResourcePolicy: RemoteResourcePolicy = .blocked
+    private var remoteImageBlockedLabel = "Remote image blocked"
     /// When the post-`didFinish` diagram-settle wait began, used to bound it.
     private var settleWaitStart: Date?
     /// Document title used to resolve the `{title}` running-text token. Set in
@@ -174,6 +179,7 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
         hostWindow.setFrameOrigin(NSPoint(x: -30_000, y: -30_000))
 
         super.init()
+        documentLoader.onFailure = { [weak self] error in self?.finish(.failure(error)) }
         webView.navigationDelegate = self
         hostWindow.orderFrontRegardless()
     }
@@ -186,10 +192,15 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
         html: String,
         outline: [Heading],
         baseURL: URL?,
+        remoteResourcePolicy: RemoteResourcePolicy = .blocked,
         documentTitle: String = "",
+        remoteImageBlockedLabel: String = "Remote image blocked",
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
+        guard !hasFinished, self.completion == nil else { return }
         self.completion = completion
+        self.remoteResourcePolicy = remoteResourcePolicy
+        self.remoteImageBlockedLabel = remoteImageBlockedLabel
         self.outline = outline
         self.documentTitle = documentTitle
 
@@ -202,7 +213,11 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
         timeoutWorkItem = timeout
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.overallTimeout, execute: timeout)
 
-        documentLoader.load(html, baseURL: baseURL, in: webView)
+        documentLoader.load(html, baseURL: baseURL, remoteResourcePolicy: remoteResourcePolicy, in: webView)
+    }
+
+    func cancel() {
+        finish(.failure(CancellationError()))
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -214,6 +229,17 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
         // for complex ones (Mermaid came out blank when the delay elapsed first).
         settleWaitStart = Date()
         waitForDiagramsToSettle()
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        guard !hasFinished, navigationAction.targetFrame?.isMainFrame == true,
+              let url = navigationAction.request.url, let page = documentLoader.documentPageURL else {
+            decisionHandler(.cancel); return
+        }
+        var candidate = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        candidate?.fragment = nil
+        decisionHandler(candidate?.url == page ? .allow : .cancel)
     }
 
     /// Polls the rendered page for the diagram-settled signal, then captures. A page
@@ -234,6 +260,28 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
                     }
                     return
                 }
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.postSettleGrace) {
+                    Task { @MainActor in self.waitForImagesToSettle() }
+                }
+            }
+        }
+    }
+
+    private func waitForImagesToSettle() {
+        guard !hasFinished else { return }
+        webView.evaluateJavaScript(ExportImageReadiness.script(policy: remoteResourcePolicy, blockedImageLabel: remoteImageBlockedLabel)) { [weak self] value, error in
+            Task { @MainActor in
+                guard let self, !self.hasFinished else { return }
+                guard error == nil, let status = value as? [String: Bool], status["failed"] == false else {
+                    self.finish(.failure(ExportError.imageFailed)); return
+                }
+                guard status["ready"] == true else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + Self.settlePollInterval) {
+                        Task { @MainActor in self.waitForImagesToSettle() }
+                    }
+                    return
+                }
+                // Allow image decode/layout changes to reach the pagination probe.
                 DispatchQueue.main.asyncAfter(deadline: .now() + Self.postSettleGrace) {
                     Task { @MainActor in self.producePDF() }
                 }
@@ -833,6 +881,7 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
     private func finish(_ result: Result<Void, Error>) {
         guard !hasFinished else { return }
         hasFinished = true
+        documentLoader.invalidate(in: webView)
 
         timeoutWorkItem?.cancel()
         timeoutWorkItem = nil

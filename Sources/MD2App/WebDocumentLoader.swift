@@ -16,8 +16,12 @@ final class WebDocumentLoader {
     /// prepared. Any other navigation's page is about to be replaced.
     private(set) var currentNavigation: WKNavigation?
     private var loadGeneration = 0
+    private var rules: WebResourceRules.Lists?
+    var onFailure: ((Error) -> Void)?
 
     func install(on configuration: WKWebViewConfiguration) {
+        // A new loader/host has no shared login, cookie or cached-image state.
+        configuration.websiteDataStore = .nonPersistent()
         configuration.setURLSchemeHandler(documents, forURLScheme: Self.documentScheme)
         configuration.setURLSchemeHandler(assets, forURLScheme: BundledWebAsset.scheme)
         configuration.setURLSchemeHandler(images, forURLScheme: LocalImageSchemeHandler.scheme)
@@ -40,15 +44,64 @@ final class WebDocumentLoader {
 
     func originalImageURL(for url: URL) -> URL? { images.originalImageURL(for: url) }
 
-    func load(_ html: String, baseURL: URL?, fragment: String? = nil, in webView: WKWebView) {
+    /// Synchronously revoke the old page before yielding to rewriting or rule
+    /// compilation. A retired context may neither finish loading nor reuse its
+    /// local image mapping. Already transmitted network bytes cannot be recalled.
+    func invalidate(in webView: WKWebView) {
         loadGeneration += 1
         currentNavigation = nil
+        documentPageURL = nil
+        documents.clear()
+        images.setAllowedImages([:])
+        if let rules {
+            let controller = webView.configuration.userContentController
+            controller.add(rules.blocked)
+            controller.remove(rules.images)
+        }
+        webView.stopLoading()
+    }
+
+    func load(_ html: String, baseURL: URL?, fragment: String? = nil,
+              remoteResourcePolicy: RemoteResourcePolicy = .blocked, in webView: WKWebView) {
+        invalidate(in: webView)
         let generation = loadGeneration
         Task { [weak self, weak webView] in
+            let rules: WebResourceRules.Lists
+            do { rules = try await WebResourceRules.compiled() }
+            catch {
+                guard let self, generation == self.loadGeneration else { return }
+                self.onFailure?(error)
+                return // Never fall back to an unrestricted document load.
+            }
+            guard let self, let webView, generation == self.loadGeneration else { return }
+            // Production identity changes replace the host too. Clearing this
+            // ephemeral store keeps loader reuse fail-closed for other callers.
+            await webView.configuration.websiteDataStore.removeData(
+                ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
+            guard generation == self.loadGeneration else { return }
             let content = await Task.detached(priority: .userInitiated) {
                 Self.rewriteContent(html, baseURL: baseURL)
             }.value
-            guard let self, let webView, generation == self.loadGeneration else { return }
+            guard generation == self.loadGeneration else { return }
+            self.rules = rules
+            let controller = webView.configuration.userContentController
+            // The preview's document-start error listener reads native policy,
+            // not an old CSP or a captured permission from its first render.
+            let marker = "/* md2-native-resource-policy */"
+            let retained = controller.userScripts.filter { !$0.source.hasPrefix(marker) }
+            controller.removeAllUserScripts()
+            for script in retained { controller.addUserScript(script) }
+            controller.addUserScript(WKUserScript(
+                source: "\(marker) window.__md2RemoteImagesAllowed = \(remoteResourcePolicy == .allowRemoteImages ? "true" : "false");",
+                injectionTime: .atDocumentStart, forMainFrameOnly: true))
+            // Install the new restriction before removing the preceding one.
+            if remoteResourcePolicy == .allowRemoteImages {
+                controller.add(rules.images)
+                controller.remove(rules.blocked)
+            } else {
+                controller.add(rules.blocked)
+                controller.remove(rules.images)
+            }
             self.installImages(content.allowedImages)
             self.loadPrepared(content.html, fragment: fragment, in: webView)
         }
@@ -73,6 +126,8 @@ private final class MemoryDocumentSchemeHandler: NSObject, WKURLSchemeHandler {
     func setDocument(url: URL, html: String) {
         lock.withLock { document = (url, Data(html.utf8)) }
     }
+
+    func clear() { lock.withLock { document = nil } }
 
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
         guard let url = task.request.url else {
@@ -109,6 +164,7 @@ private func serve(_ task: WKURLSchemeTask, url: URL, data: Data, mimeType: Stri
         "Content-Type": "\(mimeType); charset=utf-8",
         "Content-Length": String(data.count),
         "Cache-Control": cacheControl,
+        "Referrer-Policy": "no-referrer",
         "X-Content-Type-Options": "nosniff"
     ])!
     task.didReceive(response)

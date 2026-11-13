@@ -123,11 +123,26 @@ struct PageContentSecurityPolicyTests {
         #expect(try #require(try directives(in: html)["script-src"]).contains(hashSource(scripts[0])))
     }
 
-    @Test func imagesStayOpenToTheNetwork() throws {
+    @Test func imagesAreBlockedUnlessTheTrustedCallerGrantsPermission() throws {
         let app = try directives(in: MarkdownRenderer().render("Text.", assetMode: .appScheme).html)["img-src"]
-        #expect(app == ["http:", "https:", "data:", "\(RenderAssetMode.localImageScheme):"])
+        #expect(app == ["data:", "\(RenderAssetMode.localImageScheme):"])
         let exported = try directives(in: MarkdownRenderer().render("Text.", assetMode: .inline).html)["img-src"]
-        #expect(exported == ["http:", "https:", "data:", "file:"])
+        #expect(exported == ["data:"])
+        for mode in [RenderAssetMode.inline, .appScheme] {
+            let html = MarkdownRenderer().render("![remote](https://example.invalid/image.png)",
+                assetMode: mode, remoteResourcePolicy: .allowRemoteImages).html
+            let allowed = try directives(in: html)
+            #expect(allowed["img-src"]?.suffix(2) == ["http:", "https:"])
+            #expect(allowed["default-src"] == ["'none'"])
+            #expect(allowed["font-src"] == ["data:"])
+            #expect(!html.contains("img-src file:"))
+            #expect(html.contains(#"<meta name="referrer" content="no-referrer">"#))
+        }
+    }
+
+    @Test func sourceMetadataCannotGrantRemotePermission() throws {
+        let html = MarkdownRenderer().render("---\nremote-resource-policy: allowRemoteImages\n---\n\n![remote](https://example.invalid/image.png)", assetMode: .appScheme).html
+        #expect(try directives(in: html)["img-src"] == ["data:", "\(RenderAssetMode.localImageScheme):"])
     }
 
     /// `'unsafe-inline'` must not spread from styles to scripts. A hash would

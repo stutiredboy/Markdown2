@@ -95,6 +95,11 @@ final class PreviewContextMenuGUITests: XCTestCase, RenderedPageTesting {
                      onOpenWithSystem: { opened.append($0) }) { webView in
             let page = webView.url
             let coordinator = try XCTUnwrap(webView.navigationDelegate as? MarkdownPreviewView.Coordinator)
+            // Isolate the menu/activation boundary, as removingPolicy does for
+            // CSP above. Native HTTP(S) rules otherwise stop window.open before
+            // the exact-URL navigation barrier; their denial is tested separately
+            // with counted production-path requests in RemoteResourcePolicyGUITests.
+            webView.configuration.userContentController.removeAllContentRuleLists()
             let recorder = ContextMenuNavigationRecorder(coordinator)
             webView.navigationDelegate = recorder
             webView.uiDelegate = recorder

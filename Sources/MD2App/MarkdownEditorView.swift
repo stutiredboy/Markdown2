@@ -1731,19 +1731,34 @@ final class MarkdownSourceTextView: NSTextView {
         if (delegate as? MarkdownEditorSession)?.revealSelectionOnNextHost == true,
            explicitTable != nil || action == .indent || action == .outdent ||
             MarkdownFormatCommand.items.contains(where: { $0.action == action }) { return true }
-        let selection = selectedRange()
+        let session = delegate as? MarkdownEditorSession
+        let queuedTarget = session?.structuredEditUndo.requiresApplicationEvent == true ?
+            session?.structuredCommands.captureTarget(in: self, excludingUnstartedPastes: true) : nil
+        let selection = queuedTarget?.selection ?? selectedRange()
+        let tableSource = queuedTarget?.source ?? string
         guard isEditable, !hasMarkedText(), selectedRanges.count == 1 else { return false }
         let tableResult: Result<MarkdownEditing.Edit, MarkdownTableEditing.Rejection>?
         if let explicitTable {
-            tableResult = MarkdownTableEditing.result(string, selection: selection, action: explicitTable)
+            tableResult = MarkdownTableEditing.result(tableSource, selection: selection, action: explicitTable)
         } else if action == .indent || action == .outdent {
-            tableResult = MarkdownTableEditing.navigationResult(string, selection: selection, backwards: action == .outdent)
+            tableResult = MarkdownTableEditing.navigationResult(tableSource, selection: selection, backwards: action == .outdent)
         } else { tableResult = nil }
         if let tableResult {
             switch tableResult {
             case .success(let edit):
                 (delegate as? MarkdownEditorSession)?.onTableEditingResult?(nil)
-                applyTableEdit(edit)
+                let mutates = edit.range.length != 0 || !edit.replacement.isEmpty
+                let changesContext = mutates || edit.selection != selection
+                if let session, let queuedTarget, changesContext || session.structuredCommands.hasPendingTableActions {
+                    if changesContext { session.structuredCommands.cancelUnstartedPasteConversions() }
+                    let command = StructuredCommandEdit(range: edit.range, replacement: edit.replacement, selection: edit.selection)
+                    if session.structuredCommands.submit(edit: command, target: queuedTarget) != nil {
+                        if changesContext { session.acceptedStructuredTableTransition() }
+                    }
+                } else {
+                    if mutates || edit.selection != selectedRange() { session?.acceptedStructuredTableTransition() }
+                    applyTableEdit(edit)
+                }
                 return true
             case .failure(let rejection):
                 (delegate as? MarkdownEditorSession)?.onTableEditingResult?(rejection)
@@ -1753,9 +1768,9 @@ final class MarkdownSourceTextView: NSTextView {
             }
         }
         guard isEditable, !hasMarkedText(), selectedRanges.count == 1,
-              let edit = MarkdownEditing.edit(string, selection: selection, action: action,
+              let edit = MarkdownEditing.edit(string, selection: selectedRange(), action: action,
                   clipboard: action == .link ? linkClipboardText() : nil,
-                  autoClosingPositions: trackedCloser(at: selection.location)) else { return false }
+                  autoClosingPositions: trackedCloser(at: selectedRange().location)) else { return false }
         applyMarkdownEdit(edit)
         return true
     }
@@ -1765,7 +1780,7 @@ final class MarkdownSourceTextView: NSTextView {
     /// undo cannot promise after a navigation-selected range.
     private func applyTableEdit(_ edit: MarkdownEditing.Edit) {
         if edit.range.length == 0, edit.replacement.isEmpty {
-            setSelectedRange(edit.selection)
+            if selectedRange() != edit.selection { setSelectedRange(edit.selection) }
             scrollRangeToVisible(edit.selection)
             return
         }

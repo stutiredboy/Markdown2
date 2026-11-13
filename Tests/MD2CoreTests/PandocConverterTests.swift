@@ -129,6 +129,7 @@ final class PandocConverterTests: XCTestCase {
             entries.contains { $0.contains("media/") },
             "relative image was not embedded; entries: \(entries)"
         )
+        try assertRealPandocRemoteBoundary(in: dir)
     }
 
     @MainActor
@@ -168,9 +169,55 @@ final class PandocConverterTests: XCTestCase {
             FileManager.default.fileExists(atPath: destination.path),
             "a partial/failed output file must not survive"
         )
+
+        // Cancel before publication: an existing chosen destination is never
+        // removed, including when the background process finishes later.
+        let existing = dir.appendingPathComponent("existing.docx")
+        let sentinel = Data("existing-output-sentinel".utf8)
+        try sentinel.write(to: existing)
+        let converter = PandocConverter()
+        var completions = 0
+        converter.convert(markdown: "# Canceled", format: .docx, resourceDirectory: dir, destination: existing) { outcome in
+            completions += 1
+            if case .success = outcome { XCTFail("canceled conversion published") }
+        }
+        converter.cancel()
+        converter.cancel()
+        XCTAssertEqual(completions, 1)
+        XCTAssertEqual(try Data(contentsOf: existing), sentinel)
     }
 
     // MARK: - Helpers
+
+    @MainActor
+    private func assertRealPandocRemoteBoundary(in directory: URL) throws {
+        let server = try ExportNetworkTestServer()
+        defer { server.stop() }
+        let pandoc = try XCTUnwrap(PandocConverter.pandocURL())
+        for format in [DocumentExportFormat.docx, .epub] {
+            let token = UUID().uuidString
+            let source = directory.appendingPathComponent("remote-\(token).md")
+            let markdown = "# Remote boundary\n\n![pixel](\(server.baseURL)/\(token).png)\n"
+            try markdown.write(to: source, atomically: true, encoding: .utf8)
+            let direct = Process()
+            direct.executableURL = pandoc
+            direct.currentDirectoryURL = directory
+            direct.arguments = [source.lastPathComponent, "--from", PandocConverter.readerFormat(for: pandoc),
+                "-o", directory.appendingPathComponent("control-\(token).\(format.fileExtension)").path]
+            direct.standardOutput = FileHandle.nullDevice
+            direct.standardError = FileHandle.nullDevice
+            try direct.run(); direct.waitUntilExit()
+            XCTAssertEqual(direct.terminationStatus, 0)
+            XCTAssertGreaterThan(server.requests.filter { $0.path.contains(token) }.count, 0,
+                                 "the real \(format) positive control did not fetch its image")
+            let blockedToken = UUID().uuidString
+            let blocked = markdown.replacingOccurrences(of: token, with: blockedToken)
+            _ = runConversion(markdown: blocked, format: format, resourceDirectory: directory,
+                destination: directory.appendingPathComponent("blocked-\(blockedToken).\(format.fileExtension)"))
+            XCTAssertFalse(server.requests.contains { $0.path.contains(blockedToken) },
+                           "the real converter fetched a remote image")
+        }
+    }
 
     @MainActor
     private func runConversion(

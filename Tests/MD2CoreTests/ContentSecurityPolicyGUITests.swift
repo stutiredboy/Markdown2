@@ -374,16 +374,17 @@ final class ContentSecurityPolicyGUITests: XCTestCase, RenderedPageTesting {
         }
     }
 
-    /// The policy keeps this open on purpose, for Markdown images and, as a stated
-    /// limit, for an image a diagram label names. Each is really fetched here.
-    @MainActor func testRemoteImagesLoadOnEverySurface() throws {
+    /// The native session grant covers image-class resources, including diagrams.
+    /// Portable HTML never inherits this permission.
+    @MainActor func testRemoteImagesLoadOnAuthorizedNativeSurfaces() throws {
         let server = try ImageServer(image: Self.png)
         defer { server.stop() }
         XCTAssertTrue(spin(5) { server.port != nil }, "the image server did not start")
         let base = "http://127.0.0.1:\(server.port ?? 0)"
         let markdown = "![remote](\(base)/markdown.png)\n\n```mermaid\ngraph TD\n A[\"<img src='\(base)/label.png'>\"]\n```\n"
-        for surface in RenderedPageSurface.allCases {
-            try withPage(markdown, on: surface, edit: RenderedPageEdit.recordingViolations) { webView in
+        for surface in [RenderedPageSurface.preview, .offscreen] {
+            try withPage(markdown, on: surface, edit: RenderedPageEdit.recordingViolations,
+                         remoteResourcePolicy: .allowRemoteImages) { webView in
                 XCTAssertTrue(spin(5) {
                     (try? self.evaluate("[...document.images].filter(i => i.naturalWidth === 1).length", in: webView)) as? Int == 2
                 }, "\(surface): a remote image did not load")
@@ -400,14 +401,12 @@ final class ContentSecurityPolicyGUITests: XCTestCase, RenderedPageTesting {
                           "an embedded image did not load")
             try assertNoViolations(in: webView, "embedded")
         }
-        // An unsaved document cannot embed a relative image. It stays as written,
-        // and still resolves for a reader who keeps the two files together.
+        // An unresolved local image must not become an external dependency when
+        // the saved file is opened beside an unrelated same-named image.
         try withPage("![beside](dot.png)", on: .exportedFile, edit: RenderedPageEdit.recordingViolations,
                      files: ["dot.png": Self.png]) { webView in
-            XCTAssertEqual(try evaluate("document.images[0].getAttribute('src')", in: webView) as? String, "dot.png")
-            XCTAssertTrue(spin(5) { (try? self.evaluate("document.images[0].naturalWidth", in: webView)) as? Int == 1 },
-                          "an image beside the file did not load")
-            try assertNoViolations(in: webView, "beside")
+            XCTAssertFalse(spin(0.5) { (try? self.evaluate("[...document.images].some(i => i.naturalWidth > 0)", in: webView)) as? Bool == true },
+                           "an unresolved file reference loaded outside the portable artifact")
         }
     }
 

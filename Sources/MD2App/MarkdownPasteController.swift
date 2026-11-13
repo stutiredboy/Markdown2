@@ -54,9 +54,12 @@ final class MarkdownPasteController {
         guard canPerform, let editor, let session = editor.delegate as? MarkdownEditorSession else { return false }
         onNotice(nil)
         let id = requestID
-        let source = editor.string
-        let selection = editor.selectedRange()
+        let eventTarget = session.structuredEditUndo.requiresApplicationEvent ?
+            session.structuredCommands.captureTarget(in: editor) : nil
+        let source = eventTarget?.source ?? editor.string
+        let selection = eventTarget?.selection ?? editor.selectedRange()
         let generation = session.pasteContextGeneration
+        let intentGeneration = session.structuredIntentGeneration
         let host = session.pasteHostGeneration
         let window = editor.window
         if let window {
@@ -71,12 +74,14 @@ final class MarkdownPasteController {
         task = Task { [weak self, weak editor, weak session, weak window] in
             guard let self else { return }
             let result = await self.convert(kind, payload)
+            if let eventTarget { await eventTarget.waitForPredecessor() }
             guard self.requestID == id, !Task.isCancelled else { return }
             guard let editor, let session, self.canPerform, editor.delegate === session,
                   editor.window === window, session.pasteHostGeneration == host,
-                  session.pasteContextGeneration == generation,
-                  editor.selectedRanges.count == 1, editor.selectedRange() == selection,
-                  (editor.string as NSString).isEqual(to: source) else {
+                  session.structuredIntentGeneration == intentGeneration,
+                  eventTarget?.isCurrent() ?? (session.pasteContextGeneration == generation &&
+                    editor.selectedRanges.count == 1 && editor.selectedRange() == selection &&
+                    (editor.string as NSString).isEqual(to: source)) else {
                 self.onNotice(.cancelled)
                 return
             }
@@ -90,6 +95,21 @@ final class MarkdownPasteController {
                 // Explicit replacement bypasses auto-pairing and ordinary Cmd+V.
                 // Native shouldChangeText decides whether mutation is permitted;
                 // never force a selection after an editor delegate rejects it.
+                if let eventTarget {
+                    let structuredEdit = StructuredCommandEdit(range: edit.range, replacement: edit.replacement,
+                        selection: edit.selection)
+                    guard let ticket = session.structuredCommands.submit(edit: structuredEdit, target: eventTarget,
+                        pasteRequest: id, origin: .pasteConversion, validation: { [weak self, weak session] in
+                            guard let self, let session else { return false }
+                            return self.requestID == id && self.canPerform &&
+                                session.structuredIntentGeneration == intentGeneration
+                        }) else { return }
+                    let outcome = await ticket.value()
+                    guard self.requestID == id, !Task.isCancelled else { return }
+                    if outcome == .applied, !ticket.cancelled, output.fallbackReason != nil { self.onNotice(.literalFallback) }
+                    if outcome == .cancelled { self.onNotice(.cancelled) }
+                    return
+                }
                 var stale = false
                 let inserted = editor.insertStructuredText(edit.replacement, range: edit.range, selection: edit.selection, isCurrent: {
                     let current = self.requestID == id && self.canPerform && editor.delegate === session &&
@@ -106,6 +126,7 @@ final class MarkdownPasteController {
         return true
     }
     func cancel() {
+        (editor?.delegate as? MarkdownEditorSession)?.structuredCommands.cancelPending(pasteRequest: requestID)
         requestID = UUID()
         task?.cancel()
         task = nil

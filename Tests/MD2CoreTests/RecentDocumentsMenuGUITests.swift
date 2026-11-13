@@ -315,6 +315,7 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         let deadline = Date().addingTimeInterval(5)
         for app in launchedApps {
             while Self.isProcessAlive(app), Date() < deadline { usleep(100_000) }
+            XCTAssertFalse(Self.isProcessAlive(app), "private test app PID \(app.processIdentifier) survived teardown")
         }
         launchedApps = []
 
@@ -416,14 +417,37 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         let pid = try launch(recents: [], language: "english", appleLanguages: ["en"])
         try waitForEntries([], pid: pid)
         try open(document); try waitForEntries([document], pid: pid)
+        func isTargetWindow(_ window: AXUIElement) -> Bool {
+            let title = Self.title(of: window)
+            return title == document.lastPathComponent || title == document.lastPathComponent + " *"
+        }
         func sourceEditor() throws -> AXUIElement {
-            let window = try waitForWindow(pid: pid) { Self.firstElement(ofRole: kAXTextAreaRole as String, in: $0) != nil }
+            let window = try waitForWindow(pid: pid) {
+                isTargetWindow($0) && Self.firstElement(ofRole: kAXTextAreaRole as String, in: $0) != nil
+            }
+            let targets = Self.windows(pid: pid).filter(isTargetWindow)
+            guard targets.count == 1, CFEqual(targets[0], window) else {
+                throw GuardFailure("paste fixture expected one target document window in PID \(pid); saw \(Self.windows(pid: pid).map(Self.title(of:)))")
+            }
+            // The production title is always available. AXDocument is an
+            // additional identity check only when this AppKit window exposes it.
+            var represented: CFTypeRef?
+            let documentStatus = AXUIElementCopyAttributeValue(window, kAXDocumentAttribute as CFString, &represented)
+            if documentStatus == .success, let value = represented as? String, !value.isEmpty {
+                guard let url = URL(string: value), url.isFileURL,
+                      url.resolvingSymlinksInPath() == document.resolvingSymlinksInPath() else {
+                    throw GuardFailure("paste fixture window represents \(value), expected \(document.path)")
+                }
+            }
             return try XCTUnwrap(Self.firstElement(ofRole: kAXTextAreaRole as String, in: window))
         }
-        func sourceText(_ source: AXUIElement) -> String {
+        func sourceText(_ source: AXUIElement) throws -> String {
             var value: CFTypeRef?
-            AXUIElementCopyAttributeValue(source, kAXValueAttribute as CFString, &value)
-            return value as? String ?? ""
+            let status = AXUIElementCopyAttributeValue(source, kAXValueAttribute as CFString, &value)
+            guard status == .success, let text = value as? String else {
+                throw GuardFailure("paste source AXValue unavailable in PID \(pid): AXError=\(status.rawValue), valueType=\(String(describing: value.map { CFGetTypeID($0) }))")
+            }
+            return text
         }
         func command(_ title: String) throws -> AXUIElement {
             var barValue: CFTypeRef?
@@ -444,14 +468,15 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         }
         func select(_ source: AXUIElement, range: CFRange? = nil) throws {
             XCTAssertEqual(AXUIElementSetAttributeValue(source, kAXFocusedAttribute as CFString, kCFBooleanTrue), .success)
-            var selection = range ?? CFRange(location: 0, length: (sourceText(source) as NSString).length)
+            let text = try sourceText(source)
+            var selection = range ?? CFRange(location: 0, length: (text as NSString).length)
             let value = try XCTUnwrap(AXValueCreate(.cfRange, &selection))
             XCTAssertEqual(AXUIElementSetAttributeValue(source, kAXSelectedTextRangeAttribute as CFString, value), .success)
         }
-        func waitText(_ expected: String, source: AXUIElement) {
+        func waitText(_ expected: String, source: AXUIElement) throws {
             let deadline = Date().addingTimeInterval(5)
-            while sourceText(source) != expected, Date() < deadline { usleep(50_000) }
-            XCTAssertEqual(sourceText(source), expected)
+            while try sourceText(source) != expected, Date() < deadline { usleep(50_000) }
+            XCTAssertEqual(try sourceText(source), expected)
         }
         func paste(_ title: String, plain: String, html: String? = nil, source: AXUIElement) throws {
             board.clearContents()
@@ -466,26 +491,31 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         }
         try press("Edit")
         var source = try sourceEditor()
-        let original = sourceText(source)
+        let original = try sourceText(source)
+        let disk = try Data(contentsOf: document)
+        let expectedInitial = Data("# \(document.lastPathComponent)\n".utf8)
+        guard disk == expectedInitial, Data(original.utf8) == disk else {
+            throw GuardFailure("paste fixture initial bytes differ in PID \(pid), \(document.path): disk=\(Array(disk)), AX=\(Array(original.utf8)), expected=\(Array(expectedInitial))")
+        }
         try paste("Paste as Plain Text", plain: "https://example.com", source: source)
-        waitText("https://example.com", source: source)
+        try waitText("https://example.com", source: source)
         try press("Undo")
-        waitText(original, source: source)
+        try waitText(original, source: source)
         try press("Redo")
-        waitText("https://example.com", source: source)
+        try waitText("https://example.com", source: source)
         try paste("Paste as Table", plain: "H\tB\n1\t2", source: source)
         let table = "| H | B |\n| --- | --- |\n| 1 | 2 |"
-        waitText(table, source: source)
-        XCTAssertTrue(MarkdownRenderer().render(sourceText(source)).body.contains("<table"))
+        try waitText(table, source: source)
+        XCTAssertTrue(MarkdownRenderer().render(try sourceText(source)).body.contains("<table"))
         try press("Undo")
-        waitText("https://example.com", source: source)
+        try waitText("https://example.com", source: source)
         try paste("Paste as Markdown", plain: "Bold", html: "<p><strong>Bold</strong></p>", source: source)
-        waitText("**Bold**", source: source)
+        try waitText("**Bold**", source: source)
         try paste("Paste as Markdown", plain: "![x](https://example.com)", html: "<img src='https://example.com'>", source: source)
         let literal = #"\!&#91;x&#93;&#40;https\://example\.com&#41;"#
-        waitText(literal, source: source)
-        XCTAssertEqual(RenderedPlainText.extract(from: MarkdownRenderer().render(sourceText(source)).body), "![x](https://example.com)")
-        XCTAssertFalse(MarkdownRenderer().render(sourceText(source)).body.contains("<img"))
+        try waitText(literal, source: source)
+        XCTAssertEqual(RenderedPlainText.extract(from: MarkdownRenderer().render(try sourceText(source)).body), "![x](https://example.com)")
+        XCTAssertFalse(MarkdownRenderer().render(try sourceText(source)).body.contains("<img"))
         func containsFallbackNotice(_ element: AXUIElement) -> Bool {
             var value: CFTypeRef?
             AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &value)
@@ -497,9 +527,9 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         XCTAssertTrue(Self.windows(pid: pid).contains(where: containsFallbackNotice), "whole-input fallback must be disclosed visibly")
         // Empty input must not delete a full selection or create an undo step.
         try paste("Paste as Plain Text", plain: "", source: source)
-        usleep(200_000); waitText(literal, source: source)
+        usleep(200_000); try waitText(literal, source: source)
         try press("Undo")
-        waitText("**Bold**", source: source)
+        try waitText("**Bold**", source: source)
         // Read retains source but offers no source-only paste command.
         try press("Preview")
         let readDeadline = Date().addingTimeInterval(5)
@@ -510,7 +540,7 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         try press("Side by Side")
         source = try sourceEditor()
         try paste("Paste as Plain Text", plain: "split source", source: source)
-        waitText("split source", source: source)
+        try waitText("split source", source: source)
     }
 
     // MARK: - Live list
@@ -1011,6 +1041,11 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             throw GuardFailure("opening a document took longer than 30s")
         }
         if let error = result.error { throw error }
+        let expected = try XCTUnwrap(launchedApps.last, "opening a document requires this test's launched app")
+        let actual = try XCTUnwrap(result.app, "opening a document returned no app")
+        guard actual.processIdentifier == expected.processIdentifier else {
+            throw GuardFailure("document open reached PID \(actual.processIdentifier), expected this test's PID \(expected.processIdentifier); app=\(actual.bundleURL?.path ?? "unknown")")
+        }
     }
 
     private func makeDocument(_ relativePath: String) throws -> URL {

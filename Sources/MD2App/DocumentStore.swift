@@ -5,29 +5,6 @@ import MD2Core
 import UniformTypeIdentifiers
 
 @MainActor
-protocol PDFExporting: AnyObject {
-    func export(
-        html: String,
-        outline: [Heading],
-        baseURL: URL?,
-        documentTitle: String,
-        completion: @escaping (Result<Void, Error>) -> Void
-    )
-}
-
-@MainActor
-protocol DocumentPrinting: AnyObject {
-    func print(
-        html: String,
-        outline: [Heading],
-        baseURL: URL?,
-        profile: ExportProfile,
-        documentTitle: String,
-        completion: @escaping (Result<Void, Error>) -> Void
-    )
-}
-
-@MainActor
 final class DocumentStore: ObservableObject {
     @Published var text: String {
         didSet {
@@ -51,6 +28,54 @@ final class DocumentStore: ObservableObject {
     }
 
     @Published private(set) var rendered: RenderedDocument
+    /// A trusted, window-local session grant. Never serialized into the document,
+    /// recovery record, UserDefaults, or export profile.
+    @Published private(set) var remoteResourcePolicy: RemoteResourcePolicy = .blocked
+    @Published private(set) var remoteResourceContextToken = UUID()
+    @Published private(set) var renderedRemoteResourceContextToken: UUID?
+    private var remoteResourceInvalidator: (@MainActor () -> Void)?
+
+    var hasCurrentResourcePreview: Bool {
+        renderedRemoteResourceContextToken == remoteResourceContextToken
+    }
+
+    /// Called by a native control only. This deliberately bypasses the source
+    /// text pipeline: permission changes create no dirty, save, or Undo action.
+    func setRemoteImagesAllowed(_ allowed: Bool) {
+        let policy: RemoteResourcePolicy = allowed ? .allowRemoteImages : .blocked
+        guard !isClosed, policy != remoteResourcePolicy else { return }
+        replaceRemoteResourceContext(policy: policy)
+        renderImmediately()
+    }
+
+    /// SwiftUI teardown runs later; cancel the active WebKit context synchronously
+    /// before a policy or document replacement can return to the event loop.
+    func registerRemoteResourceInvalidator(for token: UUID, _ invalidate: @escaping @MainActor () -> Void) {
+        guard !isClosed, token == remoteResourceContextToken else { invalidate(); return }
+        remoteResourceInvalidator = invalidate
+    }
+
+    private func replaceRemoteResourceContext(policy: RemoteResourcePolicy = .blocked) {
+        remoteResourceInvalidator?()
+        remoteResourceInvalidator = nil
+        // Advance identity before cancellation callbacks: they may complete
+        // synchronously and must not publish an obsolete error or clear a new job.
+        remoteResourceContextToken = UUID()
+        remoteResourcePolicy = policy
+        renderedRemoteResourceContextToken = nil
+        renderGeneration &+= 1
+        pdfExporter?.cancel()
+        documentPrinter?.cancel()
+        documentConverter?.cancel()
+        pdfExporter = nil
+        documentPrinter = nil
+        documentConverter = nil
+        preparingDerivedArtifact = nil
+    }
+
+    private func resourceContextIsCurrent(_ token: UUID) -> Bool {
+        !Task.isCancelled && !isClosed && remoteResourceContextToken == token
+    }
     let copyFlow = DocumentCopyFlow()
     @Published private(set) var fileURL: URL? {
         didSet {
@@ -173,11 +198,11 @@ final class DocumentStore: ObservableObject {
     }()
 
     private let renderer = MarkdownRenderer()
-    private let renderWorker = DocumentRenderWorker()
+    private let renderWorker: DocumentRenderWorker
     private var renderTask: Task<Void, Never>?
     private var renderDebounceTask: Task<Void, Never>?
     private var isDebouncingRender = false
-    private var preparingDerivedArtifact = false
+    private var preparingDerivedArtifact: UUID?
     /// Retains the in-flight PDF export for its (asynchronous) lifetime; cleared
     /// when the export completes. PDF is a derived artifact — exporting never
     /// touches `fileURL`, `isDirty`, or autosave.
@@ -234,7 +259,7 @@ final class DocumentStore: ObservableObject {
     /// exclusive — each produces a file from the document's current state — so each
     /// guards on this, including the background preparation stage.
     private var isProducingDerivedArtifact: Bool {
-        preparingDerivedArtifact || pdfExporter != nil || documentPrinter != nil || documentConverter != nil
+        preparingDerivedArtifact != nil || pdfExporter != nil || documentPrinter != nil || documentConverter != nil
     }
     private var isLoading = false
     private var autosaveTask: Task<Void, Never>?
@@ -309,7 +334,8 @@ final class DocumentStore: ObservableObject {
         autosaveDelay: TimeInterval = 5,
         maximumAutosaveDelay: TimeInterval = 30,
         recoveryDelay: TimeInterval = 1,
-        confirmEncodingConversion: @escaping @MainActor (String) -> Bool = { _ in false }
+        confirmEncodingConversion: @escaping @MainActor (String) -> Bool = { _ in false },
+        renderWorker: DocumentRenderWorker = DocumentRenderWorker()
     ) {
         self.pdfDestinationPicker = pdfDestinationPicker
         self.htmlDestinationPicker = htmlDestinationPicker
@@ -330,10 +356,12 @@ final class DocumentStore: ObservableObject {
         self.maximumAutosaveDelay = maximumAutosaveDelay
         self.recoveryDelay = recoveryDelay
         self.confirmEncodingConversion = confirmEncodingConversion
+        self.renderWorker = renderWorker
 
         let starterText = Self.starterMarkdown
         text = starterText
-        rendered = renderer.render(starterText, assetMode: .appScheme)
+        rendered = renderer.render(starterText, assetMode: .appScheme, remoteResourcePolicy: .blocked)
+        renderedRemoteResourceContextToken = remoteResourceContextToken
     }
 
     /// True when this store still holds the untouched starter document, i.e. it
@@ -526,19 +554,24 @@ final class DocumentStore: ObservableObject {
         // Ignore a second request while an export or print is still in flight;
         // otherwise the new exporter would replace the retained one and abandon
         // the first. Print and Export are mutually exclusive.
-        guard !isProducingDerivedArtifact else { return }
+        guard !isClosed, !isProducingDerivedArtifact else { return }
 
-        guard let url = pdfDestinationPicker(pdfFileName) else {
+        let contextToken = remoteResourceContextToken
+        guard let url = pdfDestinationPicker(pdfFileName), resourceContextIsCurrent(contextToken),
+              !isProducingDerivedArtifact else {
             return
         }
 
-        preparingDerivedArtifact = true
-        defer { preparingDerivedArtifact = false }
+        let preparationID = UUID()
+        preparingDerivedArtifact = preparationID
+        defer { if preparingDerivedArtifact == preparationID { preparingDerivedArtifact = nil } }
         let baseURL = self.baseURL
         let exportDocumentTitle = self.exportDocumentTitle
         let profile = exportProfileProvider()
         let snapshot = makeRenderSnapshot()
+        let remoteImageBlockedLabel = alertText(.remoteImageBlocked)
         let rendered = await renderWorker.render(snapshot)
+        guard resourceContextIsCurrent(contextToken) else { return }
 
         let exporter = pdfExporterFactory(url, profile)
         pdfExporter = exporter
@@ -546,9 +579,11 @@ final class DocumentStore: ObservableObject {
             html: rendered.html,
             outline: rendered.outline,
             baseURL: baseURL,
-            documentTitle: exportDocumentTitle
+            remoteResourcePolicy: snapshot.remoteResourcePolicy,
+            documentTitle: exportDocumentTitle,
+            remoteImageBlockedLabel: remoteImageBlockedLabel
         ) { [weak self] result in
-            guard let self else { return }
+            guard let self, self.resourceContextIsCurrent(contextToken) else { return }
             self.pdfExporter = nil
             if case let .failure(error) = result {
                 self.alert = DocumentAlert(
@@ -566,15 +601,19 @@ final class DocumentStore: ObservableObject {
     /// `isProducingDerivedArtifact` guard, so they are mutually exclusive.
     /// Failures surface through the normal `alert` path.
     func print() async {
-        guard !isProducingDerivedArtifact else { return }
+        guard !isClosed, !isProducingDerivedArtifact else { return }
+        let contextToken = remoteResourceContextToken
 
-        preparingDerivedArtifact = true
-        defer { preparingDerivedArtifact = false }
+        let preparationID = UUID()
+        preparingDerivedArtifact = preparationID
+        defer { if preparingDerivedArtifact == preparationID { preparingDerivedArtifact = nil } }
         let baseURL = self.baseURL
         let exportDocumentTitle = self.exportDocumentTitle
         let profile = exportProfileProvider()
         let snapshot = makeRenderSnapshot()
+        let remoteImageBlockedLabel = alertText(.remoteImageBlocked)
         let rendered = await renderWorker.render(snapshot)
+        guard resourceContextIsCurrent(contextToken) else { return }
 
         let printer = documentPrinterFactory()
         documentPrinter = printer
@@ -582,10 +621,12 @@ final class DocumentStore: ObservableObject {
             html: rendered.html,
             outline: rendered.outline,
             baseURL: baseURL,
+            remoteResourcePolicy: snapshot.remoteResourcePolicy,
             profile: profile,
-            documentTitle: exportDocumentTitle
+            documentTitle: exportDocumentTitle,
+            remoteImageBlockedLabel: remoteImageBlockedLabel
         ) { [weak self] result in
-            guard let self else { return }
+            guard let self, self.resourceContextIsCurrent(contextToken) else { return }
             self.documentPrinter = nil
             if case let .failure(error) = result {
                 self.alert = DocumentAlert(
@@ -604,18 +645,22 @@ final class DocumentStore: ObservableObject {
     /// background before writing. Mutually exclusive with the
     /// other export/print jobs (it no-ops while one is in flight).
     func exportHTML() async {
-        guard !isProducingDerivedArtifact else { return }
+        guard !isClosed, !isProducingDerivedArtifact else { return }
 
-        guard let url = htmlDestinationPicker(htmlFileName) else {
+        let contextToken = remoteResourceContextToken
+        guard let url = htmlDestinationPicker(htmlFileName), resourceContextIsCurrent(contextToken),
+              !isProducingDerivedArtifact else {
             return
         }
 
-        preparingDerivedArtifact = true
-        defer { preparingDerivedArtifact = false }
+        let preparationID = UUID()
+        preparingDerivedArtifact = preparationID
+        defer { if preparingDerivedArtifact == preparationID { preparingDerivedArtifact = nil } }
         let snapshot = makeRenderSnapshot()
         // The worker also performs file reads, bounded decoding and base64
         // encoding; the export keeps using the captured document/base URL.
         let export = await renderWorker.renderSelfContainedHTML(snapshot)
+        guard resourceContextIsCurrent(contextToken) else { return }
         do {
             try export.html.write(to: url, atomically: true, encoding: .utf8)
         } catch {
@@ -633,9 +678,9 @@ final class DocumentStore: ObservableObject {
     /// How many image names each group of the HTML export notice lists.
     private static let maximumListedImages = 5
 
-    /// The notice for an exported file that still depends on images outside it, or
-    /// nil when everything is embedded. Each group lists a capped number of names,
-    /// so a long run of remote images cannot hide a missing local one.
+    /// Names known image omissions and explains the offline diagram boundary.
+    /// Diagram presence alone does not establish that an image was omitted.
+    /// Each image group is capped so remote images cannot hide a missing local one.
     private func htmlExportNotice(for export: SelfContainedHTMLBuilder.Output, fileName: String) -> DocumentAlert? {
         let localNames = export.unembeddedLocalImages.map { name in
             guard let reason = export.localImageFailures[name] else { return name }
@@ -645,17 +690,20 @@ final class DocumentStore: ObservableObject {
             (heading: alertText(.alertHTMLExportRemoteImages), names: export.remoteImages),
             (heading: alertText(.alertHTMLExportLocalImages), names: localNames)
         ].filter { !$0.names.isEmpty }
-        guard !groups.isEmpty else { return nil }
+        guard !groups.isEmpty || export.containsDiagrams else { return nil }
 
-        let sections = groups.map { group in
+        var sections = groups.map { group in
             var lines = [group.heading] + group.names.prefix(Self.maximumListedImages)
             if group.names.count > Self.maximumListedImages {
                 lines.append(alertText(.alertHTMLExportMoreImages, String(group.names.count - Self.maximumListedImages)))
             }
             return lines.joined(separator: "\n")
         }
+        if export.containsDiagrams {
+            sections.append(alertText(.alertHTMLExportDiagramResources))
+        }
         return DocumentAlert(
-            message: alertText(.alertHTMLExportIncomplete, fileName),
+            message: alertText(groups.isEmpty ? .alertHTMLExported : .alertHTMLExportIncomplete, fileName),
             detail: sections.joined(separator: "\n\n")
         )
     }
@@ -677,7 +725,7 @@ final class DocumentStore: ObservableObject {
     /// document's *current* Markdown (including unsaved edits) without changing
     /// `fileURL`/dirty/autosave. Mutually exclusive with the other export jobs.
     private func exportConverted(to format: DocumentExportFormat) {
-        guard !isProducingDerivedArtifact else { return }
+        guard !isClosed, !isProducingDerivedArtifact else { return }
 
         guard pandocAvailabilityProvider() else {
             alert = DocumentAlert(
@@ -695,7 +743,9 @@ final class DocumentStore: ObservableObject {
         }
         guard let resourceDirectory = baseURL else { return }
 
-        guard let destination = conversionDestinationPicker(format, conversionFileName(for: format)) else {
+        let contextToken = remoteResourceContextToken
+        guard let destination = conversionDestinationPicker(format, conversionFileName(for: format)),
+              resourceContextIsCurrent(contextToken), !isProducingDerivedArtifact else {
             return
         }
 
@@ -707,12 +757,17 @@ final class DocumentStore: ObservableObject {
             resourceDirectory: resourceDirectory,
             destination: destination
         ) { [weak self] result in
-            guard let self else { return }
+            guard let self, self.resourceContextIsCurrent(contextToken) else { return }
             self.documentConverter = nil
             if case let .failure(error) = result {
                 self.alert = DocumentAlert(
                     message: self.alertText(.alertCouldNotExport, destination.lastPathComponent),
                     detail: error.localizedDescription
+                )
+            } else {
+                self.alert = DocumentAlert(
+                    message: self.alertText(.alertExternalFormatExported, destination.lastPathComponent),
+                    detail: self.alertText(.alertExternalFormatNetworkBoundary)
                 )
             }
         }
@@ -1113,6 +1168,7 @@ final class DocumentStore: ObservableObject {
     }
 
     private func setDocumentText(_ newText: String, fileURL newFileURL: URL?, dirty: Bool) {
+        replaceRemoteResourceContext()
         headingNavigationTask?.cancel()
         headingNavigationTask = nil
         cancelAutosave()
@@ -1130,6 +1186,7 @@ final class DocumentStore: ObservableObject {
     /// Keep one active parse and one pending revision, without retaining a
     /// document snapshot for every keystroke while the worker is busy.
     private func scheduleRender(delay: Duration? = nil) {
+        guard !isClosed else { return }
         renderGeneration &+= 1
         let generation = renderGeneration
         hasPendingRender = true
@@ -1145,7 +1202,8 @@ final class DocumentStore: ObservableObject {
     }
 
     private func startRenderIfNeeded() {
-        guard renderTask == nil, hasPendingRender else { return }
+        guard !isClosed, renderTask == nil, hasPendingRender else { return }
+        let contextToken = remoteResourceContextToken
         let generation = renderGeneration
         let revision = sourceLineRevision
         let snapshot = makeRenderSnapshot()
@@ -1154,9 +1212,10 @@ final class DocumentStore: ObservableObject {
             let result = await worker.render(snapshot)
             guard let self else { return }
             self.renderTask = nil
-            if self.renderGeneration == generation {
+            if self.renderGeneration == generation, self.resourceContextIsCurrent(contextToken) {
                 self.renderedSourceLineRevision = revision
                 self.rendered = result
+                self.renderedRemoteResourceContextToken = contextToken
                 self.hasPendingRender = false
             } else if !self.isDebouncingRender {
                 self.startRenderIfNeeded()
@@ -1173,7 +1232,10 @@ final class DocumentStore: ObservableObject {
         let syntax = syntaxConfigProvider()
         return DocumentRenderSnapshot(text: text, baseURL: baseURL,
             citationStyle: preferences.citationStyle, numberAllEquations: preferences.numberAllEquations,
-            inlineFeatures: syntax.0, alertLanguage: syntax.1)
+            inlineFeatures: syntax.0, alertLanguage: syntax.1,
+            remoteResourcePolicy: remoteResourcePolicy,
+            offlineHTMLLabels: OfflineHTMLLabels(remoteImageBlocked: alertText(.offlineHTMLRemoteImageBlocked),
+                                                 localImageUnavailable: alertText(.offlineHTMLLocalImageUnavailable)))
     }
 
     /// Await the latest generation without blocking the main actor. If an edit
@@ -1301,6 +1363,7 @@ final class DocumentStore: ObservableObject {
             return
         }
 
+        replaceRemoteResourceContext()
         cancelAutosave()
         jumpLine = nil
         jumpHeadingID = nil
@@ -1489,6 +1552,10 @@ final class DocumentStore: ObservableObject {
             }
         }
         isClosed = true
+        replaceRemoteResourceContext()
+        renderDebounceTask?.cancel()
+        renderDebounceTask = nil
+        hasPendingRender = false
         copyFlow.cancel()
         headingNavigationTask?.cancel()
         headingNavigationTask = nil

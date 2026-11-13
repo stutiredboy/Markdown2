@@ -27,6 +27,11 @@ final class PreviewLinkActivationGUITests: XCTestCase, RenderedPageTesting {
             onOpenMarkdownLink: { local.append($0) }, onOpenWithSystem: { external.append($0) }) { webView in
             let page = webView.url
             let coordinator = try XCTUnwrap(webView.navigationDelegate as? MarkdownPreviewView.Coordinator)
+            // This isolates the trusted-activation boundary, just as the fixture
+            // removes CSP above. Native resource rules now stop window.open
+            // before WebKit emits a navigation delegate callback; their separate
+            // production-path tests must not make this delegate probe vacuous.
+            webView.configuration.userContentController.removeAllContentRuleLists()
             let recorder = LinkPolicyRecorder(coordinator)
             webView.navigationDelegate = recorder
             webView.uiDelegate = recorder

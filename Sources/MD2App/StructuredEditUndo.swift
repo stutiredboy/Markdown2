@@ -12,7 +12,10 @@ final class StructuredEditUndoManager: UndoManager {
     }
 }
 
-/// Finish automatic groups through Foundation's own event callback. Merely
+/// The synchronous boundary used by headless clients and caller transactions.
+/// Running applications submit normal automatic edits through the session's
+/// event queue instead: AppKit closes those groups when its event returns.
+/// Finish headless automatic groups through Foundation's own event callback. Merely
 /// closing them by hand leaves a pending callback; reopening an empty explicit
 /// group creates a phantom Undo. A private mode avoids both problems without
 /// processing ordinary UI events or changing the default typing policy.
@@ -35,6 +38,13 @@ final class StructuredEditUndo {
             hasOwnedEventBoundary = manager.groupingLevel == 0
             manager.runLoopModes.append(mode)
         }
+    }
+
+    var requiresApplicationEvent: Bool {
+        if manager.groupingLevel == 0 { hasOwnedEventBoundary = true }
+        return NSApp?.isRunning == true && hasOwnedEventBoundary && manager.groupsByEvent &&
+            manager.isUndoRegistrationEnabled && !manager.isUndoing && !manager.isRedoing &&
+            manager.groupingLevel <= 1
     }
 
     @discardableResult
@@ -114,6 +124,16 @@ extension NSTextView {
     @discardableResult
     func insertStructuredText(_ replacement: String, range: NSRange, selection: NSRange? = nil,
                               isCurrent additionalValidation: () -> Bool = { true }) -> Bool {
+        applyStructuredText(replacement, range: range, selection: selection,
+            atApplicationEventBoundary: false, isCurrent: additionalValidation)?.finalize() ?? false
+    }
+
+    /// An automatic edit in a running app returns its receipt before its group
+    /// closes. The session queue finalizes that receipt in a later owned event.
+    @MainActor
+    func applyStructuredText(_ replacement: String, range: NSRange, selection: NSRange? = nil,
+                            atApplicationEventBoundary: Bool,
+                            isCurrent additionalValidation: () -> Bool) -> StructuredInsertionReceipt? {
         let manager = undoManager
         let source = string, oldSelection = selectedRange(), originalDelegate = delegate
         let originalWindow = window, originalResponder = window?.firstResponder, wasKey = window?.isKeyWindow
@@ -131,11 +151,11 @@ extension NSTextView {
         }
         let sourceLength = (source as NSString).length
         guard range.location >= 0, range.location <= sourceLength, range.length >= 0,
-              range.length <= sourceLength - range.location, isCurrent() else { return false }
+              range.length <= sourceLength - range.location, isCurrent() else { return nil }
         manager?.disableUndoRegistration()
         let allowed = shouldChangeText(in: range, replacementString: replacement)
         manager?.enableUndoRegistration()
-        guard allowed, isCurrent() else { return false }
+        guard allowed, isCurrent() else { return nil }
         let original = (source as NSString).substring(with: range)
         let expected = (source as NSString).replacingCharacters(in: range, with: replacement)
         let inverseRange = NSRange(location: range.location, length: replacement.utf16.count)
@@ -143,9 +163,10 @@ extension NSTextView {
         let inverse = StructuredTextUndo(editor: self, range: inverseRange,
             expected: replacement, replacement: original, selection: oldSelection)
         var inserted = false
-        withStructuredEditUndo(isCurrent: isCurrent) {
+        var receipt: StructuredInsertionReceipt?
+        let write = {
             manager?.disableUndoRegistration()
-            insertText(replacement, replacementRange: range)
+            self.insertText(replacement, replacementRange: range)
             manager?.enableUndoRegistration()
             inserted = (self.string as NSString).isEqual(to: expected)
             guard inserted else { return }
@@ -155,14 +176,44 @@ extension NSTextView {
                 self.setSelectedRange(selection ?? nativeSelection)
                 self.scrollRangeToVisible(selection ?? nativeSelection)
             }
+            receipt = StructuredInsertionReceipt(editor: self, manager: manager, inverse: inverse,
+                expected: expected, generation: session?.pasteContextGeneration,
+                sourceRevision: session?.structuredSourceRevision)
             manager?.registerUndo(withTarget: inverse) { [inverse] _ in
                 MainActor.assumeIsolated { inverse.apply() }
             }
         }
-        guard inserted else { return false }
-        if !(string as NSString).isEqual(to: expected) {
-            // Remove after the helper closes its group: removing a marker from
-            // an open automatic group would leave a phantom empty Undo step.
+        if atApplicationEventBoundary {
+            guard manager?.groupingLevel == 0, isCurrent() else { return nil }
+            breakUndoCoalescing()
+            defer { breakUndoCoalescing() }
+            write()
+        } else {
+            withStructuredEditUndo(isCurrent: isCurrent, write)
+        }
+        return inserted ? receipt : nil
+    }
+}
+
+@MainActor
+final class StructuredInsertionReceipt {
+    private weak var editor: NSTextView?
+    private let manager: UndoManager?
+    private let inverse: StructuredTextUndo
+    let expected: String
+    let generation: UInt64?
+    let sourceRevision: UInt64?
+
+    fileprivate init(editor: NSTextView, manager: UndoManager?, inverse: StructuredTextUndo,
+                     expected: String, generation: UInt64?, sourceRevision: UInt64?) {
+        self.editor = editor; self.manager = manager; self.inverse = inverse
+        self.expected = expected; self.generation = generation; self.sourceRevision = sourceRevision
+    }
+
+    func finalize() -> Bool {
+        guard let editor, (editor.string as NSString).isEqual(to: expected) else {
+            // Only the closed history is changed. Keep observer edits and all
+            // their native actions, removing this one obsolete inverse target.
             manager?.removeAllActions(withTarget: inverse)
             return false
         }
@@ -171,7 +222,7 @@ extension NSTextView {
 }
 
 @MainActor
-private final class StructuredTextUndo: NSObject {
+fileprivate final class StructuredTextUndo: NSObject {
     private weak var editor: NSTextView?
     private let range: NSRange
     private let expected: String

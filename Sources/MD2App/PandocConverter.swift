@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import MD2Core
 
 /// Output formats produced by delegating to an external Pandoc binary.
@@ -18,6 +19,7 @@ enum DocumentExportFormat: Sendable {
 /// protocol so the export flow is testable without a real Pandoc binary.
 @MainActor
 protocol DocumentConverting: AnyObject {
+    func cancel()
     func convert(
         markdown: String,
         format: DocumentExportFormat,
@@ -25,6 +27,11 @@ protocol DocumentConverting: AnyObject {
         destination: URL,
         completion: @escaping (Result<Void, Error>) -> Void
     )
+}
+
+extension DocumentConverting {
+    // Test adapters that synchronously complete have no work to cancel.
+    func cancel() {}
 }
 
 /// Produces DOCX/EPUB by invoking an external, user-installed Pandoc binary on the
@@ -43,6 +50,8 @@ final class PandocConverter: DocumentConverting {
         case preparationFailed
         case conversionFailed(String)
         case timedOut
+        case confinementUnavailable
+        case canceled
 
         var errorDescription: String? {
             switch self {
@@ -53,6 +62,10 @@ final class PandocConverter: DocumentConverting {
             case .conversionFailed(let detail):
                 let trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
                 return trimmed.isEmpty ? "Pandoc could not convert the document." : "Pandoc failed: \(trimmed)"
+            case .confinementUnavailable:
+                return "Offline conversion is unavailable on this system. Pandoc was not run without network protection."
+            case .canceled:
+                return "The conversion was canceled."
             case .timedOut:
                 return "The conversion took too long and was stopped."
             }
@@ -68,6 +81,7 @@ final class PandocConverter: DocumentConverting {
     /// main actor exactly once. Storing it (rather than capturing it in the
     /// background closure) keeps the main-actor completion off the worker thread.
     private var pendingCompletion: ((Result<Void, Error>) -> Void)?
+    private var pendingJob: PandocConversionJob?
 
     func convert(
         markdown: String,
@@ -76,6 +90,11 @@ final class PandocConverter: DocumentConverting {
         destination: URL,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
+        guard pendingJob == nil else { return }
+        guard FileManager.default.isExecutableFile(atPath: OfflinePandocProcess.sandboxURL.path) else {
+            completion(.failure(ConversionError.confinementUnavailable))
+            return
+        }
         guard let pandoc = Self.pandocURL() else {
             completion(.failure(ConversionError.pandocNotFound))
             return
@@ -96,93 +115,60 @@ final class PandocConverter: DocumentConverting {
         // associated `.bib` so `[@key]` citations get full CSL formatting.
         let citationArguments = Self.citationArguments(markdown: markdown, resourceDirectory: resourceDirectory)
 
+        let job = PandocConversionJob()
+        pendingJob = job
         pendingCompletion = completion
-        // Run the blocking Pandoc invocation off the main actor; only a `Sendable`
-        // outcome crosses back to the main actor to fire the completion.
+        // Only a successful, still-current operation may replace the final path.
+        let staged = destination.deletingLastPathComponent().appendingPathComponent(
+            ".md2-converted-\(UUID().uuidString).\(format.fileExtension)")
         DispatchQueue.global(qos: .userInitiated).async {
-            let failure = Self.runPandoc(
-                pandoc: pandoc,
-                input: tempURL,
-                workingDirectory: resourceDirectory,
-                destination: destination,
-                extraArguments: citationArguments
-            )
-            try? FileManager.default.removeItem(at: tempURL)
-            if failure != nil {
-                // Never leave a partial/corrupt output file presented as success.
-                try? FileManager.default.removeItem(at: destination)
+            let reader = Self.readerFormat(for: pandoc, job: job)
+            let outcome: Result<String, OfflinePandocProcess.Failure>
+            switch reader {
+            case .success(let reader):
+                outcome = OfflinePandocProcess.run(pandoc: pandoc,
+                    arguments: [tempURL.lastPathComponent, "--from", reader, "-o", staged.path] + citationArguments,
+                    directory: resourceDirectory, timeout: Self.timeout, job: job)
+            case .failure(let failure): outcome = .failure(failure)
             }
+            try? FileManager.default.removeItem(at: tempURL)
             Task { @MainActor in
-                self.finish(failure)
+                defer { try? FileManager.default.removeItem(at: staged) }
+                guard self.pendingJob === job, !job.isCanceled else { return }
+                switch outcome {
+                case .success:
+                    if rename(staged.path, destination.path) == 0 {
+                        self.finish(nil)
+                    } else {
+                        self.finish(.preparationFailed)
+                    }
+                case .failure(let error): self.finish(Self.conversionError(error))
+                }
             }
         }
+    }
+
+    func cancel() {
+        guard let job = pendingJob else { return }
+        job.cancel()
+        finish(.canceled)
     }
 
     private func finish(_ failure: ConversionError?) {
         let completion = pendingCompletion
         pendingCompletion = nil
-        if let failure {
-            completion?(.failure(failure))
-        } else {
-            completion?(.success(()))
-        }
+        pendingJob = nil
+        if let failure { completion?(.failure(failure)) }
+        else { completion?(.success(())) }
     }
 
-    /// Runs Pandoc synchronously (on a background queue) with a watchdog timeout.
-    /// Returns `nil` on success, or the failure reason.
-    private nonisolated static func runPandoc(
-        pandoc: URL,
-        input: URL,
-        workingDirectory: URL,
-        destination: URL,
-        extraArguments: [String] = []
-    ) -> ConversionError? {
-        let process = Process()
-        process.executableURL = pandoc
-        process.currentDirectoryURL = workingDirectory
-        // Input by name (relative to the working directory) so relative image
-        // paths resolve; writer inferred from the output extension.
-        process.arguments = [
-            input.lastPathComponent,
-            "--from", Self.readerFormat(for: pandoc),
-            "-o", destination.path
-        ] + extraArguments
-        let errorPipe = Pipe()
-        process.standardError = errorPipe
-        process.standardOutput = Pipe()
-
-        do {
-            try process.run()
-        } catch {
-            return .conversionFailed(error.localizedDescription)
+    private nonisolated static func conversionError(_ error: OfflinePandocProcess.Failure) -> ConversionError {
+        switch error {
+        case .confinementUnavailable: .confinementUnavailable
+        case .launchFailed(let detail), .failed(let detail): .conversionFailed(detail)
+        case .timedOut: .timedOut
+        case .canceled: .canceled
         }
-
-        let timeoutLock = NSLock()
-        var didTimeOut = false
-        let watchdog = DispatchWorkItem {
-            timeoutLock.lock()
-            didTimeOut = true
-            timeoutLock.unlock()
-            process.terminate()
-        }
-        DispatchQueue.global().asyncAfter(deadline: .now() + Self.timeout, execute: watchdog)
-
-        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        watchdog.cancel()
-
-        timeoutLock.lock()
-        let timedOut = didTimeOut
-        timeoutLock.unlock()
-
-        if timedOut {
-            return .timedOut
-        }
-        guard process.terminationStatus == 0 else {
-            let message = String(data: errorData, encoding: .utf8) ?? ""
-            return .conversionFailed(message)
-        }
-        return nil
     }
 
     /// Pandoc arguments for formal citation processing. When a bibliography is
@@ -274,18 +260,24 @@ final class PandocConverter: DocumentConverting {
     /// on older 1.x builds that do not know `gfm`. Determined once (via
     /// `pandoc --version`) and cached for the process lifetime.
     nonisolated static func readerFormat(for pandoc: URL) -> String {
-        cacheLock.lock()
-        if let cachedReader {
-            cacheLock.unlock()
-            return cachedReader
+        switch readerFormat(for: pandoc, job: PandocConversionJob()) {
+        case .success(let reader): reader
+        case .failure: "markdown_github"
         }
-        cacheLock.unlock()
+    }
 
-        let reader = reader(forMajorVersion: pandocMajorVersion(of: pandoc))
-        cacheLock.lock()
-        cachedReader = reader
-        cacheLock.unlock()
-        return reader
+    private nonisolated static func readerFormat(for pandoc: URL, job: PandocConversionJob) -> Result<String, OfflinePandocProcess.Failure> {
+        if let cached = cacheLock.withLock({ cachedReader }) { return .success(cached) }
+        // A rejected confinement/version probe is an error to the converter,
+        // never an excuse to run the conversion executable without its wrapper.
+        switch OfflinePandocProcess.run(pandoc: pandoc, arguments: ["--version"],
+                                        directory: nil, timeout: 5, job: job) {
+        case .success(let output):
+            let reader = reader(forMajorVersion: parseMajorVersion(fromVersionOutput: output))
+            cacheLock.withLock { cachedReader = reader }
+            return .success(reader)
+        case .failure(let error): return .failure(error)
+        }
     }
 
     /// Pure mapping from a detected major version to the reader name. An unknown
@@ -307,21 +299,4 @@ final class PandocConverter: DocumentConverting {
         return major
     }
 
-    private nonisolated static func pandocMajorVersion(of pandoc: URL) -> Int? {
-        let process = Process()
-        process.executableURL = pandoc
-        process.arguments = ["--version"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-        do {
-            try process.run()
-        } catch {
-            return nil
-        }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard let output = String(data: data, encoding: .utf8) else { return nil }
-        return parseMajorVersion(fromVersionOutput: output)
-    }
 }

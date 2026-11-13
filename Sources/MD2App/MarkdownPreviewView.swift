@@ -51,6 +51,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
     /// only the body, so it hands these to the page with each update.
     var mathMacros: [String: String] = [:]
     let baseURL: URL?
+    var remoteResourcePolicy: RemoteResourcePolicy = .blocked
+    /// Changes with document identity or native permission, never source edits.
+    var remoteResourceContextToken: UUID? = nil
+    var onRegisterResourceInvalidator: (@escaping @MainActor () -> Void) -> Void = { _ in }
     /// When true (Side by Side mode), content-only changes are applied in place
     /// via `__md2ApplyContent` — preserving scroll position and avoiding the
     /// full-page reload flash — instead of reloading the web view.
@@ -108,6 +112,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
     @Binding var findNavigation: FindCommand?
     /// Changes whenever the preview surface should become first responder.
     let focusToken: UUID
+    /// Kept by ContentView across resource-context replacements. Legacy direct
+    /// callers without a session retain the coordinator-local focus behavior.
+    var focusState: PreviewFocusState? = nil
     /// Called when the web view receives a standard Find key/menu action before
     /// SwiftUI commands can route it through `DocumentStore`.
     var onFindShortcut: (_ action: FindCommand.Action) -> Void = { _ in }
@@ -119,6 +126,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
     /// failed path/URL is appended at runtime as text.
     var localImageMissingLabel: String = "Image not found"
     var remoteImageUnavailableLabel: String = "Remote image could not be loaded"
+    var remoteImageBlockedLabel: String = "Remote image blocked — allow images using the document’s Remote Images control."
     var genericImageLoadFailedLabel: String = "Image could not be loaded"
     var typography: TypographySettings = .init()
     /// Selected rendered HTML (nil when collapsed); the owner extracts/counts
@@ -300,7 +308,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
             var lower = src.trim().toLowerCase();
             var labelText = '\(Self.escapeForJS(genericImageLoadFailedLabel))';
             if (/^https?:/.test(lower)) {
-                labelText = '\(Self.escapeForJS(remoteImageUnavailableLabel))';
+                labelText = window.__md2RemoteImagesAllowed
+                    ? '\(Self.escapeForJS(remoteImageUnavailableLabel))'
+                    : '\(Self.escapeForJS(remoteImageBlockedLabel))';
             } else if (/^(file|md2-local-image):/.test(lower) || !/^[a-z][a-z0-9+.-]*:/.test(lower)) {
                 labelText = '\(Self.escapeForJS(localImageMissingLabel))';
             }
@@ -925,6 +935,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
         webView.setValue(false, forKey: "drawsBackground")
 
         let coordinator = context.coordinator
+        onRegisterResourceInvalidator { [weak webView, weak coordinator] in
+            guard let webView, let coordinator else { return }
+            coordinator.invalidateResourceContext(in: webView)
+        }
         viewportReader?.capture = { [weak webView, weak coordinator] completion in
             guard let webView, let coordinator else {
                 completion(nil)
@@ -950,6 +964,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
+        coordinator.invalidateResourceContext(in: webView)
         coordinator.detachFindHost(webView)
     }
 
@@ -1004,9 +1019,18 @@ struct MarkdownPreviewView: NSViewRepresentable {
 
         let htmlChanged = context.coordinator.lastHTML != html
         let baseURLChanged = context.coordinator.lastBaseURL != baseURL
+        let resourceContextChanged = context.coordinator.remoteResourcePolicy != remoteResourcePolicy
+            || context.coordinator.remoteResourceContextToken != remoteResourceContextToken
+        if resourceContextChanged {
+            context.coordinator.invalidateResourceContext(in: webView)
+            context.coordinator.remoteResourcePolicy = remoteResourcePolicy
+            context.coordinator.remoteResourceContextToken = remoteResourceContextToken
+            context.coordinator.resourceContextIsActive = true
+        }
+        guard context.coordinator.resourceContextIsActive else { return }
         context.coordinator.applyFrontMatterVisibility(in: webView)
         context.coordinator.applyLineNumbersVisibility(in: webView)
-        if htmlChanged || baseURLChanged {
+        if htmlChanged || baseURLChanged || resourceContextChanged {
             // In Side by Side mode, a content-only change (same document, no new
             // diagram engine needed) is applied in place so typing does not
             // reload the page or reset the preview's scroll. Everything else —
@@ -1015,10 +1039,12 @@ struct MarkdownPreviewView: NSViewRepresentable {
             let isLoadedContentUpdate = liveUpdate
                 && context.coordinator.isLoaded
                 && !baseURLChanged
+                && !resourceContextChanged
                 && !context.coordinator.lastHTML.isEmpty
             let canLiveUpdate = liveUpdate
                 && context.coordinator.isLoaded
                 && !baseURLChanged
+                && !resourceContextChanged
                 && !context.coordinator.lastHTML.isEmpty
                 && !Self.requiresNewEngine(newBody: bodyHTML, loadedBody: context.coordinator.lastBody)
             context.coordinator.lastHTML = html
@@ -1093,12 +1119,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             context.coordinator.handleFindNavigation(navigation.action, in: webView)
         }
 
-        if context.coordinator.lastFocusToken != focusToken {
-            context.coordinator.lastFocusToken = focusToken
-            DispatchQueue.main.async {
-                webView.window?.makeFirstResponder(webView)
-            }
-        }
+        context.coordinator.updateFocusRequest(focusToken, state: focusState, in: webView)
     }
 
     /// Whether `newBody` needs a diagram engine that the currently-loaded page
@@ -1332,6 +1353,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator {
         let coordinator = Coordinator()
+        coordinator.focusState = focusState
         coordinator.typography = typography
         coordinator.onSelectionChange = onSelectionChange
         coordinator.onEnterEdit = onEnterEdit
@@ -1346,7 +1368,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
     /// Preview and PDF export share the same memory page and resource boundary.
     private func load(_ html: String, baseURL: URL?, fragment: String?, in webView: WKWebView, coordinator: Coordinator) {
         (webView as? PreviewWebView)?.invalidateContextMenu()
-        coordinator.documentLoader.load(html, baseURL: baseURL, fragment: fragment, in: webView)
+        coordinator.documentLoader.load(html, baseURL: baseURL, fragment: fragment,
+            remoteResourcePolicy: remoteResourcePolicy, in: webView)
     }
 
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
@@ -1371,6 +1394,20 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// to decide whether an update can be a live in-place swap.
         var lastBody = ""
         var lastBaseURL: URL?
+        var remoteResourcePolicy: RemoteResourcePolicy = .blocked
+        var remoteResourceContextToken: UUID?
+        var resourceContextIsActive = true
+        var focusState: PreviewFocusState?
+
+        func invalidateResourceContext(in webView: WKWebView) {
+            if resourceContextIsActive, !lastHTML.isEmpty {
+                focusState?.preserveFocus(from: webView)
+            }
+            resourceContextIsActive = false
+            beginLoading()
+            documentLoader.invalidate(in: webView)
+            (webView as? PreviewWebView)?.invalidateContextMenu()
+        }
         var onEnterEdit: () -> Void = {}
         var onToggleTask: (
             _ line: Int, _ checked: Bool, _ revision: Int, _ restoreBoxes: @escaping () -> Void
@@ -1403,6 +1440,23 @@ struct MarkdownPreviewView: NSViewRepresentable {
         private var findInFlight = false
         var onFindUnavailable: (Bool) -> Void = { _ in }
         var lastFocusToken: UUID?
+
+        func updateFocusRequest(_ token: UUID, state: PreviewFocusState?, in webView: WKWebView) {
+            guard resourceContextIsActive, acceptsFindHost(webView) else { return }
+            focusState = state
+            let changed = lastFocusToken != token
+            lastFocusToken = token
+            let requested = changed && (state?.consume(token) ?? true)
+            guard requested || state?.hasPendingRestoration == true else { return }
+            DispatchQueue.main.async { [weak self, weak webView] in
+                guard let self, let webView, self.resourceContextIsActive,
+                      self.lastFocusToken == token, self.acceptsFindHost(webView),
+                      state == nil || state?.lastConsumedToken == token else { return }
+                if requested || state?.consumeRestoration(in: webView) == true {
+                    webView.window?.makeFirstResponder(webView)
+                }
+            }
+        }
         /// Token of the most recently consumed find-navigation command, so it runs
         /// exactly once even if `updateNSView` re-runs while the binding still holds
         /// the same command. See the consumption site for why clearing the binding
@@ -1450,6 +1504,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// preview's current source anchor. Called only when the page is loaded
         /// and no new diagram engine is required (the caller guarantees this).
         func applyLiveContent(_ bodyHTML: String, mathMacros: [String: String], in webView: WKWebView) {
+            guard resourceContextIsActive else { return }
             (webView as? PreviewWebView)?.invalidateContextMenu()
             liveUpdateGeneration += 1
             let generation = liveUpdateGeneration
@@ -1464,7 +1519,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
                     (WebDocumentLoader.rewriteContent(bodyHTML, baseURL: baseURL),
                      loadedBody.map { WebDocumentLoader.rewriteContent($0, baseURL: baseURL).html })
                 }.value
-                guard let self, let webView, generation == self.liveUpdateGeneration else { return }
+                guard let self, let webView, self.resourceContextIsActive,
+                      generation == self.liveUpdateGeneration else { return }
                 self.pendingLiveBody = prepared.html
                 self.pendingLiveOptions = Self.liveContentOptions(mathMacros: mathMacros, loadedBody: loaded)
                 self.pendingLiveImages = prepared.allowedImages
@@ -1487,7 +1543,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         private func schedulePreparedLiveContent(in webView: WKWebView, generation: Int) {
             let work = DispatchWorkItem { [weak self, weak webView] in
                 guard let self, let webView, let body = self.pendingLiveBody else { return }
-                guard generation == self.liveUpdateGeneration else { return }
+                guard self.resourceContextIsActive, generation == self.liveUpdateGeneration else { return }
                 self.pendingLiveBody = nil
                 let options = self.pendingLiveOptions
                 self.documentLoader.installImages(self.pendingLiveImages)
@@ -1665,9 +1721,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// go unlabelled. WebKit also restores the reader's place, which a load
         /// does not, so that goes along. A page still loading has none to keep.
         private func reloadLatestContent(in webView: WKWebView) {
+            guard resourceContextIsActive else { return }
             (webView as? PreviewWebView)?.invalidateContextMenu()
             captureAnchor(in: webView) { [weak self, weak webView] anchor in
-                guard let self, let webView else { return }
+                guard let self, let webView, self.resourceContextIsActive else { return }
                 let place = self.isLoaded ? anchor : nil
                 if let place {
                     self.pendingScroll = .viewport(place)
@@ -1680,7 +1737,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
                     self.runFindWhenReady(query, in: webView)
                 }
                 self.documentLoader.load(
-                    self.lastHTML, baseURL: self.lastBaseURL, fragment: place?.fallbackHeadingID, in: webView
+                    self.lastHTML, baseURL: self.lastBaseURL, fragment: place?.fallbackHeadingID,
+                    remoteResourcePolicy: self.remoteResourcePolicy, in: webView
                 )
             }
         }
@@ -1790,7 +1848,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             _ userContentController: WKUserContentController,
             didReceive message: WKScriptMessage
         ) {
-            guard message.frameInfo.isMainFrame else { return }
+            guard resourceContextIsActive, message.frameInfo.isMainFrame else { return }
             switch message.name {
             case MarkdownPreviewView.selectionMessageName:
                 guard message.world == .defaultClient else { return }
@@ -1852,6 +1910,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             decidePolicyFor navigationAction: WKNavigationAction,
             decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void
         ) {
+            guard resourceContextIsActive else { decisionHandler(.cancel); return }
             // Subframe navigations stay inside the page.
             if let targetFrame = navigationAction.targetFrame, !targetFrame.isMainFrame {
                 decisionHandler(.allow)
@@ -1892,6 +1951,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         }
 
         fileprivate func dispatch(_ route: PreviewLinkRouter.Route) {
+            guard resourceContextIsActive else { return }
             switch route {
             case .allowInPage, .ignore:
                 break
@@ -1930,7 +1990,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             // Taken for loaded, a page on its way out would receive an edit that
             // the load then overwrites with older text.
-            guard !isAwaitingCommit else { return }
+            guard resourceContextIsActive, !isAwaitingCommit,
+                  documentLoader.currentNavigation == nil || navigation === documentLoader.currentNavigation else { return }
             isLoaded = true
             applyTypography(in: webView)
             applyFrontMatterVisibility(in: webView)
@@ -1940,6 +2001,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            guard resourceContextIsActive else { return }
             (webView as? PreviewWebView)?.invalidateContextMenu()
             // A new document started loading; hold scrolling until it finishes.
             isLoaded = false

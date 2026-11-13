@@ -13,9 +13,18 @@ import unittest
 
 
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/verify.yml"
+LOCAL_SCRIPT = WORKFLOW.parents[2] / "Scripts/functional_test.sh"
 RENDER = "P1RegressionTests.renderingYieldsMainActorAndLatestRevisionWins"
 EXPORT = "SelfContainedHTMLExportTests.exportImageBuilderRunsOffMainActorWhileInputCanContinue"
 SCALING = "InlineRenderingPerformanceTests"
+BLOCK = "BlockRenderingPerformanceTests"
+
+
+def default_command():
+    command = ["swift", "test"]
+    for test in (RENDER, SCALING, EXPORT, BLOCK):
+        command.extend(["--skip", test])
+    return command
 
 
 @dataclass
@@ -75,15 +84,12 @@ def validate_lanes(workflow):
                          for command in step.commands),
         "default test",
     )
-    expected_default = ["swift", "test"]
-    for test in (RENDER, SCALING, EXPORT):
-        expected_default.extend(["--skip", test])
-    if default.commands != [expected_default]:
+    if default.commands != [default_command()]:
         raise AssertionError("Default exclusions must exactly match the isolated gates")
 
     gates = [(default_index, default)]
     isolated = {}
-    for test in (RENDER, SCALING, EXPORT):
+    for test in (RENDER, SCALING, EXPORT, BLOCK):
         isolated[test] = unique_step(
             lambda step: ["swift", "test", "--filter", test] in step.commands,
             f"isolated {test}",
@@ -97,8 +103,9 @@ def validate_lanes(workflow):
         ["swift", "test", "--filter", EXPORT],
     ]:
         raise AssertionError("Heartbeats must run sequentially with failure propagation")
-    if isolated[SCALING][1].commands != [["swift", "test", "--filter", SCALING]]:
-        raise AssertionError("Scaling gate must run its exact isolated filter")
+    for test in (SCALING, BLOCK):
+        if isolated[test][1].commands != [["swift", "test", "--filter", test]]:
+            raise AssertionError("Scaling gates must run their exact isolated filters")
     for index, step in gates:
         if index >= package_index:
             raise AssertionError("Every test gate must precede packaging")
@@ -106,11 +113,66 @@ def validate_lanes(workflow):
             raise AssertionError("Test gates must be unconditional literal run steps")
 
 
+def validate_local_lanes(script):
+    """Check this script's literal top-level calls, not arbitrary shell syntax."""
+    commands = []
+    package = []
+    settings = []
+    nesting = []
+    for index, line in enumerate(script.splitlines()):
+        tokens = shlex.split(line, comments=True)
+        if not tokens:
+            continue
+        first = tokens[0]
+        if first == "set":
+            settings.append((index, tokens))
+        if tokens[:2] == ["swift", "test"]:
+            if nesting or line != line.lstrip():
+                raise AssertionError("Local test gates must be unconditional top-level calls")
+            commands.append((index, tokens))
+        if tokens[:2] == ["bash", "Scripts/package_app.sh"]:
+            if nesting:
+                raise AssertionError("Local packaging must follow the top-level test gates")
+            package.append(index)
+        # The current CLI uses a case block and a single-line argument check;
+        # GUI work uses a later if block. Reject wrappers around mandatory gates.
+        if first == "case":
+            nesting.append("esac")
+        elif first == "if" and not re.search(r";\s*fi\s*$", line):
+            nesting.append("fi")
+        elif first in {"for", "while", "until", "select"}:
+            nesting.append("done")
+        elif re.search(r"\(\)\s*\{\s*$", line) or first == "{":
+            nesting.append("}")
+        elif first == "(":
+            nesting.append(")")
+        elif first in {"esac", "fi", "done", "}"} or (
+            first == ")" and line.lstrip().startswith(")")
+        ):
+            if not nesting or nesting.pop() != first:
+                raise AssertionError("Unexpected local script control layout")
+    expected = [default_command()] + [
+        ["swift", "test", "--filter", test] for test in (SCALING, BLOCK, RENDER, EXPORT)
+    ]
+    if [tokens for _, tokens in commands] != expected:
+        raise AssertionError("Local exclusions must have exact executable isolated gates")
+    if len(package) != 1 or any(index >= package[0] for index, _ in commands):
+        raise AssertionError("All local test gates must precede packaging")
+    before_package = [(index, tokens) for index, tokens in settings if index < package[0]]
+    if len(before_package) != 1 or before_package[0][1] != ["set", "-euo", "pipefail"]:
+        raise AssertionError("Local gates must preserve shell failure propagation")
+    if before_package[0][0] >= commands[0][0]:
+        raise AssertionError("Shell failure propagation must precede all test gates")
+
+
 class TestLaneTests(unittest.TestCase):
     def setUp(self):
         self.workflow = WORKFLOW.read_text()
         self.heartbeat = next(step for step in read_steps(self.workflow)
                               if ["swift", "test", "--filter", EXPORT] in step.commands)
+        self.block = next(step for step in read_steps(self.workflow)
+                          if ["swift", "test", "--filter", BLOCK] in step.commands)
+        self.local = LOCAL_SCRIPT.read_text()
 
     def reject(self, workflow):
         with self.assertRaises(AssertionError):
@@ -118,6 +180,52 @@ class TestLaneTests(unittest.TestCase):
 
     def test_real_workflow_preserves_all_mandatory_test_lanes(self):
         validate_lanes(self.workflow)
+
+    def test_real_local_script_preserves_the_same_mandatory_lanes(self):
+        validate_local_lanes(self.local)
+
+    def test_block_gate_or_exclusion_cannot_be_omitted(self):
+        self.reject(self.workflow.replace(self.block.raw, "", 1))
+        self.reject(self.workflow.replace(f" --skip '{BLOCK}'", "", 1))
+
+    def test_block_gate_cannot_be_conditional_or_tolerate_failure(self):
+        for field in ("continue-on-error: true", "if: false", "if : false"):
+            with self.subTest(field=field):
+                changed = self.block.raw.replace("        run:", f"        {field}\n        run:", 1)
+                self.reject(self.workflow.replace(self.block.raw, changed, 1))
+        for suffix in (" || true", " ; true", " &"):
+            with self.subTest(suffix=suffix):
+                self.reject(self.workflow.replace(f"--filter '{BLOCK}'", f"--filter '{BLOCK}'{suffix}", 1))
+
+    def test_block_gate_after_packaging_is_rejected(self):
+        package = next(step for step in read_steps(self.workflow)
+                       if ["bash", "Scripts/package_app.sh", "--release"] in step.commands)
+        changed = self.workflow.replace(self.block.raw, "", 1)
+        self.reject(changed.replace(package.raw, package.raw + self.block.raw, 1))
+
+    def test_local_lane_bypasses_are_rejected(self):
+        command = f"swift test --filter '{BLOCK}'\n"
+        mutations = [
+            self.local.replace(command, "", 1),
+            self.local.replace(f" --skip '{BLOCK}'", "", 1),
+            self.local.replace(command, f"# {command}", 1),
+            self.local.replace(command, "if false; then\n" + command + "fi\n", 1),
+            self.local.replace(command, command.rstrip() + " || true\n", 1),
+            self.local.replace(command, command.rstrip() + " &\n", 1),
+            self.local.replace("set -euo pipefail\n", "", 1),
+            self.local.replace(command, "set +e\n" + command, 1),
+            self.local.replace(command, "", 1).replace(
+                "bash Scripts/package_app.sh\n", "bash Scripts/package_app.sh\n" + command, 1),
+        ]
+        for index, changed in enumerate(mutations):
+            with self.subTest(mutation=index), self.assertRaises(AssertionError):
+                validate_local_lanes(changed)
+
+    def test_local_subshell_cannot_swallow_a_failed_gate(self):
+        command = f"swift test --filter '{BLOCK}'\n"
+        changed = self.local.replace(command, "(\n" + command + ") || true\n", 1)
+        with self.assertRaises(AssertionError):
+            validate_local_lanes(changed)
 
     def test_exclusion_without_executable_isolated_filter_is_rejected(self):
         command = f"          swift test --filter '{EXPORT}'\n"

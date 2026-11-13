@@ -13,7 +13,8 @@ public struct MarkdownRenderer: Sendable {
     public func render(
         _ markdown: String,
         config: RenderConfig = .init(),
-        assetMode: RenderAssetMode = .inline
+        assetMode: RenderAssetMode = .inline,
+        remoteResourcePolicy: RemoteResourcePolicy = .blocked
     ) -> RenderedDocument {
         if Task.isCancelled {
             return RenderedDocument(html: "", body: "", outline: [], stats: DocumentStats(plainText: ""))
@@ -30,14 +31,14 @@ public struct MarkdownRenderer: Sendable {
         let lines = markdown.normalizedMarkdownLines
         let budget = MarkdownParsingBudget()
         let metadataLines = metadataLines(from: lines, budget: budget)
-        if budget.exhausted { return sourceFallback(markdown, config: config, assetMode: assetMode) }
+        if budget.exhausted { return sourceFallback(markdown, config: config, assetMode: assetMode, remoteResourcePolicy: remoteResourcePolicy) }
         let outline = outlineBuilder.build(from: metadataLines.joined(separator: "\n"))
 
         let footnotes = FootnoteContext()
         collectFootnoteDefinitions(metadataLines, into: footnotes)
         var references: [String: LinkReference] = [:]
         collectLinkReferences(lines, into: &references, budget: budget)
-        if budget.exhausted { return sourceFallback(markdown, config: config, assetMode: assetMode) }
+        if budget.exhausted { return sourceFallback(markdown, config: config, assetMode: assetMode, remoteResourcePolicy: remoteResourcePolicy) }
 
         let citations = CitationContext(entries: config.bibliography, style: config.citationStyle)
         let crossReferences = CrossReferenceContext(numberAllEquations: config.numberAllEquations)
@@ -55,7 +56,7 @@ public struct MarkdownRenderer: Sendable {
         )
 
         var body = renderBody(markdown, outline: outline, context: context)
-        if budget.exhausted { return sourceFallback(markdown, config: config, assetMode: assetMode) }
+        if budget.exhausted { return sourceFallback(markdown, config: config, assetMode: assetMode, remoteResourcePolicy: remoteResourcePolicy) }
         if Task.isCancelled {
             return RenderedDocument(html: "", body: "", outline: [], stats: DocumentStats(plainText: ""))
         }
@@ -68,7 +69,7 @@ public struct MarkdownRenderer: Sendable {
         if let bibliography = bibliographySectionHTML(citations) {
             body += "\n" + bibliography
         }
-        let html = htmlDocument(body: body, config: config, assetMode: assetMode)
+        let html = htmlDocument(body: body, config: config, assetMode: assetMode, remoteResourcePolicy: remoteResourcePolicy)
 
         return RenderedDocument(
             html: html,
@@ -83,10 +84,10 @@ public struct MarkdownRenderer: Sendable {
     /// If any traversal reaches the shared limit, discard partial metadata and
     /// markup together. Literal source keeps every line visible, including text
     /// after the offending container, without activating HTML or diagram syntax.
-    private func sourceFallback(_ markdown: String, config: RenderConfig, assetMode: RenderAssetMode) -> RenderedDocument {
+    private func sourceFallback(_ markdown: String, config: RenderConfig, assetMode: RenderAssetMode, remoteResourcePolicy: RemoteResourcePolicy) -> RenderedDocument {
         let body = "<pre class=\"markdown-source-fallback\" data-md2-source-line=\"1\"><code>\(escapeHTML(markdown))</code></pre>"
         return RenderedDocument(
-            html: htmlDocument(body: body, config: config, assetMode: assetMode),
+            html: htmlDocument(body: body, config: config, assetMode: assetMode, remoteResourcePolicy: remoteResourcePolicy),
             body: body,
             outline: [],
             stats: DocumentStats(plainText: markdown, sourceLines: markdown.isEmpty ? 0 : markdown.normalizedMarkdownLines.count),
@@ -2836,21 +2837,24 @@ public struct MarkdownRenderer: Sendable {
             .replacingOccurrences(of: ">", with: "\\u003e")
     }
 
-    private func htmlDocument(body: String, config: RenderConfig, assetMode: RenderAssetMode) -> String {
+    private func htmlDocument(body: String, config: RenderConfig, assetMode: RenderAssetMode, remoteResourcePolicy: RemoteResourcePolicy) -> String {
         // Gathered first: they run after `<main>`, but the policy that names
         // them must come before anything in the page.
         var scripts = PageScripts(assetMode: assetMode)
         scripts.add(.katex)
         scripts.add(.mhchem)
         scripts.addInline(mathBootstrap(macros: config.mathMacros))
-        addDiagramScripts(for: body, to: &scripts)
+        addDiagramScripts(for: body, to: &scripts, offlineArtifact: assetMode == .inline && remoteResourcePolicy == .blocked,
+            imageLabel: config.alertLanguage == .simplifiedChinese
+            ? "离线导出已省略图片" : "Image omitted from offline export")
         return """
         <!doctype html>
         <html>
         <head>
         <meta charset="utf-8">
+        <meta name="referrer" content="no-referrer">
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        \(PageContentSecurityPolicy.metaTag(scriptSources: scripts.sources, assetMode: assetMode))
+        \(PageContentSecurityPolicy.metaTag(scriptSources: scripts.sources, assetMode: assetMode, remoteResourcePolicy: remoteResourcePolicy))
         \(assetMode.mathStylesheet)
         <style>
         :root {
@@ -3378,7 +3382,7 @@ public struct MarkdownRenderer: Sendable {
     /// pay nothing — notably the large Mermaid bundle is never loaded unless a
     /// `mermaid` block is present. Shared dependencies are added once, in
     /// dependency order, before the engines that consume them.
-    private func addDiagramScripts(for body: String, to scripts: inout PageScripts) {
+    private func addDiagramScripts(for body: String, to scripts: inout PageScripts, offlineArtifact: Bool, imageLabel: String) {
         let hasMermaid = body.contains(PreviewClass.diagramMermaid)
         let hasFlow = body.contains(PreviewClass.diagramFlow)
         let hasSequence = body.contains(PreviewClass.diagramSequence)
@@ -3402,7 +3406,8 @@ public struct MarkdownRenderer: Sendable {
             scripts.add(.mermaid)
         }
 
-        scripts.addInline(diagramBootstrap)
+        let offline = offlineArtifact ? OfflineDiagramResources.script(imageLabel: imageLabel) : ""
+        scripts.addInline(offline + diagramBootstrap)
     }
 
     /// Client-side bootstrap that renders each diagram placeholder via its
@@ -3550,6 +3555,7 @@ public struct MarkdownRenderer: Sendable {
             try {
                 el.textContent = "";
                 flowchart.parse(source).drawSVG(el);
+                if (typeof md2OfflineDiagram === "function") { md2OfflineDiagram(el); }
                 reveal(el);
             } catch (err) {
                 fail(el, source);
@@ -3565,6 +3571,7 @@ public struct MarkdownRenderer: Sendable {
             try {
                 sel.textContent = "";
                 Diagram.parse(ssource).drawSVG(sel, { theme: "simple" });
+                if (typeof md2OfflineDiagram === "function") { md2OfflineDiagram(sel); }
                 reveal(sel);
             } catch (err) {
                 fail(sel, ssource);
@@ -3593,7 +3600,12 @@ public struct MarkdownRenderer: Sendable {
                     window.__md2DiagramPending++;
                     try {
                         mermaid.render("md2-mermaid-" + idx, source).then(function (result) {
-                            el.innerHTML = result.svg;
+                            if (typeof md2OfflineDiagram === "function") {
+                                var template = document.createElement('template');
+                                template.innerHTML = result.svg;
+                                md2OfflineDiagram(template.content);
+                                el.replaceChildren(template.content);
+                            } else { el.innerHTML = result.svg; }
                             reveal(el);
                         }).catch(function () {
                             fail(el, source);

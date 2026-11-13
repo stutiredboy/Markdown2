@@ -442,6 +442,7 @@ enum L10nKey: String, CaseIterable, Sendable {
     case mixedLineEndings
     case alertCouldNotExport
     case alertHTMLExportIncomplete, alertHTMLExportRemoteImages, alertHTMLExportLocalImages, alertHTMLExportMoreImages
+    case alertHTMLExported, alertHTMLExportDiagramResources
     case alertCouldNotPrint
     case alertPandocRequired
     case alertPandocRequiredDetail
@@ -511,6 +512,10 @@ enum L10nKey: String, CaseIterable, Sendable {
     case attachmentFolderHelp
     case imageNotFound
     case remoteImageUnavailable
+    case remoteImages, remoteImagesBlocked, remoteImagesAllowed, remoteImagesAllow, remoteImagesAllowConfirm, remoteImagesRevoke
+    case remoteImagesExplanation, remoteImagesPrivacy, remoteImagesAllowedExplanation, remoteImagesPreparing
+    case remoteImageBlocked, offlineHTMLRemoteImageBlocked, offlineHTMLLocalImageUnavailable
+    case alertExternalFormatExported, alertExternalFormatNetworkBoundary
     case imageLoadFailed
     case exportSettings
     case pageSizeLabel
@@ -672,9 +677,11 @@ enum L10n {
         .mixedLineEndings: "Mixed line endings",
 
         .alertCouldNotExport: "Could not export %@.",
-        .alertHTMLExportIncomplete: "%@ was exported, but some images are not embedded.",
-        .alertHTMLExportRemoteImages: "Remote images stay as links and need a network connection:",
-        .alertHTMLExportLocalImages: "These local images could not be embedded and may not display:",
+        .alertHTMLExportIncomplete: "%@ was exported as offline HTML with some images omitted.",
+        .alertHTMLExported: "%@ was exported as offline HTML.",
+        .alertHTMLExportDiagramResources: "Images generated inside diagrams are not embedded in offline HTML. Unsupported resource styles may be omitted; ordinary vector geometry is retained.",
+        .alertHTMLExportRemoteImages: "Remote images were replaced with inactive placeholders:",
+        .alertHTMLExportLocalImages: "These local images could not be embedded and were replaced with inactive placeholders:",
         .alertHTMLExportMoreImages: "…and %@ more",
         .alertCouldNotPrint: "Could not print the document.",
         .alertPandocRequired: "Pandoc is required to export %@.",
@@ -780,6 +787,21 @@ enum L10n {
         .attachmentFolderHelp: "Copied image files and screenshots are saved in this document-relative folder. Move it together with the document. Defaults to assets.",
         .imageNotFound: "Image not found",
         .remoteImageUnavailable: "Remote image could not be loaded",
+        .remoteImages: "Remote Images",
+        .remoteImagesBlocked: "Remote images blocked",
+        .remoteImagesAllowed: "Remote images allowed for this session",
+        .remoteImagesAllow: "Allow for This Document…",
+        .remoteImagesAllowConfirm: "Allow Remote Images",
+        .remoteImagesRevoke: "Block Remote Images",
+        .remoteImagesExplanation: "Allow HTTP(S) images in this document’s preview, PDF export and Print, including images in CSS and diagrams. Other remote resource types stay blocked. This permission applies only to this window and session; opening, reloading or recovering a document resets it.",
+        .remoteImagesPrivacy: "Loading remote images reveals your network address and request information to their servers. You can block images again at any time; requests already sent cannot be recalled.",
+        .remoteImagesAllowedExplanation: "HTTP(S) images may load in this document’s preview, PDF export and Print. Block them again below. Offline HTML never inherits this permission.",
+        .remoteImagesPreparing: "Preparing a new preview…",
+        .remoteImageBlocked: "Remote image blocked — use the document’s Remote Images control to allow it",
+        .offlineHTMLRemoteImageBlocked: "Remote image omitted from offline HTML",
+        .offlineHTMLLocalImageUnavailable: "Image could not be embedded in offline HTML",
+        .alertExternalFormatExported: "%@ was exported.",
+        .alertExternalFormatNetworkBoundary: "Network access was blocked during conversion. Word and EPUB readers are outside this app’s policy and may load remote resources when opening the file. Use HTML or PDF for controlled offline sharing.",
         .imageLoadFailed: "Image could not be loaded",
         .exportSettings: "Export",
         .pageSizeLabel: "Page Size",
@@ -917,9 +939,11 @@ enum L10n {
         .mixedLineEndings: "混合换行符",
 
         .alertCouldNotExport: "无法导出 %@。",
-        .alertHTMLExportIncomplete: "%@ 已导出，但部分图片未嵌入。",
-        .alertHTMLExportRemoteImages: "远程图片保留为链接，需要联网才能显示：",
-        .alertHTMLExportLocalImages: "以下本地图片无法嵌入，可能无法显示：",
+        .alertHTMLExportIncomplete: "%@ 已导出为离线 HTML，部分图片已省略。",
+        .alertHTMLExported: "%@ 已导出为离线 HTML。",
+        .alertHTMLExportDiagramResources: "离线 HTML 不会嵌入图表内部生成的图片；不支持的资源样式可能被省略，普通矢量图形会保留。",
+        .alertHTMLExportRemoteImages: "以下远程图片已替换为不可加载的占位提示：",
+        .alertHTMLExportLocalImages: "以下本地图片无法嵌入，已替换为不可加载的占位提示：",
         .alertHTMLExportMoreImages: "另有 %@ 张未列出",
         .alertCouldNotPrint: "无法打印文档。",
         .alertPandocRequired: "导出 %@ 需要 Pandoc。",
@@ -1025,6 +1049,21 @@ enum L10n {
         .attachmentFolderHelp: "复制的图片文件和截图保存在此相对文档的文件夹中。移动文档时请连同它一起移动。默认为 assets。",
         .imageNotFound: "找不到图片",
         .remoteImageUnavailable: "无法加载远程图片",
+        .remoteImages: "远程图片",
+        .remoteImagesBlocked: "远程图片已阻止",
+        .remoteImagesAllowed: "本次会话已允许远程图片",
+        .remoteImagesAllow: "为本文档允许…",
+        .remoteImagesAllowConfirm: "允许远程图片",
+        .remoteImagesRevoke: "阻止远程图片",
+        .remoteImagesExplanation: "允许本文档在预览、PDF 导出和打印时加载 HTTP(S) 图片，包括 CSS 和图表中的图片。其他远程资源仍被阻止。许可仅对当前窗口和本次会话有效；打开、重新加载或恢复文档后将重置。",
+        .remoteImagesPrivacy: "加载远程图片会向其服务器透露你的网络地址和请求信息。你可随时再次阻止，但已发送的请求无法撤回。",
+        .remoteImagesAllowedExplanation: "本文档在预览、PDF 导出和打印时可加载 HTTP(S) 图片。可在下方再次阻止。离线 HTML 始终不继承此许可。",
+        .remoteImagesPreparing: "正在准备新预览…",
+        .remoteImageBlocked: "远程图片已阻止，可通过本文档的「远程图片」控件允许加载",
+        .offlineHTMLRemoteImageBlocked: "离线 HTML 已省略远程图片",
+        .offlineHTMLLocalImageUnavailable: "此图片无法嵌入离线 HTML",
+        .alertExternalFormatExported: "已导出 %@。",
+        .alertExternalFormatNetworkBoundary: "转换期间已禁止网络访问。Word 和 EPUB 阅读器不受本应用的策略约束，打开文件时可能加载远程资源。如需受控的离线分享，请使用 HTML 或 PDF。",
         .imageLoadFailed: "无法加载图片",
         .exportSettings: "导出",
         .pageSizeLabel: "页面大小",

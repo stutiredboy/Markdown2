@@ -1,4 +1,10 @@
 import Foundation
+import MD2Core
+
+struct OfflineHTMLLabels: Sendable {
+    var remoteImageBlocked: String = "Remote image omitted from offline HTML"
+    var localImageUnavailable: String = "Image could not be embedded in offline HTML"
+}
 
 /// Produces a single HTML document by inlining every locally-stored image
 /// referenced by an `<img>` tag as a base64 `data:` URI, so the exported file is
@@ -6,27 +12,23 @@ import Foundation
 /// are already inlined by `MarkdownRenderer`, so images are the only remaining
 /// external dependency.
 ///
-/// An image that stays outside the file is left untouched and reported in
-/// `Output`: a remote `http(s)` image keeps its URL, and a local reference that
-/// cannot be embedded stays as written rather than failing the export. That covers
-/// a missing, unreadable, or non-image file, and a relative path when `baseURL` is
-/// nil (an unsaved document). Already-inlined `data:` URIs need nothing. An image a
-/// diagram's own source loads when the page is displayed is out of reach: here that
-/// source is escaped text, so it is neither inlined nor reported. This complements
-/// `LocalImageHTMLRewriter` (which serves absolute local images to the
-/// offscreen PDF web view) by also resolving *relative* paths against the document
-/// directory and emitting portable data URIs.
+/// Every image that cannot be validated and embedded becomes inert readable
+/// text, including remote images and unresolved relative paths. A session's
+/// preview grant is never exported. The renderer's offline diagram boundary
+/// handles images created later by bundled engines.
 enum SelfContainedHTMLBuilder {
     /// The exported page and the images it still depends on. Names are for
     /// showing to the user, in document order, each listed once.
     struct Output: Sendable {
         let html: String
-        /// Remote sources left as URLs; they need the network to display.
+        /// Remote sources omitted from the artifact, shown only as inert text.
         let remoteImages: [String]
-        /// Local references left as written; they may show as broken images.
+        /// Local/data references that could not be validated and embedded.
         let unembeddedLocalImages: [String]
         /// Content/size rejections have a specific explanation in the export notice.
         var localImageFailures: [String: ImageFailure] = [:]
+        /// The worker observed a generated diagram placeholder, not a known image omission.
+        var containsDiagrams: Bool = false
     }
 
     typealias ImageFailure = LocalImageValidator.ImageFailure
@@ -34,9 +36,10 @@ enum SelfContainedHTMLBuilder {
 
     private static let imgTagPattern = #"<img\b[^>]*\bsrc\s*=\s*(['"])(.*?)\1[^>]*>"#
 
-    /// Returns `html` with each `<img>` that points at a local image file replaced
-    /// by an inlined `data:` URI, and reports the images it left outside the page.
-    static func build(html: String, baseURL: URL?, limits: Limits = Limits()) -> Output {
+    /// Rebuilds each rendered image from safe attributes: stale srcset/style
+    /// attributes cannot survive beside an otherwise valid embedded src.
+    static func build(html: String, baseURL: URL?, limits: Limits = Limits(),
+                      labels: OfflineHTMLLabels = .init()) -> Output {
         guard let regex = try? NSRegularExpression(pattern: imgTagPattern, options: [.caseInsensitive]) else {
             return Output(html: html, remoteImages: [], unembeddedLocalImages: [])
         }
@@ -51,29 +54,42 @@ enum SelfContainedHTMLBuilder {
         var remainingPixels = limits.totalPixels
         // Replace right-to-left so earlier ranges stay valid as later text changes.
         for match in matches.reversed() {
-            guard let sourceRange = Range(match.range(at: 2), in: result) else { continue }
+            guard let sourceRange = Range(match.range(at: 2), in: result),
+                  let tagRange = Range(match.range, in: result) else { continue }
+            let tag = String(result[tagRange])
             let source = htmlUnescaped(String(result[sourceRange]))
             let lower = source.lowercased()
-
-            guard !source.isEmpty, !lower.hasPrefix("data:") else { continue }
-
-            if lower.hasPrefix("http://") || lower.hasPrefix("https://") {
+            let remote = lower.hasPrefix("http://") || lower.hasPrefix("https://") || source.hasPrefix("//")
+            let name = lower.hasPrefix("data:") ? "Embedded image" : (source.removingPercentEncoding ?? source)
+            if remote {
                 remoteImages.append(source)
             } else {
-                let name = source.removingPercentEncoding ?? source
-                if let fileURL = localImageFileURL(fromSource: source, baseURL: baseURL) {
-                    do {
-                        let uri = try dataURI(for: fileURL, limits: limits, remainingBytes: &remainingBytes, remainingPixels: &remainingPixels)
-                        result.replaceSubrange(sourceRange, with: uri)
-                        continue
-                    } catch let failure as ImageFailure {
-                        failures[name] = failure
-                    } catch {
-                        // Missing/unreadable files retain the existing generic notice.
+                do {
+                    let image: LocalImageValidator.Image
+                    if lower.hasPrefix("data:") {
+                        image = try OfflineExportImage.decodeDataURI(source, limits: limits,
+                            remainingBytes: &remainingBytes, remainingPixels: &remainingPixels)
+                    } else if let fileURL = localImageFileURL(fromSource: source, baseURL: baseURL) {
+                        image = try OfflineExportImage.read(fileURL, limits: limits,
+                            remainingBytes: &remainingBytes, remainingPixels: &remainingPixels)
+                    } else {
+                        throw CocoaError(.fileReadNoSuchFile)
                     }
+                    let uri = "data:\(image.mime);base64,\(image.data.base64EncodedString())"
+                    result.replaceSubrange(tagRange, with: embeddedTag(uri: uri, original: tag))
+                    continue
+                } catch let failure as ImageFailure {
+                    failures[name] = failure
+                } catch {
+                    // Missing/unreadable images have a distinct generic notice.
                 }
                 localImages.append(name)
             }
+            let label = remote ? labels.remoteImageBlocked : labels.localImageUnavailable
+            let alt = attribute("alt", in: tag).map { $0.isEmpty ? "" : " — \($0)" } ?? ""
+            result.replaceSubrange(tagRange, with:
+                "<span class=\"md2-export-image-placeholder\" role=\"img\">\(escaped(label + alt)) " +
+                "<span class=\"md2-export-image-source\">\(escaped(name))</span></span>")
         }
         return Output(
             html: result,
@@ -81,6 +97,37 @@ enum SelfContainedHTMLBuilder {
             unembeddedLocalImages: uniqued(localImages.reversed()),
             localImageFailures: failures
         )
+    }
+
+    private static func attribute(_ name: String, in tag: String) -> String? {
+        let regex = try! NSRegularExpression(pattern: "\\b" + name + #"\s*=\s*(['"])(.*?)\1"#, options: [.caseInsensitive])
+        guard let match = regex.firstMatch(in: tag, range: NSRange(tag.startIndex..., in: tag)),
+              let range = Range(match.range(at: 2), in: tag) else { return nil }
+        return htmlUnescaped(String(tag[range]))
+    }
+
+    private static func embeddedTag(uri: String, original: String) -> String {
+        var result = "<img src=\"\(uri)\""
+        for key in ["alt", "title", "width", "height"] {
+            if let value = attribute(key, in: original) {
+                if ["width", "height"].contains(key), Int(value).map({ $0 > 0 && $0 <= 100_000 }) != true { continue }
+                result += " \(key)=\"\(escaped(value))\""
+            }
+        }
+        return result + ">"
+    }
+
+    private static func escaped(_ value: String) -> String {
+        value.unicodeScalars.map { scalar in
+            switch scalar.value {
+            case 38: "&amp;"
+            case 60: "&lt;"
+            case 62: "&gt;"
+            case 34: "&quot;"
+            case 39: "&#39;"
+            default: String(scalar)
+            }
+        }.joined()
     }
 
     /// The content of `<main>`, which holds the whole rendered document. Everything
@@ -130,22 +177,11 @@ enum SelfContainedHTMLBuilder {
         return url
     }
 
-    private static func dataURI(for fileURL: URL, limits: Limits, remainingBytes: inout Int,
-                                remainingPixels: inout Int) throws -> String {
-        let image = try LocalImageValidator.read(fileURL, limits: limits,
-            remainingBytes: &remainingBytes, remainingPixels: &remainingPixels)
-        return "data:\(image.mime);base64,\(image.data.base64EncodedString())"
-    }
-
     private static func isSupportedImageFile(_ url: URL) -> Bool {
         LocalImageValidator.isSupportedImageFile(url)
     }
 
     private static func htmlUnescaped(_ source: String) -> String {
-        source
-            .replacingOccurrences(of: "&quot;", with: "\"")
-            .replacingOccurrences(of: "&#39;", with: "'")
-            .replacingOccurrences(of: "&apos;", with: "'")
-            .replacingOccurrences(of: "&amp;", with: "&")
+        HTMLSafety.decodeHTMLAttributeEntities(source)
     }
 }

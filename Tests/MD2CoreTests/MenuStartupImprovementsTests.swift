@@ -177,6 +177,7 @@ struct MenuStartupImprovementsTests {
 
 @MainActor
 private final class FakeDocumentPrinter: DocumentPrinting {
+    func cancel() {}
     private(set) var printCallCount = 0
     private(set) var html: String?
     private(set) var outline: [Heading]?
@@ -193,8 +194,10 @@ private final class FakeDocumentPrinter: DocumentPrinting {
         html: String,
         outline: [Heading],
         baseURL: URL?,
+        remoteResourcePolicy: RemoteResourcePolicy,
         profile: ExportProfile,
         documentTitle: String,
+        remoteImageBlockedLabel: String,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         printCallCount += 1
@@ -217,6 +220,7 @@ private final class FakeDocumentPrinter: DocumentPrinting {
 
 @MainActor
 private final class DeferringFakePDFExporter: PDFExporting {
+    func cancel() {}
     private(set) var exportCallCount = 0
     private var pendingCompletion: ((Result<Void, Error>) -> Void)?
 
@@ -224,7 +228,9 @@ private final class DeferringFakePDFExporter: PDFExporting {
         html: String,
         outline: [Heading],
         baseURL: URL?,
+        remoteResourcePolicy: RemoteResourcePolicy,
         documentTitle: String,
+        remoteImageBlockedLabel: String,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         exportCallCount += 1
