@@ -1,17 +1,20 @@
 // Real native AppKit events exercise command acceptance and finalization.
 // These new asynchronous-contract tests preserve the existing synchronous tests.
 import AppKit
+import Darwin
 import SwiftUI
 import XCTest
 @testable import MD2App
 @testable import MD2Core
 
 final class AsyncStructuredNativeGUITests: XCTestCase {
+    private static let childVariable = "MD2_ASYNC_NATIVE_CASE"
     @MainActor private static var originalActivationPolicy: NSApplication.ActivationPolicy?
 
     override class func setUp() {
         super.setUp()
-        guard ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1" else { return }
+        guard ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+              ProcessInfo.processInfo.environment[childVariable] != nil else { return }
         MainActor.assumeIsolated {
             let app = NSApplication.shared
             originalActivationPolicy = app.activationPolicy()
@@ -21,6 +24,10 @@ final class AsyncStructuredNativeGUITests: XCTestCase {
     }
 
     override class func tearDown() {
+        guard ProcessInfo.processInfo.environment[childVariable] != nil else {
+            super.tearDown()
+            return
+        }
         MainActor.assumeIsolated {
             if let originalActivationPolicy { _ = NSApp.setActivationPolicy(originalActivationPolicy) }
             originalActivationPolicy = nil
@@ -33,7 +40,68 @@ final class AsyncStructuredNativeGUITests: XCTestCase {
                           "Requires an exclusive, unlocked native GUI lease")
     }
 
+    /// A completed native app lifecycle leaves later RunLoop-only fixtures
+    /// sharing automatic undo groups. Keep that lifecycle in a private process.
+    /// Each child executes the original case with its original 20s event limit.
+    @MainActor private func runInIsolatedProcessIfNeeded(_ method: String) throws -> Bool {
+        if let selected = ProcessInfo.processInfo.environment[Self.childVariable] {
+            guard selected == method else {
+                throw NSError(domain: "AsyncStructuredNativeGUITests", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey: "Unexpected native child case: \(selected), got \(method)"])
+            }
+            return false
+        }
+
+        let selector = String(method.dropLast(2))
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        process.arguments = ["xctest", "-XCTest", "MD2CoreTests.AsyncStructuredNativeGUITests/\(selector)",
+                             Bundle(for: Self.self).bundlePath]
+        var environment = ProcessInfo.processInfo.environment
+        environment[Self.childVariable] = method
+        process.environment = environment
+        let log = FileManager.default.temporaryDirectory.appendingPathComponent("md2-native-\(UUID()).log")
+        FileManager.default.createFile(atPath: log.path, contents: nil)
+        let output = try FileHandle(forWritingTo: log)
+        defer { try? output.close() }
+        process.standardOutput = output
+        process.standardError = output
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
+        try process.run()
+        // A case can run several original 20s event probes. This outer limit
+        // bounds process cleanup without relaxing any individual event probe.
+        let completed = finished.wait(timeout: .now() + 120) == .success
+        var terminated = completed
+        if !terminated {
+            process.terminate()
+            terminated = finished.wait(timeout: .now() + 3) == .success
+            if !terminated {
+                _ = Darwin.kill(process.processIdentifier, SIGKILL)
+                terminated = finished.wait(timeout: .now() + 3) == .success
+            }
+        }
+        let diagnostics = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
+        print("Native child \(method):\n\(diagnostics)")
+        XCTAssertTrue(completed, "Native child exceeded 120s; log: \(log.path)")
+        XCTAssertTrue(terminated, "Native child did not terminate; pid: \(process.processIdentifier), log: \(log.path)")
+        guard terminated else { return true }
+        let marker = "MD2_NATIVE_COMPLETED=\(method)"
+        let markerCount = diagnostics.split(whereSeparator: \.isNewline).filter { $0 == marker }.count
+        let passed = diagnostics.contains("Test Case '-[MD2CoreTests.AsyncStructuredNativeGUITests \(selector)]' passed (")
+        XCTAssertEqual(process.terminationReason, .exit, "Native child crashed; log: \(log.path)")
+        XCTAssertEqual(process.terminationStatus, 0, "Native child failed; log: \(log.path)")
+        XCTAssertEqual(markerCount, 1, "Native child did not complete exactly once; log: \(log.path)")
+        XCTAssertTrue(passed, "Expected native case did not pass (missing, skipped, or failed); log: \(log.path)")
+        if completed, process.terminationReason == .exit, process.terminationStatus == 0, markerCount == 1, passed {
+            try? FileManager.default.removeItem(at: log)
+        }
+        return true
+    }
+
     @MainActor func testTwoAcceptedTableIntentsFinishInOrderWithExactTwoStepHistory() throws {
+        if try runInIsolatedProcessIfNeeded(#function) { return }
+        defer { print("MD2_NATIVE_COMPLETED=\(#function)") }
         let h = try AsyncNativeHost(AsyncFixture.original)
         defer { h.close() }
         h.view.setSelectedRange(AsyncFixture.originalSelection)
@@ -65,6 +133,8 @@ final class AsyncStructuredNativeGUITests: XCTestCase {
     }
 
     @MainActor func testAttributeStylingBetweenAcceptanceAndAdoptionPreservesTableCommand() throws {
+        if try runInIsolatedProcessIfNeeded(#function) { return }
+        defer { print("MD2_NATIVE_COMPLETED=\(#function)") }
         let h = try AsyncNativeHost(AsyncFixture.original)
         defer { h.close() }
         let styling = MarkdownStylingController()
@@ -109,6 +179,8 @@ final class AsyncStructuredNativeGUITests: XCTestCase {
     }
 
     @MainActor func testActualSelectionAwayAndBackDuringStylingStillCancelsPendingCommand() throws {
+        if try runInIsolatedProcessIfNeeded(#function) { return }
+        defer { print("MD2_NATIVE_COMPLETED=\(#function)") }
         let h = try AsyncNativeHost(AsyncFixture.original)
         defer { h.close() }
         let styling = MarkdownStylingController()
@@ -143,6 +215,8 @@ final class AsyncStructuredNativeGUITests: XCTestCase {
     }
 
     @MainActor func testLastCellTabThenTabAppendsOneRowAndNavigatesProjectedRow() throws {
+        if try runInIsolatedProcessIfNeeded(#function) { return }
+        defer { print("MD2_NATIVE_COMPLETED=\(#function)") }
         let source = "| A | B |\r\n| - | - |\r\n| x | y |"
         let appended = source + "\r\n|  |  |"
         let y = (source as NSString).range(of: "y")
@@ -167,6 +241,8 @@ final class AsyncStructuredNativeGUITests: XCTestCase {
     }
 
     @MainActor func testStartupQueuedLastCellTabPrecedesQueuedNativeCharacter() throws {
+        if try runInIsolatedProcessIfNeeded(#function) { return }
+        defer { print("MD2_NATIVE_COMPLETED=\(#function)") }
         let source = "| A | B |\r\n| - | - |\r\n| x | y |"
         let appended = source + "\r\n|  |  |"
         let typed = source + "\r\n| x |  |"
@@ -210,6 +286,8 @@ final class AsyncStructuredNativeGUITests: XCTestCase {
     }
 
     @MainActor func testRealPrequeuedTabAndCharacterUseHostedCoordinatorAndKeepTwoUndoSteps() throws {
+        if try runInIsolatedProcessIfNeeded(#function) { return }
+        defer { print("MD2_NATIVE_COMPLETED=\(#function)") }
         let source = "| A | B |\r\n| - | - |\r\n| x | y |"
         let appended = source + "\r\n|  |  |"
         let typed = source + "\r\n| x |  |"
@@ -242,6 +320,8 @@ final class AsyncStructuredNativeGUITests: XCTestCase {
     }
 
     @MainActor func testTypingBeforeAndAfterCommandKeepsThreeExactHistorySteps() throws {
+        if try runInIsolatedProcessIfNeeded(#function) { return }
+        defer { print("MD2_NATIVE_COMPLETED=\(#function)") }
         let original = AsyncFixture.original + "\r\n\r\nbody "
         let beforeCommand = original + "ab"
         let afterCommand = AsyncFixture.widened + "\r\n\r\nbody ab"
@@ -281,6 +361,8 @@ final class AsyncStructuredNativeGUITests: XCTestCase {
     }
 
     @MainActor func testDidOpenCancellationKeepsActiveReceiptAndFreshSuccessor() throws {
+        if try runInIsolatedProcessIfNeeded(#function) { return }
+        defer { print("MD2_NATIVE_COMPLETED=\(#function)") }
         let h = try AsyncNativeHost(AsyncFixture.original)
         defer { h.close() }
         h.view.setSelectedRange(AsyncFixture.originalSelection)
@@ -315,6 +397,8 @@ final class AsyncStructuredNativeGUITests: XCTestCase {
     }
 
     @MainActor func testCancellationAfterWriteStillRemovesOnlyInvalidInverse() throws {
+        if try runInIsolatedProcessIfNeeded(#function) { return }
+        defer { print("MD2_NATIVE_COMPLETED=\(#function)") }
         for notification in [Notification.Name.NSUndoManagerDidOpenUndoGroup,
                              .NSUndoManagerWillCloseUndoGroup, .NSUndoManagerDidCloseUndoGroup] {
             let h = try AsyncNativeHost(AsyncFixture.original)
@@ -345,6 +429,8 @@ final class AsyncStructuredNativeGUITests: XCTestCase {
     }
 
     @MainActor func testObserverAwayAndBackDoesNotAuthorizePendingSuccessor() throws {
+        if try runInIsolatedProcessIfNeeded(#function) { return }
+        defer { print("MD2_NATIVE_COMPLETED=\(#function)") }
         // Six registration/closing combinations plus one observer reentry
         // inside the native write. Final bytes/range match the intended first
         // command, so a plain end-state comparison cannot pass these cases.
@@ -401,6 +487,8 @@ final class AsyncStructuredNativeGUITests: XCTestCase {
     }
 
     @MainActor func testPendingTableThenPasteUsesProjectedSelectionAndTwoHistorySteps() throws {
+        if try runInIsolatedProcessIfNeeded(#function) { return }
+        defer { print("MD2_NATIVE_COMPLETED=\(#function)") }
         let h = try AsyncNativeHost(AsyncFixture.original)
         defer { h.close() }
         h.view.setSelectedRange(AsyncFixture.originalSelection)
@@ -431,6 +519,8 @@ final class AsyncStructuredNativeGUITests: XCTestCase {
     }
 
     @MainActor func testPendingPasteThenTableInvalidatesConversionWithCancelledNotice() throws {
+        if try runInIsolatedProcessIfNeeded(#function) { return }
+        defer { print("MD2_NATIVE_COMPLETED=\(#function)") }
         let h = try AsyncNativeHost(AsyncFixture.original), gate = AsyncConversionGate()
         defer { h.close() }
         h.view.setSelectedRange(AsyncFixture.originalSelection)
@@ -462,6 +552,8 @@ final class AsyncStructuredNativeGUITests: XCTestCase {
     }
 
     @MainActor func testConvertedUnadoptedPasteIsCancelledBeforeLaterTablePlanning() throws {
+        if try runInIsolatedProcessIfNeeded(#function) { return }
+        defer { print("MD2_NATIVE_COMPLETED=\(#function)") }
         let h = try AsyncNativeHost(AsyncFixture.original)
         defer { h.close() }
         h.view.setSelectedRange(AsyncFixture.originalSelection)
@@ -515,6 +607,8 @@ final class AsyncStructuredNativeGUITests: XCTestCase {
     }
 
     @MainActor func testRefusedOrNoOpTableActionDoesNotCancelPendingPaste() throws {
+        if try runInIsolatedProcessIfNeeded(#function) { return }
+        defer { print("MD2_NATIVE_COMPLETED=\(#function)") }
         for action in [MarkdownEditing.Action.tableEdit(.deleteRow), .outdent] {
             let h = try AsyncNativeHost(AsyncFixture.original), gate = AsyncConversionGate()
             defer { h.close() }
@@ -551,6 +645,8 @@ final class AsyncStructuredNativeGUITests: XCTestCase {
     }
 
     @MainActor func testManualCallerAndDisabledPathsRemainSynchronousInRunningApp() throws {
+        if try runInIsolatedProcessIfNeeded(#function) { return }
+        defer { print("MD2_NATIVE_COMPLETED=\(#function)") }
         for mode in ["manual", "caller", "disabled"] {
             let h = try AsyncNativeHost(AsyncFixture.original)
             defer { h.close() }
@@ -583,6 +679,8 @@ final class AsyncStructuredNativeGUITests: XCTestCase {
     }
 
     @MainActor func testNativeFieldUndoRedoExecutesInverseSynchronously() throws {
+        if try runInIsolatedProcessIfNeeded(#function) { return }
+        defer { print("MD2_NATIVE_COMPLETED=\(#function)") }
         let h = try AsyncNativeHost(AsyncFixture.original)
         defer { h.close() }
         h.view.setSelectedRange(AsyncFixture.originalSelection)
