@@ -220,7 +220,7 @@
       "tier": "Supported",
       "baselineRelationship": "known-incomplete",
       "declaredBehavior": "Inline and reference images become `<img src alt title>`; inline images support angle-delimited destinations with spaces and Pandoc size attributes.",
-      "boundary": "Some nested alt-text and inline destination edges remain incomplete; reference images do not consume size attributes. HTML export embeds local image files; remote `http`/`https` images stay URLs, and the app lists any Markdown or HTML image it did not embed. Images loaded by diagram source are neither embedded nor listed.",
+      "boundary": "Some nested alt-text and inline destination edges remain incomplete; reference images do not consume size attributes. HTML export embeds validated local/data images; remote and unembeddable images become inert placeholders with an export notice, regardless of preview permission. Diagram-generated images are omitted with a scope notice rather than an exhaustive resource count.",
       "docLabel": "Supported"
     },
     {
@@ -395,8 +395,8 @@
       "sections": [],
       "tier": "Supported",
       "baselineRelationship": "not-in-corpus",
-      "declaredBehavior": "Pasted screenshots are saved into a configurable document-relative folder. Dragged or pasted image files are linked at their existing location without copying.",
-      "boundary": "Moving a linked file can break its reference. A missing local image shows an explicit broken-image placeholder rather than a blank.",
+      "declaredBehavior": "Pasted screenshots and dropped/pasted image files are copied into a configurable document-relative folder by default. Settings also offers linking image files at their original location. Collect Local Images copies supported existing Markdown image references and rewrites their destinations.",
+      "boundary": "Collection is limited to safely mapped top-level inline Markdown images; unsupported, missing, invalid and remote resources remain unchanged and are reported. External attachment directories require document-session authorization. Moving a linked file can break its reference; a missing local image shows an explicit broken-image placeholder.",
       "docLabel": "Supported",
       "localTests": ["ImageAttachmentTests", "DocumentStoreImageAttachmentTests"]
     },
