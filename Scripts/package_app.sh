@@ -238,18 +238,6 @@ LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchS
 echo "Installed $INSTALL_APP"
 
 if $SET_DEFAULT; then
-MD2_INSTALL_BUNDLE_IDENTIFIER="$BUNDLE_IDENTIFIER" swift - <<'SWIFT'
-import CoreServices
-import Foundation
-
-let bundleID = ProcessInfo.processInfo.environment["MD2_INSTALL_BUNDLE_IDENTIFIER"]! as NSString
-for contentType in ["net.daringfireball.markdown", "public.markdown"] {
-    let status = LSSetDefaultRoleHandlerForContentType(contentType as NSString, LSRolesMask.editor, bundleID)
-    guard status == noErr else {
-        fputs("Could not set the default handler for \(contentType): \(status)\n", stderr)
-        exit(1)
-    }
-}
-SWIFT
+swift "$ROOT_DIR/Scripts/SetDefaultMarkdownHandler.swift" "$INSTALL_APP"
 echo "Set $BUNDLE_IDENTIFIER as the default Markdown editor"
 fi
