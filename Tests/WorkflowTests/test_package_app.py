@@ -27,6 +27,9 @@ class PackageAppTests(unittest.TestCase):
         (self.root / "Scripts/package_app.sh").write_text(
             source.replace(LSREGISTER, str(self.bin / "lsregister"))
         )
+        (self.root / "Scripts/SetDefaultMarkdownHandler.swift").write_text(
+            (REPO / "Scripts/SetDefaultMarkdownHandler.swift").read_text()
+        )
         (self.root / "Resources").mkdir()
         (self.root / "Resources/AppIcon.icns").write_bytes(b"test icon")
         release = self.root / ".build/release"
@@ -46,13 +49,17 @@ if name == 'ditto':
     if os.environ.get('MD2_TEST_FAIL_COPY') == '1':
         sys.exit(1)
     shutil.copytree(sys.argv[1], sys.argv[2], dirs_exist_ok=True)
+if name == 'swift' and len(sys.argv) > 1 and pathlib.Path(sys.argv[1]).name == 'SetDefaultMarkdownHandler.swift':
+    if os.environ.get('MD2_TEST_FAIL_DEFAULT') == '1':
+        print('injected default-handler failure', file=sys.stderr)
+        sys.exit(19)
 """
         for tool in ("swift", "codesign", "ditto", "lsregister"):
             destination = self.bin / tool
             destination.write_text(wrapper)
             destination.chmod(0o755)
 
-    def run_package(self, *arguments, ci=False, fail_copy=False):
+    def run_package(self, *arguments, ci=False, fail_copy=False, fail_default=False):
         env = os.environ.copy()
         for key in ("CI", "GITHUB_REF_NAME", "MARKDOWN2_CODESIGN_IDENTITY"):
             env.pop(key, None)
@@ -66,6 +73,8 @@ if name == 'ditto':
             env["CI"] = "true"
         if fail_copy:
             env["MD2_TEST_FAIL_COPY"] = "1"
+        if fail_default:
+            env["MD2_TEST_FAIL_DEFAULT"] = "1"
         return subprocess.run(
             ["bash", "Scripts/package_app.sh", *arguments], cwd=self.root,
             env=env, text=True, capture_output=True, timeout=30,
@@ -80,12 +89,15 @@ if name == 'ditto':
         with (self.root / "dist/Markdown2.app/Contents/Info.plist").open("rb") as stream:
             return plistlib.load(stream)
 
+    def default_commands(self):
+        return [row for row in self.commands() if row[0] == "swift" and row[1] != "build"]
+
     def test_default_build_preserves_installation_and_file_associations(self):
         result = self.run_package()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.install / "original").exists())
         self.assertFalse(any(row[0] in ("ditto", "lsregister") for row in self.commands()))
-        self.assertFalse(any(row[:2] == ["swift", "-"] for row in self.commands()))
+        self.assertEqual(self.default_commands(), [])
         self.assertEqual(self.bundle()["CFBundleIdentifier"], "dev.codex.md2.development")
 
     def test_release_build_preserves_distributed_identity_and_has_no_install_side_effects(self):
@@ -96,13 +108,14 @@ if name == 'ditto':
         self.assertEqual(self.bundle()["LSMinimumSystemVersion"], "15.0")
         self.assertTrue((self.install / "original").exists())
         self.assertFalse(any(row[0] in ("ditto", "lsregister") for row in self.commands()))
+        self.assertEqual(self.default_commands(), [])
 
     def test_install_is_explicit_and_does_not_set_default(self):
         result = self.run_package("--install", str(self.install))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.install / "Contents/Info.plist").exists())
         self.assertTrue(any(row[0] == "ditto" for row in self.commands()))
-        self.assertFalse(any(row[:2] == ["swift", "-"] for row in self.commands()))
+        self.assertEqual(self.default_commands(), [])
 
     def test_set_default_requires_explicit_install_before_build(self):
         result = self.run_package("--set-default")
@@ -113,7 +126,21 @@ if name == 'ditto':
     def test_default_handler_change_requires_both_options(self):
         result = self.run_package("--install", str(self.install), "--set-default")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(any(row[:2] == ["swift", "-"] for row in self.commands()))
+        self.assertEqual(self.default_commands(), [["swift", str((self.root / "Scripts/SetDefaultMarkdownHandler.swift").resolve()), str(self.install.resolve())]])
+        self.assertEqual(self.bundle()["CFBundleIdentifier"], "dev.codex.md2.development")
+
+    def test_default_helper_failure_is_not_reported_as_success(self):
+        result = self.run_package("--install", str(self.install), "--set-default", fail_default=True)
+        self.assertEqual(result.returncode, 19, result.stderr)
+        self.assertIn("injected default-handler failure", result.stderr)
+        self.assertNotIn("as the default Markdown editor", result.stdout)
+        self.assertTrue((self.install / "Contents/Info.plist").exists())
+
+    def test_default_helper_receives_the_exact_installed_path_with_spaces(self):
+        target = self.root / "Markdown2 Daily Build.app"
+        result = self.run_package("--release", "--install", str(target), "--set-default")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.default_commands()[0][2:], [str(target.resolve())])
 
     def test_ci_rejects_installation_before_build(self):
         result = self.run_package("--install", str(self.install), ci=True)
