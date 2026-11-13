@@ -61,6 +61,12 @@ final class FindBarLayoutGUITests: XCTestCase {
 
     @MainActor
     func testSplitWithOutlineKeepsFindControlsInside360PointEditor() throws {
+        var outlierDiagnostics: [String] = []
+        defer {
+            if !outlierDiagnostics.isEmpty {
+                FileHandle.standardError.write(Data((outlierDiagnostics.joined(separator: "\n") + "\n").utf8))
+            }
+        }
         for language in [AppLanguage.english, .zhHans] {
             let harness = InteractionTestWindow()
             defer { harness.close() }
@@ -83,7 +89,18 @@ final class FindBarLayoutGUITests: XCTestCase {
                 let scroll = try XCTUnwrap(editor.enclosingScrollView)
                 let sourceBounds = harness.window.convertToScreen(scroll.convert(scroll.bounds, to: nil))
                 XCTAssertEqual(bounds.width, 360, accuracy: 1)
+                // Document-wide controls can live above the split. Identify the
+                // native find owner, then measure every control in that bar;
+                // geometry must never decide which find controls are tested.
+                let controls = try editorFindControls(in: harness)
                 for control in harness.descendants(NSButton.self).map({ $0 as NSView }) + harness.descendants(NSTextField.self).filter({ $0.isEditable }) {
+                    let frame = harness.window.convertToScreen(control.convert(control.bounds, to: nil))
+                    if !bounds.insetBy(dx: -1, dy: -1).contains(frame) {
+                        outlierDiagnostics.append(controlIdentity(control, frame: frame, editorBounds: bounds,
+                            language: language.rawValue, query: query))
+                    }
+                }
+                for control in controls {
                     let frame = harness.window.convertToScreen(control.convert(control.bounds, to: nil))
                     XCTAssertTrue(bounds.insetBy(dx: -1, dy: -1).contains(frame), "\(language) query=\(query): \(frame) outside editor \(bounds)")
                     XCTAssertGreaterThanOrEqual(frame.minY, sourceBounds.maxY - 1, "the bar must not obscure source text")
@@ -91,6 +108,50 @@ final class FindBarLayoutGUITests: XCTestCase {
                 try harness.capture("split-\(language.rawValue)-\(query.isEmpty ? "empty" : query)")
             }
         }
+    }
+
+    @MainActor
+    private func editorFindControls(in harness: InteractionTestWindow) throws -> [NSView] {
+        let query = try XCTUnwrap(harness.queryField)
+        var owners: [NSViewController] = []
+        var responder: NSResponder? = query
+        while let current = responder, current !== harness.window {
+            if let owner = current as? NativeFindPaneOwner {
+                XCTAssertTrue(owner.findPane == .editor)
+                owners.append(try XCTUnwrap(current as? NSViewController))
+            }
+            responder = current.nextResponder
+        }
+        XCTAssertEqual(owners.count, 1, "the query must belong to exactly one native editor find bar")
+        let root = try XCTUnwrap(owners.first).view
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        let views = descendants(root)
+        let buttons = views.compactMap { $0 as? NSButton }
+        let fields = views.compactMap { $0 as? NSTextField }.filter { $0.isEditable }
+        XCTAssertEqual(buttons.count, 8, "previous, next, close, three options, replace, replace all")
+        XCTAssertEqual(fields.count, 2, "query and replacement must both be measured")
+        XCTAssertTrue(fields.contains { $0 === query })
+        XCTAssertEqual(fields.filter { $0.placeholderString == harness.settings.text(.replace) }.count, 1)
+        return buttons.map { $0 as NSView } + fields
+    }
+
+    /// Keep unrelated whole-window outliers visible in CI evidence. This does
+    /// not determine membership or change any find-control geometry assertion.
+    @MainActor
+    private func controlIdentity(_ control: NSView, frame: NSRect, editorBounds: NSRect,
+                                 language: String, query: String) -> String {
+        var owner = "none"
+        var responder: NSResponder? = control
+        while let current = responder {
+            if let paneOwner = current as? NativeFindPaneOwner { owner = String(describing: paneOwner.findPane) }
+            responder = current.nextResponder
+        }
+        let row: [String: String] = ["language": language, "query": query,
+            "class": String(describing: type(of: control)), "title": (control as? NSButton)?.title ?? "",
+            "identifier": control.accessibilityIdentifier() ?? "", "owner": owner,
+            "frame": NSStringFromRect(frame), "editor": NSStringFromRect(editorBounds)]
+        let data = try! JSONSerialization.data(withJSONObject: row, options: [.sortedKeys])
+        return "MD2_FIND_LAYOUT_OUTLIER " + String(decoding: data, as: UTF8.self)
     }
 
 
