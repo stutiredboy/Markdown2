@@ -18,8 +18,9 @@ features. See the [daily-writing](Docs/Plans/daily-writing/PLAN.md),
 
 No remaining product capability from that review is a ready-to-ship small patch.
 The items below need the stated scope or evidence first. The current maintenance
-change only reconciles stale image/attachment documentation with delivered
-behavior; it does not add a new product feature.
+change reconciles stale image/attachment documentation with delivered behavior
+and repairs the installer's explicit default-handler setup; it does not add a
+new editor feature.
 
 ## Next packages
 
