@@ -92,7 +92,7 @@ final class FindSessionGUITests: XCTestCase {
         XCTAssertEqual(queries.count, 2)
         let source = try XCTUnwrap(queries.min { $0.convert($0.bounds, to: nil).midX < $1.convert($1.bounds, to: nil).midX })
         let preview = try XCTUnwrap(queries.max { $0.convert($0.bounds, to: nil).midX < $1.convert($1.bounds, to: nil).midX })
-        let replacement = try XCTUnwrap(harness.descendants(NSTextField.self).first { $0.placeholderString == harness.settings.text(.replace) })
+        let replacement = try XCTUnwrap(harness.descendants(NSTextField.self).first { $0.placeholderString == harness.settings.text(.replaceWith) })
         // Deliberately hold every SwiftUI focus report instead of publishing it.
         // The native owner must win immediately, with no event barrier and no
         // query mutation, for both source fields and the preview field.

@@ -22,17 +22,16 @@ features. See the [daily-writing](Docs/Plans/daily-writing/PLAN.md),
   resolves shared attachments in the current folder. See the [history policy
   and verification coverage](Docs/DocumentLifecycle.md#本地历史版本).
 
-## Next packages
+- [x] **P1 — Real keyboard, Chinese IME and VoiceOver acceptance.** The
+  maintainer completed the English and Simplified Chinese writing workflows
+  with a physical keyboard and confirmed that Simplified Chinese Pinyin and
+  VoiceOver passed. See the
+  [acceptance record](Docs/Plans/native-input-acceptance/RESULTS.md),
+  [acceptance plan](Docs/Plans/native-input-acceptance/PLAN.md),
+  [findings](Docs/Plans/native-input-acceptance/FINDINGS.md), and
+  [physical keyboard handoff](Docs/Plans/native-input-acceptance/HANDOFF.zh-CN.md).
 
-- [ ] **P1 — Real keyboard, Chinese IME and VoiceOver acceptance.** Automated
-  AppKit/AX tests and conditional Pinyin tests do not establish a complete manual
-  writing flow. Schedule a usable desktop and record system, input source and
-  assistive-technology versions. Acceptance: use actual input to open/edit,
-  compose Chinese, operate tables and paste, search/replace, allow/revoke remote
-  images, save and export in English and Chinese; verify focus, labels, Undo and
-  announced save/conflict failures. Preserve existing title dirty markers and
-  conflict handling. File reproducible findings separately; do not invent
-  missing functionality or weaken automated assertions to claim coverage.
+## Next packages
 
 - [ ] **P2 — A lightweight folder workflow.** Start with an explicitly opened
   directory, a file tree and quick open; directory search and rename/link-impact

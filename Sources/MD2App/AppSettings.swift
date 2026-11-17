@@ -409,6 +409,7 @@ enum L10nKey: String, CaseIterable, Sendable {
     case navigateToHeading
     case mode
     case write
+    case markdownSource
     case read
     case sideBySide
     case writeOrRead
@@ -473,6 +474,7 @@ enum L10nKey: String, CaseIterable, Sendable {
     case findPrevious
     case findReplace
     case findPlaceholder
+    case replaceWith
     case replace
     case replaceAll
     case formattingTargetNotice
@@ -669,6 +671,7 @@ enum L10n {
         .navigateToHeading: "Navigate to heading",
         .mode: "Mode",
         .write: "Edit",
+        .markdownSource: "Markdown Source",
         .read: "Preview",
         .sideBySide: "Side by Side",
         .writeOrRead: "Edit or preview",
@@ -765,6 +768,7 @@ enum L10n {
         .findPrevious: "Find Previous",
         .findReplace: "Find and Replace…",
         .findPlaceholder: "Find",
+        .replaceWith: "Replace With",
         .replace: "Replace",
         .replaceAll: "Replace All",
         .pasteAsPlainText: "Paste as Plain Text",
@@ -960,6 +964,7 @@ enum L10n {
         .navigateToHeading: "跳转到标题",
         .mode: "模式",
         .write: "编辑",
+        .markdownSource: "Markdown 源码",
         .read: "预览",
         .sideBySide: "双栏",
         .writeOrRead: "编辑或预览",
@@ -1056,6 +1061,7 @@ enum L10n {
         .findPrevious: "查找上一个",
         .findReplace: "查找与替换…",
         .findPlaceholder: "查找",
+        .replaceWith: "替换为",
         .replace: "替换",
         .replaceAll: "全部替换",
         .pasteAsPlainText: "粘贴为纯文本",

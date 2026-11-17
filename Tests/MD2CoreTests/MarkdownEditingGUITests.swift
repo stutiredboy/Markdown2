@@ -88,6 +88,21 @@ final class MarkdownEditingGUITests: XCTestCase {
         linkHarness.editor.paste(nil)
         linkHarness.spin()
         XCTAssertEqual(linkHarness.store.text, "[selected label](https://example.com)")
+
+        let prefix = "正文🙂 "
+        let suffix = " 结尾"
+        let composingHarness = try EditingWindow(prefix + suffix)
+        defer { composingHarness.close() }
+        let composingEditor = composingHarness.editor
+        composingEditor.setMarkedText("nihao", selectedRange: NSRange(location: 0, length: 2),
+                                      replacementRange: NSRange(location: prefix.utf16.count, length: 0))
+        XCTAssertTrue(composingEditor.hasMarkedText())
+        XCTAssertEqual(composingEditor.selectedRange(), NSRange(location: prefix.utf16.count, length: 2))
+        composingEditor.paste(nil)
+        composingHarness.spin()
+        XCTAssertFalse(composingEditor.hasMarkedText())
+        XCTAssertEqual(composingHarness.store.text, prefix + "nihaohttps://example.com" + suffix,
+                       "native paste commits the marked text and pastes the URL as text")
     }
 
     @MainActor

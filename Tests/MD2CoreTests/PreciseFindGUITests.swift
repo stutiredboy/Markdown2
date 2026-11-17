@@ -14,7 +14,7 @@ final class PreciseFindGUITests: XCTestCase {
         if key == .replace || key == .replaceAll {
             // SwiftUI's existing borderless text buttons have empty NSButton
             // titles. Locate their native replacement row, then its two controls.
-            let field = try XCTUnwrap(harness.descendants(NSTextField.self).first { $0.placeholderString == harness.settings.text(.replace) })
+            let field = try XCTUnwrap(harness.descendants(NSTextField.self).first { $0.placeholderString == harness.settings.text(.replaceWith) })
             let row = field.convert(field.bounds, to: nil)
             let controls = harness.descendants(NSButton.self).filter {
                 let frame = $0.convert($0.bounds, to: nil)
@@ -54,7 +54,7 @@ final class PreciseFindGUITests: XCTestCase {
         try wait(harness, "whole-word option excludes substring") { !highlighted(editor, at: 9) && highlighted(editor, at: 4) }
         try button(.findOnlySelection, harness).performClick(nil)
         try wait(harness, "scope uses selection captured before query reveal") { harness.store.editorSession.find.range == NSRange(location: 4, length: 3) && !highlighted(editor, at: 16) }
-        let replacement = try XCTUnwrap(harness.descendants(NSTextField.self).first { $0.placeholderString == harness.settings.text(.replace) })
+        let replacement = try XCTUnwrap(harness.descendants(NSTextField.self).first { $0.placeholderString == harness.settings.text(.replaceWith) })
         XCTAssertTrue(harness.window.makeFirstResponder(replacement))
         let fieldEditor = try XCTUnwrap(replacement.currentEditor())
         fieldEditor.insertText("😀cat!")

@@ -144,6 +144,10 @@ jobs:
             exit 1
           fi
 
+      # Keyboard Navigation lets AppKit focus buttons in the permission sheet.
+      - name: Enable keyboard navigation for native focus tests
+        run: defaults write -g AppleKeyboardUIMode -int 2
+
       - name: Run XCTest with GUI suites enabled
         env:
           MD2_RUN_GUI_TESTS: "1"

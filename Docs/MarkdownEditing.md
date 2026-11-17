@@ -153,6 +153,8 @@ spacing and line endings. Markdown with only a plain string also inserts that
 string unchanged. These explicit source pastes use the existing preview policy.
 Ordinary Cmd+V keeps its existing image-first behavior and selected-label + URL
 link creation; the new commands do not inspect images or invoke attachment import.
+During input-method composition, a URL paste follows native text behavior instead
+of using the provisional selection as a link label.
 Empty input never deletes selected text.
 
 Markdown prefers HTML, then RTF. HTML converts semantic paragraphs, breaks,
