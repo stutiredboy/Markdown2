@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Carbon
 import XCTest
 
 @testable import MD2App
@@ -323,6 +324,293 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             try? FileManager.default.removeItem(at: temporaryRoot)
         }
         Self.removeGuardPreferences()
+    }
+
+    func testPinyinCompositionCommitsWithSpaceAndReturn() throws {
+        let pinyinID = "com.apple.inputmethod.SCIM.ITABC"
+        let query: [String: Any] = [
+            kTISPropertyInputSourceID as String: pinyinID,
+            kTISPropertyInputSourceIsEnabled as String: true,
+            kTISPropertyInputSourceIsSelectCapable as String: true
+        ]
+        // Carbon can return nil when there is no matching enabled input source.
+        guard let sources = TISCreateInputSourceList(query as CFDictionary, false)?.takeRetainedValue(),
+              let inputSource = (sources as? [TISInputSource])?.first else {
+            throw XCTSkip("Enable Simplified Chinese Pinyin to run the real input-method regression.")
+        }
+        guard CGPreflightPostEventAccess() else {
+            throw GuardFailure("Quartz keyboard events must be allowed for the real input-method test")
+        }
+        let originalSource = try XCTUnwrap(TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+                                         "the previous input source is required for restoration")
+        defer { XCTAssertEqual(TISSelectInputSource(originalSource), noErr, "restore the user's input source") }
+
+        func wait(_ label: @autoclosure () -> String, until condition: () -> Bool) throws {
+            let deadline = Date().addingTimeInterval(5)
+            repeat {
+                if condition() { return }
+                usleep(30_000)
+            } while Date() < deadline
+            throw GuardFailure(label())
+        }
+
+        let initial = "- "
+        let document = try makeDocument("notes/PinyinList.md")
+        try Data(initial.utf8).write(to: document)
+        // Start the app with Pinyin already selected so its first text input
+        // context inherits the input source before its window takes focus.
+        guard TISSelectInputSource(inputSource) == noErr else {
+            throw GuardFailure("could not select Simplified Chinese Pinyin before launching the fixture")
+        }
+        let pid = try launch(recents: [], language: "english", appleLanguages: ["en"])
+        try open(document)
+        let window = try waitForWindow(pid: pid) {
+            Self.title(of: $0) == document.lastPathComponent
+                && Self.firstElement(ofRole: kAXTextAreaRole as String, in: $0) != nil
+        }
+        let editor = try XCTUnwrap(Self.firstElement(ofRole: kAXTextAreaRole as String, in: window))
+        let app = try XCTUnwrap(NSRunningApplication(processIdentifier: pid))
+        app.activate()
+        XCTAssertEqual(AXUIElementPerformAction(window, kAXRaiseAction as CFString), .success)
+        XCTAssertEqual(AXUIElementSetAttributeValue(editor, kAXFocusedAttribute as CFString, kCFBooleanTrue), .success)
+        let appElement = AXUIElementCreateApplication(pid)
+        try wait("the Pinyin fixture must own keyboard focus") {
+            var focused: CFTypeRef?
+            return NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+                && AXUIElementCopyAttributeValue(appElement, kAXFocusedUIElementAttribute as CFString, &focused) == .success
+                && Self.element(focused).map { CFEqual($0, editor) } == true
+        }
+        var end = CFRange(location: initial.utf16.count, length: 0)
+        let caret = try XCTUnwrap(AXValueCreate(.cfRange, &end))
+        XCTAssertEqual(AXUIElementSetAttributeValue(editor, kAXSelectedTextRangeAttribute as CFString, caret), .success)
+
+        guard TISSelectInputSource(inputSource) == noErr else {
+            throw GuardFailure("could not select Simplified Chinese Pinyin")
+        }
+        try wait("the system must select Simplified Chinese Pinyin") {
+            guard let selected = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return false }
+            return TISGetInputSourceProperty(selected, kTISPropertyInputSourceID)
+                .map { Unmanaged<CFString>.fromOpaque($0).takeUnretainedValue() as String } == pinyinID
+        }
+        // The app receives the input-source change after Text Input Sources
+        // returns. Give the WindowServer time to attach the new input context.
+        usleep(750_000)
+
+        func editorText() -> String? {
+            var value: CFTypeRef?
+            return AXUIElementCopyAttributeValue(editor, kAXValueAttribute as CFString, &value) == .success
+                ? value as? String : nil
+        }
+        let eventSource = try XCTUnwrap(CGEventSource(stateID: .combinedSessionState))
+        func press(_ key: Int, flags: CGEventFlags = []) throws {
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
+                throw GuardFailure("keyboard focus left the isolated Pinyin fixture")
+            }
+            for down in [true, false] {
+                let event = try XCTUnwrap(CGEvent(keyboardEventSource: eventSource, virtualKey: CGKeyCode(key), keyDown: down))
+                event.flags = flags
+                // Route through WindowServer so the active input method receives the key.
+                event.post(tap: .cghidEventTap)
+            }
+            usleep(70_000)
+        }
+
+        try wait("the editor must contain the original list marker") { editorText() == initial }
+        for key in [kVK_ANSI_W, kVK_ANSI_U, kVK_ANSI_B, kVK_ANSI_I] { try press(key) }
+        try wait("Pinyin did not show a provisional buffer: \(String(describing: editorText()))") {
+            guard let text = editorText() else { return false }
+            return text != initial
+        }
+        let title = document.lastPathComponent
+        XCTAssertEqual(Self.title(of: window), title, "marked text must leave the document clean")
+        XCTAssertEqual(try Data(contentsOf: document), Data(initial.utf8))
+        try press(kVK_Return)
+        try wait("the first Return must commit wubi without continuing the list: \(String(describing: editorText()))") {
+            editorText() == "- wubi" && Self.title(of: window) == title + " *"
+        }
+        try press(kVK_Return)
+        let continuedList = "- wubi\n- "
+        try wait("only the second Return may continue the list") { editorText() == continuedList }
+
+        try press(kVK_ANSI_S, flags: .maskCommand)
+        try wait("save the continued list before testing a Chinese candidate") {
+            Self.title(of: window) == title && (try? Data(contentsOf: document)) == Data(continuedList.utf8)
+        }
+        for key in [kVK_ANSI_N, kVK_ANSI_I, kVK_ANSI_H, kVK_ANSI_A, kVK_ANSI_O] { try press(key) }
+        try wait("Pinyin did not compose nihao") {
+            guard let text = editorText() else { return false }
+            return text.hasPrefix(continuedList) && text != continuedList
+        }
+        XCTAssertEqual(Self.title(of: window), title, "the candidate must still be provisional")
+        try press(kVK_Space)
+        try wait("Space must commit a Chinese candidate: \(String(describing: editorText()))") {
+            guard let text = editorText(), text.hasPrefix(continuedList) else { return false }
+            let candidate = text.dropFirst(continuedList.count)
+            return !candidate.isEmpty && candidate.unicodeScalars.allSatisfy { (0x3400...0x9FFF).contains($0.value) }
+                && Self.title(of: window) == title + " *"
+        }
+    }
+
+    func testLocalHistoryRestoresSelectedRevisionIntoAnIndependentWindow() throws {
+        func wait<Value>(_ label: String, _ read: () -> Value?) throws -> Value {
+            let deadline = Date().addingTimeInterval(5)
+            repeat {
+                if let value = read() { return value }
+                usleep(50_000)
+            } while Date() < deadline
+            throw GuardFailure("missing \(label)")
+        }
+        func attribute(_ name: String, of element: AXUIElement) -> String? {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
+            return value as? String
+        }
+        func descendant(of element: AXUIElement, where matches: (AXUIElement) -> Bool) -> AXUIElement? {
+            if matches(element) { return element }
+            for child in Self.children(of: element) {
+                if let found = descendant(of: child, where: matches) { return found }
+            }
+            return nil
+        }
+
+        let attachment = "![Shared](assets/shared.png)"
+        let historical = "# 历史版本\r\n\(attachment)\r\n历史正文 😀"
+        let latest = "# New version\r\n\(attachment)\r\nEdited text 😀"
+        let bom = Data([0xEF, 0xBB, 0xBF])
+        let historicalBytes = bom + Data(historical.utf8)
+        let latestBytes = bom + Data(latest.utf8)
+        let document = try makeDocument("notes/LocalHistory.md")
+        try historicalBytes.write(to: document)
+        let image = document.deletingLastPathComponent().appendingPathComponent("assets/shared.png")
+        let imageBytes = try XCTUnwrap(Data(base64Encoded:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jVwAAAABJRU5ErkJggg=="))
+        try FileManager.default.createDirectory(at: image.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try imageBytes.write(to: image)
+
+        let board = NSPasteboard.general
+        let savedClipboard = board.pasteboardItems?.map { item in
+            item.types.compactMap { type in item.data(forType: type).map { (type, $0) } }
+        } ?? []
+        defer {
+            board.clearContents()
+            board.writeObjects(savedClipboard.map { values in
+                let item = NSPasteboardItem()
+                for (type, data) in values { item.setData(data, forType: type) }
+                return item
+            })
+        }
+
+        let pid = try launch(recents: [], language: "english", appleLanguages: ["en"])
+        try open(document)
+        let originalWindow = try waitForWindow(pid: pid) {
+            Self.title(of: $0) == document.lastPathComponent
+                && Self.firstElement(ofRole: kAXTextAreaRole as String, in: $0) != nil
+        }
+        let source = try XCTUnwrap(Self.firstElement(ofRole: kAXTextAreaRole as String, in: originalWindow))
+        func expectText(_ text: String, in editor: AXUIElement) throws {
+            _ = try wait("exact editor text") {
+                attribute(kAXValueAttribute, of: editor).flatMap { $0.utf16.elementsEqual(text.utf16) ? $0 : nil }
+            }
+        }
+        func pressMenu(_ menuTitle: String, _ title: String) throws {
+            let app = AXUIElementCreateApplication(pid)
+            func menuBarItem() -> AXUIElement? {
+                var value: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(app, kAXMenuBarAttribute as CFString, &value) == .success,
+                      let bar = Self.element(value) else { return nil }
+                return Self.children(of: bar).first { Self.title(of: $0) == menuTitle }
+            }
+            func menu() -> AXUIElement? { menuBarItem().flatMap { Self.children(of: $0).first } }
+            let entry = try wait("\(menuTitle) menu", menuBarItem)
+            XCTAssertEqual(AXUIElementPerformAction(entry, kAXPressAction as CFString), .success)
+            var selected = false
+            defer {
+                if !selected, let menu = menu() { AXUIElementPerformAction(menu, kAXCancelAction as CFString) }
+            }
+            let item = try wait("enabled \(menuTitle) > \(title)") {
+                menu().flatMap { menu in
+                    Self.children(of: menu).first {
+                        let label = Self.title(of: $0)
+                        return Self.isEnabled($0) && (label == title || label.hasPrefix(title + " "))
+                    }
+                }
+            }
+            let outcome = AXUIElementPerformAction(item, kAXPressAction as CFString)
+            XCTAssertEqual(outcome, .success, title)
+            selected = outcome == .success
+        }
+        func findHistoryElement(_ id: String) -> AXUIElement? {
+            for window in Self.windows(pid: pid) {
+                if let match = descendant(of: window, where: { attribute(kAXIdentifierAttribute, of: $0) == id }) {
+                    return match
+                }
+            }
+            return nil
+        }
+        func historyElement(_ id: String) throws -> AXUIElement { try wait(id) { findHistoryElement(id) } }
+
+        try expectText(historical, in: source)
+        board.clearContents()
+        XCTAssertTrue(board.setString(latest, forType: .string))
+        NSRunningApplication(processIdentifier: pid)?.activate()
+        XCTAssertEqual(AXUIElementPerformAction(originalWindow, kAXRaiseAction as CFString), .success)
+        XCTAssertEqual(AXUIElementSetAttributeValue(source, kAXFocusedAttribute as CFString, kCFBooleanTrue), .success)
+        var entireSource = CFRange(location: 0, length: historical.utf16.count)
+        let selection = try XCTUnwrap(AXValueCreate(.cfRange, &entireSource))
+        XCTAssertEqual(AXUIElementSetAttributeValue(source, kAXSelectedTextRangeAttribute as CFString, selection), .success)
+        try pressMenu("Edit", "Paste as Plain Text")
+        try expectText(latest, in: source)
+        try pressMenu("File", "Save")
+        _ = try wait("latest bytes on disk") { (try? Data(contentsOf: document)) == latestBytes ? true : nil }
+
+        try pressMenu("File", "Browse Local History…")
+        func expectExcerpt(_ marker: String) throws {
+            _ = try wait("history excerpt containing \(marker)") {
+                guard let excerpt = findHistoryElement("historyRevisionExcerpt") else { return nil as AXUIElement? }
+                return descendant(of: excerpt) { row in
+                    [kAXValueAttribute, kAXTitleAttribute, kAXDescriptionAttribute].contains {
+                        attribute($0, of: row)?.contains(marker) == true
+                    }
+                }
+            }
+        }
+        let newest = try historyElement("historyRevision-0")
+        XCTAssertEqual(AXUIElementPerformAction(newest, kAXPressAction as CFString), .success)
+        try expectExcerpt("Edited text")
+        let previous = try historyElement("historyRevision-1")
+        XCTAssertFalse(CFEqual(newest, previous))
+        XCTAssertEqual(AXUIElementPerformAction(previous, kAXPressAction as CFString), .success)
+        try expectExcerpt("历史正文 😀")
+        let restore = try historyElement("historyRestoreAsCopy")
+        XCTAssertEqual(AXUIElementPerformAction(restore, kAXPressAction as CFString), .success)
+        let filenameField = try historyElement("historyCopyFilename")
+        let filename = try XCTUnwrap(attribute(kAXValueAttribute, of: filenameField))
+        XCTAssertFalse(filename.isEmpty)
+        XCTAssertNotEqual(filename, document.lastPathComponent)
+        let restored = document.deletingLastPathComponent().appendingPathComponent(filename)
+        let confirm = try historyElement("historyRestoreAndOpen")
+        XCTAssertEqual(AXUIElementPerformAction(confirm, kAXPressAction as CFString), .success)
+
+        let copyWindow = try waitForWindow(pid: pid) {
+            Self.title(of: $0) == filename && Self.firstElement(ofRole: kAXTextAreaRole as String, in: $0) != nil
+        }
+        XCTAssertFalse(CFEqual(originalWindow, copyWindow))
+        let copyEditor = try XCTUnwrap(Self.firstElement(ofRole: kAXTextAreaRole as String, in: copyWindow))
+        try expectText(historical, in: copyEditor)
+        try expectText(latest, in: source)
+        XCTAssertEqual(try Data(contentsOf: restored), historicalBytes)
+        XCTAssertEqual(try Data(contentsOf: document), latestBytes)
+        XCTAssertEqual(try Data(contentsOf: image), imageBytes)
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: restored.deletingLastPathComponent().path)),
+                       Set([document.lastPathComponent, filename, "assets"]))
+
+        XCTAssertEqual(AXUIElementPerformAction(originalWindow, kAXRaiseAction as CFString), .success)
+        XCTAssertEqual(AXUIElementSetAttributeValue(source, kAXFocusedAttribute as CFString, kCFBooleanTrue), .success)
+        try pressMenu("Edit", "Undo")
+        try expectText(historical, in: source)
+        try pressMenu("Edit", "Redo")
+        try expectText(latest, in: source)
+        try expectText(historical, in: copyEditor)
     }
 
     // MARK: - Explicit paste menus

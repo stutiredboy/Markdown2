@@ -120,14 +120,19 @@ final class DocumentCopyFlow: ObservableObject {
 
     static func openFreshStore(
         _ receipt: DocumentCopyReceipt, reader: DocumentCopyReader = .init(),
-        beforeAdoption: () throws -> Void = {}, makeStore: () -> DocumentStore
+        preservingFormat: Bool = false, beforeAdoption: () throws -> Void = {}, makeStore: () -> DocumentStore
     ) async throws -> DocumentStore {
-        let task = Task.detached(priority: .userInitiated) { try reader.read(receipt) }
-        let opened = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+        let task = Task.detached(priority: .userInitiated) {
+            let opened = try reader.read(receipt)
+            guard let decoded = MarkdownFileDecoder.decode(opened.data,
+                preserving: preservingFormat ? receipt.writtenFormat : nil) else { throw DocumentCopyOpenError.invalidData }
+            return (opened, decoded)
+        }
+        let (opened, decoded) = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
         try Task.checkCancellation()
         try beforeAdoption()
         let store = makeStore()
-        try store.openVerifiedCopy(opened)
+        try store.openVerifiedCopy(opened, decoded: decoded)
         return store
     }
 

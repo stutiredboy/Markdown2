@@ -92,6 +92,10 @@ final class DocumentStore: ObservableObject {
     private var copyFileReference: DocumentCopyFileReference?
     var copySaveIO = DocumentCopySaveIO()
     private let recoveryRepository: DocumentRecoveryRepository?
+    private let historyRepository: DocumentHistoryRepository?
+    private let keepsLocalHistory: @MainActor () -> Bool
+    private var historyFileID: DocumentHistoryFileID?
+    private var historyLineage = UUID()
     private(set) var recoveryID = UUID()
     var windowFrame: String? { didSet { if windowFrame != oldValue { scheduleRecovery() } } }
     private var recoveryTask: Task<Void, Never>?
@@ -331,6 +335,8 @@ final class DocumentStore: ObservableObject {
         alertTextProvider: @escaping @MainActor (L10nKey) -> String = { L10n.text($0, language: .english) },
         fileWatcherFactory: @escaping @MainActor () -> DocumentFileWatching = { DispatchSourceFileWatcher() },
         recoveryRepository: DocumentRecoveryRepository? = nil,
+        historyRepository: DocumentHistoryRepository? = nil,
+        keepsLocalHistory: @escaping @MainActor () -> Bool = { true },
         autosaveDelay: TimeInterval = 5,
         maximumAutosaveDelay: TimeInterval = 30,
         recoveryDelay: TimeInterval = 1,
@@ -352,6 +358,8 @@ final class DocumentStore: ObservableObject {
         self.alertTextProvider = alertTextProvider
         self.fileWatcherFactory = fileWatcherFactory
         self.recoveryRepository = recoveryRepository
+        self.historyRepository = historyRepository
+        self.keepsLocalHistory = keepsLocalHistory
         self.autosaveDelay = autosaveDelay
         self.maximumAutosaveDelay = maximumAutosaveDelay
         self.recoveryDelay = recoveryDelay
@@ -985,19 +993,21 @@ final class DocumentStore: ObservableObject {
 
     /// Consume validated bytes without another path read. The pinned identity
     /// remains authoritative across the UI handoff and subsequent copy saves.
-    func openVerifiedCopy(_ opened: DocumentCopyOpenData) throws {
+    func openVerifiedCopy(_ opened: DocumentCopyOpenData, decoded: MarkdownFileDecoder.DecodedFile) throws {
         let receipt = opened.receipt
-        guard isReusableEmptyDocument, !isClosed,
-              let decoded = MarkdownFileDecoder.decode(opened.data) else { throw DocumentCopyOpenError.invalidData }
+        guard isReusableEmptyDocument, !isClosed else { throw DocumentCopyOpenError.invalidData }
+        let historyID = historyIdentity(at: receipt.destinationURL)
         try DocumentCopyReader.validateDirectory(receipt)
         try receipt.fileReference.validate(at: receipt.destinationURL)
         copyFileReference = receipt.fileReference
         fileIdentity = DocumentFileIdentity(copyReference: receipt.fileReference)
         fileFormat = decoded.format
         setDocumentText(decoded.text, fileURL: receipt.destinationURL, dirty: false)
-        lastKnownFingerprint = DocumentFileFingerprint.of(data: opened.data, at: receipt.destinationURL)
+        lastKnownFingerprint = DocumentFileFingerprint(modificationDate: DocumentFileFingerprint.modificationDate(at: receipt.destinationURL),
+            contentHash: receipt.contentHash)
         startWatchingFile()
         persistRecoveryNow()
+        recordHistory(opened.data, reason: .opened, fileID: historyID)
     }
 
     @discardableResult
@@ -1006,7 +1016,9 @@ final class DocumentStore: ObservableObject {
             // Read the raw bytes once: the text decodes from them and the
             // fingerprint hashes them, so the stored hash always matches the
             // exact on-disk content (no re-encoding drift).
+            let readID = historyIdentity(at: url)
             let data = try Data(contentsOf: url)
+            let historyID = unchangedHistoryIdentity(readID, at: url)
             guard let decoded = MarkdownFileDecoder.decode(data) else {
                 alert = DocumentAlert(
                     message: alertText(.alertUndecodableFile, url.lastPathComponent),
@@ -1028,6 +1040,7 @@ final class DocumentStore: ObservableObject {
             pendingReloadDiscardRevision = nil
             startWatchingFile()
             persistRecoveryNow()
+            recordHistory(data, reason: .opened, fileID: historyID)
             let directory = url.deletingLastPathComponent()
             Task.detached(priority: .background) { LegacyPreviewCleaner.clean(in: directory) }
             return true
@@ -1086,10 +1099,13 @@ final class DocumentStore: ObservableObject {
 
         do {
             cancelAutosave()
+            let priorHistoryID = writingBackingFile ? historyIdentity(at: url) : nil
             if Self.hasMultipleHardLinks(at: url), !persistRecoveryNow() { return false }
             if writingBackingFile, let copyFileReference { try copyFileReference.validate(at: url) }
-            let newCopyReference = try Self.writePreservingMetadata(writtenData, to: url,
-                independentCopy: writingBackingFile && copyFileReference != nil, copyIO: copySaveIO)
+            let (newCopyReference, savedHistoryID) = try Self.writePreservingMetadata(writtenData, to: url,
+                independentCopy: writingBackingFile && copyFileReference != nil, copyIO: copySaveIO,
+                captureHistoryIdentity: historyRepository != nil,
+                verifyNewFile: keepsLocalHistory() && historyRepository?.canRecord(byteCount: writtenData.count) == true)
             copyFileReference = newCopyReference
             lastKnownFingerprint = DocumentFileFingerprint.of(data: writtenData, at: url)
             fileURL = url
@@ -1102,6 +1118,7 @@ final class DocumentStore: ObservableObject {
             hasExternalConflict = false
             startWatchingFile()
             persistRecoveryNow()
+            recordHistory(writtenData, reason: .saved, fileID: savedHistoryID, replacing: priorHistoryID)
             return true
         } catch {
             alert = DocumentAlert(message: alertText(.alertCouldNotSave, url.lastPathComponent),
@@ -1115,12 +1132,34 @@ final class DocumentStore: ObservableObject {
     /// select the shared-inode write path, even if a hardlink appears in a race.
     private static func writePreservingMetadata(_ data: Data, to url: URL,
                                                 independentCopy: Bool = false,
-                                                copyIO: DocumentCopySaveIO = .init()) throws -> DocumentCopyFileReference? {
+                                                copyIO: DocumentCopySaveIO = .init(),
+                                                captureHistoryIdentity: Bool,
+                                                verifyNewFile: Bool) throws
+        -> (DocumentCopyFileReference?, DocumentHistoryFileID?) {
+        func historyIdentity(matching descriptor: Int32) -> DocumentHistoryFileID? {
+            var written = stat()
+            guard captureHistoryIdentity, descriptor >= 0,
+                  let identity = DocumentHistoryFileID(url: url),
+                  fstat(descriptor, &written) == 0, identity.matches(written) else { return nil }
+            return identity
+        }
+
         let manager = FileManager.default
         guard manager.fileExists(atPath: url.path) else {
             if independentCopy { throw DocumentCopyOpenError.unavailable }
             try data.write(to: url, options: .atomic)
-            return nil
+            // Foundation's new-file write does not expose its temporary
+            // descriptor. Confirm the first save's bytes before indexing it.
+            guard captureHistoryIdentity else { return (nil, nil) }
+            let descriptor = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+            guard descriptor >= 0 else { return (nil, nil) }
+            let bytes = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+            defer { try? bytes.close() }
+            guard let identity = historyIdentity(matching: bytes.fileDescriptor) else { return (nil, nil) }
+            if !verifyNewFile { return (nil, identity) }
+            guard let current = try? (bytes.read(upToCount: data.count + 1) ?? Data()),
+                  current == data, historyIdentity(matching: bytes.fileDescriptor) == identity else { return (nil, nil) }
+            return (nil, identity)
         }
         if !independentCopy && hasMultipleHardLinks(at: url) {
             // Replacing an inode severs its other names. For a hard-linked file,
@@ -1138,7 +1177,7 @@ final class DocumentStore: ObservableObject {
                 try? handle.synchronize()
                 throw error
             }
-            return nil
+            return (nil, historyIdentity(matching: handle.fileDescriptor))
         }
         let replacement = try manager.url(for: .itemReplacementDirectory, in: .userDomainMask,
                                           appropriateFor: url, create: true)
@@ -1146,11 +1185,16 @@ final class DocumentStore: ObservableObject {
         let temporary = replacement.appendingPathComponent(UUID().uuidString)
         if independentCopy { try copyIO.writeTemporary(data, temporary) }
         else { try data.write(to: temporary) }
+        // replaceItemAt preserves the original creation time. Read the new
+        // identity after replacement and match it against the staged inode
+        // held open here, even if another process replaces the public path.
+        let historyDescriptor = captureHistoryIdentity ? Darwin.open(temporary.path, O_EVTONLY | O_CLOEXEC) : -1
+        defer { if historyDescriptor >= 0 { Darwin.close(historyDescriptor) } }
         let reference = independentCopy ? try DocumentCopyFileReference.open(at: temporary) : nil
         if independentCopy { try copyIO.replace(url, temporary) }
         else { _ = try manager.replaceItemAt(url, withItemAt: temporary, backupItemName: nil, options: []) }
         try reference?.validate(at: url)
-        return reference
+        return (reference, historyIdentity(matching: historyDescriptor))
     }
 
     private static func hasMultipleHardLinks(at url: URL) -> Bool {
@@ -1305,6 +1349,7 @@ final class DocumentStore: ObservableObject {
                 lastKnownFingerprint = current
                 if copyFileReference == nil { fileIdentity = DocumentFileIdentity(url: url) }
                 backingFileMissing = false
+                updateHistoryIdentity(historyIdentity(at: url))
             }
         case .reloadPreservingViewport:
             beginExternalReload()
@@ -1339,6 +1384,7 @@ final class DocumentStore: ObservableObject {
         refreshFileLocation()
         guard let fileURL else { return }
 
+        let readID = historyIdentity(at: fileURL)
         guard copyFileReference == nil || !backingFileMissing,
               let data = try? copyFileReference?.read(at: fileURL) ?? Data(contentsOf: fileURL),
               let decoded = MarkdownFileDecoder.decode(data) else {
@@ -1348,6 +1394,7 @@ final class DocumentStore: ObservableObject {
             )
             return
         }
+        let historyID = unchangedHistoryIdentity(readID, at: fileURL)
         guard !isDirty || discardRevision == textMutationRevision else {
             raiseExternalConflict()
             return
@@ -1387,6 +1434,7 @@ final class DocumentStore: ObservableObject {
         externalConflictRequest = nil
         startWatchingFile()
         persistRecoveryNow()
+        recordHistory(data, reason: .externalReload, fileID: historyID)
     }
 
     /// Enters the conflict state: writes stop, autosave is suspended, and the
@@ -1481,6 +1529,47 @@ final class DocumentStore: ObservableObject {
 
     // MARK: Recovery and session restoration
 
+    private func historyIdentity(at url: URL) -> DocumentHistoryFileID? {
+        guard historyRepository != nil else { return nil }
+        return DocumentHistoryFileID(url: url)
+    }
+
+    private func unchangedHistoryIdentity(_ known: DocumentHistoryFileID?, at url: URL) -> DocumentHistoryFileID? {
+        guard let known, historyIdentity(at: url) == known else { return nil }
+        return known
+    }
+
+    private func recordHistory(_ data: Data, reason: DocumentHistoryReason, fileID: DocumentHistoryFileID?,
+                               replacing previousID: DocumentHistoryFileID? = nil) {
+        let continuation = previousID != nil && previousID == historyFileID ? previousID : nil
+        updateHistoryIdentity(fileID, keepingLineage: continuation != nil)
+        guard let fileID, let historyRepository else { return }
+        if keepsLocalHistory() {
+            historyRepository.record(data, format: fileFormat, reason: reason, for: fileID, replacing: continuation)
+        } else if let continuation {
+            historyRepository.reassociate(from: continuation, to: fileID)
+        }
+    }
+
+    private func updateHistoryIdentity(_ fileID: DocumentHistoryFileID?, keepingLineage: Bool = false) {
+        if fileID != historyFileID && !keepingLineage { historyLineage = UUID() }
+        historyFileID = fileID
+    }
+
+    /// Viewing history never follows a path by mutating the source window.
+    func captureHistorySource() throws -> DocumentHistorySource {
+        guard !isClosed, !backingFileMissing else { throw DocumentHistoryFlowError.sourceChanged }
+        guard editorSession.textView?.hasMarkedText() != true else { throw DocumentHistoryFlowError.composing }
+        guard keepsLocalHistory() else { throw DocumentHistoryFlowError.disabled }
+        guard let fileURL else { throw DocumentHistoryFlowError.untitled }
+        guard let repository = historyRepository, let fileID = historyFileID else {
+            throw DocumentHistoryFlowError.sourceUnavailable
+        }
+        return DocumentHistorySource(documentID: documentIdentity, lineage: historyLineage,
+            url: fileURL, fileID: fileID, repository: repository)
+    }
+
+
     private func scheduleRecovery() {
         guard recoveryRepository != nil, recoveryTask == nil, !isClosed else { return }
         // Throttle, not debounce: continuous typing still reaches disk each second.
@@ -1509,6 +1598,8 @@ final class DocumentStore: ObservableObject {
     }
 
     func restore(_ snapshot: DocumentRecoverySnapshot) {
+        historyFileID = nil
+        historyLineage = UUID()
         recoveryID = snapshot.id
         windowFrame = snapshot.windowFrame
         fileFormat = snapshot.format
@@ -1529,6 +1620,8 @@ final class DocumentStore: ObservableObject {
                     markBackingFileMissing()
                 } else if snapshot.fingerprint?.contentHash != current?.contentHash {
                     raiseExternalConflict() // Keep both versions until the user chooses.
+                } else {
+                    historyFileID = historyIdentity(at: resolved)
                 }
             } else {
                 fileURL = url

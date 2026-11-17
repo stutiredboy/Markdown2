@@ -863,6 +863,8 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
             .appendingPathComponent("Library/Preferences/\(guardBundleIdentifier).plist")
         try? FileManager.default.removeItem(at: plist)
         try? FileManager.default.removeItem(at: recoveryDirectory)
+        let historyDirectory = recoveryDirectory.deletingLastPathComponent().appendingPathComponent("Document History")
+        try? FileManager.default.removeItem(at: historyDirectory)
     }
 
     private static func writeGuardPreferences(_ values: [String: Any]) {

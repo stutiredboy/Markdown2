@@ -64,6 +64,10 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(restoresWindowsOnLaunch, forKey: Keys.restoresWindowsOnLaunch) }
     }
 
+    @Published var keepsLocalHistory: Bool {
+        didSet { defaults.set(keepsLocalHistory, forKey: Keys.keepsLocalHistory) }
+    }
+
     /// Whether the editor draws a source line-number gutter in its left inset.
     /// Toggling it never changes the text, selection, or any geometry; while it
     /// is on, clicking a number selects that line.
@@ -184,6 +188,7 @@ final class AppSettings: ObservableObject {
         } else {
             restoresWindowsOnLaunch = defaults.bool(forKey: Keys.restoresWindowsOnLaunch)
         }
+        keepsLocalHistory = defaults.object(forKey: Keys.keepsLocalHistory) as? Bool ?? true
 
         if defaults.object(forKey: Keys.showsLineNumbersInEditor) == nil {
             showsLineNumbersInEditor = false
@@ -335,6 +340,7 @@ private enum Keys {
     static let showsOutlineByDefault = "MD2.ShowsOutlineByDefault"
     static let opensBlankDocumentOnLaunch = "MD2.OpensBlankDocumentOnLaunch"
     static let restoresWindowsOnLaunch = "MD2.RestoresWindowsOnLaunch"
+    static let keepsLocalHistory = "MD2.KeepsLocalHistory"
     static let showsLineNumbersInEditor = "MD2.ShowsLineNumbersInEditor"
     static let showsLineNumbersInPreview = "MD2.ShowsLineNumbersInPreview"
     static let imageFileHandling = "MD2.ImageFileHandling"
@@ -382,6 +388,12 @@ enum L10nKey: String, CaseIterable, Sendable {
     case copyCreated, copyCreatedDetail, openCopy, dismissCopyNotice, copyFailed
     case copySaveFirst, copyFinishComposition, copySourceChanged, copyInvalidName
     case copySourceUnavailable, copyNameExists, copyEncodingUnavailable, copyOpenFailed, copySaveUnavailable
+    case historyBrowse, historyTitle, historyDisabled, historySaveFirst, historySourceChanged, historyLoadFailed
+    case historyRevisionUnavailable, historySomeUnavailable, historyCopyFailed, historyCopyOpenFailed, historyEmpty
+    case historyRevisionOpened, historyRevisionSaved, historyRevisionExternal
+    case historyExcerpt, historyEmptyExcerpt, historySelectRevision, historyLoading, historyRestoring
+    case historyAttachments, historyRestoreAsCopy, historyRestoreAndOpen, historyCopyNameSuffix
+    case historyEnabledSetting, historySettingDetail, historyClear, historyClearConfirm, historyClearAction, historyClearFailed
     case exportTo
     case exportPDF
     case exportHTML
@@ -613,6 +625,35 @@ enum L10n {
         .copySourceUnavailable: "The source must be an existing local regular file. Reopen or save the document before creating a copy.",
         .copyNameExists: "That filename already exists or refers to the original. Choose a different name; no existing file was replaced.",
         .copyEncodingUnavailable: "The current text cannot be represented in %@. No copy was created and the original encoding is unchanged.",
+        .historyBrowse: "Browse Local History…",
+        .historyTitle: "Local History",
+        .historyDisabled: "Local History is off. Turn it on in Settings to browse or record revisions.",
+        .historySaveFirst: "Save the document first to start recording its history.",
+        .historySourceChanged: "The file or its location changed. Reopen Local History for this document.",
+        .historyLoadFailed: "Could not load local history.",
+        .historyRevisionUnavailable: "This revision is missing or damaged. Choose another revision.",
+        .historySomeUnavailable: "Some revisions are missing or damaged.",
+        .historyCopyFailed: "Could not restore the revision as a copy.",
+        .historyCopyOpenFailed: "The copy “%@” was created beside the document but could not be opened safely. Locate it in Finder.",
+        .historyEmpty: "There are no saved revisions for this document yet.",
+        .historyRevisionOpened: "Opened from disk",
+        .historyRevisionSaved: "Saved",
+        .historyRevisionExternal: "Reloaded from disk",
+        .historyExcerpt: "Revision excerpt",
+        .historyEmptyExcerpt: "This revision is empty.",
+        .historySelectRevision: "Select a revision to see an excerpt.",
+        .historyLoading: "Loading history…",
+        .historyRestoring: "Restoring copy…",
+        .historyAttachments: "The copy is saved beside the current document. It shares the files that relative links and attachments point to today. History keeps only the Markdown text.",
+        .historyRestoreAsCopy: "Restore as Copy…",
+        .historyRestoreAndOpen: "Restore and Open",
+        .historyCopyNameSuffix: " restored",
+        .historyEnabledSetting: "Keep Local History",
+        .historySettingDetail: "Markdown2 stores saved text revisions on this Mac and does not sync them. History keeps up to 20 revisions per document for up to 30 days, subject to a storage limit. Turning it off keeps existing revisions until they expire or you delete them.",
+        .historyClear: "Delete Local History…",
+        .historyClearConfirm: "Delete saved revisions for all documents on this Mac? This cannot be undone.",
+        .historyClearAction: "Delete History",
+        .historyClearFailed: "Could not delete local history.",
         .exportTo: "Export To",
         .exportPDF: "Export as PDF…",
         .exportHTML: "Export as HTML…",
@@ -875,6 +916,35 @@ enum L10n {
         .copySourceUnavailable: "原稿必须是已存在的本地普通文件。请先重新打开或保存文档，再创建副本。",
         .copyNameExists: "该名称已存在或指向原稿。请换一个名称；没有覆盖任何已有文件。",
         .copyEncodingUnavailable: "当前内容含有 %@ 无法表示的字符。未创建副本，原稿编码保持不变。",
+        .historyBrowse: "浏览本地历史版本…",
+        .historyTitle: "本地历史版本",
+        .historyDisabled: "本地历史版本已关闭。请在设置中启用后浏览或记录历史版本。",
+        .historySaveFirst: "请先保存文档，开始记录历史版本。",
+        .historySourceChanged: "文档或其位置已更改。请重新打开此文档的本地历史版本。",
+        .historyLoadFailed: "无法读取本地历史版本。",
+        .historyRevisionUnavailable: "此版本已丢失或损坏。请选择其他版本。",
+        .historySomeUnavailable: "部分历史版本已丢失或损坏。",
+        .historyCopyFailed: "无法将所选版本恢复为副本。",
+        .historyCopyOpenFailed: "副本“%@”已保存在原文档旁，但无法安全打开。请在访达中查找。",
+        .historyEmpty: "此文档暂无历史版本。",
+        .historyRevisionOpened: "从磁盘打开",
+        .historyRevisionSaved: "已保存",
+        .historyRevisionExternal: "从磁盘重新载入",
+        .historyExcerpt: "版本内容节选",
+        .historyEmptyExcerpt: "此版本没有内容。",
+        .historySelectRevision: "请选择要查看的版本。",
+        .historyLoading: "正在读取历史版本…",
+        .historyRestoring: "正在恢复副本…",
+        .historyAttachments: "副本保存在当前文档所在的文件夹，与原文档共享相对链接和附件指向的现有文件。历史版本只保留 Markdown 正文。",
+        .historyRestoreAsCopy: "恢复为副本…",
+        .historyRestoreAndOpen: "恢复并打开",
+        .historyCopyNameSuffix: " 恢复副本",
+        .historyEnabledSetting: "保留本地历史版本",
+        .historySettingDetail: "Markdown2 将已保存的正文版本保留在这台 Mac 上，不会同步。每份文档最多保留 20 个版本，最长 30 天，同时受存储上限约束。关闭后，已有版本将保留至到期或手动删除。",
+        .historyClear: "删除本地历史版本…",
+        .historyClearConfirm: "删除这台 Mac 上所有文档的历史版本？此操作无法撤销。",
+        .historyClearAction: "删除历史版本",
+        .historyClearFailed: "无法删除本地历史版本。",
         .exportTo: "导出到",
         .exportPDF: "导出为 PDF…",
         .exportHTML: "导出为 HTML…",

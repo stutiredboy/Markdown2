@@ -8,6 +8,9 @@ struct SettingsView: View {
     var onRequestRelaunch: () -> Void = {}
     @State private var recordingShortcutMode: EditorMode?
     @State private var shortcutValidation: ShortcutValidationNotice?
+    @State private var confirmsHistoryDeletion = false
+    @State private var deletingHistory = false
+    @State private var historyDeletionFailed = false
 
     var body: some View {
         Form {
@@ -39,6 +42,20 @@ struct SettingsView: View {
 
                 Toggle(settings.text(.openBlankOnLaunch), isOn: $settings.opensBlankDocumentOnLaunch)
                 Toggle(settings.text(.restoreWindowsOnLaunch), isOn: $settings.restoresWindowsOnLaunch)
+
+                Toggle(settings.text(.historyEnabledSetting), isOn: $settings.keepsLocalHistory)
+                Text(settings.text(.historySettingDetail))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button(settings.text(.historyClear)) { confirmsHistoryDeletion = true }
+                    .disabled(deletingHistory)
+                    .alert(settings.text(.historyClearConfirm), isPresented: $confirmsHistoryDeletion) {
+                        Button(settings.text(.historyClearAction), role: .destructive) { deleteHistory() }
+                        Button(settings.text(.cancel), role: .cancel) {}
+                    }
+                if historyDeletionFailed {
+                    Text(settings.text(.historyClearFailed)).foregroundStyle(.red)
+                }
 
                 lineNumberSettings
 
@@ -114,6 +131,16 @@ struct SettingsView: View {
         // localization, so a language change needs a restart to re-localize it.
         .onChange(of: settings.language) { _, _ in
             presentLanguageRestartPrompt()
+        }
+    }
+
+    private func deleteHistory() {
+        historyDeletionFailed = false
+        deletingHistory = true
+        Task {
+            defer { deletingHistory = false }
+            do { try await DocumentHistoryRepository.applicationRepository.removeAll() }
+            catch { historyDeletionFailed = true }
         }
     }
 
