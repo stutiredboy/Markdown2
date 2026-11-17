@@ -16,23 +16,13 @@ features. See the [daily-writing](Docs/Plans/daily-writing/PLAN.md),
 [structured-editing](Docs/Plans/structured-editing/PLAN.md) and
 [remote-resource](Docs/Plans/remote-resources/PLAN.md) contracts.
 
-No remaining product capability from that review is a ready-to-ship small patch.
-The items below need the stated scope or evidence first. The current maintenance
-change reconciles stale image/attachment documentation with delivered behavior
-and repairs the installer's explicit default-handler setup; it does not add a
-new editor feature.
+- [x] **P1 — Browseable local history and restore as a copy.** File → Browse Local
+  History shows dated disk revisions and opens a selected revision as an
+  independent copy. The copy preserves encoding, BOM and line endings and
+  resolves shared attachments in the current folder. See the [history policy
+  and verification coverage](Docs/DocumentLifecycle.md#本地历史版本).
 
 ## Next packages
-
-- [ ] **P1 — Browseable local history and restore as a copy.** Recovery currently
-  stores one atomic record per open window; Create Copy is a separate manual
-  snapshot, not a history browser. Decide snapshot triggers, retention/storage
-  limits, privacy and file identity across rename, external edits and cloud
-  conflicts before choosing a storage mechanism. Acceptance: browse dated
-  revisions and open a selected revision as an independent copy without
-  overwriting the current document, its dirty state, Undo or recovery record;
-  preserve encoding/BOM/line endings and explain shared attachments. Missing or
-  corrupt revisions must not prevent opening the current document.
 
 - [ ] **P1 — Real keyboard, Chinese IME and VoiceOver acceptance.** Automated
   AppKit/AX tests and conditional Pinyin tests do not establish a complete manual

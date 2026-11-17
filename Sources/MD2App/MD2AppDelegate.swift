@@ -14,6 +14,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let recentDocuments = RecentDocumentsModel(recorder: SystemRecentDocumentsRecorder())
     private var documentWindows: [DocumentWindow] = []
     private let recoveryRepository = DocumentRecoveryRepository.applicationRepository()
+    private let historyRepository = DocumentHistoryRepository.applicationRepository
     private var isTerminating = false
     private var pendingRecoverySnapshots: [DocumentRecoverySnapshot] = []
     private var recoveryReadFailed = false
@@ -91,6 +92,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        historyRepository.pruneExpired()
         let recentDirectories = Set(recentDocuments.urls.map { $0.deletingLastPathComponent() })
         Task.detached(priority: .background) {
             for directory in recentDirectories { LegacyPreviewCleaner.clean(in: directory) }
@@ -202,6 +204,8 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             syntaxConfigProvider: { [settings] in (settings.inlineFeatures, settings.alertLanguage) },
             alertTextProvider: { [settings] in settings.text($0) },
             recoveryRepository: recoveryRepository,
+            historyRepository: historyRepository,
+            keepsLocalHistory: { [settings] in settings.keepsLocalHistory },
             confirmEncodingConversion: { [settings] encoding in
                 let alert = NSAlert()
                 alert.messageText = settings.text(.encodingConversionTitle)
@@ -248,6 +252,13 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func createCopy() {
         guard let store = currentDocumentStore else { return }
         Task { await store.copyFlow.create(from: store, text: settings.text) }
+    }
+
+    func browseLocalHistory() {
+        guard let store = currentDocumentStore,
+              let window = documentWindows.first(where: { $0.store === store })?.window else { return }
+        DocumentHistorySheet.present(in: window, store: store, settings: settings,
+            makeStore: makeDocumentStore, onOpen: { [weak self] copy in self?.newDocument(store: copy) })
     }
 
     /// A newly committed copy must open its on-disk bytes in a fresh Store, not
@@ -524,6 +535,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if isTerminating { return .terminateLater }
         if !settings.restoresWindowsOnLaunch {
             for documentWindow in documentWindows {
                 if !confirmDiscardOrSaveIfNeeded(for: documentWindow.store) {
@@ -546,7 +558,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             for documentWindow in documentWindows {
                 documentWindow.store.closeDocument(discardRecovery: false)
             }
-            return .terminateNow
+            return finishHistoryBeforeTermination(sender)
         }
         for documentWindow in documentWindows {
             documentWindow.store.windowFrame = documentWindow.window.frameDescriptor
@@ -560,7 +572,28 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         for documentWindow in documentWindows {
             documentWindow.store.closeDocument(discardRecovery: false)
         }
-        return .terminateNow
+        return finishHistoryBeforeTermination(sender)
+    }
+
+    private func finishHistoryBeforeTermination(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // The source files and recovery have already been handled. Give the
+        // optional history queue a short drain without making it own Quit.
+        var replied = false
+        let reply = {
+            guard !replied else { return }
+            replied = true
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        let deadline = Task {
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            reply()
+        }
+        Task {
+            await historyRepository.flush()
+            deadline.cancel()
+            reply()
+        }
+        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {

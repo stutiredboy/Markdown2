@@ -67,7 +67,7 @@ struct MarkdownFileFormat: Codable, Equatable, Sendable {
 /// BOM is authoritative, otherwise strict UTF-8, GBK, then GB18030. A GBK
 /// round trip distinguishes its narrower repertoire from the GB18030 superset.
 enum MarkdownFileDecoder {
-    struct DecodedFile: Equatable {
+    struct DecodedFile: Equatable, Sendable {
         let text: String
         let format: MarkdownFileFormat
         var usedFallbackEncoding: Bool { format.encoding != .utf8 || format.hasBOM }
@@ -78,7 +78,14 @@ enum MarkdownFileDecoder {
     static let gb18030 = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
         CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)))
 
-    static func decode(_ data: Data) -> DecodedFile? {
+    static func decode(_ data: Data, preserving format: MarkdownFileFormat? = nil) -> DecodedFile? {
+        if let format {
+            let bom = format.hasBOM ? format.encoding.bom : Data()
+            guard (!format.hasBOM || !bom.isEmpty), data.starts(with: bom),
+                  let text = String(data: data.dropFirst(bom.count), encoding: format.encoding.stringEncoding),
+                  format.encode(text) == data else { return nil }
+            return DecodedFile(text: text, format: format)
+        }
         // UTF-32LE must precede UTF-16LE, whose BOM is its prefix.
         for encoding in [MarkdownFileFormat.Encoding.utf32BE, .utf32LE, .utf8, .utf16BE, .utf16LE]
         where data.starts(with: encoding.bom) {

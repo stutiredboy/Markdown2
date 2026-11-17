@@ -111,6 +111,10 @@ private struct AppCommands: Commands {
                 appDelegate.createCopy()
             }
 
+            Button(settings.text(.historyBrowse)) {
+                appDelegate.browseLocalHistory()
+            }
+
             CollectLocalImagesCommand(title: settings.text(.collectLocalImages), state: appDelegate.attachmentCommandState) {
                 guard let document = appDelegate.currentDocumentStore, !document.isWorkingOnAttachments else { return }
                 Task { await document.collectLocalImages(folder: settings.attachmentFolder) }

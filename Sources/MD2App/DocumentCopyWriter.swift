@@ -18,7 +18,7 @@ struct DocumentCopySnapshot: Sendable {
     fileprivate let directoryIdentity: DocumentCopyFileIdentity
 
     init(operationID: UUID = UUID(), documentID: UUID, revision: Int, text: String,
-         format: MarkdownFileFormat, sourceURL: URL) throws {
+         format: MarkdownFileFormat, sourceURL: URL, historyFileID: DocumentHistoryFileID? = nil) throws {
         guard DocumentCopyWriter.isLocalFileURL(sourceURL), !sourceURL.hasDirectoryPath else {
             throw DocumentCopyError.invalidSource
         }
@@ -35,6 +35,7 @@ struct DocumentCopySnapshot: Sendable {
         // A final-component symlink, directory, device, or FIFO is outside this
         // first slice; in particular, never open a FIFO just to inspect a copy.
         guard source.st_mode & S_IFMT == S_IFREG else { throw DocumentCopyError.invalidSource }
+        if let historyFileID, !historyFileID.matches(source) { throw DocumentCopyError.sourceChanged }
         self.operationID = operationID
         self.documentID = documentID
         self.revision = revision
@@ -109,7 +110,8 @@ struct DocumentCopyWriter: Sendable {
     var io = IO()
     var checkCancellation: @Sendable () throws -> Void = { try Task.checkCancellation() }
 
-    func writeNew(_ snapshot: DocumentCopySnapshot, to destination: URL) throws -> DocumentCopyReceipt {
+    func writeNew(_ snapshot: DocumentCopySnapshot, to destination: URL,
+                  verifiedHistoricalBytes: Data? = nil) throws -> DocumentCopyReceipt {
         try checkCancellation()
         guard Self.isLocalFileURL(destination), !destination.hasDirectoryPath,
               !destination.lastPathComponent.isEmpty,
@@ -125,7 +127,7 @@ struct DocumentCopyWriter: Sendable {
         defer { Darwin.close(descriptor) }
         try Self.validateSource(snapshot, directory: descriptor)
         try Self.requireNewDestination(targetName, directory: descriptor, source: snapshot.sourceIdentity)
-        guard let data = snapshot.format.encode(snapshot.text) else {
+        guard let data = verifiedHistoricalBytes ?? snapshot.format.encode(snapshot.text) else {
             throw DocumentCopyError.unrepresentableEncoding
         }
         try checkCancellation()
