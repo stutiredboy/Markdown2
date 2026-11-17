@@ -953,6 +953,7 @@ struct ContentView: View {
                 showsLineNumbers: settings.showsLineNumbersInEditor,
                 session: document.editorSession,
                 formatCommand: document.formatCommand,
+                sourceAccessibilityLabel: settings.text(.markdownSource),
                 typography: settings.typography,
                 onSelectionChange: { selection in
                     editorSelection = selection

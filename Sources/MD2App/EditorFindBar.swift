@@ -26,6 +26,8 @@ struct EditorFindBar: View {
     private enum Field: Hashable {
         case query
         case replacement
+        case replace
+        case replaceAll
     }
 
     var body: some View {
@@ -39,6 +41,7 @@ struct EditorFindBar: View {
                         onFocusChange(editing)
                     })
                         .textFieldStyle(.plain)
+                        .accessibilityLabel(settings.text(.findPlaceholder))
                         .focused($focusedField, equals: .query)
                         .frame(minWidth: 40, maxWidth: .infinity)
                         .onSubmit(onSubmitQuery)
@@ -87,17 +90,24 @@ struct EditorFindBar: View {
                 }
                 if showsReplace {
                     HStack(spacing: 8) {
-                        TextField(settings.text(.replace), text: $replacement, onEditingChanged: { editing in
+                        TextField(settings.text(.replaceWith), text: $replacement, onEditingChanged: { editing in
                             onFocusChange(editing)
                         })
                             .textFieldStyle(.plain)
+                            .accessibilityLabel(settings.text(.replaceWith))
                             .focused($focusedField, equals: .replacement)
                             .frame(minWidth: 40, maxWidth: .infinity)
 
-                        Button(settings.text(.replace), action: onReplace)
+                        Button(settings.text(.replace)) {
+                            replace(from: .replace, action: onReplace)
+                        }
+                            .focused($focusedField, equals: .replace)
                             .fixedSize()
                             .disabled(query.isEmpty || (findSession != nil && matchCount == 0) || findSession?.canReplace == false)
-                        Button(settings.text(.replaceAll), action: onReplaceAll)
+                        Button(settings.text(.replaceAll)) {
+                            replace(from: .replaceAll, action: onReplaceAll)
+                        }
+                            .focused($focusedField, equals: .replaceAll)
                             .fixedSize()
                             .disabled(query.isEmpty || (findSession != nil && matchCount == 0) || findSession?.canReplace == false)
                     }
@@ -122,6 +132,16 @@ struct EditorFindBar: View {
         .onExitCommand(perform: onClose)
         .onAppear { focusQuery() }
         .onChange(of: focusToken) { _, _ in focusQuery() }
+    }
+
+    private func replace(from button: Field, action: () -> Void) {
+        // If this action removes the last match, it disables the focused
+        // button. Keep Escape available in the bar, but allow repeated Space
+        // on Replace while there are more matches.
+        if focusedField == button, button == .replaceAll || matchCount == 1 {
+            focusedField = .replacement
+        }
+        action()
     }
 
     private func replacementStatus(_ find: FindSession) -> String {

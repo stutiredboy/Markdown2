@@ -131,7 +131,7 @@ final class FindBarLayoutGUITests: XCTestCase {
         XCTAssertEqual(buttons.count, 8, "previous, next, close, three options, replace, replace all")
         XCTAssertEqual(fields.count, 2, "query and replacement must both be measured")
         XCTAssertTrue(fields.contains { $0 === query })
-        XCTAssertEqual(fields.filter { $0.placeholderString == harness.settings.text(.replace) }.count, 1)
+        XCTAssertEqual(fields.filter { $0.placeholderString == harness.settings.text(.replaceWith) }.count, 1)
         return buttons.map { $0 as NSView } + fields
     }
 

@@ -61,7 +61,7 @@ final class PreciseFindReviewRegressionGUITests: XCTestCase {
         harness.store.requestFind(.showReplace)
         harness.spin(until: { harness.queryField != nil })
         try harness.enterQuery("cat")
-        let field = try XCTUnwrap(harness.descendants(NSTextField.self).first { $0.placeholderString == harness.settings.text(.replace) })
+        let field = try XCTUnwrap(harness.descendants(NSTextField.self).first { $0.placeholderString == harness.settings.text(.replaceWith) })
         XCTAssertTrue(harness.window.makeFirstResponder(field))
         try XCTUnwrap(field.currentEditor()).insertText("dog")
         harness.spin(until: { field.stringValue == "dog" })

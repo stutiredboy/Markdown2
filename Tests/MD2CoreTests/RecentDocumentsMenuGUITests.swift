@@ -613,6 +613,172 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         try expectText(historical, in: copyEditor)
     }
 
+    // MARK: - Editor accessibility
+
+    func testEnglishSourceAndPopulatedFindFieldsHaveAccessibleNames() throws {
+        try assertEditorAccessibleNames(language: "english", appleLanguage: "en",
+                                       sourceLabel: "Markdown Source", findLabel: "Find", replacementLabel: "Replace With")
+    }
+
+    func testChineseSourceAndPopulatedFindFieldsHaveAccessibleNames() throws {
+        try assertEditorAccessibleNames(language: "zhHans", appleLanguage: "zh-Hans",
+                                       sourceLabel: "Markdown 源码", findLabel: "查找", replacementLabel: "替换为")
+    }
+
+    private func assertEditorAccessibleNames(
+        language: String, appleLanguage: String, sourceLabel: String, findLabel: String, replacementLabel: String
+    ) throws {
+        let document = try makeDocument("notes/AccessibilityLabels.md")
+        let original = "needle 中文 needle\n"
+        try Data(original.utf8).write(to: document)
+        let pid = try launch(recents: [], language: language, appleLanguages: [appleLanguage])
+        try open(document)
+
+        func string(_ attribute: String, in element: AXUIElement) -> String? {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
+            return value as? String
+        }
+        func isDocument(_ window: AXUIElement) -> Bool {
+            Self.title(of: window) == document.lastPathComponent
+        }
+        func textFields(in element: AXUIElement) -> [AXUIElement] {
+            if string(kAXRoleAttribute, in: element) == kAXTextFieldRole { return [element] }
+            return Self.children(of: element).flatMap { textFields(in: $0) }
+        }
+
+        let sourceWindow = try waitForWindow(pid: pid) {
+            isDocument($0) && Self.firstElement(ofRole: kAXTextAreaRole, in: $0) != nil
+        }
+        let source = try XCTUnwrap(Self.firstElement(ofRole: kAXTextAreaRole, in: sourceWindow))
+        XCTAssertEqual(string(kAXValueAttribute, in: source), original)
+        XCTAssertEqual(string(kAXDescriptionAttribute, in: source), sourceLabel)
+
+        // AX marks Option as bit 2. Find uses plain Command+F.
+        let command = try menuItem(commandCharacter: "F", pid: pid, modifiers: 2)
+        XCTAssertEqual(AXUIElementPerformAction(command, kAXPressAction as CFString), .success)
+        let findWindow = try waitForWindow(pid: pid) { isDocument($0) && textFields(in: $0).count == 2 }
+        let fields = textFields(in: findWindow)
+        XCTAssertEqual(fields.count, 2)
+        let query = try XCTUnwrap(fields.first)
+        let replacement = try XCTUnwrap(fields.dropFirst().first)
+        let queryValue = "needle"
+        let replacementValue = "替换内容"
+        XCTAssertEqual(AXUIElementSetAttributeValue(query, kAXValueAttribute as CFString, queryValue as CFString), .success)
+        XCTAssertEqual(AXUIElementSetAttributeValue(replacement, kAXValueAttribute as CFString, replacementValue as CFString), .success)
+
+        // Locate both fields by content so this cannot pass using placeholder text.
+        let filledWindow = try waitForWindow(pid: pid) { window in
+            isDocument(window) && Set(textFields(in: window).compactMap { string(kAXValueAttribute, in: $0) })
+                == Set([queryValue, replacementValue])
+        }
+        let filledFields = textFields(in: filledWindow)
+        let filledQuery = try XCTUnwrap(filledFields.first { string(kAXValueAttribute, in: $0) == queryValue })
+        let filledReplacement = try XCTUnwrap(filledFields.first { string(kAXValueAttribute, in: $0) == replacementValue })
+        XCTAssertEqual(string(kAXDescriptionAttribute, in: filledQuery), findLabel)
+        XCTAssertEqual(string(kAXDescriptionAttribute, in: filledReplacement), replacementLabel)
+        XCTAssertEqual(string(kAXValueAttribute, in: source), original)
+    }
+
+    // MARK: - Remote-image permission
+
+    func testRemoteImagePermissionSheetCancelsConfirmsRevokesAndClosesOnReload() throws {
+        // This exercises the native permission UI without an authored URL.
+        let document = try makeDocument("notes/RemoteImagePermission.md")
+        let original = "# Permission test\n\nOriginal text.\n"
+        try Data(original.utf8).write(to: document)
+        let pid = try launch(recents: [], language: "english", appleLanguages: ["en"])
+        try open(document)
+        let app = AXUIElementCreateApplication(pid)
+
+        let allow = "remote-images-allow"
+        let cancel = "remote-images-cancel"
+        let confirm = "remote-images-confirm"
+        let revoke = "remote-images-revoke"
+        func attribute(_ name: String, of element: AXUIElement) -> String? {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
+            return value as? String
+        }
+        func control(_ id: String, in root: AXUIElement) -> AXUIElement? {
+            if attribute(kAXIdentifierAttribute, of: root) == id { return root }
+            for child in Self.children(of: root) {
+                if let found = control(id, in: child) { return found }
+            }
+            return nil
+        }
+        func sheet(in window: AXUIElement) -> AXUIElement? {
+            Self.firstElement(ofRole: kAXSheetRole, in: window)
+        }
+        func isDocument(_ window: AXUIElement) -> Bool {
+            Self.title(of: window) == document.lastPathComponent
+        }
+        func press(_ id: String, in root: AXUIElement) throws {
+            let button = try XCTUnwrap(control(id, in: root), id)
+            XCTAssertEqual(attribute(kAXRoleAttribute, of: button), kAXButtonRole)
+            XCTAssertEqual(AXUIElementPerformAction(button, kAXPressAction as CFString), .success, id)
+        }
+        func expectState(_ id: String, source: String) throws -> AXUIElement {
+            let window: AXUIElement
+            do {
+                window = try waitForWindow(pid: pid) {
+                    guard isDocument($0), sheet(in: $0) == nil, control(id, in: $0) != nil,
+                          let editor = Self.firstElement(ofRole: kAXTextAreaRole, in: $0) else { return false }
+                    return attribute(kAXValueAttribute, of: editor) == source
+                }
+            } catch {
+                let current = Self.windows(pid: pid).first(where: isDocument)
+                let editor = current.flatMap { Self.firstElement(ofRole: kAXTextAreaRole, in: $0) }
+                throw GuardFailure("Expected permission control \(id) and source \(source.debugDescription); "
+                    + "actual source \(editor.flatMap { attribute(kAXValueAttribute, of: $0) }?.debugDescription ?? "missing"), "
+                    + "allow=\(current.flatMap { control(allow, in: $0) } != nil), "
+                    + "revoke=\(current.flatMap { control(revoke, in: $0) } != nil), "
+                    + "sheet=\(current.flatMap(sheet(in:)) != nil); \(error)")
+            }
+            XCTAssertNil(control(id == allow ? revoke : allow, in: window))
+            XCTAssertEqual(try Data(contentsOf: document), Data(source.utf8))
+            return window
+        }
+        func openPrompt(in window: AXUIElement) throws -> AXUIElement {
+            let opener = try XCTUnwrap(control(allow, in: window), allow)
+            var focusSettable = DarwinBoolean(false)
+            if AXUIElementIsAttributeSettable(opener, kAXFocusedAttribute as CFString, &focusSettable) == .success,
+               focusSettable.boolValue {
+                XCTAssertEqual(AXUIElementSetAttributeValue(opener, kAXFocusedAttribute as CFString, kCFBooleanTrue), .success)
+            }
+            try press(allow, in: window)
+
+            let host = try waitForWindow(pid: pid) {
+                guard isDocument($0), let attached = sheet(in: $0) else { return false }
+                var focused: CFTypeRef?
+                AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &focused)
+                guard let focus = Self.element(focused), attribute(kAXIdentifierAttribute, of: focus) == cancel else { return false }
+                return control(cancel, in: attached) != nil && control(confirm, in: attached) != nil
+            }
+            return try XCTUnwrap(sheet(in: host), "native sheet attached to the fixture window")
+        }
+
+        var window = try expectState(allow, source: original)
+        try press(cancel, in: openPrompt(in: window))
+        window = try expectState(allow, source: original)
+        try press(confirm, in: openPrompt(in: window))
+        window = try expectState(revoke, source: original)
+        try press(revoke, in: window)
+        window = try expectState(allow, source: original)
+
+        // A clean external reload changes the document context while the
+        // prompt is active. Appending in place gives the watcher one new version.
+        _ = try openPrompt(in: window)
+        let addition = "\nExternal update.\n"
+        do {
+            let writer = try FileHandle(forWritingTo: document)
+            defer { try? writer.close() }
+            _ = try writer.seekToEnd()
+            try writer.write(contentsOf: Data(addition.utf8))
+        }
+        _ = try expectState(allow, source: original + addition)
+    }
+
     // MARK: - Explicit paste menus
 
     func testPasteMenusFollowSourceFindSettingsAndPlainShortcut() throws {
@@ -1248,7 +1414,7 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         AXUIElementPerformAction(later, kAXPressAction as CFString)
     }
 
-    private func menuItem(commandCharacter character: String, pid: pid_t) throws -> AXUIElement {
+    private func menuItem(commandCharacter character: String, pid: pid_t, modifiers: Int? = nil) throws -> AXUIElement {
         let appElement = AXUIElementCreateApplication(pid)
         var menuBarValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(appElement, kAXMenuBarAttribute as CFString, &menuBarValue) == .success,
@@ -1257,12 +1423,19 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         }
         for barItem in Self.children(of: menuBar) {
             for menu in Self.children(of: barItem) {
-                if let item = Self.children(of: menu).first(where: { Self.commandCharacter(of: $0) == character }) {
+                if let item = Self.children(of: menu).first(where: { item in
+                    guard Self.commandCharacter(of: item) == character else { return false }
+                    guard let modifiers else { return true }
+                    var value: CFTypeRef?
+                    return AXUIElementCopyAttributeValue(item, kAXMenuItemCmdModifiersAttribute as CFString, &value) == .success
+                        && (value as? NSNumber)?.intValue == modifiers
+                }) {
                     return item
                 }
             }
         }
-        throw GuardFailure("no menu item with the ⌘\(character) key equivalent was found")
+        let qualifier = modifiers.map { " and AX modifiers \($0)" } ?? ""
+        throw GuardFailure("no menu item with the ⌘\(character) key equivalent\(qualifier) was found")
     }
 
     // MARK: - Launching

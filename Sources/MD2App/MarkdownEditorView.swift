@@ -115,6 +115,7 @@ struct MarkdownEditorView: NSViewRepresentable {
     /// session, for an editor not backed by a document.
     var session: MarkdownEditorSession? = nil
     var formatCommand: MarkdownFormatCommand? = nil
+    var sourceAccessibilityLabel: String? = nil
     var typography: TypographySettings = .init()
     var onSelectionChange: (String?) -> Void = { _ in }
 
@@ -128,6 +129,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         let coordinator = context.coordinator
         let session = coordinator.session
         let textView = session.loadTextView(text: text)
+        textView.setAccessibilityLabel(sourceAccessibilityLabel)
         (textView as? MarkdownSourceTextView)?.typography = typography
         session.host(in: scrollView, coordinator: coordinator)
         if let sourceTextView = textView as? MarkdownSourceTextView {
@@ -190,6 +192,9 @@ struct MarkdownEditorView: NSViewRepresentable {
         // must not claim the viewport reader or touch the text.
         guard let textView = scrollView.documentView as? NSTextView,
               textView === context.coordinator.session.textView else { return }
+        if textView.accessibilityLabel() != sourceAccessibilityLabel {
+            textView.setAccessibilityLabel(sourceAccessibilityLabel)
+        }
         viewportReader?.capture = { [weak scrollView] in
             guard let scrollView else { return nil }
             return Coordinator.viewportAnchor(in: scrollView)
@@ -2048,7 +2053,8 @@ final class MarkdownSourceTextView: NSTextView {
         let sources = imageSources(fromPasteboard: NSPasteboard.general)
         guard !sources.isEmpty else {
             let selection = selectedRange()
-            if selection.length > 0,
+            // A selected clause inside provisional IME text isn't a link label.
+            if !hasMarkedText(), selection.length > 0,
                let pasted = NSPasteboard.general.string(forType: .string),
                MarkdownEditing.clipboardURL(pasted) != nil,
                let edit = MarkdownEditing.edit(string, selection: selection, action: .link,

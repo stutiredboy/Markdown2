@@ -6,8 +6,9 @@ Ordinary links remain available when you choose to open them.
 
 ## Allow images for one document
 
-Choose **Allow for This Document…** in the document's remote-image control,
-read the explanation, then confirm **Allow Remote Images**. This permits HTTP(S)
+Choose **Allow for This Document…** in the document's remote-image control.
+The document's confirmation dialog opens on **Cancel**. Review the explanation,
+then choose **Allow Remote Images** to grant permission. This permits HTTP(S)
 images in that window's preview, PDF export and Print, including image resources
 named by CSS and diagrams. It does not permit remote scripts, stylesheets, fonts,
 frames, media or background API requests.
