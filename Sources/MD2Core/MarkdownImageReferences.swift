@@ -231,13 +231,22 @@ public enum MarkdownImageReferences {
     }
 
     private static func scanLine(_ line: String, base: Int, into result: inout Scan) {
+        guard line.range(of: "![", options: .literal) != nil else { return }
         let units = Array(line.utf16)
         // An image-shaped string inside an ordinary link title/label is not a
-        // safe independent image destination. Reuse the bounded candidate walk.
-        let enclosingLinks = MarkdownLinkSyntax.candidateRanges(in: line).filter {
-            $0.location == 0 || units[$0.location - 1] != 33
+        // safe independent image destination. Preserve the older conservative
+        // refusal even when a malformed link fails the renderer's grammar.
+        let enclosingLinks = MarkdownLinkSyntax.candidateRanges(in: line)
+        let legacyEnvelopes = MarkdownLinkSyntax.legacyLinkEnvelopes(in: line)
+        var enclosingIndex = 0, legacyIndex = 0
+        func enclosingEnd(at index: Int, in ranges: [NSRange], cursor: inout Int) -> Int? {
+            while cursor < ranges.count, NSMaxRange(ranges[cursor]) <= index { cursor += 1 }
+            guard cursor < ranges.count else { return nil }
+            let range = ranges[cursor]
+            guard NSLocationInRange(index, range),
+                  range.location == 0 || units[range.location - 1] != 33 else { return nil }
+            return NSMaxRange(range)
         }
-        var enclosingIndex = 0
         let lastBrace = MarkdownLinkSyntax.lastAttributeClosingBrace(in: units, input: .rawSource)
         var index = 0
         while index + 1 < units.count {
@@ -246,11 +255,9 @@ public enum MarkdownImageReferences {
             if result.references.count + result.unsupported.count >= maximumCandidates {
                 result.exceededLimit = true; return
             }
-            while enclosingIndex < enclosingLinks.count, NSMaxRange(enclosingLinks[enclosingIndex]) <= index {
-                enclosingIndex += 1
-            }
-            if enclosingIndex < enclosingLinks.count, NSLocationInRange(index, enclosingLinks[enclosingIndex]) {
-                let end = NSMaxRange(enclosingLinks[enclosingIndex])
+            let end = max(enclosingEnd(at: index, in: enclosingLinks, cursor: &enclosingIndex) ?? index,
+                          enclosingEnd(at: index, in: legacyEnvelopes, cursor: &legacyIndex) ?? index)
+            if end > index {
                 result.unsupported.append(String(decoding: units[index..<min(end, index + 80)], as: UTF16.self))
                 index = end; continue
             }

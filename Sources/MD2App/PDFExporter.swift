@@ -653,13 +653,17 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
     /// With unbreakable tokens broken (`overflow-wrap: anywhere`), nothing exceeds
     /// the layout width, so the capture maps 1:1 with no horizontal clipping.
     ///
-    /// Mermaid is deliberately excluded from the media cap (`svg:not(.diagram-mermaid
-    /// svg)`): Mermaid emits `<svg width="100%" style="max-width:<naturalWidth>px">`,
+    /// Mermaid is deliberately excluded from the media cap. It emits
+    /// `<svg width="100%" style="max-width:<naturalWidth>px">`,
     /// using the inline `max-width` to keep small diagrams at natural size. Forcing
     /// `max-width: 100% !important` over that inline cap strips it, so `width:100%`
     /// wins and `height:auto` inflates the height to several pages — a small
     /// flowchart then reads as missing. Mermaid's own `width="100%"` already shrinks
     /// wide diagrams to the column, so nothing replaces the override for Mermaid.
+    /// KaTeX sets the height of a radical SVG from its clipping wrapper.
+    /// Applying `height: auto` instead shrinks the SVG to its very wide viewbox
+    /// aspect ratio and hides the root sign. The break probe scales the whole
+    /// equation if needed.
     static let printStyleScript = """
     (function () {
       if (!document.head) { return; }
@@ -678,7 +682,7 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
         'pre code { white-space: pre-wrap !important; overflow-wrap: anywhere;' +
         ' word-break: break-word; }' +
         'code { overflow-wrap: anywhere; word-break: break-word; }' +
-        'img, canvas, svg:not(.diagram-mermaid svg) { max-width: 100% !important; height: auto; }' +
+        'img, canvas, svg:not(.diagram-mermaid svg, .katex svg) { max-width: 100% !important; height: auto; }' +
         '.math-display { overflow: visible !important; }' +
         // The preview fades diagrams in via `transition: opacity 120ms`. In the
         // offscreen export web view that transition never advances (WebKit

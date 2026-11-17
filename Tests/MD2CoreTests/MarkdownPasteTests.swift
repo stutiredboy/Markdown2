@@ -44,7 +44,7 @@ struct MarkdownPasteTests {
         #expect(output.fallbackReason == nil)
         #expect(output.text.contains("3. one"))
         let body = MarkdownRenderer().render(output.text).body
-        for tag in ["<h2", "<strong>bold</strong>", "<em>italic</em>", "<ol ", "<ul>", "<blockquote ", "<pre ", "href=\"https://example.com/?a=1&amp;b=2\""] { #expect(body.contains(tag), "missing \(tag) in \(body)") }
+        for tag in ["<h2", "<strong>bold</strong>", "<em>italic</em>", "<ol start=\"3\"", "<ul>", "<blockquote ", "<pre ", "href=\"https://example.com/?a=1&amp;b=2\""] { #expect(body.contains(tag), "missing \(tag) in \(body)") }
     }
     @Test(arguments: ["<img src='https://example.com/a'>", "<script>alert(1)</script>", "<p onclick='bad()'>x</p>", "<table><tr><td>x</td></tr></table>", "<a href='javascript&#58;alert(1)'>x</a>", "<a href='file:///tmp/x'>x</a>", "<b>unclosed"])
     func rejectedRichUsesCompleteLiteralRepresentation(_ rich: String) throws {

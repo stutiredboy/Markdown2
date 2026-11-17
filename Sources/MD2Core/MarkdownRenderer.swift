@@ -316,32 +316,34 @@ public struct MarkdownRenderer: Sendable {
     private func fencedCodeBlock(from lines: [String], startIndex: Int, renderContent: Bool = true) -> (html: String, nextIndex: Int)? {
         guard let fence = MarkdownFence.opening(in: lines[startIndex]) else { return nil }
 
-        let language = fence.info
         var code: [String] = []
         var index = startIndex + 1
 
         while index < lines.count {
             if fence.isClosed(by: lines[index]) {
-                return (renderContent ? fencedBlockHTML(language: language, code: code) : "", index + 1)
+                return (renderContent ? fencedBlockHTML(info: fence.info, code: code) : "", index + 1)
             }
 
             if renderContent { code.append(lines[index]) }
             index += 1
         }
 
-        return (renderContent ? fencedBlockHTML(language: language, code: code) : "", index)
+        return (renderContent ? fencedBlockHTML(info: fence.info, code: code) : "", index)
     }
 
     /// Builds the HTML for a closed or unterminated fenced block. Diagram info
     /// strings (`mermaid`, `flow`, `sequence`) become diagram placeholders;
     /// everything else stays a syntax-highlighted/plain code block.
-    private func fencedBlockHTML(language: String, code: [String]) -> String {
+    private func fencedBlockHTML(info: String, code: [String]) -> String {
         let source = code.joined(separator: "\n")
 
-        if let diagram = DiagramKind(infoString: language) {
+        if let diagram = DiagramKind(infoString: info) {
             return diagramHTML(kind: diagram, source: source)
         }
 
+        // Metadata after the language (e.g. filename=…) stays in source.
+        // Diagram dispatch above still requires an exact info string.
+        let language = String(info.prefix { !$0.isWhitespace })
         let languageClass = language.isEmpty ? "" : " class=\"language-\(escapeAttribute(language))\""
         return "<pre><code\(languageClass)>\(SyntaxHighlighter.highlightedHTML(for: source, language: language))</code></pre>"
     }
@@ -639,7 +641,7 @@ public struct MarkdownRenderer: Sendable {
 
     private func tableBlock(from lines: [String], startIndex: Int, context: InlineContext? = nil) -> (html: String, nextIndex: Int)? {
         guard startIndex + 1 < lines.count,
-              lines[startIndex].contains("|"),
+              MarkdownLine.isPipeTableLine(lines[startIndex]),
               let alignments = tableAlignments(in: lines[startIndex + 1]) else {
             return nil
         }
@@ -650,7 +652,7 @@ public struct MarkdownRenderer: Sendable {
         var rows: [[String]] = []
         var index = startIndex + 2
 
-        while index < lines.count, lines[index].contains("|"), !lines[index].trimmedMarkdownLine.isEmpty {
+        while index < lines.count, MarkdownLine.isPipeTableLine(lines[index]) {
             rows.append(splitTableLine(lines[index]))
             index += 1
         }
@@ -1038,8 +1040,9 @@ public struct MarkdownRenderer: Sendable {
     ) -> (html: String, next: Int) {
         guard context.budget.enter(work: items.count - start) else { return ("", items.count) }
         defer { context.budget.leave() }
-        let kind = items[start].kind
-        let tag = kind == .ordered ? "ol" : "ul"
+        let startNumber = items[start].number
+        let isOrdered = startNumber != nil
+        let tag = isOrdered ? "ol" : "ul"
         var listItems: [String] = []
         var hasTask = false
         var index = start
@@ -1047,10 +1050,10 @@ public struct MarkdownRenderer: Sendable {
         while index < items.count {
             if Task.isCancelled || context.budget.exhausted { return ("", items.count) }
             if levels[index] < level { break }
-            if levels[index] == level && items[index].kind != kind { break }
             if levels[index] > level { break } // defensive: handled below
 
             let item = items[index]
+            if (item.number != nil) != isOrdered { break }
             let checkbox: String
             if let checked = item.checked {
                 hasTask = true
@@ -1108,8 +1111,9 @@ public struct MarkdownRenderer: Sendable {
             listItems.append("<li\(span)>\(content)</li>")
         }
 
+        let startAttribute = if let startNumber, startNumber != 1 { " start=\"\(startNumber)\"" } else { "" }
         let className = hasTask ? " class=\"task-list\"" : ""
-        return ("<\(tag)\(className)>\n\(listItems.joined(separator: "\n"))\n</\(tag)>", index)
+        return ("<\(tag)\(startAttribute)\(className)>\n\(listItems.joined(separator: "\n"))\n</\(tag)>", index)
     }
 
     private func paragraphBlock(from lines: [String], startIndex: Int, context: InlineContext, renderContent: Bool = true) -> (html: String, nextIndex: Int) {
@@ -1405,7 +1409,7 @@ public struct MarkdownRenderer: Sendable {
             }
 
             return ListItem(
-                kind: .unordered,
+                number: nil,
                 checked: checked,
                 text: text,
                 indent: indent,
@@ -1415,18 +1419,34 @@ public struct MarkdownRenderer: Sendable {
             )
         }
 
-        guard let match = firstMatch(in: trimmed, pattern: #"^(\d+[\.)])\s+(.+)$"#),
-              let markerRange = Range(match.range(at: 1), in: trimmed),
-              let textRange = Range(match.range(at: 2), in: trimmed) else {
-            return nil
+        // Markdown and the editor both cap the marker at nine ASCII digits.
+        // Scan the short prefix by scalar so a joining mark in the item text
+        // cannot invalidate the boundary after the marker's whitespace.
+        let scalars = trimmed.unicodeScalars
+        var cursor = scalars.startIndex
+        var digits = 0
+        var number = 0
+        while cursor < scalars.endIndex, (48...57).contains(scalars[cursor].value) {
+            guard digits < 9 else { return nil }
+            number = number * 10 + Int(scalars[cursor].value - 48)
+            digits += 1
+            scalars.formIndex(after: &cursor)
         }
+        guard digits > 0, cursor < scalars.endIndex,
+              scalars[cursor] == "." || scalars[cursor] == ")" else { return nil }
+        scalars.formIndex(after: &cursor)
+        let gapStart = cursor
+        while cursor < scalars.endIndex, scalars[cursor] == " " || scalars[cursor] == "\t" {
+            scalars.formIndex(after: &cursor)
+        }
+        guard cursor != gapStart, cursor < scalars.endIndex else { return nil }
 
         return ListItem(
-            kind: .ordered,
+            number: number,
             checked: nil,
-            text: String(trimmed[textRange]),
+            text: String(scalars[cursor...]),
             indent: indent,
-            contentIndent: listContentIndent(after: line, markerIndent: indent, delimiterWidth: trimmed[markerRange].unicodeScalars.count),
+            contentIndent: listContentIndent(after: line, markerIndent: indent, delimiterWidth: digits + 1),
             line: sourceLine,
             lineIndex: lineIndex
         )
@@ -2087,7 +2107,7 @@ public struct MarkdownRenderer: Sendable {
     private func renderLinks(_ text: String, protector: InlineProtector, features: InlineFeatures = .init()) -> String {
         replaceMatches(
             in: text,
-            pattern: #"\[([^\]]+)\]\((?:&lt;(.+?)&gt;|(\S+?))(?:\s+&quot;(.+?)&quot;)?\)"#,
+            pattern: MarkdownLinkSyntax.inlineLinkPattern(input: .protectedEscapes),
             linkCandidates: true
         ) { match, source in
             guard let labelRange = Range(match.range(at: 1), in: source) else {
@@ -4395,7 +4415,8 @@ private final class InlineProtector {
 }
 
 private struct ListItem {
-    let kind: ListKind
+    /// The parsed marker number for ordered items, including zero.
+    let number: Int?
     let checked: Bool?
     let text: String
     /// Raw leading-indentation width in columns (a tab counts as 4). Used to
@@ -4418,11 +4439,6 @@ private struct ListItem {
     /// `buildList` dedents and renders these as the item's body so nested block
     /// content stays inside the `<li>` instead of leaking to the top-level walk.
     var continuation: [String] = []
-}
-
-private enum ListKind: Equatable {
-    case unordered
-    case ordered
 }
 
 private enum TableAlignment {

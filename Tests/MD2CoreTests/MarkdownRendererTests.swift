@@ -329,7 +329,7 @@ struct MarkdownRendererTests {
 
         let html = MarkdownRenderer().render(markdown).html.withoutSourceLineMetadata
 
-        #expect(html.contains("<ol>\n<li>first\n<ul>\n<li>detail a</li>\n</ul></li>\n<li>second</li>\n</ol>"))
+        #expect(html.contains("<ol start=\"10\">\n<li>first\n<ul>\n<li>detail a</li>\n</ul></li>\n<li>second</li>\n</ol>"))
     }
 
     @Test func mixedOrderedListWithBlankLinesAndNestedBulletsStaysOneList() {
@@ -377,7 +377,7 @@ struct MarkdownRendererTests {
         // Both numbered items stay in one continuous ordered list.
         #expect(html.contains("<li>基本信息采集"))
         #expect(html.contains("<li>binlog 坐标采集</li>"))
-        #expect(html.contains("<ol>") && !html.contains("</ol>\n<ol>"))
+        #expect(html.contains("<ol start=\"2\">") && !html.contains("</ol>\n<ol"))
     }
 
     @Test func paragraphAndCodeBlockNestUnderListItem() {
