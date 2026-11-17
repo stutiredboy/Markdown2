@@ -333,14 +333,17 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             kTISPropertyInputSourceIsEnabled as String: true,
             kTISPropertyInputSourceIsSelectCapable as String: true
         ]
-        let pinyin = (TISCreateInputSourceList(query as CFDictionary, false).takeRetainedValue() as? [TISInputSource])?.first
-        try XCTSkipUnless(pinyin != nil, "Enable Simplified Chinese Pinyin to run the real input-method regression.")
-        let inputSource = try XCTUnwrap(pinyin)
-        let originalSource = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
-        defer { XCTAssertEqual(TISSelectInputSource(originalSource), noErr, "restore the user's input source") }
+        // Carbon can return nil when there is no matching enabled input source.
+        guard let sources = TISCreateInputSourceList(query as CFDictionary, false)?.takeRetainedValue(),
+              let inputSource = (sources as? [TISInputSource])?.first else {
+            throw XCTSkip("Enable Simplified Chinese Pinyin to run the real input-method regression.")
+        }
         guard CGPreflightPostEventAccess() else {
             throw GuardFailure("Quartz keyboard events must be allowed for the real input-method test")
         }
+        let originalSource = try XCTUnwrap(TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+                                         "the previous input source is required for restoration")
+        defer { XCTAssertEqual(TISSelectInputSource(originalSource), noErr, "restore the user's input source") }
 
         func wait(_ label: @autoclosure () -> String, until condition: () -> Bool) throws {
             let deadline = Date().addingTimeInterval(5)
@@ -385,7 +388,7 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             throw GuardFailure("could not select Simplified Chinese Pinyin")
         }
         try wait("the system must select Simplified Chinese Pinyin") {
-            let selected = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
+            guard let selected = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return false }
             return TISGetInputSourceProperty(selected, kTISPropertyInputSourceID)
                 .map { Unmanaged<CFString>.fromOpaque($0).takeUnretainedValue() as String } == pinyinID
         }
