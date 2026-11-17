@@ -7,7 +7,7 @@ PR 与标签发布共用 `.github/workflows/verify.yml`，它仅提供 `workflow
 `.github/workflows/pr-verify.yml` 是只读 PR wrapper，调用共享验证的三个 job：
 
 1. `build-test-package`：现有非 GUI 测试、独立性能比例及 heartbeat 检查、release 构建、macOS 15 最低版本、bundle 资源、版本和签名、DMG 完整性及其内 app 签名。
-2. `gui-tests`：启用 `MD2_RUN_GUI_TESTS=1` 的全部 XCTest、GUI 用例声明检查，以及原 skip allowlist 检查。
+2. `gui-tests`：在 runner 上启用 macOS 键盘导航，运行 `MD2_RUN_GUI_TESTS=1` 的全部 XCTest，检查 GUI 用例声明及原 skip allowlist。
 3. `artifact-handoff`：依赖前两者成功，按 job 输出的 artifact ID 下载本次运行的 DMG，校验其提交、版本及 SHA-256。
 
 PR wrapper 的 `verify-outputs` job 随后消费共享工作流返回的公开 artifact ID 和摘要，执行与正式发布相同的下载及 Python 校验。这覆盖了 `workflow_call`、inputs、job outputs、workflow outputs 和 artifact 传递，首个 PR 无需先合入 main 或创建发布标签。只有下载/摘要步骤重复，Swift/GUI 和打包均只运行一次。

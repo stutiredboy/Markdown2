@@ -159,6 +159,9 @@ VoiceOver itself.
 Run the focused system Pinyin regression with the Simplified Chinese Pinyin
 source enabled and Quartz event posting available. Run the full gate from the
 candidate checkout while the desktop is idle, with no concurrent live probe.
+Enable Keyboard Navigation in macOS System Settings under Keyboard before
+running the GUI suite locally. The permission sheet test asserts that Cancel
+receives keyboard focus. The CI runner enables the same setting before XCTest.
 
 ```sh
 MD2_RUN_GUI_TESTS=1 swift test --disable-swift-testing \
