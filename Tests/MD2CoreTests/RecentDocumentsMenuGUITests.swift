@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Carbon
 import XCTest
 
 @testable import MD2App
@@ -323,6 +324,128 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             try? FileManager.default.removeItem(at: temporaryRoot)
         }
         Self.removeGuardPreferences()
+    }
+
+    func testPinyinCompositionCommitsWithSpaceAndReturn() throws {
+        let pinyinID = "com.apple.inputmethod.SCIM.ITABC"
+        let query: [String: Any] = [
+            kTISPropertyInputSourceID as String: pinyinID,
+            kTISPropertyInputSourceIsEnabled as String: true,
+            kTISPropertyInputSourceIsSelectCapable as String: true
+        ]
+        let pinyin = (TISCreateInputSourceList(query as CFDictionary, false).takeRetainedValue() as? [TISInputSource])?.first
+        try XCTSkipUnless(pinyin != nil, "Enable Simplified Chinese Pinyin to run the real input-method regression.")
+        let inputSource = try XCTUnwrap(pinyin)
+        let originalSource = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
+        defer { XCTAssertEqual(TISSelectInputSource(originalSource), noErr, "restore the user's input source") }
+        guard CGPreflightPostEventAccess() else {
+            throw GuardFailure("Quartz keyboard events must be allowed for the real input-method test")
+        }
+
+        func wait(_ label: @autoclosure () -> String, until condition: () -> Bool) throws {
+            let deadline = Date().addingTimeInterval(5)
+            repeat {
+                if condition() { return }
+                usleep(30_000)
+            } while Date() < deadline
+            throw GuardFailure(label())
+        }
+
+        let initial = "- "
+        let document = try makeDocument("notes/PinyinList.md")
+        try Data(initial.utf8).write(to: document)
+        // Start the app with Pinyin already selected so its first text input
+        // context inherits the input source before its window takes focus.
+        guard TISSelectInputSource(inputSource) == noErr else {
+            throw GuardFailure("could not select Simplified Chinese Pinyin before launching the fixture")
+        }
+        let pid = try launch(recents: [], language: "english", appleLanguages: ["en"])
+        try open(document)
+        let window = try waitForWindow(pid: pid) {
+            Self.title(of: $0) == document.lastPathComponent
+                && Self.firstElement(ofRole: kAXTextAreaRole as String, in: $0) != nil
+        }
+        let editor = try XCTUnwrap(Self.firstElement(ofRole: kAXTextAreaRole as String, in: window))
+        let app = try XCTUnwrap(NSRunningApplication(processIdentifier: pid))
+        app.activate()
+        XCTAssertEqual(AXUIElementPerformAction(window, kAXRaiseAction as CFString), .success)
+        XCTAssertEqual(AXUIElementSetAttributeValue(editor, kAXFocusedAttribute as CFString, kCFBooleanTrue), .success)
+        let appElement = AXUIElementCreateApplication(pid)
+        try wait("the Pinyin fixture must own keyboard focus") {
+            var focused: CFTypeRef?
+            return NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+                && AXUIElementCopyAttributeValue(appElement, kAXFocusedUIElementAttribute as CFString, &focused) == .success
+                && Self.element(focused).map { CFEqual($0, editor) } == true
+        }
+        var end = CFRange(location: initial.utf16.count, length: 0)
+        let caret = try XCTUnwrap(AXValueCreate(.cfRange, &end))
+        XCTAssertEqual(AXUIElementSetAttributeValue(editor, kAXSelectedTextRangeAttribute as CFString, caret), .success)
+
+        guard TISSelectInputSource(inputSource) == noErr else {
+            throw GuardFailure("could not select Simplified Chinese Pinyin")
+        }
+        try wait("the system must select Simplified Chinese Pinyin") {
+            let selected = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
+            return TISGetInputSourceProperty(selected, kTISPropertyInputSourceID)
+                .map { Unmanaged<CFString>.fromOpaque($0).takeUnretainedValue() as String } == pinyinID
+        }
+        // The app receives the input-source change after Text Input Sources
+        // returns. Give the WindowServer time to attach the new input context.
+        usleep(750_000)
+
+        func editorText() -> String? {
+            var value: CFTypeRef?
+            return AXUIElementCopyAttributeValue(editor, kAXValueAttribute as CFString, &value) == .success
+                ? value as? String : nil
+        }
+        let eventSource = try XCTUnwrap(CGEventSource(stateID: .combinedSessionState))
+        func press(_ key: Int, flags: CGEventFlags = []) throws {
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
+                throw GuardFailure("keyboard focus left the isolated Pinyin fixture")
+            }
+            for down in [true, false] {
+                let event = try XCTUnwrap(CGEvent(keyboardEventSource: eventSource, virtualKey: CGKeyCode(key), keyDown: down))
+                event.flags = flags
+                // Route through WindowServer so the active input method receives the key.
+                event.post(tap: .cghidEventTap)
+            }
+            usleep(70_000)
+        }
+
+        try wait("the editor must contain the original list marker") { editorText() == initial }
+        for key in [kVK_ANSI_W, kVK_ANSI_U, kVK_ANSI_B, kVK_ANSI_I] { try press(key) }
+        try wait("Pinyin did not show a provisional buffer: \(String(describing: editorText()))") {
+            guard let text = editorText() else { return false }
+            return text != initial
+        }
+        let title = document.lastPathComponent
+        XCTAssertEqual(Self.title(of: window), title, "marked text must leave the document clean")
+        XCTAssertEqual(try Data(contentsOf: document), Data(initial.utf8))
+        try press(kVK_Return)
+        try wait("the first Return must commit wubi without continuing the list: \(String(describing: editorText()))") {
+            editorText() == "- wubi" && Self.title(of: window) == title + " *"
+        }
+        try press(kVK_Return)
+        let continuedList = "- wubi\n- "
+        try wait("only the second Return may continue the list") { editorText() == continuedList }
+
+        try press(kVK_ANSI_S, flags: .maskCommand)
+        try wait("save the continued list before testing a Chinese candidate") {
+            Self.title(of: window) == title && (try? Data(contentsOf: document)) == Data(continuedList.utf8)
+        }
+        for key in [kVK_ANSI_N, kVK_ANSI_I, kVK_ANSI_H, kVK_ANSI_A, kVK_ANSI_O] { try press(key) }
+        try wait("Pinyin did not compose nihao") {
+            guard let text = editorText() else { return false }
+            return text.hasPrefix(continuedList) && text != continuedList
+        }
+        XCTAssertEqual(Self.title(of: window), title, "the candidate must still be provisional")
+        try press(kVK_Space)
+        try wait("Space must commit a Chinese candidate: \(String(describing: editorText()))") {
+            guard let text = editorText(), text.hasPrefix(continuedList) else { return false }
+            let candidate = text.dropFirst(continuedList.count)
+            return !candidate.isEmpty && candidate.unicodeScalars.allSatisfy { (0x3400...0x9FFF).contains($0.value) }
+                && Self.title(of: window) == title + " *"
+        }
     }
 
     // MARK: - Explicit paste menus

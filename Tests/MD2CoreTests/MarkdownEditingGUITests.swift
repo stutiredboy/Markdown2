@@ -322,36 +322,6 @@ final class MarkdownEditingGUITests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "**text**")
         XCTAssertTrue(harness.store.undoManager.canUndo)
     }
-
-    @MainActor
-    func testPinyinReturnCommitsLatinLettersWithoutContinuingList() throws {
-        let harness = try EditingWindow("- ")
-        defer { harness.close() }
-        let editor = harness.editor
-        let context = try XCTUnwrap(editor.inputContext)
-        let pinyin = "com.apple.inputmethod.SCIM.ITABC"
-        try XCTSkipUnless(context.keyboardInputSources?.contains(pinyin) == true,
-                          "Enable Simplified Chinese Pinyin to run the real input-method regression (marked-text contract is tested separately).")
-        let original = context.selectedKeyboardInputSource
-        defer { context.selectedKeyboardInputSource = original }
-        NSApp.activate(ignoringOtherApps: true)
-        context.activate()
-        context.selectedKeyboardInputSource = pinyin
-        harness.spin(for: 0.3)
-        editor.setSelectedRange(NSRange(location: 2, length: 0))
-        for (character, code): (String, UInt16) in [("w", 13), ("u", 32), ("b", 11), ("i", 34)] {
-            editor.keyDown(with: harness.key(character, code: code))
-            harness.spin(for: 0.05)
-        }
-        XCTAssertTrue(editor.hasMarkedText(), "the real Pinyin input method must own the letters before Return")
-        editor.keyDown(with: harness.key("\r", code: 36))
-        harness.spin()
-        XCTAssertFalse(editor.hasMarkedText())
-        XCTAssertEqual(harness.store.text, "- wubi")
-        editor.keyDown(with: harness.key("\r", code: 36))
-        harness.spin()
-        XCTAssertEqual(harness.store.text, "- wubi\n- ")
-    }
 }
 
 /// Keeps first responder until told to let go.

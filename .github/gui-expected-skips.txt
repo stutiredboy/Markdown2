@@ -4,8 +4,8 @@
 # to the start of its skip reason; say why it cannot run on the runner.
 
 # Needs the Simplified Chinese Pinyin input source, which the runner does not
-# enable; the marked-text contract it exercises is tested headlessly.
-MD2CoreTests.MarkdownEditingGUITests/testPinyinReturnCommitsLatinLettersWithoutContinuingList | Enable Simplified Chinese Pinyin
+# enable. Synthetic marked-text coverage runs separately.
+MD2CoreTests.RecentDocumentsMenuGUITests/testPinyinCompositionCommitsWithSpaceAndReturn | Enable Simplified Chinese Pinyin
 
 # A manual export tool: it runs only when a developer points it at a file.
 MD2CoreTests.PDFExportEndToEndVerification/testExportProvidedMarkdownPath | Set MD2_VERIFY_PDF_SOURCE and MD2_VERIFY_PDF_OUTPUT
