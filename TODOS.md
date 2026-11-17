@@ -66,13 +66,13 @@ features. See the [daily-writing](Docs/Plans/daily-writing/PLAN.md),
   native fields across Write/Split/Read, remains keyboard/VoiceOver operable at
   narrow widths in both languages, and changes neither source nor exports.
 
-- [ ] **P2 — Real-document compatibility corpus and targeted syntax improvements.**
-  Add licensed or original README, technical-note, Chinese long-form and
-  math-heavy fixtures alongside the existing normative corpus. Select concrete
-  list/link/fence/table gaps instead of pursuing a reference-match percentage.
-  Acceptance: review source preservation, rendered content, editor/outline and
-  PDF/HTML consistency; preserve safety limits and intentional divergences;
-  update the authoritative matrix and generated documentation together.
+- [x] **P2 — Real-document compatibility corpus and targeted syntax improvements.**
+  Added four original fixtures and checked source preservation, native outline
+  navigation, preview, offline HTML and PDF. Fixed ordered list starts, links
+  with balanced parentheses, fence language metadata, headings beside tables,
+  and missing square-root signs in PDF. See the
+  [acceptance record](Docs/Plans/real-document-compatibility/RESULTS.md) and
+  [compatibility matrix](Docs/CompatibilityMatrix.md).
 
 - [ ] **P2 — Contributor and dependency documentation.** Add a concise
   CONTRIBUTING guide linking the existing isolated build/verification commands,

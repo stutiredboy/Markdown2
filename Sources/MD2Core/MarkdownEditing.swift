@@ -156,7 +156,7 @@ public enum MarkdownEditing {
                     let gap = String(raw.dropFirst(delimiter.count))
                     var next = raw
                     if let number = Int(delimiter.dropLast()), let punctuation = delimiter.last {
-                        next = "\(number + 1)\(punctuation)\(gap)"
+                        next = "\(nextOrderedMarkerNumber(number))\(punctuation)\(gap)"
                     }
                     var count = raw.utf16.count
                     let rest = source.substring(from: offset + count)
@@ -240,7 +240,7 @@ public enum MarkdownEditing {
               let number = Int(marker.next[numberRange]),
               let punctuationRange = Range(opening.range(at: 2), in: marker.next) else { return nil }
         let punctuation = String(marker.next[punctuationRange])
-        var nextNumber = number + 1
+        var nextNumber = nextOrderedMarkerNumber(number)
         var position = NSMaxRange(current.range)
         var changes: [Change] = []
         while position < source.length {
@@ -260,7 +260,7 @@ public enum MarkdownEditing {
             let range = NSRange(location: candidate.range.location + sibling.range.location + match.range(at: 1).location,
                                 length: match.range(at: 1).length)
             changes.append(Change(range: range, text: String(nextNumber)))
-            nextNumber += 1
+            nextNumber = nextOrderedMarkerNumber(nextNumber)
         }
         guard let last = changes.last else { return nil }
         let editRange = NSRange(location: selection.location,
@@ -272,6 +272,12 @@ public enum MarkdownEditing {
         }
         return replacing(editRange, with: insertion + (tail as String),
                          selection: NSRange(location: selection.location + insertion.utf16.count, length: 0))
+    }
+
+    private static func nextOrderedMarkerNumber(_ number: Int) -> Int {
+        // Repeating the largest valid marker keeps the item in the list. HTML
+        // increments its displayed ordinal from the first marker independently.
+        min(number + 1, 999_999_999)
     }
 
     /// A content-column continuation belongs to the nearest enclosing item.

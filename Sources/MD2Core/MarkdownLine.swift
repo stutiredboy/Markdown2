@@ -28,6 +28,13 @@ enum MarkdownLine {
         MarkdownFence.opening(in: line)?.marker
     }
 
+    /// A pipe inside an ATX heading is title text, never a table column.
+    static func isPipeTableLine(_ line: String) -> Bool {
+        guard line.contains("|") else { return false }
+        let first = line.unicodeScalars.first { !CharacterSet.whitespaces.contains($0) }
+        return first != "#" || heading(in: line) == nil
+    }
+
     static func setextHeadingLevel(in line: String) -> Int? {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
 

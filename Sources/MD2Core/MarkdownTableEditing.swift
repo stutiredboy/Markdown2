@@ -85,13 +85,13 @@ public enum MarkdownTableEditing {
         guard let current = lines.firstIndex(where: {
             selection.location >= $0.start && selection.location <= $0.start + $0.body.utf16.count
         }), NSMaxRange(selection) <= lines[current].start + lines[current].body.utf16.count else { throw Rejection.selection }
-        guard lines[current].body.contains("|") else { throw Rejection.unsupported }
+        guard MarkdownLine.isPipeTableLine(lines[current].body) else { throw Rejection.unsupported }
         var first = current, last = current
-        while first > 0, lines[first - 1].body.contains("|") {
+        while first > 0, MarkdownLine.isPipeTableLine(lines[first - 1].body) {
             first -= 1
             guard current - first < maximumRows else { throw Rejection.budget }
         }
-        while last + 1 < lines.count, lines[last + 1].body.contains("|") {
+        while last + 1 < lines.count, MarkdownLine.isPipeTableLine(lines[last + 1].body) {
             last += 1
             guard last - first + 1 <= maximumRows else { throw Rejection.budget }
         }
@@ -192,7 +192,7 @@ public enum MarkdownTableEditing {
         var tableStarts = Array(repeating: false, count: lines.count)
         var setextStarts = tableStarts
         for index in lines.indices where index + 1 < lines.count {
-            tableStarts[index] = bodies[index].contains("|") && MarkdownTableSyntax.row(bodies[index + 1])?.isDelimiter == true
+            tableStarts[index] = MarkdownLine.isPipeTableLine(bodies[index]) && MarkdownTableSyntax.row(bodies[index + 1])?.isDelimiter == true
             setextStarts[index] = !trimmed[index].isEmpty && !headings[index] && fences[index] == nil
                 && !rules[index] && listColumns[index] == nil && !quotes[index]
                 && MarkdownLine.setextHeadingLevel(in: bodies[index + 1]) != nil
@@ -253,7 +253,7 @@ public enum MarkdownTableEditing {
             if trimmed[index] == "[TOC]" { index += 1; continue }
             if tableStarts[index] {
                 index += 2
-                while index < lines.count, bodies[index].contains("|") { index += 1 }
+                while index < lines.count, MarkdownLine.isPipeTableLine(bodies[index]) { index += 1 }
                 // A labeled caption is rendered inside the preceding table,
                 // so its inline span cannot extend into the next paragraph.
                 if index < lines.count,

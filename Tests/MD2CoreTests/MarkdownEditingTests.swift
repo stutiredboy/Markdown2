@@ -22,6 +22,8 @@ struct MarkdownEditingTests {
         Example("+ a¦", .newline, "+ a\n+ ¦"),
         Example("9. a¦", .newline, "9. a\n10. ¦"),
         Example("99) a¦", .newline, "99) a\n100) ¦"),
+        Example("999999998. a¦\n999999999. b", .newline, "999999998. a\n999999999. ¦\n999999999. b"),
+        Example("999999999) a¦", .newline, "999999999) a\n999999999) ¦"),
         Example("1. one¦\n2. two\n3. three", .newline, "1. one\n2. ¦\n3. two\n4. three"),
         Example("1. one¦\n  - nested\n2. two", .newline, "1. one\n2. ¦\n  - nested\n3. two"),
         Example("- [x] done¦", .newline, "- [x] done\n- [ ] ¦"),

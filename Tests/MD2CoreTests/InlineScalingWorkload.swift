@@ -10,6 +10,7 @@ import Foundation
 enum InlineScalingWorkload: String, CaseIterable, Sendable {
     case urlAutolinks
     case markdownLinks
+    case balancedAndUnfinishedLinks
     case mailtoAutolinks
     case entities
     case bareURLs
@@ -29,6 +30,8 @@ enum InlineScalingWorkload: String, CaseIterable, Sendable {
             return (0..<count).map { "<https://example.com/path/\($0)>" }.joined(separator: " ")
         case .markdownLinks:
             return (0..<count).map { "[link \($0)](https://example.com/path/\($0))" }.joined(separator: " ")
+        case .balancedAndUnfinishedLinks:
+            return (0..<count).map { "[draft](/old_(copy) [manual](/guide/step_(\($0)).md)" }.joined(separator: " ")
         case .mailtoAutolinks:
             return (0..<count).map { "<mailto:user\($0)@example.com>" }.joined(separator: " ")
         case .entities:
@@ -75,6 +78,10 @@ enum InlineScalingWorkload: String, CaseIterable, Sendable {
         switch self {
         case .urlAutolinks, .markdownLinks, .bareURLs, .referenceLinks, .referenceLinksWithProtectedKeys:
             return body.components(separatedBy: #"href="https://example.com/path/"#).count - 1 == count
+        case .balancedAndUnfinishedLinks:
+            return body.components(separatedBy: #"href="/guide/step_("#).count - 1 == count
+                && body.components(separatedBy: ".md\">manual</a>").count - 1 == count
+                && !body.contains(#"href="/old_"#)
         case .mailtoAutolinks:
             return body.components(separatedBy: #"href="mailto:user"#).count - 1 == count
         case .entities:

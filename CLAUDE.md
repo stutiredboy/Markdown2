@@ -20,7 +20,7 @@ GUI 测试通过 `MD2_RUN_GUI_TESTS=1` 选择性开启：本地 `swift test` 默
 
 `PDFExporter.swift` 里两行是 load-bearing，删了会静默回归（深色 PDF），改它们之前先看对应 GUI 测试：
 - `hostWindow.appearance = NSAppearance(named: .aqua)` —— 强制浅色外观（守：`testPDFExporterForcesLightAppearanceOnHostWindow`、`testForcedLightAppearanceUsesDefaultMermaidTheme`）
-- `printStyleScript` 里的 `img, canvas, svg:not(.diagram-mermaid svg)` 选择器 —— 保留 Mermaid 自然尺寸（守：`testNarrowMermaidKeepsNaturalSizeUnderPrintOverride`、`testWideMermaidFitsPrintableColumnUnderPrintOverride`、`testNonMermaidMediaCappedUnderPrintOverride`）
+- `printStyleScript` 的媒体尺寸限制排除 Mermaid 和 KaTeX 内部的 SVG。Mermaid 保留自然尺寸，KaTeX 保留根号的裁切几何。验证用例包括 `testNarrowMermaidKeepsNaturalSizeUnderPrintOverride`、`testWideMermaidFitsPrintableColumnUnderPrintOverride`、`testNonMermaidMediaCappedUnderPrintOverride` 和 `testPDFPrintStylesPreserveKaTeXRadicalGeometry`。
 
 CI 的 GUI lane：`.github/workflows/verify.yml` 的 `gui-tests` job 在 GitHub 的 `macos-15` runner（有登录会话和 window server）上跑 `MD2_RUN_GUI_TESTS=1 swift test --disable-swift-testing`（只跑 XCTest：GUI 门控用例必须写成 XCTest，Swift Testing 套件已在 `build-test-package` 跑过，job 里有一步会拦住读 `MD2_RUN_GUI_TESTS` 的 Swift Testing 文件），再用 `Scripts/check_test_skips.py` 拒绝 `.github/gui-expected-skips.txt` 之外的任何 skip —— 被跳过的 GUI 测试同样是绿的，不查 skip，这个 lane 什么都证明不了。新增的 `XCTSkip` 路径如果会在 runner 上触发，必须在 allowlist 里加一条（钉住测试名和 skip 原因的开头）并写明为什么 runner 跑不了，否则 CI 失败。runner 镜像已授予 Accessibility，所以 `SettingsWindowPresentationGUITests` 里需要它的 Settings 命令用例在 CI 上也会真跑。CI 只覆盖 macOS 15，开发机覆盖当前系统，两者互补，所以上面"落地前在本地跑"的要求不变。
 

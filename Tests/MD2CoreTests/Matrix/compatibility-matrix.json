@@ -99,8 +99,8 @@
       "sections": ["Fenced code blocks"],
       "tier": "Supported",
       "baselineRelationship": "known-incomplete",
-      "declaredBehavior": "``` ``` ``` and `~~~` fences become `<pre><code>`; an info string becomes `class=\"language-…\"` and drives syntax highlighting.",
-      "boundary": "An unterminated fence renders to end of document; the trailing newline inside the code element can diverge from the reference.",
+      "declaredBehavior": "Backtick and tilde fences become `<pre><code>`; the first info word supplies the language class and drives syntax highlighting. Trailing info stays in the source.",
+      "boundary": "A diagram requires its exact info string after trimming and case folding; trailing info does not enable a diagram. An unterminated fence renders to end of document; the final code newline can differ from the reference.",
       "docLabel": "Supported"
     },
     {
@@ -159,7 +159,7 @@
       "sections": ["List items"],
       "tier": "Supported",
       "baselineRelationship": "known-incomplete",
-      "declaredBehavior": "`-`/`*`/`+` and `N.`/`N)` markers become `<li>`; indentation drives nesting.",
+      "declaredBehavior": "`-`/`*`/`+` and `N.`/`N)` markers become `<li>`; indentation drives nesting. Ordered markers use one to nine ASCII digits followed by a period or closing parenthesis and a space or tab.",
       "boundary": "Loose/tight detection, multi-paragraph items, and some indentation edges diverge from the reference.",
       "docLabel": "Supported"
     },
@@ -209,8 +209,8 @@
       "sections": ["Links"],
       "tier": "Supported",
       "baselineRelationship": "known-incomplete",
-      "declaredBehavior": "Inline and reference links become `<a href>` with optional titles; unsafe schemes are neutralised.",
-      "boundary": "Complex nested-bracket and inline destination/title edges remain incomplete.",
+      "declaredBehavior": "Inline and reference links become `<a href>` with optional titles; unsafe schemes are neutralised. An unbracketed inline link destination can contain balanced, non-nested parentheses (e.g. `manual_(portable).md`).",
+      "boundary": "Nested parentheses, complex bracket labels and other destination/title edges remain incomplete. Portable attachment collection keeps its narrower source-editing rules.",
       "docLabel": "Supported"
     },
     {
@@ -279,8 +279,8 @@
       "sections": ["Tables (extension)"],
       "tier": "Supported",
       "baselineRelationship": "intentional-divergence",
-      "declaredBehavior": "Pipe tables become `<table>` with `<thead>`/`<tbody>`; column alignment is emitted as `style=\"text-align:…\"`.",
-      "boundary": "Alignment uses CSS `style` rather than the GFM `align` attribute (intentional); a delimiter row without leading/trailing pipes is not recognised and falls back to a paragraph.",
+      "declaredBehavior": "Pipe tables become `<table>` with `<thead>`/`<tbody>`; column alignment is emitted as `style=\"text-align:…\"`. An ATX heading ends the table even when the title contains a pipe and no blank line intervenes.",
+      "boundary": "Alignment uses CSS `style` rather than the GFM `align` attribute (intentional). Some row and block boundaries diverge from the reference; table editing still refuses ambiguous rows, complex contexts and over-budget input.",
       "docLabel": "Supported"
     },
     {

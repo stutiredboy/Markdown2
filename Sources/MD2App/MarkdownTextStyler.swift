@@ -32,7 +32,7 @@ struct MarkdownStylePlan: Sendable {
                     spans.append(Span(range: range, kind: Kind(rawValue: level)!))
                 } else {
                     if trimmed.hasPrefix(">") { spans.append(Span(range: range, kind: .quote)) }
-                    if let marker = line.range(of: #"^\s*(?:[-*+]|\d+[\.)])\s+"#, options: .regularExpression) {
+                    if let marker = line.range(of: #"^\s*(?:[-*+]|[0-9]{1,9}[.)])[ \t]+"#, options: .regularExpression) {
                         let local = NSRange(marker, in: line)
                         let task = trimmed.hasPrefix("- [ ] ") || trimmed.lowercased().hasPrefix("- [x] ")
                         spans.append(Span(range: NSRange(location: range.location + (task ? 0 : local.location), length: task ? min(6, range.length) : local.length), kind: .marker))
@@ -45,7 +45,7 @@ struct MarkdownStylePlan: Sendable {
             (#"`[^`\n]+`"#, .inlineCode),
             (#"\*\*[^*]+\*\*|__[^_]+__"#, .bold),
             (#"(?<!\*)\*(?!\s)[^*]+(?<!\s)\*(?!\*)"#, .italic),
-            (#"\[[^\]]+\]\([^)]+\)"#, .link)
+            (MarkdownLinkSyntax.inlineLinkPattern(input: .rawSource), .link)
         ]
         for (pattern, kind) in patterns {
             let regex = try! NSRegularExpression(pattern: pattern)

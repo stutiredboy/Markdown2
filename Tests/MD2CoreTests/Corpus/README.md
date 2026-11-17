@@ -1,4 +1,6 @@
-# Markdown conformance corpus
+# Markdown test corpora
+
+## Normative conformance examples
 
 Vendored, offline CommonMark and GFM reference examples used by the
 `markdown-conformance-suite` (see `MarkdownConformance*` tests). Each file is an
@@ -11,7 +13,7 @@ array of records in the CommonMark reference shape:
 `markdown` is the source, `html` is the upstream reference output, and `section`
 is the construct category the compatibility matrix maps to a support tier.
 
-## Provenance (pinned)
+### Provenance (pinned)
 
 | File | Upstream source | Version | Licence |
 | --- | --- | --- | --- |
@@ -28,9 +30,29 @@ Retrieved 2026-06-26.
   `Scripts/extract_gfm_corpus.py` (which also normalises the spec's `→` tab
   markers back to real tabs).
 
-## Updating the corpus
+### Updating the normative examples
 
-Bump the pinned version, re-download, and re-run the extractor. The conformance
-baseline (`Baseline/*.json`) and the compatibility matrix are expected to fail
-until any new or renamed `section` is classified — that is the intended signal,
-not a bug.
+Bump the pinned version, re-download, and re-run the extractor. Classify any
+new or renamed `section` to satisfy the [conformance baseline](../Conformance/baseline.json)
+and the compatibility matrix.
+
+## Real-document compatibility examples
+
+The Markdown files in [`real-documents/`](real-documents/) were written for
+Markdown2 and are covered by the repository's [MIT license](../../../LICENSE).
+Waypost, the workshop, and the example measurements are fictional. The files
+have no third-party excerpts or asset dependencies. Example endpoints use the
+reserved `.test` domain. The test bundle includes the source files verbatim.
+
+| Fixture | Workflow and compatibility cases |
+| --- | --- |
+| `project-readme.md` | CLI installation and rollout. An inline link with balanced parentheses in the destination, a tilde fence with extra info after the language, a shell comment that should stay out of the outline, and an ordered procedure that resumes at step 10. |
+| `technical-note.md` | Incident recovery. Nested lists, a longer fence around a copyable Markdown template, and a pipe table directly followed by a heading that contains a pipe. |
+| `chinese-long-form.md` | Community workshop handoff. Chinese headings and fragment links, long paragraphs, nested lists, a quote, and a table with right-aligned counts. |
+| `math-heavy.md` | Measurement note. Inline and display TeX, an equation label and reference, square roots in PDF, a multiline aligned formula, and numeric results in a table. |
+
+These fixtures are reviewed against Markdown2's compatibility contract in
+[the generated matrix](../../../Docs/CompatibilityMatrix.md). Keep the
+layout and the syntax that trigger each case when updating the text. Tests
+can assert the relevant document landmarks across rendering, editing and
+exports without pinning the entire generated HTML or PDF.
