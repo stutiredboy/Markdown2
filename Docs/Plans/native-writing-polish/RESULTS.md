@@ -97,3 +97,10 @@ Reconciliation by test ID across the three runs covered all 350 XCTest cases.
 349 passed, and the optional user-supplied PDF export probe was the sole
 allowlisted skip. The skip audit passed. The final source and development
 package matched the recorded hashes.
+
+The first hosted macOS 15 run exposed three test-driver assumptions. The GUI
+tests now identify the Settings window by its localized title, close Find
+within its native query row, and measure scroll position independently of the
+Find bar's layout. Mode-switch tests wait for the destination WebKit host
+before checking its loaded content. The product source used for local
+acceptance is unchanged. [Initial hosted run](https://github.com/stutiredboy/Markdown2/actions/runs/44297517110)

@@ -629,13 +629,20 @@ final class MenuLanguageGUITests: XCTestCase {
 
     private func settingsWindow(pid: pid_t) throws -> AXUIElement {
         func isSettings(_ window: AXUIElement) -> Bool {
-            Self.firstElement(ofRole: "AXPopUpButton", in: window) != nil
+            Self.isSettingsWindow(window) && Self.firstElement(ofRole: "AXPopUpButton", in: window) != nil
         }
         if let window = Self.windows(pid: pid).first(where: isSettings) { return window }
         let settingsItem = try menuItem(commandCharacter: ",", pid: pid)
         AXUIElementSetMessagingTimeout(settingsItem, 1)
         AXUIElementPerformAction(settingsItem, kAXPressAction as CFString)
-        return try waitForWindow(pid: pid, where: isSettings)
+        return try waitForWindow(pid: pid, description: "the Settings window", where: isSettings)
+    }
+
+    private static func isSettingsWindow(_ window: AXUIElement) -> Bool {
+        // AppKit can expose the document's line-number toolbar menu as a
+        // popup as well. Identify the Settings window before finding its picker.
+        let title = Self.title(of: window)
+        return [AppLanguage.english, .zhHans].contains { title == L10n.text(.settingsTitle, language: $0) }
     }
 
     /// The prompt's default button restarts the app, so this names "Later". Its
@@ -659,7 +666,7 @@ final class MenuLanguageGUITests: XCTestCase {
         }
         AXUIElementPerformAction(closeButton, kAXPressAction as CFString)
         let deadline = Date().addingTimeInterval(5)
-        while Self.windows(pid: pid).contains(where: { Self.firstElement(ofRole: "AXPopUpButton", in: $0) != nil }),
+        while Self.windows(pid: pid).contains(where: Self.isSettingsWindow),
               Date() < deadline {
             usleep(100_000)
         }

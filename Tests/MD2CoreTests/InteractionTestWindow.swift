@@ -36,17 +36,30 @@ final class InteractionTestWindow {
     }
     var screenBounds: NSRect { window.convertToScreen(window.contentView!.bounds) }
     var queryField: NSTextField? { descendants(NSTextField.self).first { $0.placeholderString == settings.text(.findPlaceholder) } }
-    func descendants<T: NSView>(_ type: T.Type) -> [T] {
+    func descendants<T: NSView>(_ type: T.Type, in root: NSView? = nil) -> [T] {
         func visit(_ view: NSView) -> [T] { ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap(visit) }
-        guard let content = window.contentView else { return [] }
+        guard let content = root ?? window.contentView else { return [] }
         return visit(content)
     }
     func press(_ key: L10nKey) throws {
-        // Close is the rightmost button in a find-only surface; SwiftUI's
-        // native subview order differs across OS versions.
         XCTAssertEqual(key, .closeFind)
-        let buttons = descendants(NSButton.self)
-        let button = try XCTUnwrap(buttons.max { $0.convert($0.bounds, to: nil).midX < $1.convert($1.bounds, to: nil).midX })
+        let query = try XCTUnwrap(queryField)
+        var responder: NSResponder? = query
+        while let current = responder, !(current is NativeFindPaneOwner) {
+            responder = current.nextResponder
+        }
+        let owner = try XCTUnwrap(responder as? NSViewController, "the native query must have a Find bar owner")
+        let queryCenterY = query.convert(query.bounds, to: nil).midY
+        let queryRowButtons = descendants(NSButton.self, in: owner.view).filter {
+            let frame = $0.convert($0.bounds, to: nil)
+            return frame.minY <= queryCenterY && queryCenterY <= frame.maxY
+        }
+        // Close follows Previous and Next in the query row. Replace All may
+        // extend farther right on the replacement row at narrow widths.
+        XCTAssertEqual(queryRowButtons.count, 3)
+        let button = try XCTUnwrap(queryRowButtons.max {
+            $0.convert($0.bounds, to: nil).midX < $1.convert($1.bounds, to: nil).midX
+        })
         button.performClick(nil)
         spin(until: { queryField == nil })
         XCTAssertNil(queryField, "closing Find must remove its native query field")

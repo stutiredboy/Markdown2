@@ -39,7 +39,7 @@ final class NativeWritingPolishGUITests: XCTestCase {
                 let query = try XCTUnwrap(harness.queryField)
                 let fields: [(NSTextField, String)]
                 if mode == .read {
-                    let web = try XCTUnwrap(harness.descendants(WKWebView.self).first)
+                    let web = try XCTUnwrap(activePreview(in: harness))
                     try harness.waitForPage(
                         "document.querySelectorAll('mark.md2-find').length === 2",
                         in: web,
@@ -47,6 +47,10 @@ final class NativeWritingPolishGUITests: XCTestCase {
                     )
                     fields = [(query, "needle")]
                 } else {
+                    let source = try XCTUnwrap(harness.store.editorSession.textView)
+                    let firstMatch = (source.string as NSString).range(of: "needle")
+                    harness.spin(until: { source.selectedRange().location == NSMaxRange(firstMatch) })
+                    XCTAssertEqual(source.selectedRange().location, NSMaxRange(firstMatch))
                     let replacement = try XCTUnwrap(harness.descendants(NSTextField.self).first {
                         $0.placeholderString == harness.settings.text(.replaceWith)
                     })
@@ -62,9 +66,20 @@ final class NativeWritingPolishGUITests: XCTestCase {
                     harness.spin()
                     let source = harness.store.editorSession.textView
                     let sourceSelection = source?.selectedRange()
-                    let sourceViewport = source?.enclosingScrollView?.contentView.bounds
-                    let preview = harness.descendants(WKWebView.self).first
-                    let previewOffset = try preview.flatMap { try harness.js("scrollY", $0) as? Double }
+                    let sourceScroll = mode == .read ? nil : try XCTUnwrap(source?.enclosingScrollView)
+                    if let sourceScroll {
+                        // An offset away from the caret exposes an unsolicited
+                        // recenter. Measure the origin independently of the
+                        // Find bar's animated height and search-status layout.
+                        sourceScroll.contentView.scroll(to: NSPoint(x: 0, y: 320))
+                        sourceScroll.reflectScrolledClipView(sourceScroll.contentView)
+                        harness.spin()
+                    }
+                    let sourceOffset = sourceScroll?.contentView.bounds.minY
+                    if let sourceOffset { XCTAssertGreaterThan(sourceOffset, 250) }
+                    let preview = activePreview(in: harness)
+                    XCTAssertEqual(preview != nil, mode != .write)
+                    let previewOffset = try preview.map { try XCTUnwrap(harness.js("scrollY", $0) as? Double) }
                     for enabled in [true, false] {
                         harness.settings.usesTypewriterScrolling = enabled
                         harness.spin()
@@ -75,8 +90,13 @@ final class NativeWritingPolishGUITests: XCTestCase {
                         XCTAssertEqual(fieldEditor.string, value, context)
                         XCTAssertEqual(fieldEditor.selectedRange, selected, context)
                         XCTAssertEqual(source?.selectedRange(), sourceSelection, context)
-                        XCTAssertEqual(source?.enclosingScrollView?.contentView.bounds, sourceViewport, context)
-                        XCTAssertEqual(try preview.flatMap { try harness.js("scrollY", $0) as? Double }, previewOffset, context)
+                        if let sourceScroll, let sourceOffset {
+                            XCTAssertTrue(source?.enclosingScrollView === sourceScroll, context)
+                            XCTAssertEqual(sourceScroll.contentView.bounds.minY, sourceOffset, accuracy: 1, context)
+                        }
+                        XCTAssertTrue(activePreview(in: harness) === preview, context)
+                        XCTAssertEqual(try preview.map { try XCTUnwrap(harness.js("scrollY", $0) as? Double) },
+                                       previewOffset, context)
                     }
                 }
                 try harness.press(.closeFind)
@@ -136,7 +156,7 @@ final class NativeWritingPolishGUITests: XCTestCase {
 
         try switchMode(to: .read, in: harness)
         try waitForHiddenPreviewQuery(in: harness)
-        let web = try XCTUnwrap(harness.descendants(WKWebView.self).first)
+        let web = try XCTUnwrap(activePreview(in: harness))
         XCTAssertEqual(try harness.js("""
             (() => {
                 const target = Array.from(document.querySelectorAll('main > p')).find(
@@ -202,16 +222,18 @@ final class NativeWritingPolishGUITests: XCTestCase {
 
     @MainActor
     private func switchMode(to mode: EditorMode, in harness: InteractionTestWindow) throws {
+        let outgoing = activePreview(in: harness)
         harness.store.requestMode(mode)
         func mounted() -> Bool {
             let source = harness.store.editorSession.textView?.window === harness.window
-            let preview = harness.descendants(WKWebView.self).first
-            return source == (mode != .read) && (preview != nil) == (mode != .write)
+            guard source == (mode != .read) else { return false }
+            if mode == .write { return activePreview(in: harness) == nil }
+            return activePreview(in: harness, excluding: outgoing) != nil
         }
-        harness.spin(until: mounted)
+        harness.spin(until: mounted, timeout: 10)
         XCTAssertTrue(mounted(), "surfaces for \(mode) did not mount")
         if mode != .write {
-            let web = try XCTUnwrap(harness.descendants(WKWebView.self).first)
+            let web = try XCTUnwrap(activePreview(in: harness, excluding: outgoing))
             try harness.waitForPage("document.querySelector('main')?.textContent.includes('修订位置')",
                                     in: web, context: "\(mode) preview loaded")
         }
@@ -219,8 +241,18 @@ final class NativeWritingPolishGUITests: XCTestCase {
     }
 
     @MainActor
+    private func activePreview(in harness: InteractionTestWindow, excluding outgoing: WKWebView? = nil) -> WKWebView? {
+        // SwiftUI can keep the old WebKit view in the hierarchy while the
+        // destination mounts. The old page can still answer JavaScript.
+        harness.descendants(WKWebView.self).first {
+            $0 !== outgoing && $0.window === harness.window
+                && ($0.navigationDelegate as? MarkdownPreviewView.Coordinator)?.resourceContextIsActive == true
+        }
+    }
+
+    @MainActor
     private func waitForHiddenPreviewQuery(in harness: InteractionTestWindow) throws {
-        let web = try XCTUnwrap(harness.descendants(WKWebView.self).first)
+        let web = try XCTUnwrap(activePreview(in: harness))
         try harness.waitForPage(
             """
             (() => {
