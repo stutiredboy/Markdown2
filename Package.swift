@@ -27,6 +27,7 @@ let package = Package(
             resources: [
                 .copy("Resources/katex"),
                 .copy("Resources/html-entities.json"),
+                .copy("Resources/html-entities.LICENSE.txt"),
                 .copy("Resources/diagrams")
             ]
         ),

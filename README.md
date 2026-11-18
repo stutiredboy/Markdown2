@@ -114,6 +114,10 @@ To time the inline renderer's scaling workloads in a release build, or to compar
 bash Scripts/benchmark_inline.sh
 ```
 
+## Contributing
+
+See the [contributor guide](CONTRIBUTING.md) for toolchain requirements and the local and CI verification gates. See the [changelog](CHANGELOG.md) for user-facing changes.
+
 ## License
 
-Markdown2 is open source under the [MIT License](LICENSE).
+Markdown2 is open source under the [MIT License](LICENSE). Bundled components and test data have their own [licenses and attribution](Docs/ThirdParty.md).

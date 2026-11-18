@@ -75,7 +75,12 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' dist/Markdown2.app/Contents/Info.plist)" = "${PACKAGE_VERSION#v}"
           plutil -lint dist/Markdown2.app/Contents/Info.plist
           test -f dist/Markdown2.app/Contents/Resources/AppIcon.icns
-          test -d dist/Markdown2.app/Contents/Resources/MD2_MD2Core.bundle
+          resources=dist/Markdown2.app/Contents/Resources/MD2_MD2Core.bundle/Contents/Resources
+          for notice in katex/THIRD-PARTY-NOTICES.txt diagrams/THIRD-PARTY-NOTICES.txt \
+                        diagrams/MERMAID-NOTICES.txt html-entities.LICENSE.txt; do
+            test -s "Sources/MD2Core/Resources/$notice"
+            cmp "Sources/MD2Core/Resources/$notice" "$resources/$notice"
+          done
           codesign --verify --deep --strict dist/Markdown2.app
 
       - name: Verify local DMG and app signature inside

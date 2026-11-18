@@ -22,7 +22,19 @@ is the construct category the compatibility matrix maps to a support tier.
 
 Retrieved 2026-06-26.
 
+The CommonMark specification is copyright © 2014–2016 John MacFarlane.
+GitHub publishes the [GitHub Flavored Markdown specification](https://github.github.com/gfm/),
+which is based on John MacFarlane's CommonMark specification. Both corpora
+retain the upstream
+[Creative Commons Attribution-ShareAlike 4.0 International license](https://creativecommons.org/licenses/by-sa/4.0/).
+See the [CommonMark license](https://github.com/commonmark/commonmark-spec/blob/0.31.2/LICENSE)
+and the [GFM source license declaration](https://github.com/github/cmark-gfm/blob/0.29.0.gfm.13/test/spec.txt).
+
 - **CommonMark** is vendored verbatim (652 examples, 26 sections).
+  The same attribution and license apply to the inputs from examples 255 and
+  264 in [`MarkdownRendererTests.swift`](../MarkdownRendererTests.swift) and
+  [`ListIndentedCodeTests.swift`](../ListIndentedCodeTests.swift), respectively.
+  The example 255 input omits the trailing newline.
 - **GFM** is the extension-only subset (24 examples, 5 sections: Tables, Task
   list items, Strikethrough, Autolinks, Disallowed Raw HTML). GFM's `spec.txt`
   is a superset of CommonMark; only sections whose name ends with `(extension)`
