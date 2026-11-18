@@ -371,7 +371,7 @@ final class RemoteResourcePolicyGUITests: XCTestCase, RenderedPageTesting {
     }
 }
 
-private final class ResourceRequestServer: @unchecked Sendable {
+final class ResourceRequestServer: @unchecked Sendable {
     struct Record { let path: String; let headers: [String: String] }
     static let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")!
     private let listener: NWListener

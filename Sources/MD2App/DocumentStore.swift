@@ -39,6 +39,25 @@ final class DocumentStore: ObservableObject {
         renderedRemoteResourceContextToken == remoteResourceContextToken
     }
 
+    var canInspectRemoteResources: Bool {
+        !isClosed && hasCurrentResourcePreview && !hasPendingRender
+    }
+
+    func inspectRemoteResources() async -> RemoteResourceReport? {
+        guard !Task.isCancelled, canInspectRemoteResources else { return nil }
+        let token = remoteResourceContextToken
+        let generation = renderGeneration
+        let body = rendered.body
+        let inspection = Task.detached(priority: .userInitiated) { RemoteResourceReport.inspect(body: body) }
+        let report = await withTaskCancellationHandler {
+            await inspection.value
+        } onCancel: {
+            inspection.cancel()
+        }
+        guard resourceContextIsCurrent(token), renderGeneration == generation else { return nil }
+        return report
+    }
+
     /// Called by a native control only. This deliberately bypasses the source
     /// text pipeline: permission changes create no dirty, save, or Undo action.
     func setRemoteImagesAllowed(_ allowed: Bool) {

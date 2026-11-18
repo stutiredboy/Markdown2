@@ -41,15 +41,12 @@ features. See the [daily-writing](Docs/Plans/daily-writing/PLAN.md),
   external target, keep large folders responsive, open ordinary Markdown files
   without duplication, and never silently rewrite or overwrite linked files.
 
-- [ ] **P2 — Explain remote resource origins and blocked content.** The current
-  control is a document-session image grant, not a resource inspector. Define
-  whether a count means declared references, attempted loads or observed blocks,
-  including CSS/SVG/diagram resources and redirects. Acceptance: show only
-  defensible origins/counts or an explicit incomplete/unknown state; stale
-  document results cannot appear after reload/revoke. Inspection must not fetch
-  resources, change source/Undo or create persistent trust. Remembered trust or
-  per-origin authorization requires a separate security design; the existing
-  default-deny contract remains.
+- [x] **P2 — Explain remote resource origins and blocked content.** The Remote
+  Images details show origins and counts for supported HTTP(S) image references
+  in the current rendered document. The sheet identifies incomplete inspections
+  and explains that actual blocks and redirect destinations are unknown. The
+  report is read-only and invalidated on reload or permission change. See the
+  [inspection scope and permission policy](Docs/RemoteResources.md).
 
 - [ ] **P2 — Regular-expression find and replace.** Literal matching is complete;
   regex is an opt-in extension. First define source/preview scope, capture-group

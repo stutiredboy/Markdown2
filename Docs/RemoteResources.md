@@ -4,6 +4,25 @@ Markdown2 blocks automatic HTTP(S) resources from document content by default.
 Local images and the bundled math, diagram, font and style assets keep working.
 Ordinary links remain available when you choose to open them.
 
+## Inspect declared image origins
+
+Choose **Details…** in the document's **Remote Images** bar in Write, Split or
+Read mode. The report shows the scheme, host and nondefault port of supported
+absolute HTTP(S) image sources in the current rendered body. Markdown reference
+images and supported HTML images count too. Each rendered image element counts
+once, including repeated uses of the same address. Credentials, paths, queries
+and fragments are excluded. Origins appear as selectable text.
+
+Actual blocked-request counts and redirect destinations are unknown. Alternate
+image sources, CSS resources, resources inside SVG and assets created by diagram
+engines fall outside the inventory. The sheet marks the list incomplete when it
+encounters an ambiguous or unsupported HTTP(S) address or reaches an inspection
+limit (2 MiB of rendered body, 8,192 UTF-16 units per image source, or 128 origins).
+
+Opening Details reads an existing render in memory. It issues no requests and
+leaves the source, Undo history and permission intact. Reloading the document or
+changing its image permission dismisses the sheet and invalidates its report.
+
 ## Allow images for one document
 
 Choose **Allow for This Document…** in the document's remote-image control.

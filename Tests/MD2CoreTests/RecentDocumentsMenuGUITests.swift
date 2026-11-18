@@ -779,6 +779,151 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         _ = try expectState(allow, source: original + addition)
     }
 
+    func testRemoteResourceDetailsReportDoesNotFetchAndClosesOnReload() throws {
+        let originalServer = try ResourceRequestServer(), replacementServer = try ResourceRequestServer()
+        defer { originalServer.stop(); replacementServer.stop() }
+        func waitForRequests(_ condition: () -> Bool) -> Bool {
+            let deadline = Date().addingTimeInterval(10)
+            while !condition(), Date() < deadline { usleep(50_000) }
+            return condition()
+        }
+        guard waitForRequests({ originalServer.port != nil && replacementServer.port != nil }),
+              let originalPort = originalServer.port, let replacementPort = replacementServer.port else {
+            throw GuardFailure("remote resource fixtures did not start listening")
+        }
+        // Use the loopback hostname so the launched app's ATS policy can
+        // permit the plain HTTP fixture.
+        let originalOrigin = "http://localhost:\(originalPort)"
+        let replacementOrigin = "http://localhost:\(replacementPort)"
+        let document = try makeDocument("notes/RemoteResourceDetails.md")
+        let original = """
+        # Resource details
+
+        ![Direct](\(originalOrigin)/direct.png)
+
+        <img src="\(originalOrigin)/raw.png?token=private-fixture" alt="Raw">
+        """
+        let replacement = "![Replacement](\(replacementOrigin)/replacement.png)"
+        try Data(original.utf8).write(to: document)
+        let pid = try launch(recents: [], language: "english", appleLanguages: ["en"])
+        try open(document)
+
+        let details = "remote-images-details"
+        let close = "remote-images-details-close"
+        let allow = "remote-images-allow"
+        let confirm = "remote-images-confirm"
+        let revoke = "remote-images-revoke"
+        func attribute(_ name: String, of element: AXUIElement) -> String? {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
+            return value as? String
+        }
+        func element(_ id: String, in root: AXUIElement) -> AXUIElement? {
+            if attribute(kAXIdentifierAttribute, of: root) == id { return root }
+            for child in Self.children(of: root) {
+                if let found = element(id, in: child) { return found }
+            }
+            return nil
+        }
+        func sheet(in window: AXUIElement) -> AXUIElement? {
+            Self.firstElement(ofRole: kAXSheetRole, in: window)
+        }
+        func isDocument(_ window: AXUIElement) -> Bool {
+            Self.title(of: window) == document.lastPathComponent
+        }
+        func press(_ id: String, in root: AXUIElement) throws {
+            let button = try XCTUnwrap(element(id, in: root), id)
+            XCTAssertEqual(AXUIElementPerformAction(button, kAXPressAction as CFString), .success, id)
+        }
+        func windowWithPolicy(_ id: String, requiresPreview: Bool = false) throws -> AXUIElement {
+            do {
+                return try waitForWindow(pid: pid) {
+                    isDocument($0) && sheet(in: $0) == nil && element(id, in: $0) != nil
+                        && element(details, in: $0).map { Self.isEnabled($0) } == true
+                        && (!requiresPreview || Self.firstElement(ofRole: "AXWebArea", in: $0) != nil)
+                }
+            } catch {
+                throw GuardFailure("waiting for \(id) (live preview required: \(requiresPreview)): \(error)")
+            }
+        }
+        func accessibleText(in root: AXUIElement) -> [String] {
+            [attribute(kAXValueAttribute, of: root) ?? "", Self.title(of: root)]
+                + Self.children(of: root).flatMap { accessibleText(in: $0) }
+        }
+        func openDetails(in window: AXUIElement, origin: String, references: Int) throws -> AXUIElement {
+            try press(details, in: window)
+            let host = try waitForWindow(pid: pid) {
+                guard isDocument($0), let attached = sheet(in: $0), element(close, in: attached) != nil,
+                      let origins = element("remote-images-origins", in: attached),
+                      let summary = attribute(kAXValueAttribute, of: origins) else { return false }
+                return summary.contains(origin)
+            }
+            let detailsSheet = try XCTUnwrap(sheet(in: host))
+            let origins = try XCTUnwrap(element("remote-images-origins", in: detailsSheet))
+            let summary = try XCTUnwrap(attribute(kAXValueAttribute, of: origins))
+            XCTAssertEqual(summary.trimmingCharacters(in: .whitespacesAndNewlines), "\(origin) — \(references)")
+            let scope = accessibleText(in: detailsSheet).joined(separator: " ").lowercased()
+            for text in ["css", "svg", "diagrams", "blocked request count and redirect destinations are unknown"] {
+                XCTAssertTrue(scope.contains(text), "Missing inspection limit \(text) in \(scope)")
+            }
+            return detailsSheet
+        }
+        func assertQuiet(_ server: ResourceRequestServer, after requestCount: Int = 0) {
+            // Allow an accidental request to reach the listener before reading
+            // the counter. The explicit grant below proves the same host is reachable.
+            usleep(500_000)
+            XCTAssertEqual(server.requests.count, requestCount)
+        }
+
+        // Enter Split via the live document's command. The window starts with
+        // an untitled store and can adopt that store's presentation preference.
+        _ = try windowWithPolicy(allow)
+        let split = try menuItem(commandCharacter: "3", pid: pid, modifiers: 0)
+        XCTAssertEqual(Self.title(of: split), "Side by Side")
+        XCTAssertTrue(Self.isEnabled(split))
+        XCTAssertEqual(AXUIElementPerformAction(split, kAXPressAction as CFString), .success)
+        let blocked = try openDetails(in: windowWithPolicy(allow, requiresPreview: true), origin: originalOrigin, references: 2)
+        try press(close, in: blocked)
+        assertQuiet(originalServer)
+        XCTAssertEqual(try Data(contentsOf: document), Data(original.utf8))
+
+        try press(allow, in: windowWithPolicy(allow))
+        let prompt = try waitForWindow(pid: pid) {
+            isDocument($0) && sheet(in: $0).flatMap { element(confirm, in: $0) } != nil
+        }
+        try press(confirm, in: XCTUnwrap(sheet(in: prompt)))
+        let allowed = try windowWithPolicy(revoke, requiresPreview: true)
+        guard waitForRequests({
+            let paths = originalServer.requests.compactMap { $0.path.split(separator: "?", maxSplits: 1).first }
+            return paths.contains("/direct.png") && paths.contains("/raw.png")
+        }) else {
+            throw GuardFailure("granted preview did not request both fixture images; observed \(originalServer.requests.map(\.path))")
+        }
+        let requestsBeforeInspection = originalServer.requests.count
+        let allowedDetails = try openDetails(in: allowed, origin: originalOrigin, references: 2)
+        try press(close, in: allowedDetails)
+        assertQuiet(originalServer, after: requestsBeforeInspection)
+
+        try press(revoke, in: windowWithPolicy(revoke))
+        _ = try openDetails(in: windowWithPolicy(allow), origin: originalOrigin, references: 2)
+        do {
+            let writer = try FileHandle(forWritingTo: document)
+            defer { try? writer.close() }
+            let bytes = Data(replacement.utf8)
+            try writer.write(contentsOf: bytes)
+            try writer.truncate(atOffset: UInt64(bytes.count))
+        }
+        let reloaded = try waitForWindow(pid: pid) {
+            guard isDocument($0), sheet(in: $0) == nil, let editor = Self.firstElement(ofRole: kAXTextAreaRole, in: $0) else { return false }
+            return attribute(kAXValueAttribute, of: editor) == replacement
+        }
+        XCTAssertNotNil(element(allow, in: reloaded))
+        let updated = try openDetails(in: windowWithPolicy(allow), origin: replacementOrigin, references: 1)
+        try press(close, in: updated)
+        assertQuiet(replacementServer)
+        XCTAssertEqual(originalServer.requests.count, requestsBeforeInspection)
+    }
+
     // MARK: - Explicit paste menus
 
     func testPasteMenusFollowSourceFindSettingsAndPlainShortcut() throws {
