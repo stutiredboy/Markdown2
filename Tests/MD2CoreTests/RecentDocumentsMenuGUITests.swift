@@ -787,16 +787,23 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             while !condition(), Date() < deadline { usleep(50_000) }
             return condition()
         }
-        XCTAssertTrue(waitForRequests { originalServer.port != nil && replacementServer.port != nil })
+        guard waitForRequests({ originalServer.port != nil && replacementServer.port != nil }),
+              let originalPort = originalServer.port, let replacementPort = replacementServer.port else {
+            throw GuardFailure("remote resource fixtures did not start listening")
+        }
+        // The launched app has its own ATS policy. Use the loopback hostname
+        // rather than a numerical IP whose plain HTTP transport may be denied.
+        let originalOrigin = "http://localhost:\(originalPort)"
+        let replacementOrigin = "http://localhost:\(replacementPort)"
         let document = try makeDocument("notes/RemoteResourceDetails.md")
         let original = """
         # Resource details
 
-        ![Direct](\(originalServer.base)/direct.png)
+        ![Direct](\(originalOrigin)/direct.png)
 
-        <img src="\(originalServer.base)/raw.png?token=private-fixture" alt="Raw">
+        <img src="\(originalOrigin)/raw.png?token=private-fixture" alt="Raw">
         """
-        let replacement = "![Replacement](\(replacementServer.base)/replacement.png)"
+        let replacement = "![Replacement](\(replacementOrigin)/replacement.png)"
         try Data(original.utf8).write(to: document)
         let pid = try launch(recents: [], language: "english", appleLanguages: ["en"], defaultMode: .split)
         try open(document)
@@ -832,6 +839,7 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             try waitForWindow(pid: pid) {
                 isDocument($0) && sheet(in: $0) == nil && element(id, in: $0) != nil
                     && element(details, in: $0).map { Self.isEnabled($0) } == true
+                    && Self.firstElement(ofRole: "AXWebArea", in: $0) != nil
             }
         }
         func accessibleText(in root: AXUIElement) -> [String] {
@@ -863,7 +871,7 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             XCTAssertEqual(server.requests.count, requestCount)
         }
 
-        let blocked = try openDetails(in: windowWithPolicy(allow), origin: originalServer.base, references: 2)
+        let blocked = try openDetails(in: windowWithPolicy(allow), origin: originalOrigin, references: 2)
         try press(close, in: blocked)
         assertQuiet(originalServer)
         XCTAssertEqual(try Data(contentsOf: document), Data(original.utf8))
@@ -873,18 +881,20 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             isDocument($0) && sheet(in: $0).flatMap { element(confirm, in: $0) } != nil
         }
         try press(confirm, in: XCTUnwrap(sheet(in: prompt)))
-        XCTAssertTrue(waitForRequests {
-            let paths = originalServer.requests.map(\.path)
-            return paths.contains("/direct.png") && paths.contains("/raw.png?token=private-fixture")
-        }, "The document's rendered images must reach the loopback listener after an explicit grant")
         let allowed = try windowWithPolicy(revoke)
+        guard waitForRequests({
+            let paths = originalServer.requests.compactMap { $0.path.split(separator: "?", maxSplits: 1).first }
+            return paths.contains("/direct.png") && paths.contains("/raw.png")
+        }) else {
+            throw GuardFailure("granted preview did not request both fixture images; observed \(originalServer.requests.map(\.path))")
+        }
         let requestsBeforeInspection = originalServer.requests.count
-        let allowedDetails = try openDetails(in: allowed, origin: originalServer.base, references: 2)
+        let allowedDetails = try openDetails(in: allowed, origin: originalOrigin, references: 2)
         try press(close, in: allowedDetails)
         assertQuiet(originalServer, after: requestsBeforeInspection)
 
         try press(revoke, in: windowWithPolicy(revoke))
-        _ = try openDetails(in: windowWithPolicy(allow), origin: originalServer.base, references: 2)
+        _ = try openDetails(in: windowWithPolicy(allow), origin: originalOrigin, references: 2)
         do {
             let writer = try FileHandle(forWritingTo: document)
             defer { try? writer.close() }
@@ -897,7 +907,7 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             return attribute(kAXValueAttribute, of: editor) == replacement
         }
         XCTAssertNotNil(element(allow, in: reloaded))
-        let updated = try openDetails(in: windowWithPolicy(allow), origin: replacementServer.base, references: 1)
+        let updated = try openDetails(in: windowWithPolicy(allow), origin: replacementOrigin, references: 1)
         try press(close, in: updated)
         assertQuiet(replacementServer)
         XCTAssertEqual(originalServer.requests.count, requestsBeforeInspection)
