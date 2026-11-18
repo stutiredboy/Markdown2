@@ -38,10 +38,10 @@ embeds a diagram engine. View the HTML source to read them.
   [verification workflow](../.github/workflows/verify.yml). GitHub Actions
   dependencies use the references in the [workflow files](../.github/workflows).
 - [Pandoc](https://github.com/jgm/pandoc) is a separately installed executable
-  that the DOCX/EPUB conversion backend can use. Its version follows
+  used for DOCX and EPUB export. Its version follows
   the user's installation and its [GPL-2.0-or-later license](https://github.com/jgm/pandoc/blob/main/COPYRIGHT)
-  accompanies Pandoc. The normal build, tests, preview, and PDF/HTML export
-  need no Pandoc installation.
+  accompanies Pandoc. It is optional for normal builds, preview and PDF/HTML
+  export. The hosted GUI job installs its own copy for conversion tests.
 
 ## Update alongside the asset
 
