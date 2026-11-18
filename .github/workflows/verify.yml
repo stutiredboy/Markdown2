@@ -162,9 +162,23 @@ jobs:
       - name: Enable keyboard navigation for native focus tests
         run: defaults write -g AppleKeyboardUIMode -int 2
 
-      - name: Run XCTest with GUI suites enabled
+      - name: Verify the export menu without Pandoc
         env:
           MD2_RUN_GUI_TESTS: "1"
+          MD2_EXPECT_PANDOC: "0"
+        run: |
+          set -euo pipefail
+          swift test --disable-swift-testing --filter 'MenuLanguageGUITests.testExportMenuInvokesWordAndEPUBConversion' 2>&1 | tee "$RUNNER_TEMP/conversion-menu-without-pandoc.log"
+          grep -F "MenuLanguageGUITests testExportMenuInvokesWordAndEPUBConversion]' passed" "$RUNNER_TEMP/conversion-menu-without-pandoc.log"
+
+      - name: Install Pandoc for the conversion acceptance tests
+        run: brew install pandoc
+
+      - name: Run XCTest with GUI suites enabled
+        id: gui-run
+        env:
+          MD2_RUN_GUI_TESTS: "1"
+          MD2_EXPECT_PANDOC: "1"
         run: |
           set -o pipefail
           swift test --disable-swift-testing 2>&1 | tee "$RUNNER_TEMP/gui-tests.log"
@@ -172,8 +186,12 @@ jobs:
       # A skipped GUI test passes green, so every skip must be one the
       # allowlist expects on this runner.
       - name: Reject unexpected skips
-        if: ${{ !cancelled() }}
-        run: python3 Scripts/check_test_skips.py "$RUNNER_TEMP/gui-tests.log" .github/gui-expected-skips.txt
+        if: ${{ !cancelled() && (steps.gui-run.outcome == 'success' || steps.gui-run.outcome == 'failure') }}
+        run: |
+          set -euo pipefail
+          # Missing optional Pandoc is allowed only for developer runs.
+          sed '/| Pandoc not installed\./d' .github/gui-expected-skips.txt > "$RUNNER_TEMP/gui-expected-skips.txt"
+          python3 Scripts/check_test_skips.py "$RUNNER_TEMP/gui-tests.log" "$RUNNER_TEMP/gui-expected-skips.txt"
 
   # This read-only consumer runs in PRs and tags. It verifies job output and
   # artifact handoff only after both test jobs succeed.

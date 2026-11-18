@@ -127,6 +127,12 @@ private struct AppCommands: Commands {
                 Button("HTML") {
                     Task { await appDelegate.currentDocumentStore?.exportHTML() }
                 }
+                Button("DOCX") {
+                    appDelegate.currentDocumentStore?.exportDOCX()
+                }
+                Button("EPUB") {
+                    appDelegate.currentDocumentStore?.exportEPUB()
+                }
             }
 
             Divider()

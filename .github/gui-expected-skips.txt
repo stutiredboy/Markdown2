@@ -1,5 +1,5 @@
-# Skips the gui-tests job expects on GitHub's macos-15 runner. Every other
-# skip fails the job (Scripts/check_test_skips.py), because a skipped GUI test
+# Skips permitted in local and hosted GUI verification. Every other skip
+# fails the gate (Scripts/check_test_skips.py), because a skipped GUI test
 # passes green without guarding anything. Each entry is pinned to its test and
 # to the start of its skip reason; say why it cannot run on the runner.
 
@@ -10,8 +10,8 @@ MD2CoreTests.RecentDocumentsMenuGUITests/testPinyinCompositionCommitsWithSpaceAn
 # A manual export tool: it runs only when a developer points it at a file.
 MD2CoreTests.PDFExportEndToEndVerification/testExportProvidedMarkdownPath | Set MD2_VERIFY_PDF_SOURCE and MD2_VERIFY_PDF_OUTPUT
 
-# Need the Pandoc binary, which the runner image does not include; they skip in
-# build-test-package for the same reason (see PandocConverterTests).
+# Local verification can run without Pandoc. CI installs it before the full
+# GUI lane and excludes these entries from its skip allowlist.
 MD2CoreTests.PandocConverterTests/testRealConversionDeletesPartialOutputOnFailure | Pandoc not installed.
 MD2CoreTests.PandocConverterTests/testRealConversionEmbedsRelativeImage | Pandoc not installed.
-MD2CoreTests.PandocConverterTests/testRealConversionProducesValidDocx | Pandoc not installed.
+MD2CoreTests.PandocConverterTests/testRealConversionProducesValidDocxAndEpub | Pandoc not installed.

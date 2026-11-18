@@ -58,19 +58,15 @@ enum OfflinePandocProcess {
         let stdout = Pipe(), stderr = Pipe()
         process.standardOutput = stdout
         process.standardError = stderr
-        let output = BoundedProcessOutput(), errors = BoundedProcessOutput()
-        stdout.fileHandleForReading.readabilityHandler = { output.append($0.availableData) }
-        stderr.fileHandleForReading.readabilityHandler = { errors.append($0.availableData) }
+        let captureError = Failure.launchFailed("Could not capture converter output.")
+        guard let output = BoundedProcessOutput(stdout.fileHandleForReading) else { return .failure(captureError) }
+        defer { output.stop() }
+        guard let errors = BoundedProcessOutput(stderr.fileHandleForReading) else { return .failure(captureError) }
+        defer { errors.stop() }
         let finished = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in finished.signal() }
         guard job.attach(process) else { return .failure(.canceled) }
-        defer {
-            job.detach(process)
-            stdout.fileHandleForReading.readabilityHandler = nil
-            stderr.fileHandleForReading.readabilityHandler = nil
-            try? stdout.fileHandleForReading.close()
-            try? stderr.fileHandleForReading.close()
-        }
+        defer { job.detach(process) }
         do { try process.run() }
         catch { return .failure(.launchFailed(error.localizedDescription)) }
         // Cancellation may win between attach and launch.
@@ -88,10 +84,47 @@ enum OfflinePandocProcess {
 }
 
 private final class BoundedProcessOutput: @unchecked Sendable {
-    private let lock = NSLock()
+    private static let byteLimit = 65_536
+    private let queue = DispatchQueue(label: "com.markdown2.converter-output")
+    private let source: DispatchSourceRead
+    private let descriptor: Int32
+    private var buffer = [UInt8](repeating: 0, count: 4_096)
     private var data = Data()
-    func append(_ bytes: Data) {
-        lock.withLock { data.append(bytes.prefix(max(0, 65_536 - data.count))) }
+
+    init?(_ handle: FileHandle) {
+        descriptor = handle.fileDescriptor
+        guard fcntl(descriptor, F_SETFL, O_NONBLOCK) != -1 else { return nil }
+        source = DispatchSource.makeReadSource(fileDescriptor: descriptor, queue: queue)
+        source.setEventHandler { [weak self] in self?.drain() }
+        source.setCancelHandler { try? handle.close() }
+        source.activate()
     }
-    var text: String { lock.withLock { String(decoding: data, as: UTF8.self) } }
+
+    func stop() { source.cancel() }
+
+    var text: String {
+        queue.sync {
+            // Process termination and pipe readability are independently
+            // delivered. Read any bytes the asynchronous observer missed.
+            if !source.isCancelled { drain() }
+            return String(decoding: data, as: UTF8.self)
+        }
+    }
+
+    private func drain() {
+        // Limit each drain so a child that keeps the pipe open and continues
+        // writing cannot hold the result path after the parent process exits.
+        for _ in 0..<16 {
+            let count = buffer.withUnsafeMutableBytes { read(descriptor, $0.baseAddress, $0.count) }
+            if count == 0 {
+                source.cancel()
+                return
+            }
+            if count < 0 {
+                if errno == EINTR { continue }
+                return
+            }
+            data.append(buffer, count: min(count, Self.byteLimit - data.count))
+        }
+    }
 }

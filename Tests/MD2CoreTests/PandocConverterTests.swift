@@ -25,6 +25,28 @@ struct PandocReaderFormatTests {
         // Unknown version falls back to the compatible alias so it never breaks.
         #expect(PandocConverter.reader(forMajorVersion: nil) == "markdown_github")
     }
+
+    @Test func discoveryChecksStandardDirectoriesThenAbsolutePathOnEachCall() throws {
+        let manager = FileManager.default
+        let directory = manager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let standard = directory.appendingPathComponent("standard")
+        let custom = directory.appendingPathComponent("custom")
+        let standardPandoc = standard.appendingPathComponent("pandoc")
+        let customPandoc = custom.appendingPathComponent("pandoc")
+        try manager.createDirectory(at: standard, withIntermediateDirectories: true)
+        defer { try? manager.removeItem(at: directory) }
+        try manager.createDirectory(at: custom, withIntermediateDirectories: false)
+        let searchPath = ":relative-directory:\(custom.path)"
+
+        #expect(PandocConverter.pandocURL(standardDirectories: [standard.path], searchPath: searchPath) == nil)
+        try manager.createDirectory(at: standardPandoc, withIntermediateDirectories: false)
+        try manager.createSymbolicLink(atPath: customPandoc.path, withDestinationPath: "/usr/bin/true")
+        #expect(PandocConverter.pandocURL(standardDirectories: [standard.path], searchPath: searchPath) == customPandoc)
+
+        try manager.removeItem(at: standardPandoc)
+        try manager.createSymbolicLink(atPath: standardPandoc.path, withDestinationPath: "/usr/bin/true")
+        #expect(PandocConverter.pandocURL(standardDirectories: [standard.path], searchPath: searchPath) == standardPandoc)
+    }
 }
 
 /// Pure unit tests for the `--citeproc` / `--bibliography` / `--csl` argument
@@ -81,43 +103,50 @@ struct PandocCitationArgumentsTests {
 /// test skips when Pandoc is not available, so CI without Pandoc stays green.
 final class PandocConverterTests: XCTestCase {
     @MainActor
-    func testRealConversionProducesValidDocx() throws {
-        try XCTSkipUnless(PandocConverter.isAvailable(), "Pandoc not installed.")
+    func testRealConversionProducesValidDocxAndEpub() throws {
+        let pandoc = try installedPandoc()
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let destination = dir.appendingPathComponent("out.docx")
 
-        let result = runConversion(
-            markdown: "# Title\n\nHello **world** and a list:\n\n- a\n- b\n",
-            format: .docx,
-            resourceDirectory: dir,
-            destination: destination
-        )
+        for format in [DocumentExportFormat.docx, .epub] {
+            let destination = dir.appendingPathComponent("out.\(format.fileExtension)")
+            try Data("replace me".utf8).write(to: destination)
 
-        guard case .success = result else {
-            XCTFail("conversion failed: \(result)")
-            return
+            try runConversion(
+                markdown: "# Title\n\nHello **world** and a list:\n\n- a\n- b\n",
+                format: format,
+                resourceDirectory: nil,
+                destination: destination,
+                pandoc: pandoc
+            ).get()
+            let entries = zipEntries(of: destination)
+            switch format {
+            case .docx: XCTAssertTrue(entries.contains("word/document.xml"))
+            case .epub: XCTAssertTrue(entries.contains("mimetype") && entries.contains("META-INF/container.xml"))
+            }
         }
-        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
-        let data = try Data(contentsOf: destination)
-        XCTAssertGreaterThan(data.count, 0)
-        // DOCX is a Zip container: it begins with the "PK" local-file signature.
-        XCTAssertEqual(Array(data.prefix(2)), [0x50, 0x4B], "DOCX is not a valid zip")
     }
 
     @MainActor
     func testRealConversionEmbedsRelativeImage() throws {
-        try XCTSkipUnless(PandocConverter.isAvailable(), "Pandoc not installed.")
+        let pandoc = try installedPandoc()
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
-        try writePNG(named: "pic.png", into: dir)
-        let destination = dir.appendingPathComponent("img.docx")
+        let sourceDirectory = dir.appendingPathComponent("source")
+        try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: false)
+        try writePNG(named: "pic.png", into: sourceDirectory)
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: sourceDirectory.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: sourceDirectory.path)
+        }
 
+        let destination = dir.appendingPathComponent("img.docx")
         let result = runConversion(
             markdown: "# Doc\n\n![pic](pic.png)\n",
             format: .docx,
-            resourceDirectory: dir,
-            destination: destination
+            resourceDirectory: sourceDirectory,
+            destination: destination,
+            pandoc: pandoc
         )
 
         guard case .success = result else {
@@ -129,12 +158,13 @@ final class PandocConverterTests: XCTestCase {
             entries.contains { $0.contains("media/") },
             "relative image was not embedded; entries: \(entries)"
         )
-        try assertRealPandocRemoteBoundary(in: dir)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: sourceDirectory.path), ["pic.png"])
+        try assertRealPandocRemoteBoundary(in: dir, pandoc: pandoc)
     }
 
     @MainActor
     func testRealConversionDeletesPartialOutputOnFailure() throws {
-        try XCTSkipUnless(PandocConverter.isAvailable(), "Pandoc not installed.")
+        let pandoc = try installedPandoc()
         // Root bypasses permission checks, so the read-only barrier below cannot
         // make the destination unwritable; skip rather than fail confusingly.
         try XCTSkipIf(geteuid() == 0, "Permission-based failure requires a non-root runner.")
@@ -158,7 +188,8 @@ final class PandocConverterTests: XCTestCase {
             markdown: "# Doc\n",
             format: .docx,
             resourceDirectory: dir,
-            destination: destination
+            destination: destination,
+            pandoc: pandoc
         )
 
         guard case .failure = result else {
@@ -169,31 +200,116 @@ final class PandocConverterTests: XCTestCase {
             FileManager.default.fileExists(atPath: destination.path),
             "a partial/failed output file must not survive"
         )
+    }
 
-        // Cancel before publication: an existing chosen destination is never
-        // removed, including when the background process finishes later.
+    func testVersionProbeTracksNewVersionAtSamePath() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let pandoc = try writePandocFixture(in: dir, version: "1.13", conversion: "exit 100")
+        XCTAssertEqual(try PandocConverter.readerFormat(for: pandoc).get(), "markdown_github")
+        _ = try writePandocFixture(in: dir, version: "3.14", conversion: "exit 100")
+        XCTAssertEqual(try PandocConverter.readerFormat(for: pandoc).get(), "gfm")
+    }
+
+    @MainActor
+    func testVersionProbeFailurePreventsConversion() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let pandoc = try writePandocFixture(in: dir, versionFailure: true, conversion: "/usr/bin/touch ran")
+        let destination = dir.appendingPathComponent("out.docx")
+        XCTAssertThrowsError(try runConversion(markdown: "# Doc", format: .docx, resourceDirectory: dir,
+            destination: destination, pandoc: pandoc).get())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("ran").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    @MainActor
+    func testPartialOrInvalidOutputPreservesExistingDestination() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
         let existing = dir.appendingPathComponent("existing.docx")
         let sentinel = Data("existing-output-sentinel".utf8)
         try sentinel.write(to: existing)
-        let converter = PandocConverter()
+        for status in [1, 0] {
+            let pandoc = try writePandocFixture(in: dir, conversion: """
+                printf '\\120\\113\\003\\004truncated' > "$5"
+                exit \(status)
+                """)
+            XCTAssertThrowsError(try runConversion(markdown: "# Doc", format: .docx, resourceDirectory: dir,
+                destination: existing, pandoc: pandoc).get())
+            XCTAssertEqual(try Data(contentsOf: existing), sentinel)
+            XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: dir.path).contains {
+                $0.hasPrefix(".md2-converted-")
+            })
+        }
+    }
+
+    @MainActor
+    func testCancellationPreservesExistingDestination() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let existing = dir.appendingPathComponent("existing.docx")
+        let sentinel = Data("existing-output-sentinel".utf8)
+        try sentinel.write(to: existing)
+        let started = dir.appendingPathComponent("started")
+        let pandoc = try writePandocFixture(in: dir, conversion: """
+            \(zipFixtureOutput) || exit
+            /usr/bin/touch started
+            exec /bin/sleep 10
+            """)
+        let converter = PandocConverter(locatePandoc: { pandoc })
         var completions = 0
         converter.convert(markdown: "# Canceled", format: .docx, resourceDirectory: dir, destination: existing) { outcome in
             completions += 1
-            if case .success = outcome { XCTFail("canceled conversion published") }
+            guard case .failure(PandocConverter.ConversionError.canceled) = outcome else {
+                return XCTFail("unexpected result: \(outcome)")
+            }
         }
+        defer { converter.cancel() }
+        try await waitUntil { FileManager.default.fileExists(atPath: started.path) }
         converter.cancel()
         converter.cancel()
         XCTAssertEqual(completions, 1)
+        try await waitUntil {
+            try !FileManager.default.contentsOfDirectory(atPath: dir.path).contains {
+                $0.hasPrefix(".md2-converted-")
+            }
+        }
         XCTAssertEqual(try Data(contentsOf: existing), sentinel)
+    }
+
+    @MainActor
+    func testConcurrentDestinationCreationOrUpdateIsPreserved() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let pandoc = try writePandocFixture(in: dir, conversion: zipFixtureOutput)
+        let changed = Data("changed after export started".utf8)
+        for previouslyExisted in [true, false] {
+            let destination = dir.appendingPathComponent("existing-\(previouslyExisted).docx")
+            if previouslyExisted { try Data("original".utf8).write(to: destination) }
+            let converter = PandocConverter(locatePandoc: { pandoc })
+            let done = expectation(description: "conversion finalizes")
+            converter.convert(markdown: "# Doc", format: .docx, resourceDirectory: nil, destination: destination) { result in
+                defer { done.fulfill() }
+                guard case .failure(PandocConverter.ConversionError.destinationChanged) = result else {
+                    return XCTFail("unexpected result: \(result)")
+                }
+            }
+            // The worker stages off the main actor, and final publication is
+            // checked on the main actor after this competing write.
+            try changed.write(to: destination)
+            wait(for: [done], timeout: 10)
+            XCTAssertEqual(try Data(contentsOf: destination), changed)
+        }
     }
 
     // MARK: - Helpers
 
     @MainActor
-    private func assertRealPandocRemoteBoundary(in directory: URL) throws {
+    private func assertRealPandocRemoteBoundary(in directory: URL, pandoc: URL) throws {
         let server = try ExportNetworkTestServer()
         defer { server.stop() }
-        let pandoc = try XCTUnwrap(PandocConverter.pandocURL())
+        let reader = try PandocConverter.readerFormat(for: pandoc).get()
         for format in [DocumentExportFormat.docx, .epub] {
             let token = UUID().uuidString
             let source = directory.appendingPathComponent("remote-\(token).md")
@@ -202,7 +318,7 @@ final class PandocConverterTests: XCTestCase {
             let direct = Process()
             direct.executableURL = pandoc
             direct.currentDirectoryURL = directory
-            direct.arguments = [source.lastPathComponent, "--from", PandocConverter.readerFormat(for: pandoc),
+            direct.arguments = [source.lastPathComponent, "--from", reader,
                 "-o", directory.appendingPathComponent("control-\(token).\(format.fileExtension)").path]
             direct.standardOutput = FileHandle.nullDevice
             direct.standardError = FileHandle.nullDevice
@@ -213,7 +329,8 @@ final class PandocConverterTests: XCTestCase {
             let blockedToken = UUID().uuidString
             let blocked = markdown.replacingOccurrences(of: token, with: blockedToken)
             _ = runConversion(markdown: blocked, format: format, resourceDirectory: directory,
-                destination: directory.appendingPathComponent("blocked-\(blockedToken).\(format.fileExtension)"))
+                destination: directory.appendingPathComponent("blocked-\(blockedToken).\(format.fileExtension)"),
+                pandoc: pandoc)
             XCTAssertFalse(server.requests.contains { $0.path.contains(blockedToken) },
                            "the real converter fetched a remote image")
         }
@@ -223,10 +340,11 @@ final class PandocConverterTests: XCTestCase {
     private func runConversion(
         markdown: String,
         format: DocumentExportFormat,
-        resourceDirectory: URL,
-        destination: URL
+        resourceDirectory: URL?,
+        destination: URL,
+        pandoc: URL
     ) -> Result<Void, Error> {
-        let converter = PandocConverter()
+        let converter = PandocConverter(locatePandoc: { pandoc })
         let done = expectation(description: "conversion completes")
         var outcome: Result<Void, Error> = .failure(PandocConverter.ConversionError.preparationFailed)
         converter.convert(
@@ -242,6 +360,46 @@ final class PandocConverterTests: XCTestCase {
         // resolves the completion before the test wait elapses.
         wait(for: [done], timeout: 75)
         return outcome
+    }
+
+    private func installedPandoc() throws -> URL {
+        if let override = ProcessInfo.processInfo.environment["MD2_TEST_PANDOC_PATH"] {
+            let url = URL(fileURLWithPath: override)
+            XCTAssertTrue(FileManager.default.isExecutableFile(atPath: url.path), "test Pandoc should be executable")
+            return url
+        }
+        let url = PandocConverter.pandocURL()
+        try XCTSkipIf(url == nil, "Pandoc not installed.")
+        return try XCTUnwrap(url)
+    }
+
+    private var zipFixtureOutput: String {
+        #"/usr/bin/zip -jq "$5" "$1""#
+    }
+
+    @MainActor
+    private func waitUntil(_ condition: () throws -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while try !condition(), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(try condition(), "Timed out waiting for the fake converter.")
+    }
+
+    private func writePandocFixture(
+        in dir: URL, version: String = "3.14", versionFailure: Bool = false, conversion: String
+    ) throws -> URL {
+        let url = dir.appendingPathComponent("fixture-pandoc")
+        let probe = versionFailure ? "exit 23" : "printf 'pandoc \(version)\\n'; exit"
+        try """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+                \(probe)
+            fi
+            \(conversion)
+            """.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
+        return url
     }
 
     private func makeTempDir() throws -> URL {

@@ -85,13 +85,12 @@ features. See the [daily-writing](Docs/Plans/daily-writing/PLAN.md),
   edit is one native Undo step. Unsupported display formulas and ambiguous
   selections have a [source-editing route](Docs/MarkdownEditing.md#edit-a-formula-from-preview).
 
-- [ ] **P3 — Expose DOCX/EPUB conversion deliberately.** The bounded Pandoc
-  backends exist; only PDF/HTML are in the Export menu. Decide dependency
-  discovery, unsupported-content notices and destination/cancel UX before menu
-  integration. Acceptance: test actual menu invocation with/without Pandoc,
-  fail-closed network confinement, stale-document cancellation and preservation
-  of an existing destination. Do not claim independent Word/EPUB readers are
-  offline, or add automatic executable downloads.
+- [x] **P3 — Expose DOCX/EPUB conversion deliberately.** File → Export To offers
+  DOCX and EPUB with a locally installed Pandoc. The save panel explains
+  conversion limits, and the window supports cancellation while conversion
+  runs. Conversion denies network access and preserves an existing destination
+  on failure or cancellation. See the [user guide](Docs/RemoteResources.md#export-to-docx-or-epub)
+  and [acceptance plan](Docs/Plans/docx-epub-export/PLAN.md).
 
 ## Explicitly deferred
 

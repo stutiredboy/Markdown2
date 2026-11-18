@@ -260,7 +260,12 @@ struct ContentView: View {
             }
 
             Divider()
-            StatusBar(stats: document.rendered.stats, selectionStats: selectionStats, url: document.fileURL, format: document.fileFormat, settings: settings)
+            StatusBar(
+                stats: document.rendered.stats, selectionStats: selectionStats, url: document.fileURL,
+                format: document.fileFormat, settings: settings, convertingFormat: document.convertingFormat,
+                conversionStoppedForSourceChange: document.conversionStoppedForSourceChange,
+                cancelConversion: document.cancelConversion
+            )
         }
         .frame(minWidth: minimumWindowWidth, minHeight: 540)
         .onGeometryChange(for: DocumentToolbarDensity.self) { geometry in
@@ -1466,29 +1471,54 @@ private struct StatusBar: View {
     let url: URL?
     let format: MarkdownFileFormat
     let settings: AppSettings
+    let convertingFormat: DocumentExportFormat?
+    let conversionStoppedForSourceChange: Bool
+    let cancelConversion: () -> Void
 
     var body: some View {
         HStack(spacing: 14) {
-            if let selectionStats {
-                Text("\(settings.text(.selectionStats)): \(selectionStats.words) / \(stats.words) \(settings.text(.words))")
-                    .accessibilityIdentifier("document-word-count")
-            } else {
-                Text("\(stats.words) \(settings.text(.words))")
-                    .accessibilityIdentifier("document-word-count")
-            }
-            Text("\(stats.characters) \(settings.text(.chars))")
-            Text("\(stats.lines) \(settings.text(.lines))")
-            Text("\(stats.readingMinutes) \(settings.text(.minRead))")
-            Text("\(settings.typography.zoomPercent)%")
-            Text(format.encodingLabel)
-            Text(format.lineEnding == .mixed ? settings.text(.mixedLineEndings) : format.lineEnding.rawValue)
-
-            Spacer()
-
-            if let url {
-                Text(url.path)
+            if let convertingFormat {
+                let progress = String(format: settings.text(.exportConversionProgress), convertingFormat.fileExtension.uppercased())
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityHidden(true)
+                Text(progress)
+                Button(settings.text(.cancel), action: cancelConversion)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("cancel-export-conversion")
+                Spacer()
+            } else if conversionStoppedForSourceChange {
+                Text(settings.text(.alertConversionSourceChanged))
                     .lineLimit(1)
-                    .truncationMode(.middle)
+                    .help(settings.text(.alertConversionSourceChanged))
+                Button(action: cancelConversion) {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(settings.text(.close))
+                Spacer()
+            } else {
+                if let selectionStats {
+                    Text("\(settings.text(.selectionStats)): \(selectionStats.words) / \(stats.words) \(settings.text(.words))")
+                        .accessibilityIdentifier("document-word-count")
+                } else {
+                    Text("\(stats.words) \(settings.text(.words))")
+                        .accessibilityIdentifier("document-word-count")
+                }
+                Text("\(stats.characters) \(settings.text(.chars))")
+                Text("\(stats.lines) \(settings.text(.lines))")
+                Text("\(stats.readingMinutes) \(settings.text(.minRead))")
+                Text("\(settings.typography.zoomPercent)%")
+                Text(format.encodingLabel)
+                Text(format.lineEnding == .mixed ? settings.text(.mixedLineEndings) : format.lineEnding.rawValue)
+
+                Spacer()
+
+                if let url {
+                    Text(url.path)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
         }
         .font(.caption)

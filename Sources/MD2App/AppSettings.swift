@@ -478,6 +478,10 @@ enum L10nKey: String, CaseIterable, Sendable {
     case alertCouldNotPrint
     case alertPandocRequired
     case alertPandocRequiredDetail
+    case conversionDestinationTitle, conversionDestinationNotice, exportConversionProgress
+    case alertConversionSourceDestination, alertConversionSourceChanged
+    case conversionPreparationFailed, conversionFailed, conversionFailedWithDetail
+    case conversionDestinationChanged, conversionConfinementUnavailable, conversionCanceled, conversionTimedOut
     case alertHTMLExportInvalidImage, alertHTMLExportImageLimit
     case alertExternalAttachmentDirectory, alertExternalAttachmentDirectoryDetail, useAttachmentFolder
     case alertAttachmentSaveFailed
@@ -765,7 +769,19 @@ enum L10n {
         .alertHTMLExportMoreImages: "…and %@ more",
         .alertCouldNotPrint: "Could not print the document.",
         .alertPandocRequired: "Pandoc is required to export %@.",
-        .alertPandocRequiredDetail: "Install Pandoc to enable DOCX and EPUB export.",
+        .alertPandocRequiredDetail: "Install Pandoc from pandoc.org/installing.html or run brew install pandoc in Terminal, then try exporting again.",
+        .conversionDestinationTitle: "Export %@",
+        .conversionDestinationNotice: "Pandoc converts Markdown with its own layout and syntax support. Preview diagrams, styles and some Markdown extensions may look different or be omitted. Remote images cannot be downloaded during conversion.",
+        .exportConversionProgress: "Exporting %@…",
+        .alertConversionSourceDestination: "Choose a destination separate from the source document.",
+        .alertConversionSourceChanged: "The document changed during export. Try exporting again to use the latest version.",
+        .conversionPreparationFailed: "Could not prepare the document or write the export file. Check that the destination folder is writable.",
+        .conversionFailed: "Pandoc could not convert the document.",
+        .conversionFailedWithDetail: "Pandoc could not convert the document.\n\n%@",
+        .conversionDestinationChanged: "The destination changed during conversion. Choose it again to export.",
+        .conversionConfinementUnavailable: "This system could not start Pandoc with network access blocked. Export stopped.",
+        .conversionCanceled: "Conversion canceled.",
+        .conversionTimedOut: "The conversion took too long and was stopped.",
         .alertHTMLExportInvalidImage: "not a valid supported image",
         .alertHTMLExportImageLimit: "exceeds the export image size or decoding limit",
         .alertExternalAttachmentDirectory: "Save images outside this document’s folder?",
@@ -1082,7 +1098,19 @@ enum L10n {
         .alertHTMLExportMoreImages: "另有 %@ 张未列出",
         .alertCouldNotPrint: "无法打印文档。",
         .alertPandocRequired: "导出 %@ 需要 Pandoc。",
-        .alertPandocRequiredDetail: "安装 Pandoc 后即可启用 DOCX 和 EPUB 导出。",
+        .alertPandocRequiredDetail: "请从 pandoc.org/installing.html 安装 Pandoc，或在终端运行 brew install pandoc，然后重试导出。",
+        .conversionDestinationTitle: "导出 %@",
+        .conversionDestinationNotice: "Pandoc 使用自己的排版和语法规则转换 Markdown。预览中的图表、样式和部分 Markdown 扩展语法可能显示不同或被省略。转换期间无法下载远程图片。",
+        .exportConversionProgress: "正在导出 %@…",
+        .alertConversionSourceDestination: "请选择与源文档不同的目标文件。",
+        .alertConversionSourceChanged: "导出期间文档发生了变化。请重新导出以使用最新版本。",
+        .conversionPreparationFailed: "无法准备文档或写入导出文件。请检查目标文件夹是否可写。",
+        .conversionFailed: "Pandoc 无法转换文档。",
+        .conversionFailedWithDetail: "Pandoc 无法转换文档。\n\n%@",
+        .conversionDestinationChanged: "转换期间目标文件发生了变化。请重新选择目标文件后再导出。",
+        .conversionConfinementUnavailable: "当前系统无法在阻止网络访问的条件下启动 Pandoc，导出已停止。",
+        .conversionCanceled: "转换已取消。",
+        .conversionTimedOut: "转换超时，已停止。",
         .alertHTMLExportInvalidImage: "不是有效的受支持图片",
         .alertHTMLExportImageLimit: "超出导出图片大小或解码限制",
         .alertExternalAttachmentDirectory: "将图片保存到文档文件夹之外？",

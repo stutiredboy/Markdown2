@@ -44,10 +44,13 @@ Markdown2 aims for a compact Typora-like writing and reading flow. It does not c
 
 Common syntax smoke test: open [`Examples/CommonSyntax.md`](../Examples/CommonSyntax.md), toggle the three optional styles, switch the app language, and export to PDF. Automated coverage lives in `CommonSyntaxTests`, `CommonSyntaxSettingsTests`, and `CommonSyntaxGUITests` (the last requires `MD2_RUN_GUI_TESTS=1`). Parsing rules are based on [CommonMark reference links](https://spec.commonmark.org/0.31.2/#link-reference-definitions), [GFM extended autolinks](https://github.github.com/gfm/#autolinks-extension-), and [Typora's optional inline syntax](https://support.typora.io/Markdown-Reference/).
 
+DOCX and EPUB export uses a local Pandoc installation and has its own syntax
+and layout limits. See the [conversion guide](RemoteResources.md#export-to-docx-or-epub).
+
 ## Not Yet Supported
 
 - Semantic syntax analysis, compiler-aware highlighting, and language-server features.
 - Typora's remote image upload/hosting and the drag-handle image resize UI. Markdown2 saves pasted screenshots into a configurable document-relative folder, links dragged or pasted image files at their existing location, and supports `{width=…}` sizing attributes.
-- Importing PDF, DOCX, LaTeX or EPUB as editable Markdown. PDF and HTML export and printing are supported; DOCX/EPUB conversion backends exist, but their commands are not exposed in the app menus.
+- Importing PDF, DOCX, LaTeX or EPUB as editable Markdown.
 - Focus mode, typewriter mode, and custom theme management.
 - Full CommonMark conformance for every nested/container edge case.

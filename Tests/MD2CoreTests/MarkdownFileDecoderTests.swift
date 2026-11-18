@@ -69,7 +69,8 @@ struct DocumentAlertLocalizationTests {
         let keys: [L10nKey] = [
             .alertCouldNotOpen, .alertUndecodableFile, .alertCouldNotSave,
             .alertCouldNotExport, .alertPandocRequired,
-            .alertHTMLExportIncomplete, .alertHTMLExportMoreImages
+            .alertHTMLExportIncomplete, .alertHTMLExportMoreImages,
+            .conversionDestinationTitle, .exportConversionProgress, .conversionFailedWithDetail
         ]
         for key in keys {
             for language in [AppLanguage.english, .zhHans] {

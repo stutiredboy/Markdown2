@@ -13,6 +13,7 @@ final class DocumentStore: ObservableObject {
             // Most typing changes the byte count. Otherwise NSString compares
             // literal code units efficiently, as the editor session does.
             guard text.utf8.count != oldValue.utf8.count || !(text as NSString).isEqual(to: oldValue) else { return }
+            stopConversion(sourceChanged: true)
             textMutationRevision &+= 1
             sourceLineRevision &+= 1
             // The expensive full-document render that feeds the preview/stats is
@@ -74,7 +75,10 @@ final class DocumentStore: ObservableObject {
         remoteResourceInvalidator = invalidate
     }
 
-    private func replaceRemoteResourceContext(policy: RemoteResourcePolicy = .blocked) {
+    private func replaceRemoteResourceContext(
+        policy: RemoteResourcePolicy = .blocked,
+        keepingConversionNotice: Bool = false
+    ) {
         remoteResourceInvalidator?()
         remoteResourceInvalidator = nil
         // Advance identity before cancellation callbacks: they may complete
@@ -85,10 +89,13 @@ final class DocumentStore: ObservableObject {
         renderGeneration &+= 1
         pdfExporter?.cancel()
         documentPrinter?.cancel()
-        documentConverter?.cancel()
+        if keepingConversionNotice {
+            stopConversion(sourceChanged: true)
+        } else {
+            cancelConversion()
+        }
         pdfExporter = nil
         documentPrinter = nil
-        documentConverter = nil
         preparingDerivedArtifact = nil
     }
 
@@ -98,12 +105,19 @@ final class DocumentStore: ObservableObject {
     let copyFlow = DocumentCopyFlow()
     @Published private(set) var fileURL: URL? {
         didSet {
-            if oldValue != fileURL { editorSession.invalidatePasteContext() }
+            if oldValue != fileURL {
+                stopConversion(sourceChanged: true)
+                editorSession.invalidatePasteContext()
+            }
         }
     }
     @Published private(set) var isDirty = false
     @Published private(set) var fileFormat = MarkdownFileFormat()
-    @Published private(set) var backingFileMissing = false
+    @Published private(set) var backingFileMissing = false {
+        didSet {
+            if backingFileMissing && !oldValue { stopConversion(sourceChanged: true) }
+        }
+    }
     @Published var encodingConversionRequest: UUID?
     private var encodingWarningShown = false
     private let confirmEncodingConversion: @MainActor (String) -> Bool
@@ -268,21 +282,40 @@ final class DocumentStore: ObservableObject {
     /// it never touches `fileURL`, `isDirty`, or autosave.
     private var documentPrinter: DocumentPrinting?
     private let documentPrinterFactory: @MainActor () -> DocumentPrinting
-    /// Retains the in-flight DOCX/EPUB conversion for its (asynchronous) lifetime;
-    /// cleared on completion. Like the others, a derived artifact.
-    private var documentConverter: DocumentConverting?
+    private enum ConversionState {
+        case choosingDestination(UUID)
+        case running(UUID, DocumentExportFormat, DocumentConverting)
+        case sourceChanged
+
+        var operationID: UUID? {
+            switch self {
+            case .choosingDestination(let id), .running(let id, _, _): id
+            case .sourceChanged: nil
+            }
+        }
+    }
+    @Published private var conversion: ConversionState?
+    var convertingFormat: DocumentExportFormat? {
+        guard case .running(_, let format, _) = conversion else { return nil }
+        return format
+    }
+    var conversionStoppedForSourceChange: Bool {
+        if case .sourceChanged = conversion { return true }
+        return false
+    }
+
     private let documentConverterFactory: @MainActor () -> DocumentConverting
     /// Whether an external Pandoc binary is available (gates DOCX/EPUB export).
     private let pandocAvailabilityProvider: @MainActor () -> Bool
     /// Resolves the destination for a DOCX/EPUB export. Injected for testability.
-    private let conversionDestinationPicker: @MainActor (DocumentExportFormat, String) -> URL?
+    private let conversionDestinationPicker: (@MainActor (DocumentExportFormat, String) -> URL?)?
 
     /// True while any derived-artifact job (PDF export, Print, or DOCX/EPUB
     /// conversion) is in flight. All export/print operations are mutually
     /// exclusive — each produces a file from the document's current state — so each
     /// guards on this, including the background preparation stage.
     private var isProducingDerivedArtifact: Bool {
-        preparingDerivedArtifact != nil || pdfExporter != nil || documentPrinter != nil || documentConverter != nil
+        preparingDerivedArtifact != nil || pdfExporter != nil || documentPrinter != nil || conversion?.operationID != nil
     }
     private var isLoading = false
     private var autosaveTask: Task<Void, Never>?
@@ -347,7 +380,7 @@ final class DocumentStore: ObservableObject {
         documentPrinterFactory: @escaping @MainActor () -> DocumentPrinting = { DocumentPrinter() },
         documentConverterFactory: @escaping @MainActor () -> DocumentConverting = { PandocConverter() },
         pandocAvailabilityProvider: @escaping @MainActor () -> Bool = { PandocConverter.isAvailable() },
-        conversionDestinationPicker: @escaping @MainActor (DocumentExportFormat, String) -> URL? = DocumentStore.presentConversionDestination,
+        conversionDestinationPicker: (@MainActor (DocumentExportFormat, String) -> URL?)? = nil,
         saveLocationPicker: @escaping @MainActor (String) -> URL? = DocumentStore.presentSaveLocation,
         confirmExternalAttachmentDirectory: (@MainActor (URL) -> Bool)? = nil,
         exportProfileProvider: @escaping @MainActor () -> ExportProfile = { .default },
@@ -749,49 +782,71 @@ final class DocumentStore: ObservableObject {
         exportConverted(to: .epub)
     }
 
-    /// Shared DOCX/EPUB flow: requires Pandoc, saves an untitled document first (so
-    /// relative images resolve against a real directory), then converts the
-    /// document's *current* Markdown (including unsaved edits) without changing
-    /// `fileURL`/dirty/autosave. Mutually exclusive with the other export jobs.
+    /// Export the committed editor text, including unsaved edits. Untitled
+    /// documents use the converter's private directory for relative resources.
     private func exportConverted(to format: DocumentExportFormat) {
-        guard !isClosed, !isProducingDerivedArtifact else { return }
-
+        guard !isClosed, !isProducingDerivedArtifact, !hasExternalConflict,
+              pendingExternalReload == nil else { return }
+        let formatName = format.fileExtension.uppercased()
         guard pandocAvailabilityProvider() else {
             alert = DocumentAlert(
-                message: alertText(.alertPandocRequired, format.fileExtension.uppercased()),
+                message: alertText(.alertPandocRequired, formatName),
                 detail: alertText(.alertPandocRequiredDetail)
             )
             return
         }
-
-        // Pandoc reads a source file and resolves relative images against a
-        // directory, so an untitled document is saved first to establish one; a
-        // cancelled save aborts the export cleanly.
-        if fileURL == nil {
-            guard save() else { return }
+        guard editorSession.textView?.hasMarkedText() != true else {
+            alert = DocumentAlert(message: alertText(.conversionDestinationTitle, formatName),
+                                  detail: alertText(.copyFinishComposition))
+            return
         }
-        guard let resourceDirectory = baseURL else { return }
+        refreshFileLocation()
 
-        let contextToken = remoteResourceContextToken
-        guard let destination = conversionDestinationPicker(format, conversionFileName(for: format)),
-              resourceContextIsCurrent(contextToken), !isProducingDerivedArtifact else {
+        // The native picker runs a nested event loop. Reserve this operation
+        // before showing it, so an edit, reload or another command cannot hand
+        // its stale destination to the converter.
+        let id = UUID()
+        conversion = .choosingDestination(id)
+        defer {
+            if case .choosingDestination(let pendingID) = conversion, pendingID == id {
+                conversion = nil
+            }
+        }
+        let defaultName = conversionFileName(for: format)
+        let destination = if let conversionDestinationPicker {
+            conversionDestinationPicker(format, defaultName)
+        } else {
+            presentConversionDestination(format: format, defaultName: defaultName)
+        }
+        guard conversion?.operationID == id, let destination else { return }
+        refreshFileLocation()
+        guard conversion?.operationID == id else { return }
+        guard editorSession.textView?.hasMarkedText() != true else {
+            stopConversion(sourceChanged: true)
+            return
+        }
+        if let fileURL, Self.isConversionSource(fileURL, destination: destination) {
+            alert = DocumentAlert(message: alertText(.alertCouldNotExport, destination.lastPathComponent),
+                                  detail: alertText(.alertConversionSourceDestination))
             return
         }
 
         let converter = documentConverterFactory()
-        documentConverter = converter
+        conversion = .running(id, format, converter)
         converter.convert(
             markdown: text,
             format: format,
-            resourceDirectory: resourceDirectory,
+            resourceDirectory: baseURL,
             destination: destination
         ) { [weak self] result in
-            guard let self, self.resourceContextIsCurrent(contextToken) else { return }
-            self.documentConverter = nil
+            guard let self, self.conversion?.operationID == id else { return }
+            self.conversion = nil
             if case let .failure(error) = result {
+                let detail = (error as? PandocConverter.ConversionError)?.detail(using: self.alertText)
+                    ?? error.localizedDescription
                 self.alert = DocumentAlert(
                     message: self.alertText(.alertCouldNotExport, destination.lastPathComponent),
-                    detail: error.localizedDescription
+                    detail: detail
                 )
             } else {
                 self.alert = DocumentAlert(
@@ -800,6 +855,26 @@ final class DocumentStore: ObservableObject {
                 )
             }
         }
+    }
+
+    /// Detach before canceling. A converter can call back synchronously when
+    /// canceled or complete after a different operation has started.
+    func cancelConversion() {
+        stopConversion()
+    }
+
+    private func stopConversion(sourceChanged: Bool = false) {
+        guard let conversion, !sourceChanged || conversion.operationID != nil else { return }
+        self.conversion = sourceChanged ? .sourceChanged : nil
+        if case .running(_, _, let converter) = conversion { converter.cancel() }
+    }
+
+    private static func isConversionSource(_ source: URL, destination: URL) -> Bool {
+        if source.resolvingSymlinksInPath() == destination.resolvingSymlinksInPath() { return true }
+        var sourceInfo = stat()
+        var destinationInfo = stat()
+        return stat(source.path, &sourceInfo) == 0 && stat(destination.path, &destinationInfo) == 0
+            && sourceInfo.st_dev == destinationInfo.st_dev && sourceInfo.st_ino == destinationInfo.st_ino
     }
 
     /// Default PDF file name: the document's name with a `.pdf` extension, or
@@ -849,7 +924,7 @@ final class DocumentStore: ObservableObject {
         return panel.url
     }
 
-    private static func presentConversionDestination(
+    private func presentConversionDestination(
         format: DocumentExportFormat,
         defaultName: String
     ) -> URL? {
@@ -857,6 +932,10 @@ final class DocumentStore: ObservableObject {
         if let type = UTType(filenameExtension: format.fileExtension) {
             panel.allowedContentTypes = [type]
         }
+        panel.title = alertText(.conversionDestinationTitle, format.fileExtension.uppercased())
+        panel.message = alertText(.conversionDestinationNotice)
+        panel.directoryURL = baseURL
+        panel.allowsOtherFileTypes = false
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = defaultName
         guard panel.runModal() == .OK else { return nil }
@@ -1445,6 +1524,7 @@ final class DocumentStore: ObservableObject {
             pendingReloadDiscardRevision = textMutationRevision
         }
         guard pendingExternalReload == nil else { return }
+        stopConversion(sourceChanged: true)
         pendingExternalReload = UUID()
     }
 
@@ -1487,7 +1567,7 @@ final class DocumentStore: ObservableObject {
             return
         }
 
-        replaceRemoteResourceContext()
+        replaceRemoteResourceContext(keepingConversionNotice: true)
         cancelAutosave()
         jumpLine = nil
         jumpHeadingID = nil
@@ -1518,6 +1598,7 @@ final class DocumentStore: ObservableObject {
     /// window layer is asked to present the choice. Re-raising while the
     /// prompt is already pending keeps a single prompt.
     private func raiseExternalConflict() {
+        stopConversion(sourceChanged: true)
         hasExternalConflict = true
         cancelAutosave()
         persistRecoveryNow()

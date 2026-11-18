@@ -51,9 +51,11 @@ grant Accessibility access to the terminal or runner hosting the tests.
 bash Scripts/functional_test.sh --gui
 ```
 
-The GUI gate checks skips against the [expected skip list](.github/gui-expected-skips.txt),
-which covers conditional cases such as the optional Pandoc integration tests.
-Report skipped cases separately from passes. For manual keyboard, Chinese
+The GUI gate checks skips against the [expected skip list](.github/gui-expected-skips.txt).
+Install [Pandoc](https://pandoc.org/installing.html) to run the DOCX and EPUB
+archive checks locally. CI invokes the export menu both before and after installing
+Pandoc and requires the archive checks to run. Report skips separately from
+passes. For manual keyboard, Chinese
 Pinyin, and VoiceOver verification, use the [native input acceptance plan](Docs/Plans/native-input-acceptance/PLAN.md).
 
 ## Open a pull request
