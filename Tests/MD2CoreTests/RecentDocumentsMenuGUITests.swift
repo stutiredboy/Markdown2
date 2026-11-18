@@ -791,8 +791,8 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
               let originalPort = originalServer.port, let replacementPort = replacementServer.port else {
             throw GuardFailure("remote resource fixtures did not start listening")
         }
-        // The launched app has its own ATS policy. Use the loopback hostname
-        // rather than a numerical IP whose plain HTTP transport may be denied.
+        // Use the loopback hostname so the launched app's ATS policy can
+        // permit the plain HTTP fixture.
         let originalOrigin = "http://localhost:\(originalPort)"
         let replacementOrigin = "http://localhost:\(replacementPort)"
         let document = try makeDocument("notes/RemoteResourceDetails.md")
@@ -805,7 +805,7 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         """
         let replacement = "![Replacement](\(replacementOrigin)/replacement.png)"
         try Data(original.utf8).write(to: document)
-        let pid = try launch(recents: [], language: "english", appleLanguages: ["en"], defaultMode: .split)
+        let pid = try launch(recents: [], language: "english", appleLanguages: ["en"])
         try open(document)
 
         let details = "remote-images-details"
@@ -835,11 +835,15 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             let button = try XCTUnwrap(element(id, in: root), id)
             XCTAssertEqual(AXUIElementPerformAction(button, kAXPressAction as CFString), .success, id)
         }
-        func windowWithPolicy(_ id: String) throws -> AXUIElement {
-            try waitForWindow(pid: pid) {
-                isDocument($0) && sheet(in: $0) == nil && element(id, in: $0) != nil
-                    && element(details, in: $0).map { Self.isEnabled($0) } == true
-                    && Self.firstElement(ofRole: "AXWebArea", in: $0) != nil
+        func windowWithPolicy(_ id: String, requiresPreview: Bool = false) throws -> AXUIElement {
+            do {
+                return try waitForWindow(pid: pid) {
+                    isDocument($0) && sheet(in: $0) == nil && element(id, in: $0) != nil
+                        && element(details, in: $0).map { Self.isEnabled($0) } == true
+                        && (!requiresPreview || Self.firstElement(ofRole: "AXWebArea", in: $0) != nil)
+                }
+            } catch {
+                throw GuardFailure("waiting for \(id) (live preview required: \(requiresPreview)): \(error)")
             }
         }
         func accessibleText(in root: AXUIElement) -> [String] {
@@ -871,7 +875,14 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             XCTAssertEqual(server.requests.count, requestCount)
         }
 
-        let blocked = try openDetails(in: windowWithPolicy(allow), origin: originalOrigin, references: 2)
+        // Enter Split via the live document's command. The window starts with
+        // an untitled store and can adopt that store's presentation preference.
+        _ = try windowWithPolicy(allow)
+        let split = try menuItem(commandCharacter: "3", pid: pid, modifiers: 0)
+        XCTAssertEqual(Self.title(of: split), "Side by Side")
+        XCTAssertTrue(Self.isEnabled(split))
+        XCTAssertEqual(AXUIElementPerformAction(split, kAXPressAction as CFString), .success)
+        let blocked = try openDetails(in: windowWithPolicy(allow, requiresPreview: true), origin: originalOrigin, references: 2)
         try press(close, in: blocked)
         assertQuiet(originalServer)
         XCTAssertEqual(try Data(contentsOf: document), Data(original.utf8))
@@ -881,7 +892,7 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             isDocument($0) && sheet(in: $0).flatMap { element(confirm, in: $0) } != nil
         }
         try press(confirm, in: XCTUnwrap(sheet(in: prompt)))
-        let allowed = try windowWithPolicy(revoke)
+        let allowed = try windowWithPolicy(revoke, requiresPreview: true)
         guard waitForRequests({
             let paths = originalServer.requests.compactMap { $0.path.split(separator: "?", maxSplits: 1).first }
             return paths.contains("/direct.png") && paths.contains("/raw.png")
@@ -1579,8 +1590,7 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         recents: [URL],
         language: String? = nil,
         appleLanguages: [String]? = nil,
-        healthURL: URL? = nil,
-        defaultMode: EditorMode? = nil
+        healthURL: URL? = nil
     ) throws -> pid_t {
         var values: [String: Any] = [
             "MD2.RestoresWindowsOnLaunch": false,
@@ -1592,7 +1602,6 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             values["MD2.Language"] = language
             values["AppleLanguages"] = appleLanguages
         }
-        if let defaultMode { values["MD2.DefaultMode"] = defaultMode.rawValue }
         let domain = UserDefaults(suiteName: Self.guardBundleIdentifier)!
         domain.setPersistentDomain(values, forName: Self.guardBundleIdentifier)
         domain.synchronize()
