@@ -53,10 +53,6 @@ final class PreviewFormulaSheet: NSObject, NSTextViewDelegate {
         addCancel(to: alert, settings: settings)
         let open = alert.addButton(withTitle: settings.text(.formulaOpenSource))
         open.setAccessibilityIdentifier("formula-open-source")
-        alert.window.defaultButtonCell = nil
-        // Plain Return belongs to the text input and its IME candidate panel.
-        apply.keyEquivalent = "\r"
-        apply.keyEquivalentModifierMask = [.command]
         alert.window.initialFirstResponder = input
         self.input = input
         applyButton = apply
@@ -73,6 +69,11 @@ final class PreviewFormulaSheet: NSObject, NSTextViewDelegate {
             default: break
             }
         }
+        // Install the shortcut after AppKit applies the sheet's defaults.
+        // Plain Return belongs to the text input and its IME candidate panel.
+        alert.window.defaultButtonCell = nil
+        apply.keyEquivalent = "\r"
+        apply.keyEquivalentModifierMask = [.command]
     }
 
     func offerSource(in window: NSWindow, settings: AppSettings, onOpen: @escaping () -> Void) {

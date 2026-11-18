@@ -57,7 +57,8 @@ final class DirectFormulaEditingGUITests: XCTestCase {
             windowNumber: sheet.windowNumber, context: nil, characters: "\r",
             charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36
         ))
-        XCTAssertTrue(sheet.performKeyEquivalent(with: applyKey))
+        XCTAssertTrue(sheet.performKeyEquivalent(with: applyKey),
+                      "Apply equivalent \(apply.keyEquivalent.debugDescription), modifiers \(apply.keyEquivalentModifierMask.rawValue)")
         h.spin(until: { h.window.attachedSheet == nil && bytes(h.store.text) == bytes(edited) })
         XCTAssertNil(h.window.attachedSheet)
         XCTAssertEqual(bytes(h.store.text), bytes(edited))
