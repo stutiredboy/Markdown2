@@ -76,8 +76,13 @@ jobs:
           plutil -lint dist/Markdown2.app/Contents/Info.plist
           test -f dist/Markdown2.app/Contents/Resources/AppIcon.icns
           resources=dist/Markdown2.app/Contents/Resources/MD2_MD2Core.bundle/Contents/Resources
-          for notice in katex/THIRD-PARTY-NOTICES.txt diagrams/THIRD-PARTY-NOTICES.txt \
-                        diagrams/MERMAID-NOTICES.txt html-entities.LICENSE.txt; do
+          notices=(
+            katex/THIRD-PARTY-NOTICES.txt
+            diagrams/THIRD-PARTY-NOTICES.txt
+            diagrams/MERMAID-NOTICES.txt
+            html-entities.LICENSE.txt
+          )
+          for notice in "${notices[@]}"; do
             test -s "Sources/MD2Core/Resources/$notice"
             cmp "Sources/MD2Core/Resources/$notice" "$resources/$notice"
           done
