@@ -79,6 +79,16 @@ struct MarkdownPreviewView: NSViewRepresentable {
     /// The document's source-line revision that `html` was rendered from, which
     /// the page hands back with each checkbox click (see `labelPage`).
     var sourceLineRevision: Int = 0
+    struct FormulaEditing: Equatable {
+        let revision: Int
+        let editableLines: Set<Int>
+        let editLabel: String
+        let revealLabel: String
+        var focusLine: Int? = nil
+    }
+    /// Read-only preview controls for the snapshot that produced this page.
+    var formulaEditing: FormulaEditing? = nil
+    var onEditFormula: (_ line: Int, _ revision: Int, _ window: NSWindow) -> Void = { _, _, _ in }
     @Binding var jumpHeadingID: String?
     /// Fraction (0...1) to scroll to after load when no heading anchor applies.
     @Binding var jumpFraction: Double?
@@ -156,7 +166,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 return;
             }
             var content = document.createElement('div');
-            var excluded = '.front-matter,.footnote-ref,.footnote-backref,.diagram,.math,.toc,.md2-broken-image,.md2-line-gutter';
+            var excluded = '.front-matter,.footnote-ref,.footnote-backref,.diagram,.math,.toc,.md2-broken-image,.md2-line-gutter,.md2-formula-action';
             for (var i = 0; i < selection.rangeCount; i++) {
                 var range = selection.getRangeAt(i);
                 var ancestor = range.commonAncestorContainer;
@@ -178,6 +188,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
     private static let anchorMessageName = "anchorChange"
     private static let toggleTaskMessageName = "toggleTask"
     private static let revealSourceLineMessageName = "revealSourceLine"
+    private static let editFormulaMessageName = "editFormula"
     private static let openLinkMessageName = "openLink"
     private static let forwardedLinkSchemes = String(decoding:
         try! JSONEncoder().encode(HTMLSafety.safeURLSchemes.sorted().map { $0 + ":" }), as: UTF8.self)
@@ -188,10 +199,93 @@ struct MarkdownPreviewView: NSViewRepresentable {
         controller.add(handler, contentWorld: .defaultClient, name: enterEditMessageName)
         controller.add(handler, contentWorld: .defaultClient, name: toggleTaskMessageName)
         controller.add(handler, contentWorld: .defaultClient, name: revealSourceLineMessageName)
+        controller.add(handler, contentWorld: .defaultClient, name: editFormulaMessageName)
         controller.add(handler, contentWorld: .defaultClient, name: openLinkMessageName)
         controller.addUserScript(WKUserScript(source: interactionScript,
             injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: .defaultClient))
+        controller.addUserScript(WKUserScript(source: formulaControlsScript,
+            injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: .defaultClient))
     }
+
+    private static let formulaControlsScript = """
+    (function () {
+        var config = null;
+        var controls = new Map();
+        var style = null;
+        function restoreFocus(line, reveal) {
+            var button = controls.get(line);
+            if (!button || !button.isConnected) { return false; }
+            button.focus({preventScroll: true});
+            var bounds = reveal ? button.getBoundingClientRect() : null;
+            if (bounds && (bounds.top < 0 || bounds.bottom > window.innerHeight)) {
+                button.scrollIntoView({block: 'nearest', inline: 'nearest'});
+            }
+            return true;
+        }
+        window.__md2FocusFormula = function (token, line) {
+            return !!config && config.token === token && restoreFocus(line, true);
+        };
+        window.__md2SetFormulaControls = function (next) {
+            var active = document.activeElement;
+            var activeLine = null;
+            controls.forEach(function (button, line) {
+                if (active === button) { activeLine = line; }
+                button.remove();
+            });
+            controls.clear();
+            config = next;
+            if (!config) { return; }
+            var main = document.querySelector('main');
+            if (!main) { return; }
+            var editable = new Set(config.editableLines);
+            // HTMLSafety strips authored classes and data attributes. Take the
+            // line from the renderer's equation wrapper, not from the button,
+            // selected text, or the content KaTeX inserted into the equation.
+            var equations = main.querySelectorAll('div.math.math-display[data-md2-source-line], ' +
+                'div.numbered-equation[data-md2-source-line] > div.math.math-display');
+            if (equations.length && !style) {
+                style = document.createElement('style');
+                // CSS-generated labels keep action text out of document Find
+                // and Copy while aria-label gives the native button its name.
+                style.textContent = '.md2-formula-action{' +
+                    'display:block;margin:0 0 .65rem auto;padding:.25em .55em;' +
+                    'font:500 .78rem/1.35 -apple-system,BlinkMacSystemFont,sans-serif;' +
+                    'color:var(--text);background:var(--code-bg);border:1px solid var(--border);' +
+                    'border-radius:5px;cursor:pointer;user-select:none;}' +
+                    '.md2-formula-action::before{content:attr(aria-label);}' +
+                    '.md2-formula-action:hover{border-color:var(--accent);}' +
+                    '.md2-formula-action:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}' +
+                    '@media print{.md2-formula-action{display:none;}}';
+                document.head.appendChild(style);
+            }
+            equations.forEach(function (equation) {
+                var block = equation.hasAttribute('data-md2-source-line') ? equation : equation.parentElement;
+                var line = Number(block.getAttribute('data-md2-source-line'));
+                if (!Number.isSafeInteger(line) || line < 1 || controls.has(line)) { return; }
+                var canEdit = editable.has(line);
+                if (canEdit && block.parentElement !== main) { return; }
+                var button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'md2-formula-action';
+                button.setAttribute('data-md2-formula-line', line);
+                button.setAttribute('aria-label', canEdit ? config.editLabel : config.revealLabel);
+                button.addEventListener('click', function (event) {
+                    if (!event.isTrusted || event.defaultPrevented || !config || controls.get(line) !== button ||
+                        button.previousElementSibling !== block || !main.contains(block) ||
+                        Number(block.getAttribute('data-md2-source-line')) !== line ||
+                        (canEdit && block.parentElement !== main)) { return; }
+                    window.webkit.messageHandlers.\(Self.editFormulaMessageName).postMessage({
+                        line: line, token: config.token
+                    });
+                });
+                controls.set(line, button);
+                block.after(button);
+            });
+            if (activeLine !== null) { restoreFocus(activeLine, false); }
+        };
+        if (window.__md2FormulaConfig) { window.__md2SetFormulaControls(window.__md2FormulaConfig); }
+    })();
+    """
 
     static let interactionScript = """
         // WKNavigationAction.linkActivated also describes scripted clicks. Only
@@ -250,9 +344,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 window.webkit.messageHandlers.\(Self.enterEditMessageName).postMessage(null);
             }
         });
-        // Task checkboxes are the preview's one interactive element: the click
-        // toggles the box optimistically, and native rewrites the source line
-        // (the re-render that follows is the authoritative state). The line only
+        // Task checkboxes toggle optimistically, and native rewrites the source
+        // line (the re-render that follows is the authoritative state). The line only
         // means something in the source this page was rendered from, so the
         // revision native labelled the page with goes along.
         document.addEventListener('click', function (event) {
@@ -992,6 +1085,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
         context.coordinator.onEnterEdit = onEnterEdit
         context.coordinator.onToggleTask = onToggleTask
         context.coordinator.onRevealSourceLine = onRevealSourceLine
+        context.coordinator.onEditFormula = onEditFormula
+        context.coordinator.formulaEditing = formulaEditing
         context.coordinator.onOpenMarkdownLink = onOpenMarkdownLink
         context.coordinator.onMissingLocalLink = onMissingLocalLink
         context.coordinator.onOpenWithSystem = onOpenWithSystem
@@ -1057,11 +1152,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 && !baseURLChanged
                 && !resourceContextChanged
                 && !context.coordinator.lastHTML.isEmpty
-            let canLiveUpdate = liveUpdate
-                && context.coordinator.isLoaded
-                && !baseURLChanged
-                && !resourceContextChanged
-                && !context.coordinator.lastHTML.isEmpty
+            // Formula controls are outside the renderer body. Never hand their
+            // modified DOM to the renderer's keyed live-content reconciler.
+            let canLiveUpdate = isLoadedContentUpdate && formulaEditing == nil && !context.coordinator.hasFormulaControls
                 && !Self.requiresNewEngine(newBody: bodyHTML, loadedBody: context.coordinator.lastBody)
             context.coordinator.lastHTML = html
             context.coordinator.lastBody = bodyHTML
@@ -1094,6 +1187,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         } else {
             // Text that renders to the same page is still a new revision.
             context.coordinator.labelPage(in: webView)
+            context.coordinator.configureFormulaControls(in: webView)
         }
 
         // Anchor/heading/fraction targets are also applied once the page has
@@ -1429,6 +1523,13 @@ struct MarkdownPreviewView: NSViewRepresentable {
             _ line: Int, _ checked: Bool, _ revision: Int, _ restoreBoxes: @escaping () -> Void
         ) -> Void = { _, _, _, _ in }
         var onRevealSourceLine: (_ line: Int) -> Void = { _ in }
+        var onEditFormula: (_ line: Int, _ revision: Int, _ window: NSWindow) -> Void = { _, _, _ in }
+        var formulaEditing: FormulaEditing?
+        /// A new token retires messages queued by any earlier page/configuration,
+        /// even when two source revisions produce identical rendered HTML.
+        private var formulaPage: (config: FormulaEditing, token: String)?
+        var hasFormulaControls: Bool { formulaPage != nil }
+        private var restoredFormulaFocusRevision: Int?
         var onOpenMarkdownLink: (_ url: URL) -> Void = { _ in }
         var onMissingLocalLink: (_ url: URL) -> Void = { _ in }
         var onOpenWithSystem: (_ url: URL) -> Void = { _ in }
@@ -1630,6 +1731,45 @@ struct MarkdownPreviewView: NSViewRepresentable {
             )
         }
 
+        func configureFormulaControls(in webView: WKWebView) {
+            guard !hasContentInFlight, formulaPage?.config != formulaEditing,
+                  let pageURL = documentLoader.documentPageURL else { return }
+            var payload = "null"
+            if let config = formulaEditing {
+                let token = UUID().uuidString
+                let options: [String: Any] = [
+                    "token": token, "editableLines": Array(config.editableLines),
+                    "editLabel": config.editLabel, "revealLabel": config.revealLabel
+                ]
+                guard let data = try? JSONSerialization.data(withJSONObject: options) else { return }
+                payload = String(decoding: data, as: UTF8.self)
+                formulaPage = (config, token)
+            } else {
+                formulaPage = nil
+            }
+            // A commit can arrive ahead of the document-end user script, and
+            // slow remote images must not delay controls for visible formulas.
+            webView.evaluateJavaScript("""
+                if (location.href.split('#')[0] === \(Self.jsStringLiteral(pageURL.absoluteString))) {
+                    window.__md2FormulaConfig = \(payload);
+                    if (window.__md2SetFormulaControls) { window.__md2SetFormulaControls(window.__md2FormulaConfig); }
+                }
+                true;
+                """, in: nil, in: .defaultClient)
+            if isLoaded { restoreFormulaFocus(in: webView) }
+        }
+
+        private func restoreFormulaFocus(in webView: WKWebView) {
+            guard let page = formulaPage, let line = page.config.focusLine,
+                  page.config.revision != restoredFormulaFocusRevision,
+                  let window = webView.window, window.isKeyWindow,
+                  let responder = window.firstResponder as? NSView,
+                  responder === webView || responder.isDescendant(of: webView) else { return }
+            restoredFormulaFocusRevision = page.config.revision
+            webView.evaluateJavaScript("window.__md2FocusFormula ? window.__md2FocusFormula(\(Self.jsStringLiteral(page.token)), \(line)) : false;",
+                                       in: nil, in: .defaultClient)
+        }
+
         private func restoreTaskBoxes(in webView: WKWebView?) {
             webView?.evaluateJavaScript(MarkdownPreviewView.restoreTaskBoxesScript, in: nil, in: .defaultClient)
         }
@@ -1724,6 +1864,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             isLoaded = false
             isAwaitingCommit = true
             hasContentInFlight = true
+            formulaPage = nil
             liveUpdateGeneration += 1
             liveUpdateWorkItem?.cancel()
             pendingLiveBody = nil
@@ -1902,6 +2043,13 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 guard let body = message.body as? [String: Any],
                       let line = (body["line"] as? NSNumber)?.intValue, line >= 1 else { return }
                 onRevealSourceLine(line)
+            case MarkdownPreviewView.editFormulaMessageName:
+                guard message.world == .defaultClient, !hasContentInFlight,
+                      let webView = message.webView, acceptsFindHost(webView), let window = webView.window,
+                      let page = formulaPage, page.config == formulaEditing,
+                      let body = message.body as? [String: Any], body["token"] as? String == page.token,
+                      let line = body["line"] as? Int, line > 0 else { return }
+                onEditFormula(line, page.config.revision, window)
             case MarkdownPreviewView.anchorMessageName:
                 guard let body = message.body as? [String: Any] else { return }
                 if ignoreNextAnchorMessage {
@@ -2020,6 +2168,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             applyLineNumbersVisibility(in: webView)
             applyPendingScroll(in: webView, consume: true)
             applyPendingFind(in: webView)
+            restoreFormulaFocus(in: webView)
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
@@ -2035,6 +2184,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             hasContentInFlight = false
             pageRevision = nil
             labelPage(in: webView)
+            configureFormulaControls(in: webView)
         }
 
         private func applyPendingScroll(in webView: WKWebView, consume: Bool = true) {

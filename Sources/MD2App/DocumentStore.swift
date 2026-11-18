@@ -318,6 +318,8 @@ final class DocumentStore: ObservableObject {
     /// The `sourceLineRevision` of the text `rendered` was built from. Always
     /// set together with `rendered`, whose publication carries it to the preview.
     private(set) var renderedSourceLineRevision = 0
+    private(set) var renderedTextMutationRevision = 0
+    private(set) var renderedEditableFormulaLines: Set<Int> = []
 
     var baseURL: URL? {
         fileURL?.deletingLastPathComponent()
@@ -907,6 +909,59 @@ final class DocumentStore: ObservableObject {
         jumpHeadingID = heading.id
     }
 
+    struct PreviewFormulaTarget {
+        fileprivate let identity: UUID
+        let revision: Int
+        let line: Int
+        let edit: DisplayFormulaEdit?
+    }
+
+    enum PreviewFormulaResult { case applied, unchanged, requiresSource, stale }
+
+    func previewFormulaTarget(line: Int, renderedAt revision: Int) -> PreviewFormulaTarget? {
+        guard !isClosed, hasCurrentResourcePreview, revision == renderedTextMutationRevision,
+              revision == textMutationRevision, line > 0, line <= rendered.stats.lines else { return nil }
+        return PreviewFormulaTarget(identity: documentIdentity, revision: revision, line: line,
+                                    edit: rendered.displayFormulaEdits[line])
+    }
+
+    func isCurrent(_ target: PreviewFormulaTarget) -> Bool {
+        guard target.identity == documentIdentity,
+              let current = previewFormulaTarget(line: target.line, renderedAt: target.revision) else { return false }
+        return current.edit == target.edit
+    }
+
+    func applyPreviewFormula(_ target: PreviewFormulaTarget, replacement: String,
+                             beforeMutation: () -> Bool = { true },
+                             isReading: @escaping @MainActor () -> Bool) async -> PreviewFormulaResult {
+        guard !Task.isCancelled, isReading(), isCurrent(target) else { return .stale }
+        guard let edit = target.edit,
+              let replacement = DisplayFormulaEdit.validatedReplacement(replacement) else { return .requiresSource }
+        let currentText = text
+        let source = currentText as NSString
+        guard edit.range.location >= 0, edit.range.length >= 0, edit.range.location <= source.length,
+              edit.range.length <= source.length - edit.range.location,
+              (source.substring(with: edit.range) as NSString).isEqual(to: edit.source) else { return .stale }
+        guard !(edit.source as NSString).isEqual(to: replacement) else { return .unchanged }
+
+        // New TeX can turn this line into the previous table's row or link
+        // definition. Reuse the renderer off the main actor to prove ownership
+        // before authorizing the single native replacement.
+        let proposed = source.replacingCharacters(in: edit.range, with: replacement)
+        let candidate = await renderWorker.render(makeRenderSnapshot(text: proposed))
+        guard !Task.isCancelled, isReading(), isCurrent(target) else { return .stale }
+        let newRange = NSRange(location: edit.range.location, length: replacement.utf16.count)
+        guard let mapped = candidate.displayFormulaEdits[target.line], mapped.range == newRange,
+              (mapped.source as NSString).isEqual(to: replacement) else { return .requiresSource }
+        guard beforeMutation() else { return .stale }
+
+        let applied = await editorSession.applyPreviewFormulaEdit(changing: currentText, range: edit.range,
+                                                                  replacement: replacement) {
+            isReading() && self.isCurrent(target)
+        }
+        return applied ? .applied : .stale
+    }
+
     /// Sets the task-list marker on the 1-based source `line` to `checked`,
     /// in response to a checkbox click in the preview. `revision` is the
     /// `sourceLineRevision` the clicked page was rendered from: the line is that
@@ -1269,6 +1324,7 @@ final class DocumentStore: ObservableObject {
         let contextToken = remoteResourceContextToken
         let generation = renderGeneration
         let revision = sourceLineRevision
+        let mutationRevision = textMutationRevision
         let snapshot = makeRenderSnapshot()
         let worker = renderWorker
         renderTask = Task { [weak self] in
@@ -1277,6 +1333,8 @@ final class DocumentStore: ObservableObject {
             self.renderTask = nil
             if self.renderGeneration == generation, self.resourceContextIsCurrent(contextToken) {
                 self.renderedSourceLineRevision = revision
+                self.renderedTextMutationRevision = mutationRevision
+                self.renderedEditableFormulaLines = Set(result.displayFormulaEdits.keys)
                 self.rendered = result
                 self.renderedRemoteResourceContextToken = contextToken
                 self.hasPendingRender = false
@@ -1290,10 +1348,10 @@ final class DocumentStore: ObservableObject {
 
     func reRenderForSettingsChange() { renderImmediately() }
 
-    private func makeRenderSnapshot() -> DocumentRenderSnapshot {
+    private func makeRenderSnapshot(text source: String? = nil) -> DocumentRenderSnapshot {
         let preferences = renderConfigProvider()
         let syntax = syntaxConfigProvider()
-        return DocumentRenderSnapshot(text: text, baseURL: baseURL,
+        return DocumentRenderSnapshot(text: source ?? text, baseURL: baseURL,
             citationStyle: preferences.citationStyle, numberAllEquations: preferences.numberAllEquations,
             inlineFeatures: syntax.0, alertLanguage: syntax.1,
             remoteResourcePolicy: remoteResourcePolicy,

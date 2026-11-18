@@ -79,13 +79,11 @@ features. See the [daily-writing](Docs/Plans/daily-writing/PLAN.md),
   resources. User-facing changes go in the [changelog](CHANGELOG.md).
   Confirm a private reporting route and its owner before adding `SECURITY.md`.
 
-- [ ] **P3 — Progressive direct editing with exact source mapping.** Start with
-  one image/link/table/formula operation before considering block live editing.
-  Define how ambiguous rendered selections return to source; the current Read
-  formatting action safely reveals source before editing. Acceptance: exact
-  UTF-16/source mapping, unchanged surrounding Markdown and line endings,
-  composition safety, one-step native Undo, keyboard/VoiceOver operation, and
-  clear rejection of unsupported syntax. No broad rich-document rewrite.
+- [x] **P3 — Progressive direct editing with exact source mapping.** Preview
+  edits one top-level single-line `$$…$$` formula through a native TeX dialog.
+  Exact UTF-16 ranges preserve surrounding Markdown and line endings, and each
+  edit is one native Undo step. Unsupported display formulas and ambiguous
+  selections have a [source-editing route](Docs/MarkdownEditing.md#edit-a-formula-from-preview).
 
 - [ ] **P3 — Expose DOCX/EPUB conversion deliberately.** The bounded Pandoc
   backends exist; only PDF/HTML are in the Export menu. Decide dependency

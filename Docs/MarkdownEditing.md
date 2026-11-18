@@ -50,6 +50,26 @@ the input method. Return used to commit Latin letters from a Chinese IME must
 not also continue a list. Shift+Return's originating event is retained because
 AppKit may dispatch it as `insertNewline:` rather than `insertLineBreak:`.
 
+## Edit a formula from Preview
+
+In Preview, choose **Edit Formula…** beside a top-level display formula such as
+`$$ x^2 + 1 $$` on a single source line. Tab to the button and activate it with
+Space, or activate the named button with VoiceOver. Edit **Formula (TeX)** and
+activate **Apply**, or press `Cmd+Return`. Confirm any input-method candidate before applying. The
+document stays in Preview and one `Cmd+Z` restores the previous formula.
+
+The edit targets the specific formula instance, even when identical formulas
+appear elsewhere. It replaces only the TeX between the delimiters, preserving
+their padding, surrounding Markdown and the original line endings. Enter one
+nonempty line of TeX. If the draft would change the Markdown structure, the
+dialog keeps it available so you can revise it or choose **Open Source**.
+
+For display formulas such as multiline blocks, `\[…\]`, or nested formulas,
+**Open Formula in Source…** selects the formula's first line or its containing
+source block. For inline formulas and ambiguous text selections, use the
+existing Read-mode Format action to reveal the retained source selection, then
+locate the intended Markdown in Edit. The reveal action itself makes no edit.
+
 ## Table editing
 
 Tab selects the next cell's source content; Shift+Tab selects the previous cell.

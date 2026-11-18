@@ -174,7 +174,7 @@ private final class StructuredCloseObservation {
 
 @MainActor
 final class StructuredCommandQueue {
-    enum Origin { case tableAction, pasteConversion }
+    enum Origin { case tableAction, pasteConversion, previewFormula }
     @MainActor private final class Command {
         let marker: Int
         let target: StructuredCommandTarget

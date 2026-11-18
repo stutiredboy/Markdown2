@@ -12,18 +12,23 @@ public struct RenderedDocument: Equatable, Sendable {
     /// The live preview swaps only the body, so it passes these along for the
     /// formulas to render with.
     public let mathMacros: [String: String]
+    /// Exact edits from the original source, keyed by the renderer's 1-based
+    /// top-level formula line. Empty when the caller did not request a map.
+    public let displayFormulaEdits: [Int: DisplayFormulaEdit]
 
     public init(
         html: String,
         body: String,
         outline: [Heading],
         stats: DocumentStats,
-        mathMacros: [String: String] = [:]
+        mathMacros: [String: String] = [:],
+        displayFormulaEdits: [Int: DisplayFormulaEdit] = [:]
     ) {
         self.html = html
         self.body = body
         self.outline = outline
         self.stats = stats
         self.mathMacros = mathMacros
+        self.displayFormulaEdits = displayFormulaEdits
     }
 }
