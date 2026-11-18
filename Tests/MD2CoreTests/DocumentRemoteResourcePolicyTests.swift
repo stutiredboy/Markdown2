@@ -271,6 +271,62 @@ struct DocumentRemoteResourcePolicyTests {
         store.closeDocument(discardRecovery: true)
     }
 
+    @Test func resourceInspectionFollowsTheCurrentSourceAndPermissionContext() async throws {
+        let directory = try fixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = directory.appendingPathComponent("original.md")
+        let replacement = directory.appendingPathComponent("replacement.md")
+        let original = "![one](https://original.invalid/a.png)\n\n![two](https://original.invalid/a.png)"
+        let edited = "![updated](https://edited.invalid/b.png)"
+        let replacementText = "![new](http://replacement.invalid:8080/c.png)"
+        try Data(original.utf8).write(to: first)
+        try Data(replacementText.utf8).write(to: replacement)
+
+        let gate = RemoteRenderingGate()
+        let worker = DocumentRenderWorker(beforeRendering: { await gate.pauseIfArmed() })
+        let store = DocumentStore(renderWorker: worker)
+        defer { store.closeDocument(discardRecovery: true) }
+        store.open(first)
+        await store.flushPendingRender()
+        #expect(store.canInspectRemoteResources)
+        let blocked = try #require(await store.inspectRemoteResources())
+        #expect(blocked.origins.map(\.displayName) == ["https://original.invalid"])
+        #expect(blocked.origins.map(\.referenceCount) == [2])
+        #expect(store.remoteResourcePolicy == .blocked)
+        #expect(store.text == original)
+        #expect(!store.isDirty)
+        #expect(!store.undoManager.canUndo)
+        #expect(try Data(contentsOf: first) == Data(original.utf8))
+
+        store.setRemoteImagesAllowed(true)
+        await store.flushPendingRender()
+        #expect(await store.inspectRemoteResources()?.origins.map(\.displayName) == ["https://original.invalid"])
+
+        await gate.arm()
+        store.text = edited
+        let flush = Task { await store.flushPendingRender() }
+        await gate.waitUntilStarted()
+        #expect(!store.canInspectRemoteResources)
+        #expect(await store.inspectRemoteResources() == nil)
+
+        store.setRemoteImagesAllowed(false)
+        #expect(!store.canInspectRemoteResources)
+        #expect(await store.inspectRemoteResources() == nil)
+        await gate.release()
+        await flush.value
+        #expect(await store.inspectRemoteResources()?.origins.map(\.displayName) == ["https://edited.invalid"])
+
+        store.open(replacement)
+        #expect(!store.canInspectRemoteResources)
+        #expect(await store.inspectRemoteResources() == nil)
+        await store.flushPendingRender()
+        #expect(await store.inspectRemoteResources()?.origins.map(\.displayName) == ["http://replacement.invalid:8080"])
+        #expect(store.remoteResourcePolicy == .blocked)
+        #expect(store.text == replacementText)
+        #expect(!store.isDirty)
+        #expect(!store.undoManager.canUndo)
+    }
+
     @Test func offlineWorkerNeverInheritsAllowedSnapshot() async {
         let worker = DocumentRenderWorker()
         let snapshot = DocumentRenderSnapshot(text: "![remote](https://example.invalid/image.png)", baseURL: nil,
