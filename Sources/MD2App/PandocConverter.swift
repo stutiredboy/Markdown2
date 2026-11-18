@@ -23,7 +23,7 @@ protocol DocumentConverting: AnyObject {
     func convert(
         markdown: String,
         format: DocumentExportFormat,
-        resourceDirectory: URL,
+        resourceDirectory: URL?,
         destination: URL,
         completion: @escaping (Result<Void, Error>) -> Void
     )
@@ -38,44 +38,52 @@ extension DocumentConverting {
 /// document's current Markdown. The native pipeline stays dependency-free: Pandoc
 /// is optional, detected at use time, and degrades gracefully when absent.
 ///
-/// The Markdown is written to a temporary file inside the document directory and
-/// Pandoc runs with that directory as its working directory, so relative images
-/// resolve (without the 2.0-only `--resource-path`) and unsaved edits are captured
-/// without touching the saved file. The run is bounded by a timeout; on timeout or
-/// a non-zero exit the partial output is removed and an error is reported.
+/// The current Markdown is staged privately. Pandoc resolves relative resources
+/// from the document directory, or from the private temporary directory for
+/// untitled documents. Only the completed archive reaches the chosen destination.
 @MainActor
 final class PandocConverter: DocumentConverting {
     enum ConversionError: LocalizedError, Sendable {
         case pandocNotFound
         case preparationFailed
         case conversionFailed(String)
+        case destinationChanged
         case timedOut
         case confinementUnavailable
         case canceled
 
         var errorDescription: String? {
+            detail { L10n.text($0, language: .english) }
+        }
+
+        func detail(using text: (L10nKey) -> String) -> String {
             switch self {
             case .pandocNotFound:
-                return "Pandoc is required to export DOCX/EPUB but was not found. Install Pandoc and try again."
+                return text(.alertPandocRequiredDetail)
             case .preparationFailed:
-                return "The document could not be prepared for conversion."
+                return text(.conversionPreparationFailed)
             case .conversionFailed(let detail):
                 let trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
-                return trimmed.isEmpty ? "Pandoc could not convert the document." : "Pandoc failed: \(trimmed)"
+                guard !trimmed.isEmpty else { return text(.conversionFailed) }
+                let excerpt = trimmed.prefix(600)
+                let display = excerpt.count < trimmed.count ? String(excerpt) + "…" : String(excerpt)
+                return String(format: text(.conversionFailedWithDetail), display)
+            case .destinationChanged:
+                return text(.conversionDestinationChanged)
             case .confinementUnavailable:
-                return "Offline conversion is unavailable on this system. Pandoc was not run without network protection."
+                return text(.conversionConfinementUnavailable)
             case .canceled:
-                return "The conversion was canceled."
+                return text(.conversionCanceled)
             case .timedOut:
-                return "The conversion took too long and was stopped."
+                return text(.conversionTimedOut)
             }
         }
     }
 
-    /// Filename prefix for the temporary Markdown written next to the document.
-    private nonisolated static let tempPrefix = ".md2-export-"
     /// Maximum time to allow a single Pandoc invocation before terminating it.
     private nonisolated static let timeout: TimeInterval = 60
+    private nonisolated static let archiveInspector = URL(fileURLWithPath: "/usr/bin/unzip")
+    private let locatePandoc: () -> URL?
 
     /// Completion held for the conversion's asynchronous lifetime, called on the
     /// main actor exactly once. Storing it (rather than capturing it in the
@@ -83,10 +91,14 @@ final class PandocConverter: DocumentConverting {
     private var pendingCompletion: ((Result<Void, Error>) -> Void)?
     private var pendingJob: PandocConversionJob?
 
+    init(locatePandoc: @escaping () -> URL? = { PandocConverter.pandocURL() }) {
+        self.locatePandoc = locatePandoc
+    }
+
     func convert(
         markdown: String,
         format: DocumentExportFormat,
-        resourceDirectory: URL,
+        resourceDirectory: URL?,
         destination: URL,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
@@ -95,57 +107,98 @@ final class PandocConverter: DocumentConverting {
             completion(.failure(ConversionError.confinementUnavailable))
             return
         }
-        guard let pandoc = Self.pandocURL() else {
+        guard let pandoc = locatePandoc() else {
             completion(.failure(ConversionError.pandocNotFound))
             return
         }
-
-        // Write the current Markdown to a temp file in the document directory so
-        // relative images resolve from the working directory and unsaved edits are
-        // captured without mutating the saved file.
-        let tempURL = resourceDirectory.appendingPathComponent("\(Self.tempPrefix)\(UUID().uuidString).md")
-        do {
-            try markdown.write(to: tempURL, atomically: true, encoding: .utf8)
-        } catch {
+        guard let expectedDestination = DestinationState(at: destination) else {
             completion(.failure(ConversionError.preparationFailed))
             return
         }
 
-        // Formal citation processing: enable `--citeproc` and point Pandoc at the
-        // associated `.bib` so `[@key]` citations get full CSL formatting.
-        let citationArguments = Self.citationArguments(markdown: markdown, resourceDirectory: resourceDirectory)
-
         let job = PandocConversionJob()
         pendingJob = job
         pendingCompletion = completion
-        // Only a successful, still-current operation may replace the final path.
-        let staged = destination.deletingLastPathComponent().appendingPathComponent(
-            ".md2-converted-\(UUID().uuidString).\(format.fileExtension)")
         DispatchQueue.global(qos: .userInitiated).async {
-            let reader = Self.readerFormat(for: pandoc, job: job)
-            let outcome: Result<String, OfflinePandocProcess.Failure>
-            switch reader {
-            case .success(let reader):
-                outcome = OfflinePandocProcess.run(pandoc: pandoc,
-                    arguments: [tempURL.lastPathComponent, "--from", reader, "-o", staged.path] + citationArguments,
-                    directory: resourceDirectory, timeout: Self.timeout, job: job)
-            case .failure(let failure): outcome = .failure(failure)
-            }
-            try? FileManager.default.removeItem(at: tempURL)
+            let outcome = Self.stageConversion(markdown: markdown, format: format,
+                resourceDirectory: resourceDirectory, destination: destination, pandoc: pandoc, job: job)
             Task { @MainActor in
-                defer { try? FileManager.default.removeItem(at: staged) }
+                defer {
+                    if case .success(let staged) = outcome {
+                        try? FileManager.default.removeItem(at: staged.deletingLastPathComponent())
+                    }
+                }
                 guard self.pendingJob === job, !job.isCanceled else { return }
                 switch outcome {
-                case .success:
-                    if rename(staged.path, destination.path) == 0 {
-                        self.finish(nil)
-                    } else {
-                        self.finish(.preparationFailed)
-                    }
-                case .failure(let error): self.finish(Self.conversionError(error))
+                case .success(let staged):
+                    self.finish(expectedDestination.publish(staged, to: destination))
+                case .failure(let error):
+                    self.finish(error)
                 }
             }
         }
+    }
+
+    private nonisolated static func stageConversion(
+        markdown: String, format: DocumentExportFormat, resourceDirectory: URL?, destination: URL,
+        pandoc: URL, job: PandocConversionJob
+    ) -> Result<URL, ConversionError> {
+        guard !job.isCanceled else { return .failure(.canceled) }
+        let reader: String
+        switch readerFormat(for: pandoc, job: job) {
+        case .success(let format): reader = format
+        case .failure(let error): return .failure(conversionError(error))
+        }
+
+        let manager = FileManager.default
+        let inputDirectory = manager.temporaryDirectory.appendingPathComponent("md2-export-\(UUID())",
+                                                                               isDirectory: true)
+        let stagingDirectory = destination.deletingLastPathComponent()
+            .appendingPathComponent(".md2-converted-\(UUID())", isDirectory: true)
+        let directoryPermissions: [FileAttributeKey: Any] = [.posixPermissions: 0o700]
+        do {
+            try manager.createDirectory(at: inputDirectory, withIntermediateDirectories: false,
+                                        attributes: directoryPermissions)
+            defer { try? manager.removeItem(at: inputDirectory) }
+            let input = inputDirectory.appendingPathComponent("document.md")
+            try markdown.write(to: input, atomically: false, encoding: .utf8)
+            let workingDirectory = resourceDirectory ?? inputDirectory
+            let citations = citationArguments(markdown: markdown, resourceDirectory: workingDirectory)
+            guard !job.isCanceled else { return .failure(.canceled) }
+
+            try manager.createDirectory(at: stagingDirectory, withIntermediateDirectories: false,
+                                        attributes: directoryPermissions)
+            var completed = false
+            defer {
+                if !completed { try? manager.removeItem(at: stagingDirectory) }
+            }
+            let staged = stagingDirectory.appendingPathComponent("document.\(format.fileExtension)")
+            switch OfflinePandocProcess.run(pandoc: pandoc, arguments: [input.path, "--from", reader, "-o", staged.path]
+                                             + citations, directory: workingDirectory, timeout: timeout, job: job) {
+            case .failure(let error): return .failure(conversionError(error))
+            case .success:
+                guard hasZipHeader(staged) else { return .failure(.conversionFailed("")) }
+                // Inspect the central directory without extracting or inflating
+                // any entries. A partial archive can still start with PK.
+                if case .failure(let error) = OfflinePandocProcess.run(pandoc: archiveInspector,
+                    arguments: ["-Zt", staged.path], directory: nil, timeout: 5, job: job) {
+                    return .failure(conversionError(error))
+                }
+                completed = true
+                return .success(staged)
+            }
+        } catch {
+            return .failure(.preparationFailed)
+        }
+    }
+
+    private nonisolated static func hasZipHeader(_ url: URL) -> Bool {
+        let descriptor = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard descriptor >= 0 else { return false }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        var entry = stat()
+        guard fstat(descriptor, &entry) == 0, entry.st_mode & S_IFMT == S_IFREG else { return false }
+        return (try? handle.read(upToCount: 4)) == Data([0x50, 0x4B, 0x03, 0x04])
     }
 
     func cancel() {
@@ -201,81 +254,43 @@ final class PandocConverter: DocumentConverting {
         return arguments
     }
 
-    // MARK: - Detection (cached, refreshable)
+    // MARK: - Detection
 
-    private nonisolated static let cacheLock = NSLock()
-    private nonisolated(unsafe) static var cachedURL: URL?
-    private nonisolated(unsafe) static var cachedAt: Date?
-    private nonisolated static let cacheTTL: TimeInterval = 60
-
-    /// Locates the Pandoc binary, caching the result briefly so repeated menu/UI
-    /// checks are cheap. `forceRefresh` re-checks immediately (e.g. when the app is
-    /// re-activated after the user may have installed Pandoc).
-    nonisolated static func pandocURL(forceRefresh: Bool = false) -> URL? {
-        cacheLock.lock()
-        defer { cacheLock.unlock() }
-
-        if !forceRefresh, let cachedAt, Date().timeIntervalSince(cachedAt) < cacheTTL {
-            return cachedURL
-        }
-        let located = locatePandoc()
-        cachedURL = located
-        cachedAt = Date()
-        return located
-    }
-
-    nonisolated static func isAvailable(forceRefresh: Bool = false) -> Bool {
-        pandocURL(forceRefresh: forceRefresh) != nil
-    }
-
-    /// Searches common install locations first (a Finder-launched app has a minimal
-    /// `PATH`), then any directories on `PATH`.
-    private nonisolated static func locatePandoc() -> URL? {
-        let candidates = [
-            "/opt/homebrew/bin/pandoc",
-            "/usr/local/bin/pandoc",
-            "/usr/bin/pandoc"
-        ]
-        for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
-            return URL(fileURLWithPath: path)
-        }
-
-        if let pathEnv = ProcessInfo.processInfo.environment["PATH"] {
-            for directory in pathEnv.split(separator: ":") {
-                let candidate = URL(fileURLWithPath: String(directory)).appendingPathComponent("pandoc")
-                if FileManager.default.isExecutableFile(atPath: candidate.path) {
-                    return candidate
-                }
+    /// Finder launches usually have a minimal PATH. Check common locations
+    /// first, then absolute PATH directories. Search again on each export so an
+    /// installation or upgrade is visible from the running app.
+    nonisolated static func pandocURL(
+        standardDirectories: [String] = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"],
+        searchPath: String = ProcessInfo.processInfo.environment["PATH"] ?? ""
+    ) -> URL? {
+        let directories = standardDirectories + searchPath.split(separator: ":").map(String.init)
+        for directory in directories where directory.hasPrefix("/") {
+            let url = URL(fileURLWithPath: directory, isDirectory: true).appendingPathComponent("pandoc")
+            var entry = stat()
+            if stat(url.path, &entry) == 0, entry.st_mode & S_IFMT == S_IFREG,
+               FileManager.default.isExecutableFile(atPath: url.path) {
+                return url
             }
         }
         return nil
     }
 
-    // MARK: - Reader format (gfm on Pandoc 2.0+, markdown_github on older)
+    nonisolated static func isAvailable() -> Bool { pandocURL() != nil }
 
-    private nonisolated(unsafe) static var cachedReader: String?
+    // MARK: - Reader format (gfm on Pandoc 2.0+, markdown_github on older)
 
     /// The GitHub-flavored Markdown reader to pass to Pandoc: the canonical `gfm`
     /// on Pandoc 2.0+, falling back to the deprecated `markdown_github` alias only
-    /// on older 1.x builds that do not know `gfm`. Determined once (via
-    /// `pandoc --version`) and cached for the process lifetime.
-    nonisolated static func readerFormat(for pandoc: URL) -> String {
-        switch readerFormat(for: pandoc, job: PandocConversionJob()) {
-        case .success(let reader): reader
-        case .failure: "markdown_github"
-        }
-    }
-
-    private nonisolated static func readerFormat(for pandoc: URL, job: PandocConversionJob) -> Result<String, OfflinePandocProcess.Failure> {
-        if let cached = cacheLock.withLock({ cachedReader }) { return .success(cached) }
+    /// on older 1.x builds that do not know `gfm`. Probe the selected executable
+    /// so a new installation or upgrade can change the reader immediately.
+    nonisolated static func readerFormat(for pandoc: URL, job: PandocConversionJob = .init())
+        -> Result<String, OfflinePandocProcess.Failure> {
         // A rejected confinement/version probe is an error to the converter,
         // never an excuse to run the conversion executable without its wrapper.
         switch OfflinePandocProcess.run(pandoc: pandoc, arguments: ["--version"],
                                         directory: nil, timeout: 5, job: job) {
         case .success(let output):
-            let reader = reader(forMajorVersion: parseMajorVersion(fromVersionOutput: output))
-            cacheLock.withLock { cachedReader = reader }
-            return .success(reader)
+            return .success(reader(forMajorVersion: parseMajorVersion(fromVersionOutput: output)))
         case .failure(let error): return .failure(error)
         }
     }
@@ -299,4 +314,45 @@ final class PandocConverter: DocumentConverting {
         return major
     }
 
+}
+
+private enum DestinationState: Equatable {
+    struct FileState: Equatable {
+        let device: dev_t
+        let inode: ino_t
+        let size: off_t
+        let modifiedSeconds: Int
+        let modifiedNanoseconds: Int
+        let changedSeconds: Int
+        let changedNanoseconds: Int
+    }
+
+    case missing
+    case existing(FileState)
+
+    init?(at url: URL) {
+        var entry = stat()
+        if lstat(url.path, &entry) != 0 {
+            guard errno == ENOENT else { return nil }
+            self = .missing
+            return
+        }
+        guard entry.st_mode & S_IFMT == S_IFREG else { return nil }
+        self = .existing(FileState(device: entry.st_dev, inode: entry.st_ino, size: entry.st_size,
+                                   modifiedSeconds: entry.st_mtimespec.tv_sec,
+                                   modifiedNanoseconds: entry.st_mtimespec.tv_nsec,
+                                   changedSeconds: entry.st_ctimespec.tv_sec,
+                                   changedNanoseconds: entry.st_ctimespec.tv_nsec))
+    }
+
+    func publish(_ staged: URL, to destination: URL) -> PandocConverter.ConversionError? {
+        switch self {
+        case .missing:
+            if renamex_np(staged.path, destination.path, UInt32(RENAME_EXCL)) == 0 { return nil }
+            return errno == EEXIST ? .destinationChanged : .preparationFailed
+        case .existing:
+            guard DestinationState(at: destination) == self else { return .destinationChanged }
+            return rename(staged.path, destination.path) == 0 ? nil : .preparationFailed
+        }
+    }
 }

@@ -459,7 +459,7 @@ private final class DeferredRemotePrinter: DocumentPrinting {
 private final class DeferredRemoteConverter: DocumentConverting {
     var cancelCount = 0
     private var completion: ((Result<Void, Error>) -> Void)?
-    func convert(markdown: String, format: DocumentExportFormat, resourceDirectory: URL, destination: URL,
+    func convert(markdown: String, format: DocumentExportFormat, resourceDirectory: URL?, destination: URL,
                  completion: @escaping (Result<Void, Error>) -> Void) {
         self.completion = completion
     }

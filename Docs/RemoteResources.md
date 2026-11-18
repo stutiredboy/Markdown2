@@ -55,7 +55,7 @@ that macOS makes no DNS or other platform network requests.
 | --- | --- |
 | PDF / Print | Uses the document's current image permission captured when the operation starts. Supported image work must settle within the existing 30-second total deadline or the operation fails. Revocation, replacement or close cancels obsolete work; a failed or canceled operation preserves an existing destination. |
 | HTML | Always offline, regardless of the preview grant. Validated local/data images are embedded. Remote images and local images that cannot be embedded become readable placeholders, with an export notice. No remote image downloader is used. |
-| DOCX / EPUB backend | Pandoc conversion and version probes run with network access denied, including child processes. Conversion stops if confinement cannot be applied. Independent Word/EPUB readers are outside this policy and may load remote resources when opening the output. Use HTML or PDF for controlled offline sharing. These backend commands are not yet exposed in the app menus. |
+| DOCX / EPUB | Pandoc conversion and version probes run with network access denied, including child processes. Conversion stops if confinement cannot be applied. Independent Word and EPUB readers may load remote resources when opening the output. |
 
 HTML includes the bundled math and diagram engines. Images generated inside a
 diagram are omitted; ordinary vector geometry and supported colors, fonts and
@@ -72,6 +72,28 @@ The latter may need an additional in-page image decode request, bounded to 256
 unique URLs and the same total deadline. This is not a downloaded-byte quota.
 Unsupported or unverifiable image work fails visibly rather than producing a
 silently incomplete successful export.
+
+## Export to DOCX or EPUB
+
+Choose **File → Export To → DOCX** or **EPUB**. With no Pandoc installed, the
+command shows installation guidance. Install it yourself with the macOS
+installer or `brew install pandoc`, then invoke the command again. Markdown2
+checks `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` and absolute directories
+on its process PATH. [Pandoc installation instructions](https://pandoc.org/installing.html)
+
+The save panel explains the conversion limits before you choose a destination.
+Pandoc converts the current Markdown with its own layout and syntax support.
+Preview diagrams, styling and some Markdown extensions may look different or be
+omitted. A saved document's relative images resolve from its folder. An
+untitled document can export directly, with no document folder for relative
+resources. Remote images cannot be downloaded during conversion.
+
+Choose **Cancel** in the save panel or in the window's status bar while
+conversion runs. Editing, reloading or closing the document also invalidates the
+current export. A canceled or failed conversion preserves an existing
+destination. Markdown2 checks for changes to the destination before publishing.
+Word and EPUB readers apply their own resource policy after export.
+For self-contained offline sharing, choose **HTML**.
 
 ## Implementation and verification
 

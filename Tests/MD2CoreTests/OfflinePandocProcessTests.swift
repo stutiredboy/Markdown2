@@ -61,4 +61,23 @@ final class OfflinePandocProcessTests: XCTestCase {
             arguments: ["10"], directory: nil, timeout: 0.1)
         guard case .failure(.timedOut) = timedOut else { return XCTFail("unexpected timeout: \(timedOut)") }
     }
+
+    func testCollectsShortVersionOutputEvenIfProcessExitsImmediately() {
+        let printf = URL(fileURLWithPath: "/usr/bin/printf")
+        DispatchQueue.concurrentPerform(iterations: 64) { _ in
+            let result = OfflinePandocProcess.run(pandoc: printf, arguments: ["pandoc 3.14\\n"],
+                                                  directory: nil, timeout: 5)
+            guard case .success(let version) = result else { return XCTFail("version probe failed: \(result)") }
+            XCTAssertEqual(version, "pandoc 3.14\n")
+        }
+    }
+
+    func testDrainsBothPipesAndBoundsCapturedDiagnostics() {
+        let result = OfflinePandocProcess.run(pandoc: URL(fileURLWithPath: "/bin/sh"), arguments: [
+            "-c", "head -c 262144 /dev/zero; printf 'diagnostic\n' >&2; head -c 262144 /dev/zero >&2; exit 7"
+        ], directory: nil, timeout: 5)
+        guard case .failure(.failed(let diagnostic)) = result else { return XCTFail("unexpected result: \(result)") }
+        XCTAssertTrue(diagnostic.hasPrefix("diagnostic\n"))
+        XCTAssertEqual(diagnostic.utf8.count, 65_536)
+    }
 }

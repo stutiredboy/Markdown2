@@ -102,6 +102,137 @@ final class MenuLanguageGUITests: XCTestCase {
         try waitForCommandTitles(.english, pid: pid)
     }
 
+    /// Exercises the File menu in the running app. CI runs once before and
+    /// again after installing Pandoc, with the expected discovery result set.
+    @MainActor
+    func testExportMenuInvokesWordAndEPUBConversion() throws {
+        let pandocAvailable = PandocConverter.isAvailable()
+        if let expected = ProcessInfo.processInfo.environment["MD2_EXPECT_PANDOC"] {
+            XCTAssertEqual(pandocAvailable ? "1" : "0", expected)
+        }
+        let source = temporaryRoot.appendingPathComponent("Conversion fixture.md")
+        let markdown = "# Conversion fixture\n\nConverting from the File menu.\n"
+        try markdown.write(to: source, atomically: true, encoding: .utf8)
+        let pid = try launch(arguments: [source.path])
+        try waitForWindow(pid: pid, description: "the conversion source") { window in
+            Self.firstElement(ofRole: "AXTextArea", in: window)
+                .flatMap { Self.stringValue(kAXValueAttribute, of: $0) } == markdown
+        }
+
+        for format in ["DOCX", "EPUB"] {
+            if pandocAvailable {
+                let destination = source.deletingPathExtension().appendingPathExtension(format.lowercased())
+                let existing = Data("Existing destination".utf8)
+                try existing.write(to: destination)
+                try pressExport(format, pid: pid)
+                let panel = try exportPanel(format, pid: pid)
+                try pressButton("Cancel", in: panel)
+                try waitForExportDialogToClose(pid: pid) { Self.title(of: $0) == Self.exportPanelTitle(format) }
+                XCTAssertEqual(try Data(contentsOf: destination), existing)
+
+                try pressExport(format, pid: pid)
+                let savePanel = try exportPanel(format, pid: pid)
+                try pressButton("Save", in: savePanel)
+                try pressButton("Replace", in: savePanel)
+                try dismissExportAlert(
+                    String(format: L10n.text(.alertExternalFormatExported, language: .english),
+                           destination.lastPathComponent),
+                    detail: L10n.text(.alertExternalFormatNetworkBoundary, language: .english),
+                    pid: pid
+                )
+                let bytes = try Data(contentsOf: destination)
+                XCTAssertEqual(bytes.prefix(4), Data([0x50, 0x4B, 0x03, 0x04]))
+            } else {
+                try pressExport(format, pid: pid)
+                try dismissExportAlert(
+                    String(format: L10n.text(.alertPandocRequired, language: .english), format),
+                    detail: L10n.text(.alertPandocRequiredDetail, language: .english),
+                    pid: pid
+                )
+            }
+        }
+        XCTAssertEqual(try String(contentsOf: source, encoding: .utf8), markdown)
+    }
+
+    private func pressExport(_ format: String, pid: pid_t) throws {
+        let (_, fileMenu) = try locateFileMenu(pid: pid)
+        let title = L10n.text(.exportTo, language: .english)
+        let export = try XCTUnwrap(Self.children(of: fileMenu).first { Self.title(of: $0) == title })
+        let menu = try XCTUnwrap(Self.children(of: export).first { Self.role(of: $0) == kAXMenuRole as String })
+        let items = Self.children(of: menu)
+        XCTAssertEqual(items.map(Self.title(of:)).filter { !$0.isEmpty }, ["PDF", "HTML", "DOCX", "EPUB"])
+        let item = try XCTUnwrap(items.first { Self.title(of: $0) == format })
+        // Selecting a modal save panel can outlive the Accessibility call.
+        // The caller waits for the exact panel or alert that proves dispatch.
+        AXUIElementSetMessagingTimeout(item, 1)
+        let result = AXUIElementPerformAction(item, kAXPressAction as CFString)
+        XCTAssertTrue(result == .success || result == .cannotComplete, "Export \(format): \(result)")
+    }
+
+    private func exportPanel(_ format: String, pid: pid_t) throws -> AXUIElement {
+        let notice = L10n.text(.conversionDestinationNotice, language: .english)
+        return try waitForWindow(pid: pid, description: "the \(format) destination panel with its conversion limits") {
+            Self.title(of: $0) == Self.exportPanelTitle(format)
+                && Self.showsStaticText(notice, in: $0)
+        }
+    }
+
+    private static func exportPanelTitle(_ format: String) -> String {
+        String(format: L10n.text(.conversionDestinationTitle, language: .english), format)
+    }
+
+    private func dismissExportAlert(_ title: String, detail: String, pid: pid_t) throws {
+        func alertShowsTitle(_ window: AXUIElement) -> Bool {
+            Self.title(of: window) == title || Self.showsStaticText(title, in: window)
+        }
+        let alert = try waitForWindow(pid: pid, description: "the alert titled \(title) with guidance") {
+            alertShowsTitle($0) && Self.showsStaticText(detail, in: $0)
+        }
+        try pressButton(L10n.text(.ok, language: .english), in: alert)
+        try waitForExportDialogToClose(pid: pid, matching: alertShowsTitle)
+    }
+
+    private static func showsStaticText(_ text: String, in window: AXUIElement) -> Bool {
+        firstElement(in: window) {
+            role(of: $0) == kAXStaticTextRole as String
+                && [title(of: $0), stringValue(kAXValueAttribute, of: $0)].contains(text)
+        } != nil
+    }
+
+    private func waitForExportDialogToClose(
+        pid: pid_t,
+        matching: (AXUIElement) -> Bool
+    ) throws {
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if !Self.windows(pid: pid).contains(where: matching) { return }
+            usleep(100_000)
+        }
+        throw GuardFailure("the export dialog remained visible after dismissal")
+    }
+
+    private func pressButton(_ title: String, in window: AXUIElement) throws {
+        func enabledButton() -> AXUIElement? {
+            Self.firstElement(in: window) {
+                guard Self.role(of: $0) == kAXButtonRole as String, Self.title(of: $0) == title else { return false }
+                var value: CFTypeRef?
+                return AXUIElementCopyAttributeValue($0, kAXEnabledAttribute as CFString, &value) == .success
+                    && (value as? Bool) == true
+            }
+        }
+        let deadline = Date().addingTimeInterval(5)
+        var enabled = enabledButton()
+        while enabled == nil, Date() < deadline {
+            usleep(100_000)
+            enabled = enabledButton()
+        }
+        let button = try XCTUnwrap(enabled, "the enabled \(title) button in \(Self.title(of: window))")
+        AXUIElementSetMessagingTimeout(button, 1)
+        // A modal button may disappear before AppKit acknowledges AXPress.
+        // Each caller verifies the actual transition after activating it.
+        AXUIElementPerformAction(button, kAXPressAction as CFString)
+    }
+
     /// New titles must not cost a command its action. These run the document
     /// paths that every kind of command takes: New, then Find, Mode and Paragraph.
     func testCommandsStillActAfterALanguageChange() throws {
@@ -375,7 +506,7 @@ final class MenuLanguageGUITests: XCTestCase {
     // MARK: - Launching
 
     @discardableResult
-    private func launch(values extraValues: [String: Any] = [:]) throws -> pid_t {
+    private func launch(values extraValues: [String: Any] = [:], arguments: [String] = []) throws -> pid_t {
         // Language and AppleLanguages together: a mismatch makes the app relaunch
         // itself at startup.
         var values: [String: Any] = [
@@ -392,6 +523,7 @@ final class MenuLanguageGUITests: XCTestCase {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
         configuration.createsNewApplicationInstance = true
+        configuration.arguments = arguments
         configuration.environment = Self.launchEnvironment
 
         let result = LaunchResult()
