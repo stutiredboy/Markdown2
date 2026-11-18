@@ -48,15 +48,15 @@ final class PreviewFormulaSheet: NSObject, NSTextViewDelegate {
 
         let apply = alert.addButton(withTitle: settings.text(.formulaApply))
         apply.setAccessibilityIdentifier("formula-apply")
-        // Plain Return belongs to the text input and its IME candidate panel.
-        apply.keyEquivalent = "\r"
-        apply.keyEquivalentModifierMask = [.command]
         apply.target = self
         apply.action = #selector(confirmEdit)
         addCancel(to: alert, settings: settings)
         let open = alert.addButton(withTitle: settings.text(.formulaOpenSource))
         open.setAccessibilityIdentifier("formula-open-source")
         alert.window.defaultButtonCell = nil
+        // Plain Return belongs to the text input and its IME candidate panel.
+        apply.keyEquivalent = "\r"
+        apply.keyEquivalentModifierMask = [.command]
         alert.window.initialFirstResponder = input
         self.input = input
         applyButton = apply
