@@ -114,6 +114,10 @@ swift test
 bash Scripts/benchmark_inline.sh
 ```
 
+## 开发贡献
+
+工具链要求、本地验证和 CI 检查见[贡献指南](CONTRIBUTING.md)。面向用户的变更见[变更日志](CHANGELOG.md)。
+
 ## 许可证
 
-Markdown2 基于 [MIT License](LICENSE) 开源。
+Markdown2 基于 [MIT License](LICENSE) 开源。内置组件和测试数据的许可及署名见[第三方清单](Docs/ThirdParty.md)。

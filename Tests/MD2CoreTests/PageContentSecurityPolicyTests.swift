@@ -95,6 +95,7 @@ struct PageContentSecurityPolicyTests {
 
     @Test func appPagesNameEachServedScriptAndInlineBootstrap() throws {
         let html = MarkdownRenderer().render(Self.everyEngine, assetMode: .appScheme).html
+        #expect(!html.contains("<!--\nThird-party notices"))
         let sources = try #require(try directives(in: html)["script-src"])
         let served: [BundledWebAsset] = [.katex, .mhchem, .underscore, .raphael, .flowchart, .sequence, .mermaid]
         for asset in served {
@@ -105,6 +106,15 @@ struct PageContentSecurityPolicyTests {
             #expect(sources.contains(hashSource(script)))
         }
         #expect(sources.count == served.count + inlineScripts(in: html).count)
+    }
+
+    @Test func thirdPartyNoticeMarkupStaysInsideOneComment() {
+        let markup = "> <!-- --> --!><img src=md2-app://assets/example><!-"
+        #expect(BundledWebNotices.htmlComment(markup) == """
+        <!--
+        > &lt;!-- --&gt; --!&gt;<img src=md2-app://assets/example><!-
+        -->
+        """)
     }
 
     @Test func unusedEnginesAreNotNamed() throws {

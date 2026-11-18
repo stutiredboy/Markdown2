@@ -74,6 +74,31 @@ public enum BundledWebAsset: String, CaseIterable, Sendable {
     }
 }
 
+/// License text follows assets redistributed in standalone HTML. Cache the
+/// comments separately from the active web assets and their policy hashes.
+enum BundledWebNotices {
+    static let math = loadComment(subdirectory: "katex", group: "math")
+    static let diagrams = loadComment(subdirectory: "diagrams", group: "diagrams")
+    static let mermaid = loadComment(subdirectory: "diagrams", group: "Mermaid",
+                                     filename: "MERMAID-NOTICES")
+
+    private static func loadComment(subdirectory: String, group: String,
+                                    filename: String = "THIRD-PARTY-NOTICES") -> String {
+        guard let url = MD2CoreResources.bundle.url(forResource: filename,
+                                                   withExtension: "txt", subdirectory: subdirectory),
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return "" }
+        return "\n" + htmlComment("Third-party notices (\(group))\n\(text)")
+    }
+
+    static func htmlComment(_ text: String) -> String {
+        // Keep even markup-like license text inside a single HTML comment.
+        let content = text.replacingOccurrences(of: "<!--", with: "&lt;!--")
+            .replacingOccurrences(of: "-->", with: "--&gt;")
+            .replacingOccurrences(of: "--!>", with: "--!&gt;")
+        return "<!--\n\(content)\n-->"
+    }
+}
+
 /// Standalone HTML embeds its dependencies; app pages share bundled resources.
 public enum RenderAssetMode: Sendable {
     case inline

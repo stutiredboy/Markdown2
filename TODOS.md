@@ -71,16 +71,13 @@ features. See the [daily-writing](Docs/Plans/daily-writing/PLAN.md),
   [acceptance record](Docs/Plans/real-document-compatibility/RESULTS.md) and
   [compatibility matrix](Docs/CompatibilityMatrix.md).
 
-- [ ] **P2 — Contributor and dependency documentation.** Add a concise
-  CONTRIBUTING guide linking the existing isolated build/verification commands,
-  plus a maintained third-party version/source/license/attribution inventory.
-  Existing diagram version notes and release artifact verification are inputs,
-  not missing features. Acceptance: a new checkout can reproduce the documented
-  gates without installing or changing default handlers; the inventory matches
-  bundled resources and required notices. Add SECURITY.md only after a real
-  private reporting route and its owner are confirmed; do not invent a contact
-  address or response promise. Record user-facing release changes separately
-  from raw test logs.
+- [x] **P2 — Contributor and dependency documentation.** The
+  [contributor guide](CONTRIBUTING.md) links the build and verification gates
+  for a fresh checkout. The [third-party inventory](Docs/ThirdParty.md) records
+  resource versions, sources and licenses. The release gate checks the notices
+  in the signed app, and standalone HTML carries notices for its embedded
+  resources. User-facing changes go in the [changelog](CHANGELOG.md).
+  Confirm a private reporting route and its owner before adding `SECURITY.md`.
 
 - [ ] **P3 — Progressive direct editing with exact source mapping.** Start with
   one image/link/table/formula operation before considering block live editing.

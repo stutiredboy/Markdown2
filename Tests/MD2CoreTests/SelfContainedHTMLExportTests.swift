@@ -431,6 +431,11 @@ struct SelfContainedHTMLExportTests {
         let output = await worker.renderSelfContainedHTML(snapshot)
         #expect(output.containsDiagrams)
         #expect(output.remoteImages.isEmpty && output.unembeddedLocalImages.isEmpty)
+        let includesDiagramNotice = output.html.contains("<!--\nThird-party notices (diagrams)\n")
+        let includesMermaidNotice = output.html.contains("<!--\nThird-party notices (Mermaid)\n")
+        let isMermaid = kind.lowercased() == "mermaid"
+        #expect(includesDiagramNotice == !isMermaid)
+        #expect(includesMermaidNotice == isMermaid)
         let injected = await worker.renderSelfContainedHTML(snapshot) { html, _ in
             #expect(!Thread.isMainThread)
             return SelfContainedHTMLBuilder.Output(html: html, remoteImages: [], unembeddedLocalImages: [])
@@ -455,6 +460,21 @@ struct SelfContainedHTMLExportTests {
 
     // MARK: - DocumentStore.exportHTML integration
 
+    private func thirdPartyNotice(for group: String, in html: String) throws -> Substring {
+        let start = try #require(html.range(of: "<!--\nThird-party notices (\(group))\n")).upperBound
+        let end = try #require(html.range(of: "\n-->", range: start..<html.endIndex)).lowerBound
+        return html[start..<end]
+    }
+
+    @Test func plainHTMLCarriesAttributionForTheEmbeddedMathAssets() throws {
+        let html = MarkdownRenderer().render("# Plain").html
+        #expect(try thirdPartyNotice(for: "math", in: html).contains("KaTeX"))
+        let includesDiagramNotice = html.contains("<!--\nThird-party notices (diagrams)\n")
+        let includesMermaidNotice = html.contains("<!--\nThird-party notices (Mermaid)\n")
+        #expect(!includesDiagramNotice)
+        #expect(!includesMermaidNotice)
+    }
+
     @Test func exportHTMLWritesSelfContainedFileAndPreservesDocumentState() async throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -473,6 +493,10 @@ struct SelfContainedHTMLExportTests {
 
         ```mermaid
         graph TD; A-->B;
+        ```
+
+        ```sequence
+        A->B: Hello
         ```
 
         ![pic](pic.png)
@@ -497,6 +521,16 @@ struct SelfContainedHTMLExportTests {
         #expect(exported.contains("__md2RenderDiagrams"))
         #expect(!exported.contains("md2-app://"))
         #expect(!exported.contains("<script src="))
+        let mathNotice = try thirdPartyNotice(for: "math", in: exported)
+        #expect(mathNotice.contains("KaTeX"))
+        #expect(mathNotice.contains("Martin Hensel"))
+        #expect(mathNotice.contains("Apache License"))
+        let diagramNotice = try thirdPartyNotice(for: "diagrams", in: exported)
+        #expect(diagramNotice.contains("Brampton"))
+        let mermaidNotice = try thirdPartyNotice(for: "Mermaid", in: exported)
+        #expect(mermaidNotice.contains("Mermaid"))
+        #expect(mermaidNotice.contains("DOMPurify"))
+        #expect(mermaidNotice.contains("Eclipse Public License"))
     }
 
     @Test func exportHTMLNamesRemoteAndMissingImagesAfterWritingTheFile() async throws {

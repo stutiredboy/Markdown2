@@ -2864,9 +2864,15 @@ public struct MarkdownRenderer: Sendable {
         scripts.add(.katex)
         scripts.add(.mhchem)
         scripts.addInline(mathBootstrap(macros: config.mathMacros))
-        addDiagramScripts(for: body, to: &scripts, offlineArtifact: assetMode == .inline && remoteResourcePolicy == .blocked,
+        let diagrams = addDiagramScripts(for: body, to: &scripts,
+            offlineArtifact: assetMode == .inline && remoteResourcePolicy == .blocked,
             imageLabel: config.alertLanguage == .simplifiedChinese
             ? "离线导出已省略图片" : "Image omitted from offline export")
+        let notices = assetMode == .inline
+            ? BundledWebNotices.math
+                + (diagrams.hasFlowOrSequence ? BundledWebNotices.diagrams : "")
+                + (diagrams.hasMermaid ? BundledWebNotices.mermaid : "")
+            : ""
         return """
         <!doctype html>
         <html>
@@ -3283,7 +3289,7 @@ public struct MarkdownRenderer: Sendable {
         <main>
         \(body)
         </main>
-        \(scripts.elements.joined(separator: "\n"))
+        \(scripts.elements.joined(separator: "\n"))\(notices)
         </body>
         </html>
         """
@@ -3401,19 +3407,22 @@ public struct MarkdownRenderer: Sendable {
     /// diagram types the document actually uses. Documents without any diagrams
     /// pay nothing — notably the large Mermaid bundle is never loaded unless a
     /// `mermaid` block is present. Shared dependencies are added once, in
-    /// dependency order, before the engines that consume them.
-    private func addDiagramScripts(for body: String, to scripts: inout PageScripts, offlineArtifact: Bool, imageLabel: String) {
+    /// dependency order, before the engines that consume them. The result
+    /// identifies the attribution needed when the scripts are embedded.
+    private func addDiagramScripts(for body: String, to scripts: inout PageScripts,
+                                   offlineArtifact: Bool, imageLabel: String) -> (hasFlowOrSequence: Bool, hasMermaid: Bool) {
         let hasMermaid = body.contains(PreviewClass.diagramMermaid)
         let hasFlow = body.contains(PreviewClass.diagramFlow)
         let hasSequence = body.contains(PreviewClass.diagramSequence)
+        let hasFlowOrSequence = hasFlow || hasSequence
 
-        guard hasMermaid || hasFlow || hasSequence else { return }
+        guard hasMermaid || hasFlowOrSequence else { return (false, false) }
 
         // Underscore + Raphael are shared dependencies; add each once, first.
         if hasSequence {
             scripts.add(.underscore)
         }
-        if hasFlow || hasSequence {
+        if hasFlowOrSequence {
             scripts.add(.raphael)
         }
         if hasFlow {
@@ -3428,6 +3437,7 @@ public struct MarkdownRenderer: Sendable {
 
         let offline = offlineArtifact ? OfflineDiagramResources.script(imageLabel: imageLabel) : ""
         scripts.addInline(offline + diagramBootstrap)
+        return (hasFlowOrSequence, hasMermaid)
     }
 
     /// Client-side bootstrap that renders each diagram placeholder via its
