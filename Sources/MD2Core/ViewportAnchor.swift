@@ -11,6 +11,18 @@ import Foundation
 /// id and proportional scroll fraction remain as fallbacks for content whose
 /// block metadata cannot be resolved.
 public struct ViewportAnchor: Equatable, Sendable {
+    /// The UTF-16 start of a visual source row and the viewport's offset from
+    /// that row. Available only when the anchor came from the native editor.
+    public struct EditorPosition: Equatable, Sendable {
+        public let characterIndex: Int
+        public let verticalOffset: Double
+
+        public init(characterIndex: Int, verticalOffset: Double) {
+            self.characterIndex = characterIndex
+            self.verticalOffset = verticalOffset
+        }
+    }
+
     /// 1-based first source line of the anchored block (or the exact top
     /// visible editor line). `nil` when no source-line anchor is available and
     /// only the fallbacks apply.
@@ -30,6 +42,7 @@ public struct ViewportAnchor: Equatable, Sendable {
     /// The section heading id at/above the captured position, used when block
     /// metadata is unavailable on the destination.
     public var fallbackHeadingID: String?
+    public var editorPosition: EditorPosition?
 
     public init(
         sourceLine: Int? = nil,
@@ -37,7 +50,8 @@ public struct ViewportAnchor: Equatable, Sendable {
         intraBlockProgress: Double = 0,
         viewportTopInset: Double = 0,
         scrollFraction: Double = 0,
-        fallbackHeadingID: String? = nil
+        fallbackHeadingID: String? = nil,
+        editorPosition: EditorPosition? = nil
     ) {
         self.sourceLine = sourceLine
         self.sourceEndLine = sourceEndLine
@@ -45,6 +59,7 @@ public struct ViewportAnchor: Equatable, Sendable {
         self.viewportTopInset = viewportTopInset.isFinite ? max(0, viewportTopInset) : 0
         self.scrollFraction = clampedUnitProgress(scrollFraction)
         self.fallbackHeadingID = fallbackHeadingID
+        self.editorPosition = editorPosition
     }
 
     /// The single source line this anchor targets on the destination: the

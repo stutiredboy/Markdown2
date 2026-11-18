@@ -141,6 +141,9 @@ struct ContentView: View {
     /// Latest debounced viewport anchor reported by the preview — the cached
     /// fallback when the live capture does not answer in time.
     @State private var previewAnchor: ViewportAnchor?
+    /// Returning from a passive preview restores the source's exact wrapped row.
+    /// Read navigation takes precedence, and edits invalidate the UTF-16 offset.
+    @State private var sourceBeforeRead: (anchor: ViewportAnchor, revision: Int)?
     @State private var outlineSourceLine = 1
     /// Keep an explicitly chosen heading selected across the preview's own
     /// jump and layout reports. A nearby child heading may enter the viewport
@@ -244,6 +247,7 @@ struct ContentView: View {
                         onSelect: { heading in
                             clickedOutlineHeadingID = heading.id
                             outlineSourceLine = heading.line
+                            if mode == .read { sourceBeforeRead = nil }
                             document.jump(to: heading)
                         }
                     )
@@ -286,6 +290,7 @@ struct ContentView: View {
             selectionStats = result
         }
         .onChange(of: document.documentIdentity) { _, _ in
+            sourceBeforeRead = nil
             outlineSourceLine = 1
             clickedOutlineHeadingID = nil
             editorSelection = nil
@@ -300,6 +305,10 @@ struct ContentView: View {
             showsFrontMatterMetadata = false
             dismissEditorFind()
             dismissPreviewFind()
+        }
+        .onChange(of: document.remoteResourceContextToken) { _, _ in
+            // A new preview page has no record of the outgoing page's scroll.
+            if mode == .read { sourceBeforeRead = nil }
         }
         .onChange(of: mode) { _, _ in
             editorFindQuery = lastFindQuery
@@ -400,7 +409,7 @@ struct ContentView: View {
                 .pickerStyle(.segmented)
                 .modifier(CollapsibleToolbarLabel(showsTitle: toolbarDensity.showsModeText, expanded: .titleOnly))
                 .accessibilityLabel(settings.text(.mode))
-                .help(settings.text(.writeReadOrSplit))
+                .help(settings.modePickerHelp)
 
                 Button {
                     onOpen()
@@ -471,7 +480,10 @@ struct ContentView: View {
     private func captureAnchorForExternalReload() {
         switch mode {
         case .write, .split:
-            document.completeExternalReload(anchor: editorAnchorForPreview())
+            var anchor = editorAnchorForPreview()
+            // The disk revision will use a different UTF-16 coordinate space.
+            anchor.editorPosition = nil
+            document.completeExternalReload(anchor: anchor)
         case .read:
             previewViewport.currentAnchor { fresh in
                 document.completeExternalReload(anchor: previewAnchorForEditor(fresh: fresh))
@@ -697,10 +709,18 @@ struct ContentView: View {
             // times out to the cached debounced anchor.
             guard !isCapturingPreviewAnchor else { return }
             isCapturingPreviewAnchor = true
-            previewViewport.currentAnchor { fresh in
+            let identity = document.documentIdentity
+            previewViewport.currentPosition { fresh in
                 isCapturingPreviewAnchor = false
-                guard mode == .read else { return }
-                deliver(anchor: previewAnchorForEditor(fresh: fresh), to: newMode)
+                guard mode == .read, document.documentIdentity == identity else { return }
+                let anchor: ViewportAnchor
+                if let sourceBeforeRead, sourceBeforeRead.revision == document.sourceLineRevision,
+                   fresh?.movedFromAnchor != true {
+                    anchor = sourceBeforeRead.anchor
+                } else {
+                    anchor = previewAnchorForEditor(fresh: fresh?.anchor)
+                }
+                deliver(anchor: anchor, to: newMode)
             }
         }
     }
@@ -711,6 +731,7 @@ struct ContentView: View {
     /// own anchor binding: the outgoing surface's final `updateNSView` pass
     /// must not be able to consume the incoming surface's target.
     private func deliver(anchor: ViewportAnchor, to newMode: EditorMode) {
+        sourceBeforeRead = newMode == .read ? (anchor, document.sourceLineRevision) : nil
         document.jumpLine = nil
         document.jumpHeadingID = nil
         document.jumpFraction = nil
@@ -931,7 +952,7 @@ struct ContentView: View {
                 findQuery: $editorFindQuery,
                 findOptions: document.editorSession.find.options,
                 findScope: document.editorSession.find.scope,
-                findMayRevealMatches: !document.showsFormattingTargetNotice,
+                findMayRevealMatches: editorFindVisible && !document.showsFormattingTargetNotice,
                 findNavigation: $editorFindNavigation,
                 findReplacement: $editorFindReplacement,
                 replaceCommand: $editorReplaceCommand,
@@ -951,6 +972,7 @@ struct ContentView: View {
                         handling: settings.imageFileHandling, insertionRange: range, expectedText: source)
                 },
                 showsLineNumbers: settings.showsLineNumbersInEditor,
+                usesTypewriterScrolling: settings.usesTypewriterScrolling,
                 session: document.editorSession,
                 formatCommand: document.formatCommand,
                 sourceAccessibilityLabel: settings.text(.markdownSource),
@@ -997,6 +1019,7 @@ struct ContentView: View {
                                 ?? document.rendered.outline.heading(forID: anchor.fallbackHeadingID ?? "")?.line ?? 1
                             if isUserInitiated { clickedOutlineHeadingID = nil }
                         }
+                        if !inSplit, mode == .read, isUserInitiated { sourceBeforeRead = nil }
                         if inSplit, isUserInitiated { syncPreviewToEditor(anchor: anchor) }
                     },
                     onEnterEdit: { if !inSplit { requestMode(.write) } },
@@ -1017,6 +1040,7 @@ struct ContentView: View {
                     onOpenMarkdownLink: onOpenMarkdownLink,
                     onMissingLocalLink: { document.reportMissingLocalLink($0) },
                     findQuery: $previewFindQuery,
+                    findMayRevealMatches: previewFindVisible,
                     findOptions: document.editorSession.find.options,
                     findNavigation: $previewFindNavigation,
                     focusToken: previewSurfaceFocusToken,

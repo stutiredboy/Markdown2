@@ -32,6 +32,23 @@ struct AppSettingsPresentationModeTests {
         #expect(settings.presentationMode(isFileBacked: false) == .write)
     }
 
+    @Test func typewriterScrollingDefaultsOffAndPersistsIndependentlyOfPresentationMode() {
+        let suiteName = "AppSettingsTypewriterTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = AppSettings(defaults: defaults)
+        #expect(!settings.usesTypewriterScrolling)
+        settings.defaultMode = .read
+        settings.usesTypewriterScrolling = true
+
+        let reopened = AppSettings(defaults: defaults)
+        #expect(reopened.usesTypewriterScrolling)
+        #expect(reopened.presentationMode(isFileBacked: true) == .read)
+        #expect(reopened.presentationMode(isFileBacked: false) == .write)
+        reopened.usesTypewriterScrolling = false
+        #expect(!AppSettings(defaults: defaults).usesTypewriterScrolling)
+    }
+
     @Test func windowRestorationDefaultsToSystemAndCanBeOverridden() {
         let suiteName = "AppSettingsRestoreTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

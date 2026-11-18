@@ -109,6 +109,7 @@ struct MarkdownEditorView: NSViewRepresentable {
     /// inset. Toggling it changes no text, selection, or geometry, so it cannot
     /// re-wrap the document; while it is on, clicking a number selects its line.
     var showsLineNumbers: Bool = false
+    var usesTypewriterScrolling: Bool = false
     /// The document's editor text system. Every editor the document mounts
     /// re-hosts its one text view, so the undo history — whose actions target
     /// that view — survives mode switches. `nil` gives this editor a private
@@ -128,6 +129,7 @@ struct MarkdownEditorView: NSViewRepresentable {
 
         let coordinator = context.coordinator
         let session = coordinator.session
+        coordinator.initializesCaretFromAnchor = session.textView == nil && jumpAnchor?.targetSourceLine != nil
         let textView = session.loadTextView(text: text)
         textView.setAccessibilityLabel(sourceAccessibilityLabel)
         (textView as? MarkdownSourceTextView)?.typography = typography
@@ -172,6 +174,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         }
 
         DispatchQueue.main.async {
+            guard session.isHosted(by: coordinator) else { return }
             textView.window?.makeFirstResponder(textView)
             coordinator.reportSelection(in: textView)
         }
@@ -187,6 +190,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         context.coordinator.onFindShortcut = onFindShortcut
         context.coordinator.onFindResult = onFindResult
         context.coordinator.onInsertImageAttachments = onInsertImageAttachments
+        context.coordinator.usesTypewriterScrolling = usesTypewriterScrolling
         // SwiftUI can still update an outgoing editor after the incoming one has
         // re-hosted the session's text view; that scroll view is empty now and
         // must not claim the viewport reader or touch the text.
@@ -263,15 +267,22 @@ struct MarkdownEditorView: NSViewRepresentable {
         }
 
         if context.coordinator.lastFocusToken != focusToken {
-            context.coordinator.lastFocusToken = focusToken
+            let coordinator = context.coordinator
+            coordinator.lastFocusToken = focusToken
             DispatchQueue.main.async {
+                guard coordinator.session.isHosted(by: coordinator) else { return }
                 textView.window?.makeFirstResponder(textView)
             }
         }
 
         if let anchor = jumpAnchor {
+            var initializesCaret = context.coordinator.initializesCaretFromAnchor
+            context.coordinator.initializesCaretFromAnchor = false
             context.coordinator.applyAnchorUntilSettled(anchor, in: scrollView) { anchor, scrollView in
-                apply(anchor: anchor, in: scrollView, textView: textView, focus: focusOnProgrammaticScroll)
+                let applied = apply(anchor: anchor, in: scrollView, textView: textView,
+                                    focus: focusOnProgrammaticScroll, initializesCaret: initializesCaret)
+                if applied { initializesCaret = false }
+                return applied
             }
             DispatchQueue.main.async {
                 self.jumpAnchor = nil
@@ -283,7 +294,8 @@ struct MarkdownEditorView: NSViewRepresentable {
             let coordinator = context.coordinator
             DispatchQueue.main.async {
                 let applied = coordinator.performProgrammaticScroll(in: scrollView) {
-                    scroll(to: targetLine, in: textView, focus: focusOnProgrammaticScroll)
+                    scroll(to: targetLine, in: textView,
+                           focus: focusOnProgrammaticScroll, selectLine: focusOnProgrammaticScroll)
                 }
                 if applied {
                     self.jumpLine = nil
@@ -291,7 +303,8 @@ struct MarkdownEditorView: NSViewRepresentable {
                 } else {
                     DispatchQueue.main.async {
                         _ = coordinator.performProgrammaticScroll(in: scrollView) {
-                            scroll(to: targetLine, in: textView, focus: focusOnProgrammaticScroll)
+                            scroll(to: targetLine, in: textView,
+                                   focus: focusOnProgrammaticScroll, selectLine: focusOnProgrammaticScroll)
                         }
                         self.jumpLine = nil
                         self.jumpFraction = nil
@@ -335,11 +348,17 @@ struct MarkdownEditorView: NSViewRepresentable {
         anchor: ViewportAnchor,
         in scrollView: NSScrollView,
         textView: NSTextView,
-        focus: Bool
+        focus: Bool,
+        initializesCaret: Bool
     ) -> Bool {
-        if let targetLine = anchor.targetSourceLine {
-            return scroll(to: targetLine, in: textView, focus: focus)
+        if let position = anchor.editorPosition, let offset = position.scrollOffset(in: textView) {
+            if focus { textView.window?.makeFirstResponder(textView) }
+            return scroll(toVerticalOffset: offset, in: scrollView)
         }
+        if let targetLine = anchor.targetSourceLine {
+            return scroll(to: targetLine, in: textView, focus: focus, selectLine: initializesCaret)
+        }
+        if focus { textView.window?.makeFirstResponder(textView) }
         return scroll(toFraction: anchor.scrollFraction, in: scrollView)
     }
 
@@ -352,6 +371,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         coordinator.onFindShortcut = onFindShortcut
         coordinator.onFindResult = onFindResult
         coordinator.onInsertImageAttachments = onInsertImageAttachments
+        coordinator.usesTypewriterScrolling = usesTypewriterScrolling
         return coordinator
     }
 
@@ -394,7 +414,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         return true
     }
 
-    private func scroll(to line: Int, in textView: NSTextView, focus: Bool = true) -> Bool {
+    private func scroll(to line: Int, in textView: NSTextView, focus: Bool, selectLine: Bool) -> Bool {
         let lineIndex = max(1, line)
         let string = textView.string as NSString
         var currentLine = 1
@@ -416,6 +436,10 @@ struct MarkdownEditorView: NSViewRepresentable {
         // fits the viewport) rather than wherever the focus scroll landed.
         if focus {
             textView.window?.makeFirstResponder(textView)
+        }
+        // A newly created source editor starts at the reading location.
+        // Rehosting an existing editor retains its selection.
+        if selectLine {
             textView.setSelectedRange(targetRange)
         }
         return scrollLineToTop(charRange: targetRange, in: textView)
@@ -436,25 +460,19 @@ struct MarkdownEditorView: NSViewRepresentable {
 
         layoutManager.ensureLayout(for: textContainer)
         let glyphRange = layoutManager.glyphRange(forCharacterRange: charRange, actualCharacterRange: nil)
-        var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
-        // Convert from text-container coordinates to the text view (document)
-        // coordinate space the clip view scrolls in.
-        let origin = textView.textContainerOrigin
-        rect.origin.y += origin.y
-
-        let documentHeight = scrollableContentHeight(for: textView)
-        let visibleHeight = scrollView.contentView.bounds.height
-        guard visibleHeight > 0 else { return false }
-        if documentHeight <= visibleHeight {
-            return true
-        }
+        let rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
         // Leave a small top margin (the container inset) so the line is not
-        // flush against the very top edge. The shared clamp keeps the offset in
-        // the scrollable range and returns 0 when the document fits the viewport,
-        // so a short document stays pinned to the top.
+        // flush against the very top edge. The rect is in container coordinates.
+        return scroll(toVerticalOffset: rect.minY, in: scrollView)
+    }
+
+    private func scroll(toVerticalOffset offset: CGFloat, in scrollView: NSScrollView) -> Bool {
+        let visibleHeight = scrollView.contentView.bounds.height
+        guard visibleHeight > 0, let documentView = scrollView.documentView else { return false }
+        // The shared clamp keeps short documents pinned to the top.
         let targetY = CGFloat(clampedScrollOffset(
-            targetY: Double(rect.minY - origin.y),
-            contentHeight: Double(documentHeight),
+            targetY: Double(offset),
+            contentHeight: Double(scrollableContentHeight(for: documentView)),
             viewportHeight: Double(visibleHeight)
         ))
         scrollView.contentView.scroll(to: NSPoint(x: 0, y: targetY))
@@ -467,6 +485,8 @@ struct MarkdownEditorView: NSViewRepresentable {
         /// The text system this editor hosts and edits through.
         let session: MarkdownEditorSession
         var isApplyingStyle = false
+        var usesTypewriterScrolling = false
+        var initializesCaretFromAnchor = false
         var onEnterPreview: () -> Void = {}
         var onAnchorLineChange: (_ line: Int, _ drivesPreviewSync: Bool) -> Void = { _, _ in }
         var onTextEdit: (_ caretLine: Int) -> Void = { _ in }
@@ -1136,7 +1156,8 @@ struct MarkdownEditorView: NSViewRepresentable {
             var lastContentHeight = CGFloat(-1)
 
             func step() {
-                guard self.settlingAnchor == anchor else { return }
+                guard self.settlingAnchor == anchor, self.session.isHosted(by: self),
+                      scrollView.documentView === self.session.textView else { return }
                 attempts += 1
 
                 // While the freshly mounted scroll view is being sized, a
@@ -1217,7 +1238,8 @@ struct MarkdownEditorView: NSViewRepresentable {
                 sourceLine: line,
                 intraBlockProgress: 0,
                 viewportTopInset: Double(textView.textContainerInset.height),
-                scrollFraction: fraction
+                scrollFraction: fraction,
+                editorPosition: ViewportAnchor.EditorPosition(of: textView)
             )
         }
 
@@ -1242,7 +1264,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             return line
         }
 
-        @MainActor static func topVisibleLine(in scrollView: NSScrollView) -> Int? {
+        @MainActor static func topVisibleLine(in scrollView: NSScrollView, layoutWholeDocument: Bool = true) -> Int? {
             guard let textView = scrollView.documentView as? NSTextView,
                   let layoutManager = textView.layoutManager,
                   let textContainer = textView.textContainer else { return nil }
@@ -1254,7 +1276,13 @@ struct MarkdownEditorView: NSViewRepresentable {
             let origin = textView.textContainerOrigin
             rect.origin.x -= origin.x
             rect.origin.y -= origin.y
-            layoutManager.ensureLayout(for: textContainer)
+            if layoutWholeDocument {
+                // Styling restores the viewport through a bounds change. Lay
+                // out the resized content before AppKit clamps that offset.
+                layoutManager.ensureLayout(for: textContainer)
+            } else {
+                layoutManager.ensureLayout(forBoundingRect: rect, in: textContainer)
+            }
             let glyphRange = layoutManager.glyphRange(forBoundingRect: rect, in: textContainer)
             let charIndex = layoutManager.characterIndexForGlyph(at: glyphRange.location)
 
@@ -1558,6 +1586,44 @@ struct MarkdownEditorView: NSViewRepresentable {
 
         private let styling = MarkdownStylingController()
 
+        @MainActor func centerTypewriterCaret(in textView: NSTextView) {
+            let selection = textView.selectedRange()
+            guard usesTypewriterScrolling, session.isHosted(by: self), settlingAnchor == nil,
+                  !session.revealSelectionOnNextHost, !textView.hasMarkedText(),
+                  textView.selectedRanges.count == 1, selection.length == 0,
+                  selection.location != NSNotFound, let window = textView.window,
+                  window.firstResponder === textView,
+                  let scrollView, scrollView.documentView === textView else { return }
+
+            let clipView = scrollView.contentView
+            guard clipView.bounds.height > 0 else { return }
+            // Supersede any viewport restore queued by the regular edit path.
+            editViewportRestoreToken = UUID()
+            let originalOffset = clipView.bounds.minY
+            let wasProgrammatic = isProgrammaticScroll
+            isProgrammaticScroll = true
+            defer {
+                isProgrammaticScroll = wasProgrammatic
+                if abs(clipView.bounds.minY - originalOffset) > 0.5,
+                   let line = Self.topVisibleLine(in: scrollView, layoutWholeDocument: false) {
+                    onAnchorLineChange(line, false)
+                }
+            }
+            // NSTextInputClient can clip the caret rect to the viewport. Once
+            // revealed, its native geometry locates the active wrapped row and
+            // the insertion point after a trailing newline.
+            textView.scrollRangeToVisible(selection)
+            let screenRect = textView.firstRect(forCharacterRange: selection, actualRange: nil)
+            let caret = clipView.convert(window.convertFromScreen(screenRect), from: nil)
+            guard caret.height > 0, caret.midY.isFinite else { return }
+            var proposed = clipView.bounds
+            proposed.origin.y = caret.midY - proposed.height / 2
+            let target = clipView.constrainBoundsRect(proposed).origin
+            guard abs(clipView.bounds.minY - target.y) > 0.5 else { return }
+            clipView.scroll(to: target)
+            scrollView.reflectScrolledClipView(clipView)
+        }
+
         @MainActor func scheduleStyle(in textView: NSTextView) {
             styling.schedule(in: textView, willApply: { [weak self] in
                 self?.isApplyingStyle = true
@@ -1700,6 +1766,9 @@ final class MarkdownSourceTextView: NSTextView {
     lazy var markdownPasteController = MarkdownPasteController(editor: self)
     private var isPasting = false
     private var isSoftReturnEvent = false
+    /// Non-nil during a tracked key event. An insert distinguishes an IME
+    /// commit from cancellation, which can also change text and selection.
+    private var typewriterKeyInsertedText: Bool?
     /// Isolated command input keeps editor tests off the user's shared clipboard.
     var linkClipboardText: () -> String? = { NSPasteboard.general.string(forType: .string) }
 
@@ -1710,7 +1779,22 @@ final class MarkdownSourceTextView: NSTextView {
         let previous = isSoftReturnEvent
         isSoftReturnEvent = Self.isSoftReturn(event)
         defer { isSoftReturnEvent = previous }
+        guard let session = delegate as? MarkdownEditorSession, session.usesTypewriterScrolling else {
+            super.keyDown(with: event)
+            return
+        }
+        let oldSelection = selectedRanges
+        let oldAffinity = selectionAffinity
+        let oldRevision = session.structuredSourceRevision
+        let wasComposing = hasMarkedText()
+        let previousInsert = typewriterKeyInsertedText
+        typewriterKeyInsertedText = false
+        defer { typewriterKeyInsertedText = previousInsert }
         super.keyDown(with: event)
+        guard !hasMarkedText(), !wasComposing || typewriterKeyInsertedText == true,
+              oldSelection != selectedRanges || oldAffinity != selectionAffinity
+                  || oldRevision != session.structuredSourceRevision else { return }
+        session.centerTypewriterCaret(in: self)
     }
 
     override func interpretKeyEvents(_ eventArray: [NSEvent]) {
@@ -1829,6 +1913,7 @@ final class MarkdownSourceTextView: NSTextView {
     }
 
     override func insertText(_ insertString: Any, replacementRange: NSRange) {
+        let wasComposing = hasMarkedText()
         // Explicit replacements are edits, paste/drop payloads, or input-method
         // commits. Pair only ordinary single-character typing; never re-enter
         // this path while applying a MarkdownEditing result.
@@ -1840,6 +1925,14 @@ final class MarkdownSourceTextView: NSTextView {
             applyMarkdownEdit(edit)
         } else {
             super.insertText(insertString, replacementRange: replacementRange)
+        }
+        guard !hasMarkedText() else { return }
+        if typewriterKeyInsertedText != nil {
+            typewriterKeyInsertedText = true
+        } else if wasComposing {
+            // Some input methods deliver the committed text through the
+            // input context outside the text view's keyDown call.
+            (delegate as? MarkdownEditorSession)?.centerTypewriterCaret(in: self)
         }
     }
 

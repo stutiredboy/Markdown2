@@ -35,17 +35,19 @@ enum PreviewTextSearch {
             findMarks = []; findGroups = []; findCurrent = -1; findSnapshot = null;
         }
         window.__md2FindClear = clearFind;
-        function setCurrent(index) {
+        function setCurrent(index, reveal) {
             if (!findGroups.length) return { total: 0, index: 0 };
             if (findCurrent >= 0 && findCurrent < findGroups.length)
                 findGroups[findCurrent].forEach(m => m.classList.remove('md2-find-current'));
             findCurrent = ((index % findGroups.length) + findGroups.length) % findGroups.length;
             var group = findGroups[findCurrent];
             group.forEach(m => m.classList.add('md2-find-current'));
-            window.__md2FindActive = true;
-            group[0].scrollIntoView({ block: 'center', inline: 'nearest' });
-            clearTimeout(window.__md2FindTimer);
-            window.__md2FindTimer = setTimeout(() => { window.__md2FindActive = false; }, 400);
+            if (reveal !== false) {
+                window.__md2FindActive = true;
+                group[0].scrollIntoView({ block: 'center', inline: 'nearest' });
+                clearTimeout(window.__md2FindTimer);
+                window.__md2FindTimer = setTimeout(() => { window.__md2FindActive = false; }, 400);
+            }
             return { total: findGroups.length, index: findCurrent + 1 };
         }
         // Join inline nodes, with explicit block separators. No source mapping
@@ -84,7 +86,7 @@ enum PreviewTextSearch {
             findSnapshot = { id: id, records: records, breaks: breaks };
             return { id: id, text: text };
         };
-        window.__md2Find = function (query, payload) {
+        window.__md2Find = function (query, payload, reveal) {
             // The native path always supplies core-computed ranges. Keep the
             // original direct page API useful for diagnostics and CSP probes.
             if (!payload) {
@@ -125,7 +127,7 @@ enum PreviewTextSearch {
             }
             findGroups = groupMap.filter(g => g.length);
             findSnapshot = null;
-            return findGroups.length ? setCurrent(0) : { total: 0, index: 0 };
+            return findGroups.length ? setCurrent(0, reveal) : { total: 0, index: 0 };
         };
         window.__md2FindNext = function (forward) {
             return setCurrent(findCurrent + (forward ? 1 : -1));

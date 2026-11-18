@@ -7,12 +7,13 @@ import XCTest
 
 @MainActor
 final class InteractionTestWindow {
-    let store = DocumentStore()
+    let store: DocumentStore
     let window: NSWindow
     let suite = "FindInteractionGUITests-\(UUID().uuidString)"
     let settings: AppSettings
-    init() {
+    init(store: DocumentStore = DocumentStore()) {
         _ = NSApplication.shared
+        self.store = store
         settings = AppSettings(defaults: UserDefaults(suiteName: suite)!)
         settings.newDocumentMode = .write
         settings.defaultMode = .write

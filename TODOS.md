@@ -56,12 +56,12 @@ features. See the [daily-writing](Docs/Plans/daily-writing/PLAN.md),
   Replace All shows its scope/count and is one Undo operation. Keep the literal
   search defaults unchanged.
 
-- [ ] **P2 — Native writing polish.** Evaluate focus/typewriter modes and shortcut
-  discoverability with real writing tasks before adding controls. The app already
-  has mode shortcuts, typography, a status bar and save/conflict feedback.
-  Acceptance: a chosen mode preserves the caret, selection, scroll position and
-  native fields across Write/Split/Read, remains keyboard/VoiceOver operable at
-  narrow widths in both languages, and changes neither source nor exports.
+- [x] **P2 — Native writing polish.** The Mode menu offers opt-in Typewriter
+  Scrolling, and the toolbar help shows the current mode shortcuts. Switching
+  modes preserves the source selection and working position. Narrow-window
+  native fields, bilingual keyboard and VoiceOver operation, real Pinyin, and
+  unchanged source and exports passed the
+  [acceptance checks](Docs/Plans/native-writing-polish/RESULTS.md).
 
 - [x] **P2 — Real-document compatibility corpus and targeted syntax improvements.**
   Added four original fixtures and checked source preservation, native outline

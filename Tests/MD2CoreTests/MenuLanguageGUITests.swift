@@ -270,6 +270,55 @@ final class MenuLanguageGUITests: XCTestCase {
 
     // MARK: - Shortcuts
 
+    func testTypewriterScrollingIsANativeCheckedCommandInBothLanguages() throws {
+        let pid = try launch()
+        try waitForCommandTitles(.english, pid: pid)
+        try press(.new, in: .english, pid: pid)
+        try waitForWindow(pid: pid) { Self.firstElement(ofRole: "AXTextArea", in: $0) != nil }
+        try waitForTypewriterScrolling(checked: false, language: .english, pid: pid)
+        try toggleTypewriterScrolling(language: .english, pid: pid)
+        try waitForTypewriterScrolling(checked: true, language: .english, pid: pid)
+
+        try changeLanguage(toChoice: 2, pid: pid)
+        try waitForCommandTitles(.zhHans, pid: pid)
+        try closeSettings(pid: pid)
+        try press(.read, in: .zhHans, pid: pid)
+        try waitForWindow(pid: pid) { Self.firstElement(ofRole: "AXWebArea", in: $0) != nil }
+        try waitForTypewriterScrolling(checked: true, language: .zhHans, pid: pid)
+        try toggleTypewriterScrolling(language: .zhHans, pid: pid)
+        try waitForTypewriterScrolling(checked: false, language: .zhHans, pid: pid)
+    }
+
+    private func typewriterScrollingItem(language: AppLanguage, pid: pid_t) throws -> AXUIElement {
+        let mode = L10n.text(.mode, language: language)
+        let title = L10n.text(.typewriterScrolling, language: language)
+        let bar = try menuBar(pid: pid)
+        let modeMenu = try XCTUnwrap(Self.children(of: bar).first { Self.title(of: $0) == mode })
+        let item = try XCTUnwrap(Self.children(of: modeMenu).flatMap(Self.children(of:))
+            .first { Self.title(of: $0) == title }, "Mode has no localized typewriter command")
+        XCTAssertEqual(Self.role(of: item), "AXMenuItem")
+        XCTAssertTrue(Self.commandCharacter(of: item)?.isEmpty ?? true, "the menu item must not reserve a shortcut")
+        return item
+    }
+
+    private func toggleTypewriterScrolling(language: AppLanguage, pid: pid_t) throws {
+        let item = try typewriterScrollingItem(language: language, pid: pid)
+        AXUIElementSetMessagingTimeout(item, 2)
+        XCTAssertEqual(AXUIElementPerformAction(item, kAXPressAction as CFString), .success)
+    }
+
+    private func waitForTypewriterScrolling(checked: Bool, language: AppLanguage, pid: pid_t) throws {
+        let deadline = Date().addingTimeInterval(5)
+        var mark: String?
+        repeat {
+            let item = try typewriterScrollingItem(language: language, pid: pid)
+            mark = Self.stringValue(kAXMenuItemMarkCharAttribute, of: item)
+            if (mark?.isEmpty == false) == checked { return }
+            usleep(100_000)
+        } while Date() < deadline
+        XCTFail("Mode menu checkmark was \(String(describing: mark)); expected checked=\(checked)")
+    }
+
     /// Mode shortcuts reach the menu through the same observation as the titles.
     func testResettingModeShortcutsUpdatesTheModeMenuWithoutARelaunch() throws {
         let custom = ModeShortcutConfiguration(
@@ -403,7 +452,7 @@ final class MenuLanguageGUITests: XCTestCase {
             .new, .open, .openRecent, .clearMenu, .save, .exportTo, .close, .print,
             .formatMenu, .paragraphMenu,
             .zoomIn, .zoomOut, .resetZoom,
-            .mode, .write, .read, .sideBySide,
+            .mode, .write, .read, .sideBySide, .typewriterScrolling,
             .find, .findReplace, .findNext, .findPrevious
         ] + MarkdownFormatCommand.items.map(\.title)
     }

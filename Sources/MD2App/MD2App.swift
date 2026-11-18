@@ -200,6 +200,9 @@ private struct AppCommands: Commands {
                 appDelegate.currentDocumentStore?.requestMode(.split)
             }
             .keyboardShortcut(splitShortcut.keyEquivalent, modifiers: splitShortcut.modifiers.eventModifiers)
+
+            Divider()
+            Toggle(settings.text(.typewriterScrolling), isOn: $settings.usesTypewriterScrolling)
         }
 
         CommandGroup(after: .pasteboard) {

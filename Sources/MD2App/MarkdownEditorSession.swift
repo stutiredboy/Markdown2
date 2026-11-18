@@ -159,6 +159,12 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate, @preconcurrency
 
     func isHosted(by coordinator: MarkdownEditorView.Coordinator) -> Bool { self.coordinator === coordinator }
 
+    var usesTypewriterScrolling: Bool { coordinator?.usesTypewriterScrolling == true }
+
+    func centerTypewriterCaret(in textView: NSTextView) {
+        coordinator?.centerTypewriterCaret(in: textView)
+    }
+
     /// Detaches the text view from an editor SwiftUI is tearing down, unless a
     /// newer editor has already re-hosted it.
     func unhost(from scrollView: NSScrollView, coordinator: MarkdownEditorView.Coordinator) {
