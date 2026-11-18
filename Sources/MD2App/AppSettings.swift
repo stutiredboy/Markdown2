@@ -429,6 +429,9 @@ enum L10nKey: String, CaseIterable, Sendable {
     case sideBySide
     case writeOrRead
     case modePickerHelp
+    case formulaEditButton, formulaEditorTitle, formulaEditorInstructions, formulaEditorInput, formulaApply
+    case formulaRevealButton, formulaSourceTitle, formulaSourceDetail, formulaOpenSource
+    case formulaEditUnavailable, formulaEditUnavailableDetail, formulaCheckingDraft, formulaReplacementRequiresSource
     case typewriterScrolling
     case words
     case chars
@@ -695,6 +698,19 @@ enum L10n {
         .sideBySide: "Side by Side",
         .writeOrRead: "Edit or preview",
         .modePickerHelp: "Edit (%@), Side by Side (%@), Preview (%@). Change shortcuts in Settings.",
+        .formulaEditButton: "Edit Formula…",
+        .formulaEditorTitle: "Edit Formula",
+        .formulaEditorInstructions: "Enter one nonempty line of TeX without the surrounding $$ delimiters. Press Command-Return to apply.",
+        .formulaEditorInput: "Formula (TeX)",
+        .formulaApply: "Apply",
+        .formulaRevealButton: "Open Formula in Source…",
+        .formulaSourceTitle: "Edit This Formula in Source",
+        .formulaSourceDetail: "Preview can edit a top-level $$ formula on a single line. Open the source to edit this formula or its containing block.",
+        .formulaOpenSource: "Open Source",
+        .formulaEditUnavailable: "Could Not Edit Formula",
+        .formulaEditUnavailableDetail: "The source has changed or the editor is busy. Finish any active text input and choose the formula again in Preview.",
+        .formulaCheckingDraft: "Checking the formula against its Markdown context…",
+        .formulaReplacementRequiresSource: "This draft changes how Markdown reads the formula line. Revise the TeX or choose Open Source to edit the Markdown.",
         .typewriterScrolling: "Typewriter Scrolling",
         .words: "words",
         .chars: "chars",
@@ -999,6 +1015,19 @@ enum L10n {
         .sideBySide: "双栏",
         .writeOrRead: "编辑或预览",
         .modePickerHelp: "编辑（%@）、双栏（%@）、预览（%@）。可在设置中修改快捷键。",
+        .formulaEditButton: "编辑公式…",
+        .formulaEditorTitle: "编辑公式",
+        .formulaEditorInstructions: "输入一行非空的 TeX，无需输入两端的 $$ 定界符。按 Command-Return 应用。",
+        .formulaEditorInput: "公式（TeX）",
+        .formulaApply: "应用",
+        .formulaRevealButton: "在源码中打开公式…",
+        .formulaSourceTitle: "在源码中编辑此公式",
+        .formulaSourceDetail: "预览中可直接编辑独占一行的顶层 $$ 公式。请打开源码编辑此公式或包含它的内容块。",
+        .formulaOpenSource: "打开源码",
+        .formulaEditUnavailable: "无法编辑公式",
+        .formulaEditUnavailableDetail: "源码已更改或编辑器正在处理输入。请先完成当前输入，再在预览中选择公式。",
+        .formulaCheckingDraft: "正在检查公式所在的 Markdown 上下文…",
+        .formulaReplacementRequiresSource: "当前内容会改变 Markdown 对公式所在行的解析。请修改 TeX，或选择「打开源码」编辑 Markdown。",
         .typewriterScrolling: "打字机滚动",
         .words: "字",
         .chars: "字符",

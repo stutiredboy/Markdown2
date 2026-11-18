@@ -179,6 +179,8 @@ struct ContentView: View {
     @State private var previewFindNavigation: FindCommand?
     @State private var previewSurfaceFocusToken = UUID()
     @State private var previewFocusState = PreviewFocusState()
+    @State private var formulaSheet = PreviewFormulaSheet()
+    @State private var formulaFocus: (revision: Int, line: Int)?
     @State private var previewMatchTotal = 0
     @State private var previewMatchIndex = 0
     /// Side by Side: the pane that most recently had user interaction, so a
@@ -267,6 +269,7 @@ struct ContentView: View {
             toolbarDensity = density
         }
         .navigationTitle(document.displayTitle)
+        .onDisappear { formulaSheet.dismiss() }
         .task(id: selectedContent) {
             selectionStats = nil
             guard let selection = selectedContent else { return }
@@ -290,6 +293,8 @@ struct ContentView: View {
             selectionStats = result
         }
         .onChange(of: document.documentIdentity) { _, _ in
+            formulaSheet.dismiss()
+            formulaFocus = nil
             sourceBeforeRead = nil
             outlineSourceLine = 1
             clickedOutlineHeadingID = nil
@@ -311,6 +316,10 @@ struct ContentView: View {
             if mode == .read { sourceBeforeRead = nil }
         }
         .onChange(of: mode) { _, _ in
+            if mode != .read {
+                formulaSheet.dismiss()
+                formulaFocus = nil
+            }
             editorFindQuery = lastFindQuery
             previewFindQuery = lastFindQuery
             clickedOutlineHeadingID = nil
@@ -780,6 +789,60 @@ struct ContentView: View {
         document.editorLineSelection = LineSelectionRequest(line: line)
     }
 
+    private var previewFormulaEditing: MarkdownPreviewView.FormulaEditing {
+        let revision = document.renderedTextMutationRevision
+        return MarkdownPreviewView.FormulaEditing(
+            revision: revision, editableLines: document.renderedEditableFormulaLines,
+            editLabel: settings.text(.formulaEditButton), revealLabel: settings.text(.formulaRevealButton),
+            focusLine: formulaFocus?.revision == revision ? formulaFocus?.line : nil)
+    }
+
+    private func editPreviewFormula(line: Int, revision: Int, window: NSWindow) {
+        guard mode == .read else { return }
+        guard let target = document.previewFormulaTarget(line: line, renderedAt: revision) else {
+            reportFormulaChanged()
+            return
+        }
+        guard let edit = target.edit else {
+            offerFormulaSource(target, in: window)
+            return
+        }
+        formulaSheet.edit(edit.source, in: window, settings: settings) { replacement, beforeMutation in
+            await document.applyPreviewFormula(target, replacement: replacement, beforeMutation: beforeMutation) {
+                mode == .read && !isCapturingPreviewAnchor
+            }
+        } onDismiss: { outcome in
+            guard mode == .read else { return }
+            switch outcome {
+            case .applied:
+                formulaFocus = (revision &+ 1, line)
+                document.previewJumpAnchor = previewAnchor
+                document.renderImmediately()
+            case .openSource:
+                revealFormulaSource(target)
+            case .stale:
+                reportFormulaChanged()
+            }
+        }
+    }
+
+    private func offerFormulaSource(_ target: DocumentStore.PreviewFormulaTarget, in window: NSWindow) {
+        formulaSheet.offerSource(in: window, settings: settings) {
+            revealFormulaSource(target)
+        }
+    }
+
+    private func revealFormulaSource(_ target: DocumentStore.PreviewFormulaTarget) {
+        guard mode == .read else { return }
+        guard document.isCurrent(target) else { reportFormulaChanged(); return }
+        revealSourceLineInEditor(target.line, inSplit: false)
+    }
+
+    private func reportFormulaChanged() {
+        document.alert = DocumentAlert(message: settings.text(.formulaEditUnavailable),
+                                       detail: settings.text(.formulaEditUnavailableDetail))
+    }
+
     /// Entering Side by Side rebuilds the preview web view; its reload can land
     /// the page at the top before the handed-off `previewJumpAnchor` settles
     /// (notably Preview→Split, where the binding is consumed by the outgoing web
@@ -1008,6 +1071,10 @@ struct ContentView: View {
                     showsFrontMatter: showsFrontMatterInPreview,
                     showsLineNumbers: settings.showsLineNumbersInPreview,
                     sourceLineRevision: document.renderedSourceLineRevision,
+                    formulaEditing: inSplit ? nil : previewFormulaEditing,
+                    onEditFormula: { line, revision, window in
+                        editPreviewFormula(line: line, revision: revision, window: window)
+                    },
                     jumpHeadingID: $document.jumpHeadingID,
                     jumpFraction: $document.jumpFraction,
                     jumpAnchor: $document.previewJumpAnchor,

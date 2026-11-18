@@ -14,7 +14,8 @@ public struct MarkdownRenderer: Sendable {
         _ markdown: String,
         config: RenderConfig = .init(),
         assetMode: RenderAssetMode = .inline,
-        remoteResourcePolicy: RemoteResourcePolicy = .blocked
+        remoteResourcePolicy: RemoteResourcePolicy = .blocked,
+        includeDisplayFormulaEdits: Bool = false
     ) -> RenderedDocument {
         if Task.isCancelled {
             return RenderedDocument(html: "", body: "", outline: [], stats: DocumentStats(plainText: ""))
@@ -55,7 +56,8 @@ public struct MarkdownRenderer: Sendable {
             budget: budget
         )
 
-        var body = renderBody(markdown, outline: outline, context: context)
+        let formulaMap = includeDisplayFormulaEdits ? DisplayFormulaSourceMap(markdown: markdown) : nil
+        var body = renderBody(markdown, outline: outline, context: context, formulaMap: formulaMap)
         if budget.exhausted { return sourceFallback(markdown, config: config, assetMode: assetMode, remoteResourcePolicy: remoteResourcePolicy) }
         if Task.isCancelled {
             return RenderedDocument(html: "", body: "", outline: [], stats: DocumentStats(plainText: ""))
@@ -77,7 +79,8 @@ public struct MarkdownRenderer: Sendable {
             outline: outline,
             stats: DocumentStats(plainText: RenderedPlainText.extract(from: body),
                                  sourceLines: markdown.isEmpty ? 0 : lines.count),
-            mathMacros: config.mathMacros
+            mathMacros: config.mathMacros,
+            displayFormulaEdits: formulaMap?.edits ?? [:]
         )
     }
 
@@ -100,7 +103,8 @@ public struct MarkdownRenderer: Sendable {
         outline: [Heading],
         context: InlineContext,
         lineOffset: Int = 0,
-        listContinuation: Bool = false
+        listContinuation: Bool = false,
+        formulaMap: DisplayFormulaSourceMap? = nil
     ) -> String {
         let lines = markdown.normalizedMarkdownLines
         guard context.budget.enter(lines: lines) else { return "" }
@@ -177,6 +181,9 @@ public struct MarkdownRenderer: Sendable {
             }
 
             if let math = mathBlockContent(from: lines, startIndex: index) {
+                if math.nextIndex == index + 1 {
+                    formulaMap?.record(line: line, number: index + 1, tex: math.tex)
+                }
                 appendBlock(
                     mathDisplayBlockHTML(tex: math.tex, context: context),
                     from: index,

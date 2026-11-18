@@ -206,6 +206,27 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate, @preconcurrency
         return true
     }
 
+    /// Use the retained source editor and its native Undo history even when
+    /// Read is the only mounted surface.
+    func applyPreviewFormulaEdit(changing current: String, range: NSRange, replacement: String,
+                                 isCurrent: @escaping @MainActor () -> Bool) async -> Bool {
+        let editor = loadTextView(text: current)
+        guard coordinator == nil, !editor.hasMarkedText(),
+              (editor.string as NSString).isEqual(to: current), isCurrent() else { return false }
+        let selection = NSRange(location: range.location, length: replacement.utf16.count)
+        if structuredEditUndo.requiresApplicationEvent {
+            guard let editor = editor as? MarkdownSourceTextView,
+                  let target = structuredCommands.captureTarget(in: editor),
+                  (target.source as NSString).isEqual(to: current),
+                  let ticket = structuredCommands.submit(
+                    edit: StructuredCommandEdit(range: range, replacement: replacement, selection: selection),
+                    target: target, origin: .previewFormula, validation: isCurrent
+                  ) else { return false }
+            return await ticket.value() == .applied
+        }
+        return editor.insertStructuredText(replacement, range: range, selection: selection, isCurrent: isCurrent)
+    }
+
     /// Mirrors a change the undo history cannot describe — opening a file, a
     /// reload from disk, or any text that reached the document without passing
     /// through the editor — and clears that history: every recorded action

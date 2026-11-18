@@ -58,6 +58,7 @@ actor DocumentRenderWorker {
             numberAllEquations: snapshot.numberAllEquations,
             mathMacros: FrontMatterReader.parseMathMacros(fields["math-macros"]),
             inlineFeatures: snapshot.inlineFeatures, alertLanguage: snapshot.alertLanguage),
-            assetMode: assetMode, remoteResourcePolicy: snapshot.remoteResourcePolicy)
+            assetMode: assetMode, remoteResourcePolicy: snapshot.remoteResourcePolicy,
+            includeDisplayFormulaEdits: assetMode == .appScheme)
     }
 }
