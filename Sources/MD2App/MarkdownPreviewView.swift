@@ -8,7 +8,12 @@ import WebKit
 /// of relying on the last (possibly stale) debounced scroll callback.
 @MainActor
 final class PreviewViewportReader {
-    fileprivate var capture: ((_ completion: @escaping (ViewportAnchor?) -> Void) -> Void)?
+    struct Position {
+        let anchor: ViewportAnchor
+        let movedFromAnchor: Bool
+    }
+
+    fileprivate var capture: ((_ completion: @escaping (Position?) -> Void) -> Void)?
     /// Scrolls the live preview directly to a (possibly fractional) source line
     /// for continuous Side by Side follow — lighter than a mode-switch anchor and
     /// without the pinning settle loop, so the preview tracks the editor smoothly.
@@ -22,6 +27,10 @@ final class PreviewViewportReader {
     /// when the preview is not mounted or does not answer within the capture
     /// timeout (e.g. the page is still executing heavy engine scripts).
     func currentAnchor(completion: @escaping (ViewportAnchor?) -> Void) {
+        currentPosition { completion($0?.anchor) }
+    }
+
+    func currentPosition(completion: @escaping (Position?) -> Void) {
         guard let capture else {
             completion(nil)
             return
@@ -107,6 +116,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
     var onOpenWithSystem: (_ url: URL) -> Void = { NSWorkspace.shared.open($0) }
     /// The current find query; running search whenever it changes.
     @Binding var findQuery: String
+    var findMayRevealMatches = true
     var findOptions = TextSearch.Options()
     /// A next/previous navigation request; consumed (set to nil) once applied.
     @Binding var findNavigation: FindCommand?
@@ -369,6 +379,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
             // Suppress anchor reporting while we are programmatically scrolling,
             // so a mode-switch scroll is never captured back as the user's anchor.
             var suppressUntil = 0;
+            // This offset belongs to the source→preview handoff. A later
+            // layout-only repin must not erase evidence of reader navigation.
+            var anchoredScrollY = null;
             // Vertical band below the viewport top sampled for the block the
             // user is reading: small enough to track the top of the viewport,
             // large enough to bridge the margins between blocks.
@@ -405,6 +418,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 var anchor = {
                     line: null, endLine: null, progress: 0, inset: 0,
                     fraction: fraction, id: headingAtTop(),
+                    movedFromAnchor: anchoredScrollY !== null && Math.abs(window.scrollY - anchoredScrollY) > 1,
                     user: Date.now() - lastUserScrollIntentAt < 1200
                 };
 
@@ -456,7 +470,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             // the anchor reflows. Content below the anchor changing the total
             // height does not move the target, so we don't scroll (avoiding a
             // pointless late jump). We stop on a user scroll or once stable.
-            function keepPinned(getTargetY, silent) {
+            function keepPinned(getTargetY, silent, rememberOffset) {
                 // A recent click inside the preview is not evidence that this
                 // programmatic jump was a user scroll. Only gestures that occur
                 // after pinning starts may mark its final anchor as user driven.
@@ -503,6 +517,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
                         var maxY = document.documentElement.scrollHeight - window.innerHeight;
                         window.scrollTo(0, Math.min(Math.max(0, targetY), Math.max(0, maxY)));
                         expectedY = window.scrollY;
+                        if (rememberOffset) { anchoredScrollY = expectedY; }
                         started = true;
                     } else {
                         stableFrames++;
@@ -590,7 +605,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
                     var max = document.documentElement.scrollHeight - window.innerHeight;
                     var f = Math.min(1, Math.max(0, payload.fraction || 0));
                     return max > 0 ? max * f : 0;
-                }, silent);
+                }, silent, !silent && payload.fromEditor);
             };
 
             // Continuous Side by Side follow: scroll directly to the rendered
@@ -944,7 +959,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 completion(nil)
                 return
             }
-            coordinator.captureAnchor(in: webView, completion: completion)
+            coordinator.capturePosition(in: webView, completion: completion)
         }
         viewportReader?.follow = { [weak webView, weak coordinator] line in
             guard let webView, let coordinator, coordinator.isLoaded else { return }
@@ -984,6 +999,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         context.coordinator.onFindShortcut = onFindShortcut
         context.coordinator.onFindResult = onFindResult
         context.coordinator.onFindUnavailable = onFindUnavailable
+        context.coordinator.findMayRevealMatches = findMayRevealMatches
         context.coordinator.showsFrontMatter = showsFrontMatter
         context.coordinator.showsLineNumbers = showsLineNumbers
         context.coordinator.sourceLineRevision = sourceLineRevision
@@ -1001,7 +1017,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 completion(nil)
                 return
             }
-            coordinator.captureAnchor(in: webView, completion: completion)
+            coordinator.capturePosition(in: webView, completion: completion)
         }
         viewportReader?.follow = { [weak webView, weak coordinator] line in
             guard let webView, let coordinator, coordinator.isLoaded else { return }
@@ -1433,6 +1449,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// that finishes before then is one that load is about to replace.
         private var isAwaitingCommit = false
         var lastFindQuery: String?
+        var findMayRevealMatches = true
         var findOptions = TextSearch.Options()
         private var findGeneration = UUID()
         private weak var findHost: WKWebView?
@@ -1642,13 +1659,13 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// before falling back to the cached anchor.
         private static let captureTimeout: TimeInterval = 0.25
         private var pendingCaptureID = 0
-        private var pendingCaptureCompletion: ((ViewportAnchor?) -> Void)?
+        private var pendingCaptureCompletion: ((PreviewViewportReader.Position?) -> Void)?
         private var captureTimeoutWorkItem: DispatchWorkItem?
 
         /// Asks the live page for a fresh viewport anchor, completing with
         /// `nil` after a short timeout so a switch is never blocked by a page
         /// that is still loading or running heavy engine scripts.
-        func captureAnchor(in webView: WKWebView, completion: @escaping (ViewportAnchor?) -> Void) {
+        func capturePosition(in webView: WKWebView, completion: @escaping (PreviewViewportReader.Position?) -> Void) {
             // A newer capture supersedes any still-pending one.
             pendingCaptureID += 1
             let captureID = pendingCaptureID
@@ -1665,18 +1682,23 @@ struct MarkdownPreviewView: NSViewRepresentable {
             webView.evaluateJavaScript(
                 "window.__md2CaptureAnchor ? window.__md2CaptureAnchor() : null;"
             ) { [weak self] result, _ in
-                let anchor = (result as? [String: Any]).map(Self.viewportAnchor(fromMessage:))
-                self?.finishCapture(captureID, with: anchor)
+                let position = (result as? [String: Any]).map {
+                    PreviewViewportReader.Position(
+                        anchor: Self.viewportAnchor(fromMessage: $0),
+                        movedFromAnchor: $0["movedFromAnchor"] as? Bool == true
+                    )
+                }
+                self?.finishCapture(captureID, with: position)
             }
         }
 
-        private func finishCapture(_ captureID: Int, with anchor: ViewportAnchor?) {
+        private func finishCapture(_ captureID: Int, with position: PreviewViewportReader.Position?) {
             guard captureID == pendingCaptureID,
                   let completion = pendingCaptureCompletion else { return }
             pendingCaptureCompletion = nil
             captureTimeoutWorkItem?.cancel()
             captureTimeoutWorkItem = nil
-            completion(anchor)
+            completion(position)
         }
 
         /// Decodes the anchor payload produced by the page's `captureAnchor()`
@@ -1723,9 +1745,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
         private func reloadLatestContent(in webView: WKWebView) {
             guard resourceContextIsActive else { return }
             (webView as? PreviewWebView)?.invalidateContextMenu()
-            captureAnchor(in: webView) { [weak self, weak webView] anchor in
+            capturePosition(in: webView) { [weak self, weak webView] position in
                 guard let self, let webView, self.resourceContextIsActive else { return }
-                let place = self.isLoaded ? anchor : nil
+                let place = self.isLoaded ? position?.anchor : nil
                 if let place {
                     self.pendingScroll = .viewport(place)
                     self.suppressNextAnchorMessage()
@@ -2040,7 +2062,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
             var payload: [String: Any] = [
                 "progress": anchor.intraBlockProgress,
                 "inset": anchor.viewportTopInset,
-                "fraction": anchor.scrollFraction
+                "fraction": anchor.scrollFraction,
+                "fromEditor": anchor.editorPosition != nil
             ]
             if let line = anchor.sourceLine { payload["line"] = line }
             if let endLine = anchor.sourceEndLine { payload["endLine"] = endLine }
@@ -2089,7 +2112,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
                         self.completeFind(nil, generation: generation, in: webView)
                         return
                     }
-                    self.finishFind(script: "window.__md2Find('\(MarkdownPreviewView.escapeForJS(query))', \(json));", generation: generation, in: webView)
+                    let reveal = MarkdownPreviewView.jsBoolean(self.findMayRevealMatches)
+                    self.finishFind(script: "window.__md2Find('\(MarkdownPreviewView.escapeForJS(query))', \(json), \(reveal));", generation: generation, in: webView)
                 }
             }
         }

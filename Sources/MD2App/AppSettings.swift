@@ -45,6 +45,10 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    @Published var usesTypewriterScrolling: Bool {
+        didSet { defaults.set(usesTypewriterScrolling, forKey: Keys.usesTypewriterScrolling) }
+    }
+
     @Published var showsOutlineByDefault: Bool {
         didSet {
             defaults.set(showsOutlineByDefault, forKey: Keys.showsOutlineByDefault)
@@ -169,6 +173,7 @@ final class AppSettings: ObservableObject {
         } else {
             modeShortcuts = .default
         }
+        usesTypewriterScrolling = defaults.bool(forKey: Keys.usesTypewriterScrolling)
 
         if defaults.object(forKey: Keys.showsOutlineByDefault) == nil {
             showsOutlineByDefault = true
@@ -314,6 +319,15 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    var modePickerHelp: String {
+        String(
+            format: text(.modePickerHelp),
+            modeShortcuts[.write].symbolDisplayString,
+            modeShortcuts[.split].symbolDisplayString,
+            modeShortcuts[.read].symbolDisplayString
+        )
+    }
+
     func modeShortcutValidationMessage(_ error: ModeShortcutValidationError) -> String {
         switch error {
         case .malformed:
@@ -337,6 +351,7 @@ private enum Keys {
     static let defaultMode = "MD2.DefaultMode"
     static let newDocumentMode = "MD2.NewDocumentMode"
     static let modeShortcuts = "MD2.ModeShortcuts"
+    static let usesTypewriterScrolling = "MD2.UsesTypewriterScrolling"
     static let showsOutlineByDefault = "MD2.ShowsOutlineByDefault"
     static let opensBlankDocumentOnLaunch = "MD2.OpensBlankDocumentOnLaunch"
     static let restoresWindowsOnLaunch = "MD2.RestoresWindowsOnLaunch"
@@ -413,7 +428,8 @@ enum L10nKey: String, CaseIterable, Sendable {
     case read
     case sideBySide
     case writeOrRead
-    case writeReadOrSplit
+    case modePickerHelp
+    case typewriterScrolling
     case words
     case chars
     case lines
@@ -678,7 +694,8 @@ enum L10n {
         .read: "Preview",
         .sideBySide: "Side by Side",
         .writeOrRead: "Edit or preview",
-        .writeReadOrSplit: "Edit, side by side, or preview",
+        .modePickerHelp: "Edit (%@), Side by Side (%@), Preview (%@). Change shortcuts in Settings.",
+        .typewriterScrolling: "Typewriter Scrolling",
         .words: "words",
         .chars: "chars",
         .lines: "lines",
@@ -981,7 +998,8 @@ enum L10n {
         .read: "预览",
         .sideBySide: "双栏",
         .writeOrRead: "编辑或预览",
-        .writeReadOrSplit: "编辑、双栏或预览",
+        .modePickerHelp: "编辑（%@）、双栏（%@）、预览（%@）。可在设置中修改快捷键。",
+        .typewriterScrolling: "打字机滚动",
         .words: "字",
         .chars: "字符",
         .lines: "行",

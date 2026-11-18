@@ -68,6 +68,22 @@ struct ModeKeyboardShortcut: Codable, Hashable {
         (modifiers.displayParts + [keyDisplayName]).joined(separator: "-")
     }
 
+    var symbolDisplayString: String {
+        var symbols = ""
+        if modifiers.contains(.control) { symbols += "⌃" }
+        if modifiers.contains(.option) { symbols += "⌥" }
+        if modifiers.contains(.shift) { symbols += "⇧" }
+        if modifiers.contains(.command) { symbols += "⌘" }
+        switch key {
+        case "space": return symbols + "␣"
+        case "tab": return symbols + "⇥"
+        case "escape": return symbols + "⎋"
+        case "return": return symbols + "↩"
+        case "delete": return symbols + "⌫"
+        default: return symbols + keyDisplayName
+        }
+    }
+
     var keyEquivalent: KeyEquivalent {
         switch key {
         case "space":

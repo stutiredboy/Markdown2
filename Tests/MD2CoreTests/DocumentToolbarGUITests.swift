@@ -137,7 +137,7 @@ final class DocumentToolbarGUITests: XCTestCase {
             }
 
             let helpByItem = [
-                settings.text(.mode): settings.text(.writeReadOrSplit),
+                settings.text(.mode): settings.modePickerHelp,
                 settings.text(.lineNumbers): settings.text(.lineNumbersHelp),
                 settings.text(.showMetadata): settings.text(.showMetadata)
             ]
@@ -146,6 +146,22 @@ final class DocumentToolbarGUITests: XCTestCase {
                 let found = harness.helpTexts(of: item)
                 XCTAssertTrue(found.contains(help), "\(label) lost its help text when it collapsed, found \(found)")
             }
+
+            let modeItem = try XCTUnwrap(harness.item(labelled: settings.text(.mode)))
+            let originalHelp = settings.modePickerHelp
+            for shortcut in ["⌘1", "⌘2", "⌘3"] {
+                XCTAssertTrue(originalHelp.contains(shortcut), "default help is missing \(shortcut)")
+            }
+            for name in harness.modeNames {
+                XCTAssertTrue(originalHelp.contains(name), "help is missing the localized label \(name)")
+            }
+            XCTAssertNil(settings.updateModeShortcut(.command("7"), for: .write))
+            XCTAssertTrue(harness.spin(until: {
+                harness.helpTexts(of: modeItem).contains { $0.contains("⌘7") && !$0.contains("⌘1") }
+            }), "changing the configured shortcut must update the compact Mode picker help")
+            settings.resetModeShortcutsToDefaults()
+            XCTAssertTrue(harness.spin(until: { harness.helpTexts(of: modeItem).contains(originalHelp) }),
+                          "restoring defaults must restore the compact Mode picker help")
         }
     }
 

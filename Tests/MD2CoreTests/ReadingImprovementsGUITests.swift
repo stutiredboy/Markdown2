@@ -296,6 +296,8 @@ final class ReadingImprovementsGUITests: XCTestCase {
         })
         host.spin(0.5)
         let editor = try XCTUnwrap(host.store.editorSession.textView)
+        XCTAssertEqual(editor.selectedRange(), NSRange(location: target, length: 0),
+                       "the first source caret must be at the reading location")
         let scrollView = try XCTUnwrap(editor.enclosingScrollView)
         let layoutManager = try XCTUnwrap(editor.layoutManager)
         var line = layoutManager.lineFragmentRect(forGlyphAt: layoutManager.glyphIndexForCharacter(at: target), effectiveRange: nil)
