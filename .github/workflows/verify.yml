@@ -75,7 +75,11 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' dist/Markdown2.app/Contents/Info.plist)" = "${PACKAGE_VERSION#v}"
           plutil -lint dist/Markdown2.app/Contents/Info.plist
           test -f dist/Markdown2.app/Contents/Resources/AppIcon.icns
-          resources=dist/Markdown2.app/Contents/Resources/MD2_MD2Core.bundle/Contents/Resources
+          # SwiftPM emits flat or Contents/Resources bundles depending on the toolchain.
+          resources=dist/Markdown2.app/Contents/Resources/MD2_MD2Core.bundle
+          if [ -d "$resources/Contents/Resources" ]; then
+            resources="$resources/Contents/Resources"
+          fi
           notices=(
             katex/THIRD-PARTY-NOTICES.txt
             diagrams/THIRD-PARTY-NOTICES.txt
