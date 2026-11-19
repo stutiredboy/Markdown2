@@ -42,9 +42,10 @@ jobs:
       # has a 2 s deadline. Run each in its own process so unrelated MainActor
       # tests cannot consume its time budget. The scaling suites
       # also need separate processes: concurrent suites can distort their ratios.
+      # Real file-watcher callbacks also have deadlines on the main actor.
       # Every exclusion below has a mandatory isolated gate before packaging.
       - name: Run default tests (GUI suites run in gui-tests)
-        run: swift test --skip 'P1RegressionTests.renderingYieldsMainActorAndLatestRevisionWins' --skip 'InlineRenderingPerformanceTests' --skip 'SelfContainedHTMLExportTests.exportImageBuilderRunsOffMainActorWhileInputCanContinue' --skip 'BlockRenderingPerformanceTests' --skip 'LiteralReplacementPerformanceTests'
+        run: swift test --skip 'P1RegressionTests.renderingYieldsMainActorAndLatestRevisionWins' --skip 'InlineRenderingPerformanceTests' --skip 'SelfContainedHTMLExportTests.exportImageBuilderRunsOffMainActorWhileInputCanContinue' --skip 'BlockRenderingPerformanceTests' --skip 'LiteralReplacementPerformanceTests' --skip 'DispatchSourceFileWatcherTests'
 
       - name: Verify inline scaling ratios in isolation
         run: swift test --filter 'InlineRenderingPerformanceTests'
@@ -60,6 +61,9 @@ jobs:
           set -euo pipefail
           swift test --filter 'P1RegressionTests.renderingYieldsMainActorAndLatestRevisionWins'
           swift test --filter 'SelfContainedHTMLExportTests.exportImageBuilderRunsOffMainActorWhileInputCanContinue'
+
+      - name: Verify file watcher callbacks in isolation
+        run: swift test --filter 'DispatchSourceFileWatcherTests'
 
       - name: Build and package without installing or publishing
         env:
