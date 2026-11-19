@@ -118,11 +118,14 @@ extension ViewportAnchor.EditorPosition {
     @MainActor init?(of textView: NSTextView) {
         guard let layoutManager = textView.layoutManager,
               let container = textView.textContainer,
-              layoutManager.numberOfGlyphs > 0 else { return nil }
+              let storage = textView.textStorage, storage.length > 0 else { return nil }
         // One inset below the viewport's top in the text view is the
         // viewport's own top in container coordinates.
         let top = textView.visibleRect.minY
         let glyph = layoutManager.glyphIndex(for: NSPoint(x: 0, y: top), in: container)
+        // Asking for the total glyph count forces TextKit to fill glyphs that
+        // each styling chunk has just invalidated, even far from the viewport.
+        guard layoutManager.isValidGlyphIndex(glyph) else { return nil }
         var line = NSRange()
         let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: &line)
         self.init(characterIndex: layoutManager.characterIndexForGlyph(at: line.location),
@@ -160,7 +163,7 @@ final class MarkdownStylingController {
             try? await Task.sleep(for: .milliseconds(25))
             guard !Task.isCancelled, let (plan, range) = await worker.prepare(text, previous: previous),
                   !Task.isCancelled, let self, self.generation == revision,
-                  let textView, !textView.hasMarkedText(), textView.string == text else { return }
+                  let textView, !textView.hasMarkedText(), (textView.string as NSString).isEqual(to: text) else { return }
             // Loads, large pastes and fence edits can invalidate the entire
             // document. Apply bounded chunks and yield between them so even
             // these updates do not monopolize the main actor.
@@ -169,7 +172,7 @@ final class MarkdownStylingController {
             let source = text as NSString
             repeat {
                 guard !Task.isCancelled, self.generation == revision,
-                      !textView.hasMarkedText(), textView.string == text else { return }
+                      !textView.hasMarkedText(), (textView.string as NSString).isEqual(to: text) else { return }
                 let chunk = source.rangeOfComposedCharacterSequences(for:
                     NSRange(location: cursor, length: min(8_192, NSMaxRange(range) - cursor)))
                 willApply()

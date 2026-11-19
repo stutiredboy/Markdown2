@@ -135,6 +135,23 @@ struct P1RegressionTests {
         #expect((view.textStorage?.attribute(.font, at: marked.location, effectiveRange: nil) as? NSFont)?.pointSize == 31)
     }
 
+    @Test @MainActor func pendingStyleRejectsCanonicallyEqualSourceMutation() async throws {
+        let original = "**a\u{0301}\u{0323}**"
+        let changed = "**a\u{0323}\u{0301}**"
+        try #require(original == changed && !original.utf16.elementsEqual(changed.utf16))
+        let view = NSTextView()
+        view.string = original
+        let controller = MarkdownStylingController()
+        var didStyleOldSource = false
+        controller.schedule(in: view, didApply: { didStyleOldSource = true })
+        view.string = changed
+
+        await controller.flush()
+
+        #expect(!didStyleOldSource)
+        #expect(view.string.utf16.elementsEqual(changed.utf16))
+    }
+
     private static func milliseconds(_ duration: Duration) -> Double {
         Double(duration.components.seconds) * 1_000 + Double(duration.components.attoseconds) / 1e15
     }
