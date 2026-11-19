@@ -387,7 +387,7 @@ struct MarkdownEditorView: NSViewRepresentable {
     /// this scroll view: the undo actions it registered target it, and the next
     /// editor re-hosts it.
     static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
-        coordinator.cancelRegexWork()
+        coordinator.cancelHostedRegexWork()
         coordinator.session.unhost(from: scrollView, coordinator: coordinator)
     }
 
@@ -645,7 +645,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         private var lastObservedScope = FindSession.Scope.document
         private var lastObservedRegex = false
         private var lastObservedRegexEpoch: UInt64 = 0
-        private var lastObservedFindIdentity: UUID?
+        private var lastObservedFindIdentity: UUID
         private var regexQueryBinding: Binding<String>?
         private var regexTemplateBinding: Binding<String>?
         private var regexNavigationBinding: Binding<FindCommand?>?
@@ -701,6 +701,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         @MainActor init(text: Binding<String>, session: MarkdownEditorSession = MarkdownEditorSession()) {
             _text = text
             self.session = session
+            lastObservedFindIdentity = session.find.identity
         }
 
         /// The document's undo manager, so the text view, the window, and the
@@ -760,8 +761,8 @@ struct MarkdownEditorView: NSViewRepresentable {
             let regex = find.usesRegex
             let queryChanged = regex ? !(query as NSString).isEqual(to: lastObservedQuery) : query != lastObservedQuery
             if queryChanged || find.options != lastObservedOptions || find.scope != lastObservedScope
-                || regex != lastObservedRegex || find.identity != lastObservedFindIdentity
-                || (regex && find.regexResultsEpoch != lastObservedRegexEpoch) {
+                || regex != lastObservedRegex
+                || (regex && (find.identity != lastObservedFindIdentity || find.regexResultsEpoch != lastObservedRegexEpoch)) {
                 let wasRegex = lastObservedRegex
                 lastObservedOptions = find.options
                 lastObservedScope = find.scope
@@ -831,7 +832,11 @@ struct MarkdownEditorView: NSViewRepresentable {
             }
         }
 
-        @MainActor func cancelRegexWork() {
+        @MainActor func cancelHostedRegexWork() {
+            if lastObservedRegex { cancelRegexWork() }
+        }
+
+        @MainActor private func cancelRegexWork() {
             regexSearchTask?.cancel()
             regexSearchTask = nil
             regexValidationTask?.cancel()
@@ -1353,8 +1358,9 @@ struct MarkdownEditorView: NSViewRepresentable {
                 onFindResult(total, index)
             } else {
                 let generation = findGeneration
+                let isRegex = session.find.usesRegex
                 DispatchQueue.main.async { [weak self] in
-                    guard let self, self.findGeneration == generation else { return }
+                    guard let self, !isRegex || self.findGeneration == generation else { return }
                     self.onFindResult(total, index)
                 }
             }
