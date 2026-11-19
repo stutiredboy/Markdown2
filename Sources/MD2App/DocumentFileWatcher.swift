@@ -23,8 +23,15 @@ struct DocumentFileFingerprint: Codable, Equatable, Sendable {
     /// The file's on-disk fingerprint right now, or `nil` when it is missing
     /// or unreadable (deleted, moved, mid-replacement).
     static func current(at url: URL, reference: DocumentCopyFileReference? = nil) -> DocumentFileFingerprint? {
-        guard let data = try? (reference?.read(at: url) ?? Data(contentsOf: url)) else { return nil }
+        guard reference != nil || isReadableRegularFile(at: url),
+              let data = try? (reference?.read(at: url) ?? Data(contentsOf: url)) else { return nil }
         return of(data: data, at: url)
+    }
+
+    static func isReadableRegularFile(at url: URL) -> Bool {
+        var info = stat()
+        return url.isFileURL && stat(url.path, &info) == 0 && info.st_mode & S_IFMT == S_IFREG
+            && access(url.path, R_OK) == 0
     }
 
     static func modificationDate(at url: URL) -> Date? {

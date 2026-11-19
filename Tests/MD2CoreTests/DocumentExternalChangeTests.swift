@@ -226,6 +226,69 @@ struct DocumentExternalChangeTests {
         #expect(try String(contentsOf: url, encoding: .utf8) == "# Doc\n")
         #expect(!store.isDirty)
     }
+
+    @Test(arguments: [false, true])
+    func manualSavePreservesUnverifiableReplacement(isFIFO: Bool) throws {
+        let watcher = FakeFileWatcher()
+        let url = try makeTempDocument("Original")
+        let directory = url.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let recoveredURL = directory.appendingPathComponent("recovered.md")
+        let repository = DocumentRecoveryRepository(directory: directory.appendingPathComponent("recovery"))
+        var destination = url
+        let store = DocumentStore(saveLocationPicker: { _ in destination }, fileWatcherFactory: { watcher },
+                                  recoveryRepository: repository)
+        defer { store.closeDocument(discardRecovery: true) }
+        store.open(url)
+        store.text = "Keep my edits"
+
+        try FileManager.default.removeItem(at: url)
+        if isFIFO {
+            try #require(mkfifo(url.path, 0o600) == 0)
+        } else {
+            try Data("External contents".utf8).write(to: url)
+            try FileManager.default.setAttributes([.posixPermissions: 0o200], ofItemAtPath: url.path)
+        }
+        // No watcher notification has arrived. Even explicitly selecting the
+        // original pathname must not replace an entry we cannot verify.
+        #expect(!store.save())
+        #expect(store.isDirty)
+        #expect(store.alert != nil)
+        #expect(try repository.load().first?.text == "Keep my edits")
+        if isFIFO {
+            var info = stat()
+            #expect(lstat(url.path, &info) == 0)
+            #expect(info.st_mode & S_IFMT == S_IFIFO)
+        } else {
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            #expect(try String(contentsOf: url, encoding: .utf8) == "External contents")
+            try FileManager.default.setAttributes([.posixPermissions: 0o200], ofItemAtPath: url.path)
+        }
+        destination = recoveredURL
+        #expect(store.save())
+        #expect(try String(contentsOf: recoveredURL, encoding: .utf8) == "Keep my edits")
+    }
+
+    @Test func recreatingMissingFilePreservesNewOccupantWithSameBytes() throws {
+        let watcher = FakeFileWatcher()
+        let url = try makeTempDocument("Original")
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = DocumentStore(saveLocationPicker: { _ in
+            // The absent pathname becomes occupied while the save panel is
+            // running. An identical fingerprint does not authorize this write.
+            try! Data("Original".utf8).write(to: url)
+            return url
+        }, fileWatcherFactory: { watcher })
+        defer { store.closeDocument(discardRecovery: true) }
+        store.open(url)
+        try FileManager.default.removeItem(at: url)
+        store.text = "Keep my edits"
+
+        #expect(!store.save())
+        #expect(try String(contentsOf: url, encoding: .utf8) == "Original")
+        #expect(store.text == "Keep my edits")
+        #expect(store.isDirty)
+    }
 }
 
 @MainActor

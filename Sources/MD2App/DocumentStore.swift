@@ -248,7 +248,7 @@ final class DocumentStore: ObservableObject {
     /// Resolves the destination for a self-contained HTML export. Injected so the
     /// flow can be tested without the modal `NSSavePanel`.
     private let htmlDestinationPicker: @MainActor (String) -> URL?
-    private let pdfExporterFactory: @MainActor (URL, ExportProfile) -> PDFExporting
+    private let pdfExporterFactory: (@MainActor (URL, ExportProfile) -> PDFExporting)?
     /// Supplies the export profile (page geometry, page numbers, headers/footers)
     /// applied to PDF export and Print. Injected so tests can pin a profile; the
     /// app wires it to the live `AppSettings` value.
@@ -376,7 +376,7 @@ final class DocumentStore: ObservableObject {
     init(
         pdfDestinationPicker: @escaping @MainActor (String) -> URL? = DocumentStore.presentPDFDestination,
         htmlDestinationPicker: @escaping @MainActor (String) -> URL? = DocumentStore.presentHTMLDestination,
-        pdfExporterFactory: @escaping @MainActor (URL, ExportProfile) -> PDFExporting = { PDFExporter(destinationURL: $0, profile: $1) },
+        pdfExporterFactory: (@MainActor (URL, ExportProfile) -> PDFExporting)? = nil,
         documentPrinterFactory: @escaping @MainActor () -> DocumentPrinting = { DocumentPrinter() },
         documentConverterFactory: @escaping @MainActor () -> DocumentConverting = { PandocConverter() },
         pandocAvailabilityProvider: @escaping @MainActor () -> Bool = { PandocConverter.isAvailable() },
@@ -472,10 +472,18 @@ final class DocumentStore: ObservableObject {
     /// menu command — relocating an existing file is left to the Finder.
     @discardableResult
     private func presentSaveLocationAndWrite() -> Bool {
+        func entryPath(_ url: URL) -> String {
+            url.deletingLastPathComponent().resolvingSymlinksInPath().appendingPathComponent(url.lastPathComponent).path
+        }
+        let vacantBackingURL = fileURL.flatMap { url -> URL? in
+            var entry = stat()
+            guard backingFileMissing, lstat(url.path, &entry) != 0, errno == ENOENT else { return nil }
+            return url
+        }
         guard let url = saveLocationPicker(fileURL?.lastPathComponent ?? "Untitled.md") else {
             return false
         }
-        return write(to: url)
+        return write(to: url, requiresVacantDestination: vacantBackingURL.map(entryPath) == entryPath(url))
     }
 
     /// Default save-location picker: the standard `NSSavePanel` for Markdown.
@@ -620,7 +628,7 @@ final class DocumentStore: ObservableObject {
 
         let contextToken = remoteResourceContextToken
         guard let url = pdfDestinationPicker(pdfFileName), resourceContextIsCurrent(contextToken),
-              !isProducingDerivedArtifact else {
+              !isProducingDerivedArtifact, allowsExport(to: url) else {
             return
         }
 
@@ -633,9 +641,13 @@ final class DocumentStore: ObservableObject {
         let snapshot = makeRenderSnapshot()
         let remoteImageBlockedLabel = alertText(.remoteImageBlocked)
         let rendered = await renderWorker.render(snapshot)
-        guard resourceContextIsCurrent(contextToken) else { return }
+        guard resourceContextIsCurrent(contextToken), allowsExport(to: url) else { return }
 
-        let exporter = pdfExporterFactory(url, profile)
+        let exporter = pdfExporterFactory?(url, profile) ?? PDFExporter(destinationURL: url, profile: profile,
+            canWriteDestination: { [weak self] in
+                guard let self else { return false }
+                return !self.exportDestinationIsSource(url)
+            })
         pdfExporter = exporter
         exporter.export(
             html: rendered.html,
@@ -648,9 +660,12 @@ final class DocumentStore: ObservableObject {
             guard let self, self.resourceContextIsCurrent(contextToken) else { return }
             self.pdfExporter = nil
             if case let .failure(error) = result {
+                let detail = if case .sourceDestination = error as? PDFExporter.ExportError {
+                    self.alertText(.alertExportSourceDestination)
+                } else { error.localizedDescription }
                 self.alert = DocumentAlert(
                     message: self.alertText(.alertCouldNotExport, url.lastPathComponent),
-                    detail: error.localizedDescription
+                    detail: detail
                 )
             }
         }
@@ -711,7 +726,7 @@ final class DocumentStore: ObservableObject {
 
         let contextToken = remoteResourceContextToken
         guard let url = htmlDestinationPicker(htmlFileName), resourceContextIsCurrent(contextToken),
-              !isProducingDerivedArtifact else {
+              !isProducingDerivedArtifact, allowsExport(to: url) else {
             return
         }
 
@@ -722,7 +737,7 @@ final class DocumentStore: ObservableObject {
         // The worker also performs file reads, bounded decoding and base64
         // encoding; the export keeps using the captured document/base URL.
         let export = await renderWorker.renderSelfContainedHTML(snapshot)
-        guard resourceContextIsCurrent(contextToken) else { return }
+        guard resourceContextIsCurrent(contextToken), allowsExport(to: url) else { return }
         do {
             try export.html.write(to: url, atomically: true, encoding: .utf8)
         } catch {
@@ -825,11 +840,7 @@ final class DocumentStore: ObservableObject {
             stopConversion(sourceChanged: true)
             return
         }
-        if let fileURL, Self.isConversionSource(fileURL, destination: destination) {
-            alert = DocumentAlert(message: alertText(.alertCouldNotExport, destination.lastPathComponent),
-                                  detail: alertText(.alertConversionSourceDestination))
-            return
-        }
+        guard allowsExport(to: destination) else { return }
 
         let converter = documentConverterFactory()
         conversion = .running(id, format, converter)
@@ -869,7 +880,16 @@ final class DocumentStore: ObservableObject {
         if case .running(_, _, let converter) = conversion { converter.cancel() }
     }
 
-    private static func isConversionSource(_ source: URL, destination: URL) -> Bool {
+    private func allowsExport(to destination: URL) -> Bool {
+        guard exportDestinationIsSource(destination) else { return true }
+        alert = DocumentAlert(message: alertText(.alertCouldNotExport, destination.lastPathComponent),
+                              detail: alertText(.alertExportSourceDestination))
+        return false
+    }
+
+    private func exportDestinationIsSource(_ destination: URL) -> Bool {
+        guard let fileURL else { return false }
+        let source = fileIdentity?.resolve(fallback: fileURL) ?? fileURL
         if source.resolvingSymlinksInPath() == destination.resolvingSymlinksInPath() { return true }
         var sourceInfo = stat()
         var destinationInfo = stat()
@@ -1254,7 +1274,7 @@ final class DocumentStore: ObservableObject {
     }
 
     @discardableResult
-    private func write(to requestedURL: URL, automatically: Bool = false) -> Bool {
+    private func write(to requestedURL: URL, automatically: Bool = false, requiresVacantDestination: Bool = false) -> Bool {
         guard !isClosed else { return false }
         // Preserve destination intent across the modal encoding prompt: the
         // watcher may follow a rename while that nested run loop is active.
@@ -1283,7 +1303,7 @@ final class DocumentStore: ObservableObject {
         guard !isClosed, !hasExternalConflict, documentIdentity == writingDocumentIdentity else { return false }
         // Resolve again at the write boundary, even before the watcher fires.
         if writingBackingFile { refreshFileLocation() }
-        let url = writingBackingFile ? (fileURL ?? requestedURL) : requestedURL
+        let url = writingBackingFile && !requiresVacantDestination ? (fileURL ?? requestedURL) : requestedURL
         if backingFileMissing && (automatically || (writingBackingFile && (copyFileReference != nil || folderBacked))) {
             if !automatically {
                 alert = DocumentAlert(message: alertText(.alertCouldNotSave, url.lastPathComponent),
@@ -1291,16 +1311,18 @@ final class DocumentStore: ObservableObject {
             }
             return false
         }
-        if url == fileURL, let lastKnown = lastKnownFingerprint {
+        if !requiresVacantDestination, url == fileURL, let lastKnown = lastKnownFingerprint {
             let comparison = DocumentFileFingerprint.comparison(
                 lastKnown: lastKnown, current: DocumentFileFingerprint.current(at: url, reference: copyFileReference))
             if comparison == .contentChanged {
                 raiseExternalConflict()
                 return false
             }
-            // A file can vanish between location resolution and the read.
-            if (automatically || copyFileReference != nil) && comparison == .missing {
+            // A missing fingerprint also means an unreadable or nonregular
+            // replacement. An ordinary Save has no permission to replace it.
+            if comparison == .missing {
                 markBackingFileMissing()
+                if !automatically { reportUnverifiedSaveDestination(url) }
                 return false
             }
         }
@@ -1308,10 +1330,24 @@ final class DocumentStore: ObservableObject {
         do {
             cancelAutosave()
             let priorHistoryID = writingBackingFile ? historyIdentity(at: url) : nil
-            if Self.hasMultipleHardLinks(at: url), !persistRecoveryNow() { return false }
+            let needsLinkedSaveRecovery = !requiresVacantDestination && Self.hasMultipleHardLinks(at: url)
+            if needsLinkedSaveRecovery {
+                if writingBackingFile, !isDirty, lastKnownFingerprint?.contentHash == DocumentFileFingerprint.hash(of: writtenData) {
+                    return true
+                }
+                if !persistRecoveryNow() {
+                    if !automatically {
+                        alert = DocumentAlert(message: alertText(.alertCouldNotSave, url.lastPathComponent),
+                                              detail: alertText(.alertRecoveryRequiredForLinkedSave))
+                    }
+                    return false
+                }
+            }
             let (newCopyReference, savedHistoryID) = try Self.writePreservingMetadata(writtenData, to: url,
                 replacingReference: writingBackingFile ? copyFileReference : nil, copyIO: copySaveIO,
                 protectsLinkedDestination: folderBacked,
+                requiresVacantDestination: requiresVacantDestination,
+                securedLinkedSaveRecovery: needsLinkedSaveRecovery,
                 captureHistoryIdentity: historyRepository != nil,
                 verifyNewFile: keepsLocalHistory() && historyRepository?.canRecord(byteCount: writtenData.count) == true)
             copyFileReference = newCopyReference
@@ -1331,13 +1367,24 @@ final class DocumentStore: ObservableObject {
             recordHistory(writtenData, reason: .saved, fileID: savedHistoryID, replacing: priorHistoryID)
             return true
         } catch {
-            alert = DocumentAlert(message: alertText(.alertCouldNotSave, url.lastPathComponent),
-                                  detail: error is DocumentCopyOpenError
-                                    ? alertText(folderBacked ? .folderSaveUnavailable : .copySaveUnavailable)
-                                    : error.localizedDescription)
+            if error is UnverifiedSaveDestination {
+                reportUnverifiedSaveDestination(url)
+            } else {
+                alert = DocumentAlert(message: alertText(.alertCouldNotSave, url.lastPathComponent),
+                                      detail: error is DocumentCopyOpenError
+                                        ? alertText(folderBacked ? .folderSaveUnavailable : .copySaveUnavailable)
+                                        : error.localizedDescription)
+            }
             persistRecoveryNow()
             return false
         }
+    }
+
+    private struct UnverifiedSaveDestination: Error {}
+
+    private func reportUnverifiedSaveDestination(_ url: URL) {
+        alert = DocumentAlert(message: alertText(.alertCouldNotSave, url.lastPathComponent),
+                              detail: alertText(.alertUnverifiedSaveDestination))
     }
 
     /// A pinned document always replaces a directory entry atomically and
@@ -1346,26 +1393,33 @@ final class DocumentStore: ObservableObject {
                                                 replacingReference: DocumentCopyFileReference?,
                                                 copyIO: DocumentCopySaveIO = .init(),
                                                 protectsLinkedDestination: Bool,
+                                                requiresVacantDestination: Bool,
+                                                securedLinkedSaveRecovery: Bool,
                                                 captureHistoryIdentity: Bool,
                                                 verifyNewFile: Bool) throws
         -> (DocumentCopyFileReference?, DocumentHistoryFileID?) {
         try replacingReference?.validate(at: url)
-        func validateDestination() throws {
-            guard protectsLinkedDestination else { return }
-            if let replacingReference {
-                _ = try DocumentCopyFileReference.open(at: url, matching: replacingReference.identity, noFollowAncestors: true)
-                return
+        func inspectDestination() throws -> DocumentCopyFileIdentity? {
+            if protectsLinkedDestination, let replacingReference {
+                return try DocumentCopyFileReference.open(at: url, matching: replacingReference.identity,
+                                                          noFollowAncestors: true).identity
             }
             var info = stat()
-            if lstat(url.path, &info) == 0 {
-                guard info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1 else {
-                    throw DocumentCopyOpenError.changed
-                }
-            } else if errno != ENOENT {
-                throw DocumentCopyOpenError.unavailable
+            guard lstat(url.path, &info) == 0 else {
+                if errno == ENOENT { return nil }
+                throw UnverifiedSaveDestination()
             }
+            if !protectsLinkedDestination, info.st_mode & S_IFMT == S_IFLNK {
+                guard stat(url.path, &info) == 0 else { throw UnverifiedSaveDestination() }
+            }
+            guard info.st_mode & S_IFMT == S_IFREG, access(url.path, R_OK) == 0 else {
+                throw UnverifiedSaveDestination()
+            }
+            if protectsLinkedDestination, info.st_nlink != 1 { throw DocumentCopyOpenError.changed }
+            return DocumentCopyFileIdentity(info)
         }
-        try validateDestination()
+        let destinationIdentity = try inspectDestination()
+        if requiresVacantDestination, destinationIdentity != nil { throw UnverifiedSaveDestination() }
         func historyIdentity(matching descriptor: Int32) -> DocumentHistoryFileID? {
             var written = stat()
             guard captureHistoryIdentity, descriptor >= 0,
@@ -1375,8 +1429,22 @@ final class DocumentStore: ObservableObject {
         }
 
         let manager = FileManager.default
-        guard manager.fileExists(atPath: url.path) else {
+        guard let destinationIdentity else {
             if replacingReference != nil { throw DocumentCopyOpenError.unavailable }
+            if requiresVacantDestination {
+                let replacement = try manager.url(for: .itemReplacementDirectory, in: .userDomainMask,
+                                                  appropriateFor: url, create: true)
+                defer { try? manager.removeItem(at: replacement) }
+                let staged = replacement.appendingPathComponent(UUID().uuidString)
+                try data.write(to: staged)
+                let descriptor = captureHistoryIdentity ? Darwin.open(staged.path, O_EVTONLY | O_CLOEXEC) : -1
+                defer { if descriptor >= 0 { Darwin.close(descriptor) } }
+                guard renamex_np(staged.path, url.path, UInt32(RENAME_EXCL)) == 0 else {
+                    if errno == EEXIST { throw UnverifiedSaveDestination() }
+                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                }
+                return (nil, historyIdentity(matching: descriptor))
+            }
             try data.write(to: url, options: .atomic)
             // Foundation's new-file write does not expose its temporary
             // descriptor. Confirm the first save's bytes before indexing it.
@@ -1394,9 +1462,13 @@ final class DocumentStore: ObservableObject {
         if replacingReference == nil && !protectsLinkedDestination && hasMultipleHardLinks(at: url) {
             // Replacing an inode severs its other names. For a hard-linked file,
             // update that inode after securing a recovery snapshot instead.
+            guard securedLinkedSaveRecovery else { throw UnverifiedSaveDestination() }
             let original = try Data(contentsOf: url)
             let handle = try FileHandle(forWritingTo: url)
             defer { try? handle.close() }
+            var info = stat()
+            guard fstat(handle.fileDescriptor, &info) == 0, DocumentCopyFileIdentity(info) == destinationIdentity,
+                  try inspectDestination() == destinationIdentity else { throw UnverifiedSaveDestination() }
             do {
                 try handle.truncate(atOffset: 0)
                 try handle.write(contentsOf: data)
@@ -1424,11 +1496,13 @@ final class DocumentStore: ObservableObject {
         if let replacingReference {
             reference = try DocumentCopyFileReference.open(at: temporary)
             try replacingReference.validate(at: url)
-            try validateDestination()
+            guard try inspectDestination() == destinationIdentity else { throw UnverifiedSaveDestination() }
             try copyIO.replace(url, temporary)
         } else {
             reference = nil
-            try validateDestination()
+            guard try inspectDestination() == destinationIdentity, !hasMultipleHardLinks(at: url) else {
+                throw UnverifiedSaveDestination()
+            }
             _ = try manager.replaceItemAt(url, withItemAt: temporary, backupItemName: nil, options: [])
         }
         try reference?.validate(at: url)
@@ -1437,7 +1511,7 @@ final class DocumentStore: ObservableObject {
 
     private static func hasMultipleHardLinks(at url: URL) -> Bool {
         var info = stat()
-        return stat(url.path, &info) == 0 && info.st_nlink > 1
+        return stat(url.path, &info) == 0 && info.st_mode & S_IFMT == S_IFREG && info.st_nlink > 1
     }
 
     func resolveEncodingConversion(convertToUTF8: Bool) {
@@ -1629,7 +1703,7 @@ final class DocumentStore: ObservableObject {
         guard let fileURL else { return }
 
         let readID = historyIdentity(at: fileURL)
-        guard !backingFileMissing || (copyFileReference == nil && fileIdentity?.isFolderFile != true),
+        guard !backingFileMissing,
               let data = try? copyFileReference?.read(at: fileURL) ?? Data(contentsOf: fileURL),
               let decoded = MarkdownFileDecoder.decode(data) else {
             alert = DocumentAlert(
@@ -1763,7 +1837,8 @@ final class DocumentStore: ObservableObject {
             backingFileMissing = false
             startWatchingFile()
         }
-        guard let resolved = fileIdentity?.resolve(fallback: previous) else {
+        guard let resolved = fileIdentity?.resolve(fallback: previous),
+              DocumentFileFingerprint.isReadableRegularFile(at: resolved) else {
             markBackingFileMissing()
             return
         }

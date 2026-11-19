@@ -125,6 +125,32 @@ struct DocumentStoreTests {
         #expect(store.isDirty)
     }
 
+    @Test(arguments: ["html", "pdf"])
+    func exportCannotReplaceItsMarkdownSource(fileExtension: String) async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("md2-export-source-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let source = directory.appendingPathComponent("notes.\(fileExtension)")
+        let original = Data("# Original Markdown\n".utf8)
+        try original.write(to: source)
+        let exporter = FakePDFExporter()
+        let store = DocumentStore(pdfDestinationPicker: { _ in source }, htmlDestinationPicker: { _ in source },
+                                  pdfExporterFactory: { _, _ in exporter })
+        defer { store.closeDocument(discardRecovery: true) }
+        store.open(source)
+        store.text += "Unsaved edit."
+
+        if fileExtension == "html" { await store.exportHTML() }
+        else { await store.exportPDF() }
+
+        #expect(try Data(contentsOf: source) == original)
+        #expect(exporter.exportCallCount == 0)
+        #expect(store.alert?.detail == "Choose a destination separate from the source document.")
+        #expect(store.isDirty)
+    }
+
     @Test func toggleTaskChecksAndUnchecksMarker() {
         let store = DocumentStore()
         store.text = "# Title\n\n- [ ] Draft\n- [x] Review"

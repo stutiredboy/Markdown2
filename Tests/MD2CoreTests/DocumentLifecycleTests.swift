@@ -253,6 +253,34 @@ struct DocumentRecoveryTests {
         store.closeDocument(discardRecovery: true)
     }
 
+    @Test func explicitHardLinkSaveReportsUnavailableRecoveryEveryTime() throws {
+        let (dir, _) = try fixture()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let obstruction = dir.appendingPathComponent("file-not-directory")
+        try Data().write(to: obstruction)
+        let repository = DocumentRecoveryRepository(directory: obstruction)
+        let source = dir.appendingPathComponent("source.md")
+        let alias = dir.appendingPathComponent("alias.md")
+        let original = Data("Original".utf8)
+        try original.write(to: source)
+        try FileManager.default.linkItem(at: source, to: alias)
+        let store = DocumentStore(recoveryRepository: repository)
+        defer { store.closeDocument(discardRecovery: false) }
+        store.open(source)
+        store.alert = nil
+        #expect(store.save(), "an unchanged hard link needs no write or recovery snapshot")
+
+        store.text = "Keep my edits"
+        for _ in 0..<2 {
+            store.alert = nil
+            #expect(!store.save())
+            #expect(store.alert?.detail == L10n.text(.alertRecoveryRequiredForLinkedSave, language: .english))
+        }
+        #expect(store.isDirty)
+        #expect(try Data(contentsOf: source) == original)
+        #expect(try Data(contentsOf: alias) == original)
+    }
+
     @Test func deletionNeverAutosavesBackToOldPath() async throws {
         let (dir, repository) = try fixture()
         defer { try? FileManager.default.removeItem(at: dir) }

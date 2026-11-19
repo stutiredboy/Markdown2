@@ -344,7 +344,7 @@ struct DocumentConversionFlowTests {
             store.alert = nil
             store.exportDOCX()
 
-            #expect(store.alert?.detail == L10n.text(.alertConversionSourceDestination, language: .english))
+            #expect(store.alert?.detail == L10n.text(.alertExportSourceDestination, language: .english))
             #expect(try String(contentsOf: destination, encoding: .utf8) == "# Original\n")
         }
         #expect(converter.callCount == 0)
