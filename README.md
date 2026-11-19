@@ -52,15 +52,15 @@ The Format and Paragraph menus offer `Cmd+B` for bold, `Cmd+I` for italic, `Cmd+
 
 ## Install
 
-Requires macOS 15 or later.
+The release disk image requires an Apple silicon Mac running macOS 15 or later.
 
-Download the latest `Markdown2.app` from [Releases](https://github.com/stutiredboy/md2/releases), then drag it to `/Applications`.
+Download the latest `Markdown2-*.dmg` from [Releases](https://github.com/stutiredboy/Markdown2/releases). Open the disk image and drag `Markdown2.app` to `/Applications`.
 
 > [!NOTE]
-> Apps downloaded from GitHub Releases are not signed or notarized by Apple. macOS Gatekeeper will block them with a "damaged" warning. Run the following command to remove the quarantine attribute:
+> GitHub releases use ad-hoc signing. If Gatekeeper blocks the app after you verify that it came from the official release, remove its quarantine attribute.
 >
 > ```sh
-> xattr -cr /Applications/Markdown2.app
+> xattr -dr com.apple.quarantine /Applications/Markdown2.app
 > ```
 >
 > Then open **System Settings → Privacy & Security** and click **Open Anyway**, or simply double-click the app.

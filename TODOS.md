@@ -88,6 +88,19 @@ features. See the [daily-writing](Docs/Plans/daily-writing/PLAN.md),
   on failure or cancellation. See the [user guide](Docs/RemoteResources.md#export-to-docx-or-epub)
   and [acceptance plan](Docs/Plans/docx-epub-export/PLAN.md).
 
+## Follow-up from 0.9.0 verification
+
+- [ ] **Refresh the standalone P1 benchmark.** The runner for the 0.6.0
+  measurements compiles its own list of app sources, which has drifted from
+  the current editor and typography code. Update the runner or document how
+  to reproduce those measurements at the matching revision. The Swift test
+  suite and release workflow still check the render and HTML export
+  main-thread heartbeats.
+- [ ] **Improve recovery after an interrupted hard-linked save.** The draft
+  is persisted before an in-place write so edited text remains recoverable.
+  If the process stops mid-write, the linked paths can temporarily expose
+  partial bytes. Design how to reconcile those paths from the recovery record.
+
 ## Explicitly deferred
 
 - **Developer ID signing, notarization and stapling:** blocked on an Apple
