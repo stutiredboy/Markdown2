@@ -33,13 +33,12 @@ features. See the [daily-writing](Docs/Plans/daily-writing/PLAN.md),
 
 ## Next packages
 
-- [ ] **P2 — A lightweight folder workflow.** Start with an explicitly opened
-  directory, a file tree and quick open; directory search and rename/link-impact
-  handling need a subsequent bounded contract. Decide root/symlink boundaries,
-  indexing limits, excluded files, cancellation and external-change handling.
-  Acceptance: index only the authorized scope without following an unapproved
-  external target, keep large folders responsive, open ordinary Markdown files
-  without duplication, and never silently rewrite or overwrite linked files.
+- [x] **P2 — A lightweight folder workflow.** File → Open Folder shows a
+  bounded Markdown tree for one explicitly selected folder. Quick Open filters
+  filenames and relative paths, and opening a file reuses any existing document
+  window. See the [scope, limits, refresh and link policy](Docs/FolderWorkflow.md).
+  Directory content search and rename/link-impact handling need a subsequent
+  bounded contract.
 
 - [x] **P2 — Explain remote resource origins and blocked content.** The Remote
   Images details show origins and counts for supported HTTP(S) image references

@@ -1144,6 +1144,45 @@ final class DocumentStore: ObservableObject {
         }
     }
 
+    func matchesFolderFile(at url: URL) -> Bool {
+        guard fileIdentity?.isFolderFile == true, let copyFileReference else { return false }
+        return (try? copyFileReference.validate(at: url)) != nil
+    }
+
+    /// Explicitly opening a new file at the missing file's path frees that
+    /// path for the new editor while keeping the previous editor as a draft.
+    func detachUnavailableFolderDraft(replacedBy url: URL, verifiedReference: DocumentCopyFileReference? = nil) {
+        guard backingFileMissing, let identity = fileIdentity, identity.isFolderFile,
+              let fileURL else { return }
+        let samePath = verifiedReference != nil ? fileURL.path == url.path
+            : fileURL.resolvingSymlinksInPath().path == url.resolvingSymlinksInPath().path
+        guard samePath, let replacement = verifiedReference ?? (try? DocumentCopyFileReference.open(at: url)),
+              !identity.matchesFolderEntry(replacement) else { return }
+        stopWatchingFile()
+        copyFileReference = nil
+        fileIdentity = nil
+        self.fileURL = nil
+        lastKnownFingerprint = nil
+        backingFileMissing = false
+        updateHistoryIdentity(nil)
+        replaceRemoteResourceContext()
+        renderImmediately()
+        persistRecoveryNow()
+    }
+
+    func openVerifiedFolderFile(_ opened: FolderIndex.OpenedFile, decoded: MarkdownFileDecoder.DecodedFile?) throws {
+        guard isReusableEmptyDocument, !isClosed else { throw FolderIndex.Failure.fileUnavailable }
+        let historyID = historyIdentity(at: opened.url)
+        try opened.validate()
+        guard let decoded else {
+            showUndecodableFile(opened.url)
+            return
+        }
+        installLoadedFile(decoded, url: opened.url, data: opened.data, fingerprint: opened.fingerprint,
+                          identity: DocumentFileIdentity(folderReference: opened.fileReference),
+                          reference: opened.fileReference, historyID: historyID)
+    }
+
     /// Consume validated bytes without another path read. The pinned identity
     /// remains authoritative across the UI handoff and subsequent copy saves.
     func openVerifiedCopy(_ opened: DocumentCopyOpenData, decoded: MarkdownFileDecoder.DecodedFile) throws {
@@ -1152,15 +1191,39 @@ final class DocumentStore: ObservableObject {
         let historyID = historyIdentity(at: receipt.destinationURL)
         try DocumentCopyReader.validateDirectory(receipt)
         try receipt.fileReference.validate(at: receipt.destinationURL)
-        copyFileReference = receipt.fileReference
-        fileIdentity = DocumentFileIdentity(copyReference: receipt.fileReference)
-        fileFormat = decoded.format
-        setDocumentText(decoded.text, fileURL: receipt.destinationURL, dirty: false)
-        lastKnownFingerprint = DocumentFileFingerprint(modificationDate: DocumentFileFingerprint.modificationDate(at: receipt.destinationURL),
+        let fingerprint = DocumentFileFingerprint(
+            modificationDate: DocumentFileFingerprint.modificationDate(at: receipt.destinationURL),
             contentHash: receipt.contentHash)
+        installLoadedFile(decoded, url: receipt.destinationURL, data: opened.data, fingerprint: fingerprint,
+                          identity: DocumentFileIdentity(copyReference: receipt.fileReference),
+                          reference: receipt.fileReference, historyID: historyID)
+    }
+
+    private func installLoadedFile(_ decoded: MarkdownFileDecoder.DecodedFile, url: URL, data: Data,
+                                   fingerprint: DocumentFileFingerprint, identity: DocumentFileIdentity,
+                                   reference: DocumentCopyFileReference? = nil, historyID: DocumentHistoryFileID?) {
+        fileFormat = decoded.format
+        copyFileReference = reference
+        fileIdentity = identity
+        backingFileMissing = false
+        encodingWarningShown = false
+        encodingConversionRequest = nil
+        setDocumentText(decoded.text, fileURL: url, dirty: false)
+        lastKnownFingerprint = fingerprint
+        hasExternalConflict = false
+        externalConflictRequest = nil
+        pendingExternalReload = nil
+        pendingReloadDiscardRevision = nil
         startWatchingFile()
         persistRecoveryNow()
-        recordHistory(opened.data, reason: .opened, fileID: historyID)
+        recordHistory(data, reason: .opened, fileID: historyID)
+    }
+
+    private func showUndecodableFile(_ url: URL) {
+        alert = DocumentAlert(
+            message: alertText(.alertUndecodableFile, url.lastPathComponent),
+            detail: alertText(.alertUndecodableFileDetail)
+        )
     }
 
     @discardableResult
@@ -1173,27 +1236,11 @@ final class DocumentStore: ObservableObject {
             let data = try Data(contentsOf: url)
             let historyID = unchangedHistoryIdentity(readID, at: url)
             guard let decoded = MarkdownFileDecoder.decode(data) else {
-                alert = DocumentAlert(
-                    message: alertText(.alertUndecodableFile, url.lastPathComponent),
-                    detail: alertText(.alertUndecodableFileDetail)
-                )
+                showUndecodableFile(url)
                 return false
             }
-            fileFormat = decoded.format
-            copyFileReference = nil
-            fileIdentity = DocumentFileIdentity(url: url)
-            backingFileMissing = false
-            encodingWarningShown = false
-            encodingConversionRequest = nil
-            setDocumentText(decoded.text, fileURL: url, dirty: false)
-            lastKnownFingerprint = DocumentFileFingerprint.of(data: data, at: url)
-            hasExternalConflict = false
-            externalConflictRequest = nil
-            pendingExternalReload = nil
-            pendingReloadDiscardRevision = nil
-            startWatchingFile()
-            persistRecoveryNow()
-            recordHistory(data, reason: .opened, fileID: historyID)
+            installLoadedFile(decoded, url: url, data: data, fingerprint: .of(data: data, at: url),
+                              identity: DocumentFileIdentity(url: url), historyID: historyID)
             let directory = url.deletingLastPathComponent()
             Task.detached(priority: .background) { LegacyPreviewCleaner.clean(in: directory) }
             return true
@@ -1211,7 +1258,9 @@ final class DocumentStore: ObservableObject {
         guard !isClosed else { return false }
         // Preserve destination intent across the modal encoding prompt: the
         // watcher may follow a rename while that nested run loop is active.
-        let writingBackingFile = requestedURL == fileURL
+        let folderBacked = fileIdentity?.isFolderFile == true
+        let writingBackingFile = requestedURL == fileURL || (folderBacked &&
+            requestedURL.resolvingSymlinksInPath().path == fileURL?.resolvingSymlinksInPath().path)
         let writingDocumentIdentity = documentIdentity
 
         var outputFormat = fileFormat
@@ -1235,16 +1284,22 @@ final class DocumentStore: ObservableObject {
         // Resolve again at the write boundary, even before the watcher fires.
         if writingBackingFile { refreshFileLocation() }
         let url = writingBackingFile ? (fileURL ?? requestedURL) : requestedURL
-        if backingFileMissing && (automatically || (writingBackingFile && copyFileReference != nil)) { return false }
+        if backingFileMissing && (automatically || (writingBackingFile && (copyFileReference != nil || folderBacked))) {
+            if !automatically {
+                alert = DocumentAlert(message: alertText(.alertCouldNotSave, url.lastPathComponent),
+                                      detail: alertText(folderBacked ? .folderSaveUnavailable : .copySaveUnavailable))
+            }
+            return false
+        }
         if url == fileURL, let lastKnown = lastKnownFingerprint {
             let comparison = DocumentFileFingerprint.comparison(
-                lastKnown: lastKnown, current: DocumentFileFingerprint.current(at: url))
+                lastKnown: lastKnown, current: DocumentFileFingerprint.current(at: url, reference: copyFileReference))
             if comparison == .contentChanged {
                 raiseExternalConflict()
                 return false
             }
             // A file can vanish between location resolution and the read.
-            if automatically && comparison == .missing {
+            if (automatically || copyFileReference != nil) && comparison == .missing {
                 markBackingFileMissing()
                 return false
             }
@@ -1254,15 +1309,17 @@ final class DocumentStore: ObservableObject {
             cancelAutosave()
             let priorHistoryID = writingBackingFile ? historyIdentity(at: url) : nil
             if Self.hasMultipleHardLinks(at: url), !persistRecoveryNow() { return false }
-            if writingBackingFile, let copyFileReference { try copyFileReference.validate(at: url) }
             let (newCopyReference, savedHistoryID) = try Self.writePreservingMetadata(writtenData, to: url,
-                independentCopy: writingBackingFile && copyFileReference != nil, copyIO: copySaveIO,
+                replacingReference: writingBackingFile ? copyFileReference : nil, copyIO: copySaveIO,
+                protectsLinkedDestination: folderBacked,
                 captureHistoryIdentity: historyRepository != nil,
                 verifyNewFile: keepsLocalHistory() && historyRepository?.canRecord(byteCount: writtenData.count) == true)
             copyFileReference = newCopyReference
             lastKnownFingerprint = DocumentFileFingerprint.of(data: writtenData, at: url)
             fileURL = url
-            fileIdentity = newCopyReference.map { DocumentFileIdentity(copyReference: $0) } ?? DocumentFileIdentity(url: url)
+            fileIdentity = newCopyReference.map {
+                folderBacked ? DocumentFileIdentity(folderReference: $0) : DocumentFileIdentity(copyReference: $0)
+            } ?? DocumentFileIdentity(url: url)
             fileFormat = outputFormat
             isDirty = false
             backingFileMissing = false
@@ -1275,20 +1332,40 @@ final class DocumentStore: ObservableObject {
             return true
         } catch {
             alert = DocumentAlert(message: alertText(.alertCouldNotSave, url.lastPathComponent),
-                                  detail: error is DocumentCopyOpenError ? alertText(.copySaveUnavailable) : error.localizedDescription)
+                                  detail: error is DocumentCopyOpenError
+                                    ? alertText(folderBacked ? .folderSaveUnavailable : .copySaveUnavailable)
+                                    : error.localizedDescription)
             persistRecoveryNow()
             return false
         }
     }
 
-    /// Copy windows always replace a directory entry atomically; they never
-    /// select the shared-inode write path, even if a hardlink appears in a race.
+    /// A pinned document always replaces a directory entry atomically and
+    /// retains its independent save route if another hard link appears.
     private static func writePreservingMetadata(_ data: Data, to url: URL,
-                                                independentCopy: Bool = false,
+                                                replacingReference: DocumentCopyFileReference?,
                                                 copyIO: DocumentCopySaveIO = .init(),
+                                                protectsLinkedDestination: Bool,
                                                 captureHistoryIdentity: Bool,
                                                 verifyNewFile: Bool) throws
         -> (DocumentCopyFileReference?, DocumentHistoryFileID?) {
+        try replacingReference?.validate(at: url)
+        func validateDestination() throws {
+            guard protectsLinkedDestination else { return }
+            if let replacingReference {
+                _ = try DocumentCopyFileReference.open(at: url, matching: replacingReference.identity, noFollowAncestors: true)
+                return
+            }
+            var info = stat()
+            if lstat(url.path, &info) == 0 {
+                guard info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1 else {
+                    throw DocumentCopyOpenError.changed
+                }
+            } else if errno != ENOENT {
+                throw DocumentCopyOpenError.unavailable
+            }
+        }
+        try validateDestination()
         func historyIdentity(matching descriptor: Int32) -> DocumentHistoryFileID? {
             var written = stat()
             guard captureHistoryIdentity, descriptor >= 0,
@@ -1299,7 +1376,7 @@ final class DocumentStore: ObservableObject {
 
         let manager = FileManager.default
         guard manager.fileExists(atPath: url.path) else {
-            if independentCopy { throw DocumentCopyOpenError.unavailable }
+            if replacingReference != nil { throw DocumentCopyOpenError.unavailable }
             try data.write(to: url, options: .atomic)
             // Foundation's new-file write does not expose its temporary
             // descriptor. Confirm the first save's bytes before indexing it.
@@ -1314,7 +1391,7 @@ final class DocumentStore: ObservableObject {
                   current == data, historyIdentity(matching: bytes.fileDescriptor) == identity else { return (nil, nil) }
             return (nil, identity)
         }
-        if !independentCopy && hasMultipleHardLinks(at: url) {
+        if replacingReference == nil && !protectsLinkedDestination && hasMultipleHardLinks(at: url) {
             // Replacing an inode severs its other names. For a hard-linked file,
             // update that inode after securing a recovery snapshot instead.
             let original = try Data(contentsOf: url)
@@ -1336,16 +1413,24 @@ final class DocumentStore: ObservableObject {
                                           appropriateFor: url, create: true)
         defer { try? manager.removeItem(at: replacement) }
         let temporary = replacement.appendingPathComponent(UUID().uuidString)
-        if independentCopy { try copyIO.writeTemporary(data, temporary) }
+        if replacingReference != nil { try copyIO.writeTemporary(data, temporary) }
         else { try data.write(to: temporary) }
         // replaceItemAt preserves the original creation time. Read the new
         // identity after replacement and match it against the staged inode
         // held open here, even if another process replaces the public path.
         let historyDescriptor = captureHistoryIdentity ? Darwin.open(temporary.path, O_EVTONLY | O_CLOEXEC) : -1
         defer { if historyDescriptor >= 0 { Darwin.close(historyDescriptor) } }
-        let reference = independentCopy ? try DocumentCopyFileReference.open(at: temporary) : nil
-        if independentCopy { try copyIO.replace(url, temporary) }
-        else { _ = try manager.replaceItemAt(url, withItemAt: temporary, backupItemName: nil, options: []) }
+        let reference: DocumentCopyFileReference?
+        if let replacingReference {
+            reference = try DocumentCopyFileReference.open(at: temporary)
+            try replacingReference.validate(at: url)
+            try validateDestination()
+            try copyIO.replace(url, temporary)
+        } else {
+            reference = nil
+            try validateDestination()
+            _ = try manager.replaceItemAt(url, withItemAt: temporary, backupItemName: nil, options: [])
+        }
         try reference?.validate(at: url)
         return (reference, historyIdentity(matching: historyDescriptor))
     }
@@ -1452,7 +1537,7 @@ final class DocumentStore: ObservableObject {
 
     /// Creates (once) and (re-)arms the watcher on the current backing file.
     private func startWatchingFile() {
-        guard let fileURL else {
+        guard let fileURL, !(backingFileMissing && fileIdentity?.isFolderFile == true) else {
             stopWatchingFile()
             return
         }
@@ -1475,10 +1560,12 @@ final class DocumentStore: ObservableObject {
     /// stale evaluation instead of acting on it.
     private func evaluateExternalChange() {
         refreshFileLocation()
-        guard let fileURL, let lastKnown = lastKnownFingerprint, !isLoading, !isClosed else { return }
+        guard let fileURL, let lastKnown = lastKnownFingerprint, !isLoading, !isClosed,
+              !(backingFileMissing && fileIdentity?.isFolderFile == true) else { return }
         let url = fileURL
+        let reference = copyFileReference
         Task.detached(priority: .utility) { [weak self] in
-            let current = DocumentFileFingerprint.current(at: url)
+            let current = DocumentFileFingerprint.current(at: url, reference: reference)
             await MainActor.run { [weak self] in
                 self?.applyExternalChange(current: current, lastKnown: lastKnown, url: url)
             }
@@ -1542,7 +1629,7 @@ final class DocumentStore: ObservableObject {
         guard let fileURL else { return }
 
         let readID = historyIdentity(at: fileURL)
-        guard copyFileReference == nil || !backingFileMissing,
+        guard !backingFileMissing || (copyFileReference == nil && fileIdentity?.isFolderFile != true),
               let data = try? copyFileReference?.read(at: fileURL) ?? Data(contentsOf: fileURL),
               let decoded = MarkdownFileDecoder.decode(data) else {
             alert = DocumentAlert(
@@ -1618,7 +1705,8 @@ final class DocumentStore: ObservableObject {
             beginExternalReload(discardingEdits: true)
         } else {
             refreshFileLocation()
-            if let fileURL, let current = DocumentFileFingerprint.current(at: fileURL) {
+            if let fileURL, !(backingFileMissing && fileIdentity?.isFolderFile == true),
+               let current = DocumentFileFingerprint.current(at: fileURL, reference: copyFileReference) {
                 lastKnownFingerprint = current
                 if copyFileReference == nil { fileIdentity = DocumentFileIdentity(url: fileURL) }
             }
@@ -1665,6 +1753,16 @@ final class DocumentStore: ObservableObject {
     /// also rebase relative images/links and the window's represented URL.
     func refreshFileLocation() {
         guard let previous = fileURL, !isClosed else { return }
+        if let identity = fileIdentity, identity.isFolderFile, copyFileReference == nil {
+            guard let reference = identity.reopenFolderFile(at: previous) else {
+                markBackingFileMissing()
+                return
+            }
+            copyFileReference = reference
+            fileIdentity = DocumentFileIdentity(folderReference: reference)
+            backingFileMissing = false
+            startWatchingFile()
+        }
         guard let resolved = fileIdentity?.resolve(fallback: previous) else {
             markBackingFileMissing()
             return
@@ -1755,7 +1853,7 @@ final class DocumentStore: ObservableObject {
         }
     }
 
-    func restore(_ snapshot: DocumentRecoverySnapshot) {
+    func restore(_ snapshot: DocumentRecoverySnapshot, openingFolderFile: FolderIndex.OpenedFile? = nil) {
         historyFileID = nil
         historyLineage = UUID()
         recoveryID = snapshot.id
@@ -1763,6 +1861,10 @@ final class DocumentStore: ObservableObject {
         fileFormat = snapshot.format
         fileIdentity = snapshot.identity
         lastKnownFingerprint = snapshot.fingerprint
+        if let url = snapshot.fileURL, openingFolderFile != nil || snapshot.identity?.isFolderFile == true {
+            restoreFolderDocument(snapshot, url: url, selectedFile: openingFolderFile)
+            return
+        }
         let resolved = snapshot.fileURL.flatMap { snapshot.identity?.resolve(fallback: $0) }
         setDocumentText(snapshot.text, fileURL: resolved ?? snapshot.fileURL, dirty: snapshot.isDirty)
         if let url = snapshot.fileURL {
@@ -1789,6 +1891,51 @@ final class DocumentStore: ObservableObject {
         }
         scheduleAutosaveIfNeeded()
         persistRecoveryNow()
+    }
+
+    private func restoreFolderDocument(_ snapshot: DocumentRecoverySnapshot, url: URL,
+                                       selectedFile: FolderIndex.OpenedFile?) {
+        let restoreURL = selectedFile?.url ?? url
+        let identityMatches = snapshot.identity?.isFolderFile != true
+            || selectedFile.map { snapshot.identity?.matchesFolderEntry($0.fileReference) == true } == true
+        let selectedReference = identityMatches ? selectedFile?.fileReference : nil
+        let reference = selectedReference ?? snapshot.identity?.reopenFolderFile(at: restoreURL)
+        guard let reference else {
+            setDocumentText(snapshot.text, fileURL: restoreURL, dirty: snapshot.isDirty)
+            markBackingFileMissing()
+            return
+        }
+        copyFileReference = reference
+        let identity = DocumentFileIdentity(folderReference: reference)
+        fileIdentity = identity
+        setDocumentText(snapshot.text, fileURL: restoreURL, dirty: snapshot.isDirty)
+        do {
+            let verifiedSelection = selectedReference != nil ? selectedFile : nil
+            try verifiedSelection?.validate()
+            let data = try verifiedSelection?.data ?? reference.read(at: restoreURL)
+            let current = verifiedSelection?.fingerprint ?? .of(data: data, at: restoreURL)
+            let historyID = historyIdentity(at: restoreURL)
+            if !snapshot.isDirty {
+                guard let decoded = MarkdownFileDecoder.decode(data) else {
+                    showUndecodableFile(restoreURL)
+                    markBackingFileMissing()
+                    return
+                }
+                installLoadedFile(decoded, url: restoreURL, data: data, fingerprint: current,
+                                  identity: identity, reference: reference, historyID: historyID)
+                return
+            }
+            if snapshot.fingerprint?.contentHash != current.contentHash {
+                raiseExternalConflict()
+            } else {
+                historyFileID = historyID
+            }
+            startWatchingFile()
+            scheduleAutosaveIfNeeded()
+            persistRecoveryNow()
+        } catch {
+            markBackingFileMissing()
+        }
     }
 
     /// Explicit close discards the record only after Save/Don't Save succeeded.

@@ -395,6 +395,7 @@ enum L10nKey: String, CaseIterable, Sendable {
     case selectionStats
     case new
     case open
+    case openFolder, folderQuickOpen, folderAuthorizationFailed, folderSaveUnavailable
     case openRecent
     case clearMenu
     case recentDocumentMissingDetail
@@ -415,6 +416,11 @@ enum L10nKey: String, CaseIterable, Sendable {
     case exportDOCX
     case exportEPUB
     case close
+    case folderWindowTitle, folderQuickOpenField, folderFilterPlaceholder, folderFileList
+    case folderRefresh, folderCancelScan, folderOpenSelection, folderScanning, folderOpening
+    case folderNoFiles, folderOneFile, folderFileCount, folderOneMatch, folderMatchCount
+    case folderScanLimited, folderScanUnreadable, folderScanCancelled, folderRefreshCancelled
+    case folderRootUnavailable, folderFileUnavailable, folderFileTooLarge
     case outline
     case noHeadings
     case hideOutline
@@ -633,6 +639,10 @@ enum L10n {
         .selectionStats: "Selection",
         .new: "New",
         .open: "Open...",
+        .openFolder: "Open Folder…",
+        .folderQuickOpen: "Quick Open…",
+        .folderAuthorizationFailed: "Choose a readable folder in its original location.",
+        .folderSaveUnavailable: "The original file could not be verified. Your edits are still in this window.",
         .openRecent: "Open Recent",
         .clearMenu: "Clear Menu",
         .recentDocumentMissingDetail: "The file no longer exists at its recorded location.",
@@ -691,6 +701,27 @@ enum L10n {
         .exportDOCX: "Export as DOCX…",
         .exportEPUB: "Export as EPUB…",
         .close: "Close",
+        .folderWindowTitle: "%@ — Folder",
+        .folderQuickOpenField: "Quick Open",
+        .folderFilterPlaceholder: "Search filenames or paths",
+        .folderFileList: "Folder Files",
+        .folderRefresh: "Refresh",
+        .folderCancelScan: "Stop Scan",
+        .folderOpenSelection: "Open",
+        .folderScanning: "Scanning folder…",
+        .folderOpening: "Opening file…",
+        .folderNoFiles: "No Markdown files found.",
+        .folderOneFile: "1 Markdown file",
+        .folderFileCount: "%@ Markdown files",
+        .folderOneMatch: "1 matching file",
+        .folderMatchCount: "%@ matching files",
+        .folderScanLimited: "Partial list. The scan limit was reached.",
+        .folderScanUnreadable: "Some items could not be read.",
+        .folderScanCancelled: "Scan stopped. Refresh to try again.",
+        .folderRefreshCancelled: "Scan stopped. Showing the previous list.",
+        .folderRootUnavailable: "The folder is unavailable. Choose it again to continue.",
+        .folderFileUnavailable: "This file is unavailable or changed on disk. Refresh the folder and try again.",
+        .folderFileTooLarge: "This file is too large to open from the folder browser. Use File › Open to open it directly.",
         .outline: "Outline",
         .noHeadings: "No headings",
         .hideOutline: "Hide outline",
@@ -974,6 +1005,10 @@ enum L10n {
         .selectionStats: "选区",
         .new: "新建",
         .open: "打开...",
+        .openFolder: "打开文件夹…",
+        .folderQuickOpen: "快速打开…",
+        .folderAuthorizationFailed: "请选择位于原始位置且可读取的文件夹。",
+        .folderSaveUnavailable: "无法验证原文件。编辑内容仍保留在此窗口中。",
         .openRecent: "打开最近使用的",
         .clearMenu: "清除菜单",
         .recentDocumentMissingDetail: "文件已不在原来的位置（可能已被移动或删除）。",
@@ -1032,6 +1067,27 @@ enum L10n {
         .exportDOCX: "导出为 DOCX…",
         .exportEPUB: "导出为 EPUB…",
         .close: "关闭",
+        .folderWindowTitle: "%@ — 文件夹",
+        .folderQuickOpenField: "快速打开",
+        .folderFilterPlaceholder: "搜索文件名或路径",
+        .folderFileList: "文件夹中的文件",
+        .folderRefresh: "刷新",
+        .folderCancelScan: "停止扫描",
+        .folderOpenSelection: "打开",
+        .folderScanning: "正在扫描文件夹…",
+        .folderOpening: "正在打开文件…",
+        .folderNoFiles: "未找到 Markdown 文件。",
+        .folderOneFile: "1 个 Markdown 文件",
+        .folderFileCount: "%@ 个 Markdown 文件",
+        .folderOneMatch: "1 个匹配的文件",
+        .folderMatchCount: "%@ 个匹配的文件",
+        .folderScanLimited: "已达到扫描上限，仅显示部分结果。",
+        .folderScanUnreadable: "部分项目无法读取。",
+        .folderScanCancelled: "扫描已停止。可刷新后重试。",
+        .folderRefreshCancelled: "扫描已停止，当前显示上一次的列表。",
+        .folderRootUnavailable: "文件夹不可用。请重新选择文件夹。",
+        .folderFileUnavailable: "此文件不可用或已在磁盘上发生变化。请刷新文件夹后重试。",
+        .folderFileTooLarge: "此文件过大，无法从文件夹浏览器打开。请使用「文件」菜单中的「打开」。",
         .outline: "大纲",
         .noHeadings: "没有标题",
         .hideOutline: "隐藏大纲",

@@ -13,6 +13,8 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// successful open and first save.
     let recentDocuments = RecentDocumentsModel(recorder: SystemRecentDocumentsRecorder())
     private var documentWindows: [DocumentWindow] = []
+    private var folderBrowser: FolderBrowserWindowController?
+    private var folderAuthorization: Task<Void, Never>?
     private let recoveryRepository = DocumentRecoveryRepository.applicationRepository()
     private let historyRepository = DocumentHistoryRepository.applicationRepository
     private var isTerminating = false
@@ -157,7 +159,9 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         _ sender: NSApplication,
         hasVisibleWindows flag: Bool
     ) -> Bool {
-        if documentWindows.isEmpty {
+        if documentWindows.isEmpty, let folderBrowser {
+            if !flag { folderBrowser.show() }
+        } else if documentWindows.isEmpty {
             newDocument()
         } else if !flag {
             documentWindows.last?.window.makeKeyAndOrderFront(nil)
@@ -217,7 +221,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         )
     }
 
-    /// Closes the frontmost document window in response to ⌘W. Routing through
+    /// Closes the frontmost document or folder window in response to ⌘W. Routing through
     /// `performClose(_:)` (rather than `close()`) drives the window through
     /// `windowShouldClose(_:)`, so the existing unsaved-changes prompt runs and
     /// no save/discard logic is duplicated. No-ops safely when no document
@@ -225,9 +229,8 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func closeCurrentDocument() {
         let target: NSWindow?
         if let keyWindow = NSApp.keyWindow {
-            // Only act when the focused window is one of our document windows;
-            // when something else is key (e.g. Settings) leave documents alone.
-            target = documentWindows.first(where: { $0.window == keyWindow })?.window
+            target = keyWindow == folderBrowser?.window
+                ? keyWindow : documentWindows.first(where: { $0.window == keyWindow })?.window
         } else {
             // No key window at all — fall back to the most recent document window.
             target = documentWindows.first?.window
@@ -247,6 +250,52 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         for url in panel.urls {
             openInNewWindow(url)
         }
+    }
+
+    func openFolder(quickOpen: Bool = false) {
+        let panel = NSOpenPanel()
+        panel.title = settings.text(.openFolder)
+        panel.directoryURL = folderBrowser?.root.url ?? currentDocumentStore?.fileURL?.deletingLastPathComponent()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.resolvesAliases = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        folderAuthorization?.cancel()
+        folderAuthorization = Task.detached(priority: .userInitiated) { [weak self] in
+            let result = Result { try FolderIndex.authorize(url) }
+            await self?.presentFolder(result, quickOpen: quickOpen)
+        }
+    }
+
+    func quickOpenFolderFile() {
+        if let folderBrowser {
+            folderBrowser.show(quickOpen: true)
+        } else {
+            openFolder(quickOpen: true)
+        }
+    }
+
+    private func presentFolder(_ result: Result<FolderIndex.Root, Error>, quickOpen: Bool) {
+        guard !Task.isCancelled, !isTerminating else { return }
+        folderAuthorization = nil
+        guard case let .success(root) = result else {
+            let alert = NSAlert()
+            alert.messageText = settings.text(.openFolder)
+            alert.informativeText = settings.text(.folderAuthorizationFailed)
+            alert.runModal()
+            return
+        }
+
+        folderBrowser?.close()
+        let browser = FolderBrowserWindowController(root: root, text: settings.text, onOpen: { [weak self] opened, decoded in
+            try self?.openFolderDocument(opened, decoded: decoded)
+        }, onClose: { [weak self] in
+            self?.folderBrowser = nil
+        })
+        folderBrowser = browser
+        browser.show(quickOpen: quickOpen)
     }
 
     func createCopy() {
@@ -279,18 +328,40 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// preview, so linked documents front/dedupe like any other open.
     func openInNewWindow(_ linkURL: URL) {
         let target = DocumentLinkTarget(linkURL)
+        openDocument(target) { $0.open(target.fileURL) }
+    }
+
+    private func openFolderDocument(_ opened: FolderIndex.OpenedFile, decoded: MarkdownFileDecoder.DecodedFile?) throws {
+        try opened.validate()
+        try openDocument(DocumentLinkTarget(opened.url), folderFile: opened) {
+            try $0.openVerifiedFolderFile(opened, decoded: decoded)
+        }
+    }
+
+    private func openDocument(_ target: DocumentLinkTarget, folderFile: FolderIndex.OpenedFile? = nil,
+                              load: (DocumentStore) throws -> Void) rethrows {
         let url = target.fileURL
+        let resolvedURL = folderFile?.url ?? url.resolvingSymlinksInPath()
+        func matches(_ store: DocumentStore) -> Bool {
+            guard let openedURL = store.fileURL else { return false }
+            if let folderFile {
+                return openedURL.standardizedFileURL.path == resolvedURL.path
+                    || (try? folderFile.fileReference.validate(at: openedURL.resolvingSymlinksInPath())) != nil
+            }
+            return openedURL.resolvingSymlinksInPath() == resolvedURL || store.matchesFolderFile(at: url)
+        }
         // Run after every open path, including an existing window or restored
         // dirty draft. The fragment uses that window's current text, not disk.
         defer {
-            documentWindows.first(where: {
-                $0.store.fileURL?.resolvingSymlinksInPath() == url.resolvingSymlinksInPath()
-            })?.store.requestHeadingNavigation(target.fragment)
+            if folderFile == nil || target.fragment != nil {
+                documentWindows.first(where: { matches($0.store) })?.store.requestHeadingNavigation(target.fragment)
+            }
         }
-        for document in documentWindows { document.store.refreshFileLocation() }
-        if let existing = documentWindows.first(where: {
-            $0.store.fileURL?.resolvingSymlinksInPath() == url.resolvingSymlinksInPath()
-        }) {
+        for document in documentWindows {
+            document.store.refreshFileLocation()
+            document.store.detachUnavailableFolderDraft(replacedBy: url, verifiedReference: folderFile?.fileReference)
+        }
+        if let existing = documentWindows.first(where: { matches($0.store) }) {
             existing.window.makeKeyAndOrderFront(nil)
             // Re-opening an already-open document still bumps its recency,
             // matching platform behavior. (Fresh opens are noted through the
@@ -302,16 +373,20 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Explicit opens consume only this file's recovery record. Unrelated
         // drafts stay on disk and in the pending list, including when another
         // file is opened later in this process.
-        if restoreDocumentWindows(matching: url) { return }
+        if restoreDocumentWindows(matching: url, folderFile: folderFile) { return }
 
         if let reusable = documentWindows.first(where: { $0.store.isReusableEmptyDocument }) {
-            reusable.store.open(url)
+            try load(reusable.store)
             reusable.window.makeKeyAndOrderFront(nil)
             return
         }
 
         let documentWindow = makeDocumentWindow(store: makeDocumentStore())
-        documentWindow.store.open(url)
+        do { try load(documentWindow.store) }
+        catch {
+            documentWindow.window.close()
+            throw error
+        }
         documentWindow.window.makeKeyAndOrderFront(nil)
     }
 
@@ -319,7 +394,9 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// file open restores its newest matching record; additional versions stay
     /// pending for full session recovery, which preserves them as untitled drafts.
     @discardableResult
-    private func restoreDocumentWindows(matching requestedURL: URL? = nil, onlyDirty: Bool = false) -> Bool {
+    private func restoreDocumentWindows(matching requestedURL: URL? = nil, onlyDirty: Bool = false,
+                                        folderFile: FolderIndex.OpenedFile? = nil) -> Bool {
+        if let folderFile, (try? folderFile.validate()) == nil { return false }
         if requestedURL == nil, !pendingRecoverySnapshots.isEmpty,
            recoveryRepository.restorationWasInterrupted {
             let alert = NSAlert()
@@ -333,7 +410,13 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let snapshots: [DocumentRecoverySnapshot]
         if let requestedURL {
             let match = pendingRecoverySnapshots.last { snapshot in
-                let url = snapshot.fileURL.flatMap { snapshot.identity?.resolve(fallback: $0) } ?? snapshot.fileURL
+                if let folderFile, let identity = snapshot.identity,
+                   identity.isFolderFile, !identity.matchesFolderEntry(folderFile.fileReference) {
+                    return false
+                }
+                let resolved = snapshot.fileURL.flatMap { snapshot.identity?.resolve(fallback: $0) }
+                if snapshot.identity?.isFolderFile == true && resolved == nil { return false }
+                let url = resolved ?? snapshot.fileURL
                 return url?.resolvingSymlinksInPath() == requestedURL.resolvingSymlinksInPath()
             }
             snapshots = match.map { [$0] } ?? []
@@ -369,13 +452,13 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         || (requestedURL != nil && $0.store.isReusableEmptyDocument)
                 }) {
                     let temporaryID = existing.store.recoveryID
-                    existing.store.restore(snapshot)
+                    existing.store.restore(snapshot, openingFolderFile: folderFile)
                     if temporaryID != snapshot.id { try recoveryRepository.remove(temporaryID) }
                     if let frame = snapshot.windowFrame { existing.window.setFrame(from: frame) }
                     existing.window.makeKeyAndOrderFront(nil)
                 } else {
                     let store = makeDocumentStore()
-                    store.restore(snapshot)
+                    store.restore(snapshot, openingFolderFile: folderFile)
                     let window = makeDocumentWindow(store: store).window
                     window.makeKeyAndOrderFront(nil)
                 }

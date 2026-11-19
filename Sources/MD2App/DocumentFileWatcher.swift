@@ -22,8 +22,8 @@ struct DocumentFileFingerprint: Codable, Equatable, Sendable {
 
     /// The file's on-disk fingerprint right now, or `nil` when it is missing
     /// or unreadable (deleted, moved, mid-replacement).
-    static func current(at url: URL) -> DocumentFileFingerprint? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
+    static func current(at url: URL, reference: DocumentCopyFileReference? = nil) -> DocumentFileFingerprint? {
+        guard let data = try? (reference?.read(at: url) ?? Data(contentsOf: url)) else { return nil }
         return of(data: data, at: url)
     }
 

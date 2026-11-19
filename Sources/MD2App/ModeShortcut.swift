@@ -241,6 +241,8 @@ enum ModeShortcutValidator {
         ModeKeyboardShortcut(key: "0", modifiers: [.command, .option]): "Actual Size",
         .command("n"): "New",
         .command("o"): "Open",
+        ModeKeyboardShortcut(key: "o", modifiers: [.command, .shift]): "Open Folder",
+        ModeKeyboardShortcut(key: "p", modifiers: [.command, .shift]): "Quick Open",
         .command("s"): "Save",
         .command("w"): "Close",
         .command("p"): "Print",

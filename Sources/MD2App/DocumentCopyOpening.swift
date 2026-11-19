@@ -11,21 +11,32 @@ enum DocumentCopyOpenError: Error {
 /// sharing a receipt never shares a mutable file offset or a writable handle.
 final class DocumentCopyFileReference: @unchecked Sendable, Equatable {
     let identity: DocumentCopyFileIdentity
+    private let initialBirthTime: timespec
     private let descriptor: Int32
 
-    private init(descriptor: Int32, identity: DocumentCopyFileIdentity) {
+    private init(descriptor: Int32, information: stat) {
         self.descriptor = descriptor
-        self.identity = identity
+        identity = DocumentCopyFileIdentity(information)
+        initialBirthTime = information.st_birthtimespec
     }
 
     deinit { Darwin.close(descriptor) }
+
+    // Atomic replacement can preserve the previous file's creation time.
+    var birthTime: (second: Int, nanosecond: Int) {
+        var info = stat()
+        let value = fstat(descriptor, &info) == 0 ? info.st_birthtimespec : initialBirthTime
+        return (value.tv_sec, value.tv_nsec)
+    }
 
     static func == (lhs: DocumentCopyFileReference, rhs: DocumentCopyFileReference) -> Bool {
         lhs.identity == rhs.identity
     }
 
-    static func open(at url: URL, matching expected: DocumentCopyFileIdentity? = nil) throws -> DocumentCopyFileReference {
-        let descriptor = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+    static func open(at url: URL, matching expected: DocumentCopyFileIdentity? = nil,
+                     noFollowAncestors: Bool = false) throws -> DocumentCopyFileReference {
+        let noFollow = noFollowAncestors ? O_NOFOLLOW_ANY : O_NOFOLLOW
+        let descriptor = Darwin.open(url.path, O_RDONLY | noFollow | O_NONBLOCK | O_CLOEXEC)
         return try adopting(descriptor, matching: expected)
     }
 
@@ -42,7 +53,7 @@ final class DocumentCopyFileReference: @unchecked Sendable, Equatable {
             Darwin.close(descriptor)
             throw DocumentCopyOpenError.changed
         }
-        return DocumentCopyFileReference(descriptor: descriptor, identity: DocumentCopyFileIdentity(info))
+        return DocumentCopyFileReference(descriptor: descriptor, information: info)
     }
 
     /// Refuse redirection, aliases and disappeared files. This is a gate, not a
@@ -73,6 +84,14 @@ final class DocumentCopyFileReference: @unchecked Sendable, Equatable {
 
     func read(at url: URL, expectedCount: Int? = nil) throws -> Data {
         try validate(at: url)
+        let data = try readPinned(expectedCount: expectedCount)
+        try validate(at: url)
+        return data
+    }
+
+    /// Folder opens validate their directory-relative path independently. Read
+    /// this descriptor directly so resolution cannot race with another open.
+    func readPinned(expectedCount: Int? = nil) throws -> Data {
         var before = stat()
         guard fstat(descriptor, &before) == 0, before.st_size >= 0,
               before.st_size <= Int.max else { throw DocumentCopyOpenError.unavailable }
@@ -95,7 +114,6 @@ final class DocumentCopyFileReference: @unchecked Sendable, Equatable {
               after.st_mtimespec.tv_nsec == before.st_mtimespec.tv_nsec,
               after.st_ctimespec.tv_sec == before.st_ctimespec.tv_sec,
               after.st_ctimespec.tv_nsec == before.st_ctimespec.tv_nsec else { throw DocumentCopyOpenError.changed }
-        try validate(at: url)
         return data
     }
 }

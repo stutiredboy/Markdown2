@@ -108,6 +108,16 @@ private struct AppCommands: Commands {
                 onOpen: { appDelegate.openRecentDocument($0) },
                 onClear: { appDelegate.clearRecentDocuments() }
             )
+
+            Button(settings.text(.openFolder)) {
+                appDelegate.openFolder()
+            }
+            .keyboardShortcut("o", modifiers: [.command, .shift])
+
+            Button(settings.text(.folderQuickOpen)) {
+                appDelegate.quickOpenFolderFile()
+            }
+            .keyboardShortcut("p", modifiers: [.command, .shift])
         }
 
         CommandGroup(replacing: .saveItem) {
