@@ -40,17 +40,20 @@ jobs:
 
       # The render heartbeat has a 200 ms deadline and the HTML export heartbeat
       # has a 2 s deadline. Run each in its own process so unrelated MainActor
-      # tests cannot consume its time budget. The inline and block scaling suites
+      # tests cannot consume its time budget. The scaling suites
       # also need separate processes: concurrent suites can distort their ratios.
       # Every exclusion below has a mandatory isolated gate before packaging.
       - name: Run default tests (GUI suites run in gui-tests)
-        run: swift test --skip 'P1RegressionTests.renderingYieldsMainActorAndLatestRevisionWins' --skip 'InlineRenderingPerformanceTests' --skip 'SelfContainedHTMLExportTests.exportImageBuilderRunsOffMainActorWhileInputCanContinue' --skip 'BlockRenderingPerformanceTests'
+        run: swift test --skip 'P1RegressionTests.renderingYieldsMainActorAndLatestRevisionWins' --skip 'InlineRenderingPerformanceTests' --skip 'SelfContainedHTMLExportTests.exportImageBuilderRunsOffMainActorWhileInputCanContinue' --skip 'BlockRenderingPerformanceTests' --skip 'LiteralReplacementPerformanceTests'
 
       - name: Verify inline scaling ratios in isolation
         run: swift test --filter 'InlineRenderingPerformanceTests'
 
-      - name: Verify block scaling ratios in isolation
-        run: swift test --filter 'BlockRenderingPerformanceTests'
+      - name: Verify block and replacement scaling ratios in isolation
+        run: |
+          set -euo pipefail
+          swift test --filter 'BlockRenderingPerformanceTests'
+          swift test --filter 'LiteralReplacementPerformanceTests'
 
       - name: Verify main actor heartbeats in isolation
         run: |

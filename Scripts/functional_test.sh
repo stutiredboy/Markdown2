@@ -17,9 +17,10 @@ if [ "$#" -gt 1 ]; then echo "Too many arguments." >&2; exit 1; fi
 cd "$ROOT_DIR"
 
 # Keep timing checks separate from other tests, matching the shared CI workflow.
-swift test --skip 'P1RegressionTests.renderingYieldsMainActorAndLatestRevisionWins' --skip 'InlineRenderingPerformanceTests' --skip 'SelfContainedHTMLExportTests.exportImageBuilderRunsOffMainActorWhileInputCanContinue' --skip 'BlockRenderingPerformanceTests'
+swift test --skip 'P1RegressionTests.renderingYieldsMainActorAndLatestRevisionWins' --skip 'InlineRenderingPerformanceTests' --skip 'SelfContainedHTMLExportTests.exportImageBuilderRunsOffMainActorWhileInputCanContinue' --skip 'BlockRenderingPerformanceTests' --skip 'LiteralReplacementPerformanceTests'
 swift test --filter 'InlineRenderingPerformanceTests'
 swift test --filter 'BlockRenderingPerformanceTests'
+swift test --filter 'LiteralReplacementPerformanceTests'
 swift test --filter 'P1RegressionTests.renderingYieldsMainActorAndLatestRevisionWins'
 swift test --filter 'SelfContainedHTMLExportTests.exportImageBuilderRunsOffMainActorWhileInputCanContinue'
 python3 -m unittest discover -s Tests/WorkflowTests -p 'test_*.py'

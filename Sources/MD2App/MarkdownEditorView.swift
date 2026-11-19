@@ -1165,30 +1165,48 @@ struct MarkdownEditorView: NSViewRepresentable {
             guard let first = targets.first, let last = targets.last else { return }
             let range = NSRange(location: first.location, length: NSMaxRange(last) - first.location)
             let original = (textView.string as NSString).substring(with: range)
-            let mutable = NSMutableString(string: original)
-            for target in targets.reversed() {
-                mutable.replaceCharacters(in: NSRange(location: target.location - range.location, length: target.length), with: replacement)
-            }
-            if (original as NSString).isEqual(to: mutable as String) {
+            let updated = Self.assembleLiteralReplacement(original, matches: targets, replacement: replacement)
+            if original.utf16.elementsEqual(updated.utf16) {
                 session.find.replacementCount = 0
                 return
             }
             var scope = session.find.scope
             if case .selection(let old) = scope {
-                scope = .selection(NSRange(location: old.location, length: old.length + mutable.length - range.length))
+                scope = .selection(NSRange(location: old.location, length: old.length + updated.utf16.count - range.length))
             }
             // Production always uses the retained session text system. The
             // detached coordinator fixtures also exercise the native path below.
             if session.textView === textView {
-                guard session.applyFindEdit(range: range, replacement: mutable as String, scope: scope) else { return }
+                guard session.applyFindEdit(range: range, replacement: updated, scope: scope) else { return }
             } else {
                 textView.breakUndoCoalescing()
-                textView.insertText(mutable as String, replacementRange: range)
+                textView.insertText(updated, replacementRange: range)
                 textView.breakUndoCoalescing()
                 session.find.scope = scope
             }
             session.find.replacementCount = targets.count
             rebuildFindIndex(query: lastFindQuery, in: textView, preferredIndex: max(currentMatchIndex, 0), shouldReveal: true)
+        }
+
+        /// `original` spans the first through last match. The sorted,
+        /// nonoverlapping ranges still use the document's UTF-16 coordinates.
+        nonisolated static func assembleLiteralReplacement(
+            _ original: String, matches: [NSRange], replacement: String
+        ) -> String {
+            guard matches.count > 1, let first = matches.first else { return replacement }
+            // Copy each gap once instead of repeatedly shifting the suffix.
+            let source = Array(original.utf16)
+            let insertion = Array(replacement.utf16)
+            var output: [UInt16] = []
+            output.reserveCapacity(source.count)
+            var cursor = 0
+            for match in matches {
+                let start = match.location - first.location
+                output.append(contentsOf: source[cursor..<start])
+                output.append(contentsOf: insertion)
+                cursor = start + match.length
+            }
+            return String(decoding: output, as: UTF16.self)
         }
 
         @MainActor private func rebuildFindIndex(
