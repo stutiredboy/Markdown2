@@ -6,7 +6,7 @@ PR 与标签发布共用 `.github/workflows/verify.yml`，它仅提供 `workflow
 
 `.github/workflows/pr-verify.yml` 是只读 PR wrapper，调用共享验证的三个 job：
 
-1. `build-test-package`：现有非 GUI 测试、独立性能比例及 heartbeat 检查、release 构建、macOS 15 最低版本、bundle 资源、版本和签名、DMG 完整性及其内 app 签名。打包验证逐字节核对应用资源中的[第三方许可](ThirdParty.md)与仓库副本。
+1. `build-test-package`：非 GUI 测试、独立运行的性能比例测试、主线程响应和文件监听回调测试、release 构建、macOS 15 最低版本、bundle 资源、版本和签名、DMG 完整性及其内 app 签名。打包验证逐字节核对应用资源中的[第三方许可](ThirdParty.md)与仓库副本。
 2. `gui-tests` 启用 macOS 键盘导航，先从原生导出菜单验证缺少 Pandoc 时的提示，再为测试安装 Pandoc，运行 `MD2_RUN_GUI_TESTS=1` 的全部 XCTest。完整的 GUI 检查要求 Pandoc 转换用例实际执行，并审核其余跳过项。
 3. `artifact-handoff`：依赖前两者成功，按 job 输出的 artifact ID 下载本次运行的 DMG，校验其提交、版本及 SHA-256。
 

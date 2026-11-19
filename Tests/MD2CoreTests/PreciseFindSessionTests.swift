@@ -60,6 +60,36 @@ struct PreciseFindSessionTests {
         #expect(session.find.range == NSRange(location: 2, length: 3))
     }
 
+    @Test func replaceAllPreservesUTF16BetweenFoldedMatchesAndRestoresScope() {
+        let prefix = "café\r\n"
+        let suffix = "\r\ncafé"
+        let gap = " 👩‍💻 o\u{308}\r\n"
+        let scopeText = "CAFÉ" + gap + "cafe\u{301}"
+        let initial = prefix + scopeText + suffix
+        let replacement = "🙂中"
+        let updatedScope = replacement + gap + replacement
+        let expected = prefix + updatedScope + suffix
+        let originalRange = NSRange(location: prefix.utf16.count, length: scopeText.utf16.count)
+        let updatedRange = NSRange(location: prefix.utf16.count, length: updatedScope.utf16.count)
+        let (session, editor, coordinator) = fixture(initial)
+        editor.setSelectedRange(originalRange)
+        session.find.useSelection(in: editor)
+        search("café", coordinator, editor)
+
+        coordinator.replace(.all, replacement: replacement, in: editor)
+
+        #expect(editor.string.utf16.elementsEqual(expected.utf16))
+        #expect(session.find.replacementCount == 2)
+        #expect(session.find.range == updatedRange)
+        session.undoManager.undo()
+        #expect(editor.string.utf16.elementsEqual(initial.utf16))
+        #expect(session.find.range == originalRange)
+        #expect(!session.undoManager.canUndo)
+        session.undoManager.redo()
+        #expect(editor.string.utf16.elementsEqual(expected.utf16))
+        #expect(session.find.range == updatedRange)
+    }
+
     @Test func deletingEntireSelectionKeepsAnEmptyScopeInsteadOfWholeDocument() {
         let (session, editor, coordinator) = fixture("cat cat")
         editor.setSelectedRange(NSRange(location: 0, length: 3))

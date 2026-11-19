@@ -52,15 +52,15 @@
 
 ## 安装
 
-需要 macOS 15 或更高版本。
+正式版磁盘映像需要搭载 Apple 芯片并运行 macOS 15 或更高版本的 Mac。
 
-从 [Releases](https://github.com/stutiredboy/md2/releases) 下载最新的 `Markdown2.app`，拖入 `/Applications` 即可。
+从 [Releases](https://github.com/stutiredboy/Markdown2/releases) 下载最新的 `Markdown2-*.dmg`。打开磁盘映像，将 `Markdown2.app` 拖入 `/Applications`。
 
 > [!NOTE]
-> 从 GitHub Release 下载的 app 未经 Apple 签名和公证，macOS Gatekeeper 会阻止打开并提示"已损坏"。运行以下命令即可解除：
+> GitHub 正式版使用临时签名。如果 Gatekeeper 阻止打开，请先确认应用来自官方发布，再移除应用的隔离属性。
 >
 > ```sh
-> xattr -cr /Applications/Markdown2.app
+> xattr -dr com.apple.quarantine /Applications/Markdown2.app
 > ```
 >
 > 然后在 **系统设置 → 隐私与安全性** 中点击"仍要打开"，或直接双击打开即可。

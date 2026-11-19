@@ -23,6 +23,7 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
         case renderFailed
         case writeFailed
         case imageFailed
+        case sourceDestination
 
         var errorDescription: String? {
             switch self {
@@ -34,6 +35,8 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
                 return "The PDF could not be written."
             case .imageFailed:
                 return "An image could not be loaded or verified before export. No PDF was written."
+            case .sourceDestination:
+                return "Choose a destination separate from the source document."
             }
         }
     }
@@ -76,6 +79,7 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
     /// window, parked far off-screen, makes WebKit lay it out and render.
     let hostWindow: NSWindow  // internal so @testable tests can verify the forced-light appearance
     private let destinationURL: URL
+    private let canWriteDestination: () -> Bool
     /// The active export profile: page geometry plus any page-number/header/footer
     /// configuration. Geometry is consumed in `init`; running-text settings are
     /// consumed when composing pages.
@@ -124,9 +128,10 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
     /// number is drawn.
     private var contentBottomInset: CGFloat { margins.bottom + (footerActive ? runningTextBandHeight : 0) }
 
-    init(destinationURL: URL, profile: ExportProfile = .default) {
+    init(destinationURL: URL, profile: ExportProfile = .default, canWriteDestination: @escaping () -> Bool = { true }) {
         self.destinationURL = destinationURL
         self.profile = profile
+        self.canWriteDestination = canWriteDestination
 
         // Page geometry comes from the export profile (default: A4 portrait with
         // narrow margins), not the system paper size, so output is consistent
@@ -369,6 +374,10 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
             // `CGPDFContextSetOutline` reports no errors, so read the outline back.
             guard outlineTree.isEmpty || Self.containsOutline(paginated) else {
                 finish(.failure(ExportError.writeFailed))
+                return
+            }
+            guard canWriteDestination() else {
+                finish(.failure(ExportError.sourceDestination))
                 return
             }
             do {

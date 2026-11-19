@@ -474,7 +474,7 @@ enum L10nKey: String, CaseIterable, Sendable {
     case alertHeadingNotFound, alertHeadingNotFoundDetail
     case alertUndecodableFile
     case alertUndecodableFileDetail
-    case alertCouldNotSave
+    case alertCouldNotSave, alertUnverifiedSaveDestination, alertRecoveryRequiredForLinkedSave
     case alertRecoveryFailed, alertRecoveryUnreadable
     case encodingConversionTitle, encodingConversionMessage, convertToUTF8
     case mixedLineEndings
@@ -485,7 +485,7 @@ enum L10nKey: String, CaseIterable, Sendable {
     case alertPandocRequired
     case alertPandocRequiredDetail
     case conversionDestinationTitle, conversionDestinationNotice, exportConversionProgress
-    case alertConversionSourceDestination, alertConversionSourceChanged
+    case alertExportSourceDestination, alertConversionSourceChanged
     case conversionPreparationFailed, conversionFailed, conversionFailedWithDetail
     case conversionDestinationChanged, conversionConfinementUnavailable, conversionCanceled, conversionTimedOut
     case alertHTMLExportInvalidImage, alertHTMLExportImageLimit
@@ -787,6 +787,8 @@ enum L10n {
         .alertUndecodableFile: "Could not read %@ as text.",
         .alertUndecodableFileDetail: "The file is not in a supported text encoding (UTF-8, UTF-16/32 with a byte-order mark, or GB18030).",
         .alertCouldNotSave: "Could not save %@.",
+        .alertUnverifiedSaveDestination: "Markdown2 could not verify the file at this location. Check its permissions or choose a different location.",
+        .alertRecoveryRequiredForLinkedSave: "This file has other hard links. Markdown2 needs a recovery copy before updating them. Restore access to document recovery or use Create Copy to save your edits separately.",
         .alertRecoveryFailed: "Could not write document recovery data. Keep this window open and save your work.",
         .alertRecoveryUnreadable: "Some recovery records could not be read. They have been kept in %@.",
         .encodingConversionTitle: "Save as UTF-8?",
@@ -807,7 +809,7 @@ enum L10n {
         .conversionDestinationTitle: "Export %@",
         .conversionDestinationNotice: "Pandoc converts Markdown with its own layout and syntax support. Preview diagrams, styles and some Markdown extensions may look different or be omitted. Remote images cannot be downloaded during conversion.",
         .exportConversionProgress: "Exporting %@…",
-        .alertConversionSourceDestination: "Choose a destination separate from the source document.",
+        .alertExportSourceDestination: "Choose a destination separate from the source document.",
         .alertConversionSourceChanged: "The document changed during export. Try exporting again to use the latest version.",
         .conversionPreparationFailed: "Could not prepare the document or write the export file. Check that the destination folder is writable.",
         .conversionFailed: "Pandoc could not convert the document.",
@@ -1153,6 +1155,8 @@ enum L10n {
         .alertUndecodableFile: "无法将 %@ 作为文本读取。",
         .alertUndecodableFileDetail: "文件不是受支持的文本编码（UTF-8、带字节序标记的 UTF-16/32，或 GB18030）。",
         .alertCouldNotSave: "无法保存 %@。",
+        .alertUnverifiedSaveDestination: "Markdown2 无法确认此位置的文件。请检查文件权限或选择其他保存位置。",
+        .alertRecoveryRequiredForLinkedSave: "此文件还有其他硬链接。Markdown2 需要先写入恢复副本才能更新文件。请恢复文档恢复目录的访问权限，或使用“创建副本”另存编辑内容。",
         .alertRecoveryFailed: "无法写入文档恢复数据。请保持窗口打开并保存文稿。",
         .alertRecoveryUnreadable: "部分恢复记录无法读取，已保留在 %@。",
         .encodingConversionTitle: "转换为 UTF-8 保存？",
@@ -1173,7 +1177,7 @@ enum L10n {
         .conversionDestinationTitle: "导出 %@",
         .conversionDestinationNotice: "Pandoc 使用自己的排版和语法规则转换 Markdown。预览中的图表、样式和部分 Markdown 扩展语法可能显示不同或被省略。转换期间无法下载远程图片。",
         .exportConversionProgress: "正在导出 %@…",
-        .alertConversionSourceDestination: "请选择与源文档不同的目标文件。",
+        .alertExportSourceDestination: "请选择与源文档不同的目标文件。",
         .alertConversionSourceChanged: "导出期间文档发生了变化。请重新导出以使用最新版本。",
         .conversionPreparationFailed: "无法准备文档或写入导出文件。请检查目标文件夹是否可写。",
         .conversionFailed: "Pandoc 无法转换文档。",
