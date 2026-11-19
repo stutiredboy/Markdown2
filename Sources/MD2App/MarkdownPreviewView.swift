@@ -686,6 +686,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
             // pins once because it chases the still-changing total height.
             window.__md2ScrollToViewportAnchor = function (payload, silent) {
                 var fractionPinned = false;
+                // A source handoff can supply just a line or fraction. Keep
+                // its first settled offset to detect later reader navigation.
+                var rememberOffset = !silent && (payload.fromEditor || anchoredScrollY === null);
                 keepPinned(function () {
                     var targetY = sourceLineTargetY(payload.line);
                     if (targetY !== null) { return targetY; }
@@ -698,7 +701,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
                     var max = document.documentElement.scrollHeight - window.innerHeight;
                     var f = Math.min(1, Math.max(0, payload.fraction || 0));
                     return max > 0 ? max * f : 0;
-                }, silent, !silent && payload.fromEditor);
+                }, silent, rememberOffset);
             };
 
             // Continuous Side by Side follow: scroll directly to the rendered
