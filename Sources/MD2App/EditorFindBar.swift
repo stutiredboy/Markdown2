@@ -107,7 +107,8 @@ struct EditorFindBar: View {
                 if let regexNotice {
                     Text(settings.text(regexNotice.key))
                         .font(.caption)
-                        .foregroundStyle(regexNotice.isError ? .orange : .secondary)
+                        .fontWeight(regexNotice.isError ? .semibold : .regular)
+                        .foregroundStyle(regexNotice.isError ? .primary : .secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.top, 4)
