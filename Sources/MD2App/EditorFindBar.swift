@@ -30,6 +30,22 @@ struct EditorFindBar: View {
         case replaceAll
     }
 
+    private var regexSession: FindSession? {
+        guard !isReadOnly, let findSession, findSession.usesRegex else { return nil }
+        return findSession
+    }
+
+    private var matchesReady: Bool {
+        (regexSession?.regexStatus ?? .ready) == .ready
+    }
+
+    private var allowsNavigation: Bool { !query.isEmpty && matchesReady }
+
+    private var allowsReplacement: Bool {
+        allowsNavigation && (findSession == nil || matchCount > 0) && findSession?.canReplace != false
+            && (regexSession?.regexReplacementStatus ?? .ready) == .ready
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: 0) {
@@ -46,7 +62,7 @@ struct EditorFindBar: View {
                         .frame(minWidth: 40, maxWidth: .infinity)
                         .onSubmit(onSubmitQuery)
 
-                    if !statusText.isEmpty {
+                    if !statusText.isEmpty, matchesReady {
                         Text(statusText)
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -64,7 +80,7 @@ struct EditorFindBar: View {
                     }
                     .accessibilityLabel(settings.text(.findPrevious))
                     .help(settings.text(.findPrevious))
-                    .disabled(query.isEmpty)
+                    .disabled(!allowsNavigation)
 
                     Button(action: onNext) {
                         Image(systemName: "chevron.down")
@@ -73,7 +89,7 @@ struct EditorFindBar: View {
                     }
                     .accessibilityLabel(settings.text(.findNext))
                     .help(settings.text(.findNext))
-                    .disabled(query.isEmpty)
+                    .disabled(!allowsNavigation)
 
                     Button(action: onClose) {
                         Image(systemName: "xmark")
@@ -88,6 +104,16 @@ struct EditorFindBar: View {
                                    onUseSelection: onUseSelection)
                         .padding(.top, 7)
                 }
+                if let regexNotice {
+                    Text(settings.text(regexNotice.key))
+                        .font(.caption)
+                        .fontWeight(regexNotice.isError ? .semibold : .regular)
+                        .foregroundStyle(regexNotice.isError ? .primary : .secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 4)
+                        .accessibilityIdentifier("findRegexStatus")
+                }
                 if showsReplace {
                     HStack(spacing: 8) {
                         TextField(settings.text(.replaceWith), text: $replacement, onEditingChanged: { editing in
@@ -97,23 +123,24 @@ struct EditorFindBar: View {
                             .accessibilityLabel(settings.text(.replaceWith))
                             .focused($focusedField, equals: .replacement)
                             .frame(minWidth: 40, maxWidth: .infinity)
+                            .help(regexSession != nil ? settings.text(.findRegexReplacementHelp) : "")
 
                         Button(settings.text(.replace)) {
                             replace(from: .replace, action: onReplace)
                         }
                             .focused($focusedField, equals: .replace)
                             .fixedSize()
-                            .disabled(query.isEmpty || (findSession != nil && matchCount == 0) || findSession?.canReplace == false)
+                            .disabled(!allowsReplacement || regexSession?.hasCurrentRegexMatch == false)
                         Button(settings.text(.replaceAll)) {
                             replace(from: .replaceAll, action: onReplaceAll)
                         }
                             .focused($focusedField, equals: .replaceAll)
                             .fixedSize()
-                            .disabled(query.isEmpty || (findSession != nil && matchCount == 0) || findSession?.canReplace == false)
+                            .disabled(!allowsReplacement)
                     }
                     .padding(.top, 8)
-                    if let findSession, findSession.scope != .invalid {
-                        Text(replacementStatus(findSession))
+                    if let findSession, let replacementStatus = replacementStatus(findSession) {
+                        Text(replacementStatus)
                             .font(.caption).foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .fixedSize(horizontal: false, vertical: true)
@@ -135,22 +162,36 @@ struct EditorFindBar: View {
     }
 
     private func replace(from button: Field, action: () -> Void) {
-        // If this action removes the last match, it disables the focused
-        // button. Keep Escape available in the bar, but allow repeated Space
-        // on Replace while there are more matches.
-        if focusedField == button, button == .replaceAll || matchCount == 1 {
+        // Keep focus in the bar if the action disables the button. For a
+        // literal Replace with more matches, keep Space on that button.
+        if focusedField == button, regexSession != nil || button == .replaceAll || matchCount == 1 {
             focusedField = .replacement
         }
         action()
     }
 
-    private func replacementStatus(_ find: FindSession) -> String {
-        if find.scope == .invalid { return settings.text(.findSelectionInvalid) }
+    private var regexNotice: (key: L10nKey, isError: Bool)? {
+        guard let find = regexSession, !query.isEmpty, find.scope != .invalid else { return nil }
+        let duringReplacement = find.regexStatus == .ready && showsReplace
+        switch duringReplacement ? find.regexReplacementStatus : find.regexStatus {
+        case .idle, .ready: return nil
+        case .searching: return (duringReplacement ? .findRegexPreparingReplacement : .findRegexSearching, false)
+        case .invalidPattern: return (.findRegexInvalidPattern, true)
+        case .invalidReplacement: return (.findRegexInvalidReplacement, true)
+        case .workLimit: return (duringReplacement ? .findRegexReplacementLimit : .findRegexSearchLimit, true)
+        case .searchFailed: return (.findRegexSearchFailed, true)
+        }
+    }
+
+    private func replacementStatus(_ find: FindSession) -> String? {
+        if find.scope == .invalid { return nil }
         if find.replacementCancelled { return settings.text(.findReplacementCancelled) }
         let label = settings.text(find.isSelectionOnly ? .findSourceSelection : .findWholeDocument)
         if let count = find.replacementCount {
             return String(format: settings.text(.findReplacedCount), label, count)
         }
+        if regexSession != nil, !query.isEmpty,
+           find.regexStatus != .ready || find.regexReplacementStatus != .ready { return nil }
         return String(format: settings.text(.findScopeCount), label, matchCount)
     }
 
@@ -173,18 +214,23 @@ private struct FindOptionsRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 10) {
-                FindOptionToggle(title: settings.text(.findMatchCase), isOn: $find.options.caseSensitive, identifier: "findMatchCase")
-                FindOptionToggle(title: settings.text(.findWholeWord), isOn: $find.options.wholeWord, identifier: "findWholeWord")
-                FindOptionToggle(title: settings.text(.findOnlySelection), isOn: Binding(
-                    get: { find.isSelectionOnly },
-                    set: { enabled in
-                        if enabled { onUseSelection() }
-                        else { find.scope = .document; find.replacementCount = nil }
-                    }), identifier: "findOnlySelection")
-                    .disabled(readOnly)
-                    .help(settings.text(.findSourceOnlyHelp))
-                    .accessibilityIdentifier("findOnlySelection")
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    matchCase
+                    wholeWord
+                    selection
+                    if !readOnly { regularExpression }
+                }
+                Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 5) {
+                    GridRow {
+                        matchCase
+                        wholeWord
+                    }
+                    GridRow {
+                        selection
+                        if !readOnly { regularExpression }
+                    }
+                }
             }
             .font(.caption)
             if readOnly {
@@ -200,7 +246,43 @@ private struct FindOptionsRow: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onChange(of: find.options) { _, _ in find.replacementCount = nil }
+    }
+
+    private var matchCase: some View {
+        FindOptionToggle(title: settings.text(.findMatchCase), isOn: $find.options.caseSensitive,
+                         identifier: "findMatchCase")
+    }
+
+    private var wholeWord: some View {
+        let usesRegex = !readOnly && find.usesRegex
+        return FindOptionToggle(title: settings.text(.findWholeWord),
+                                isOn: usesRegex ? .constant(false) : $find.options.wholeWord,
+                                identifier: "findWholeWord")
+            .disabled(usesRegex)
+            .help(usesRegex ? settings.text(.findRegexWholeWordHelp) : "")
+    }
+
+    private var selection: some View {
+        FindOptionToggle(title: settings.text(.findOnlySelection), isOn: Binding(
+            get: { find.isSelectionOnly },
+            set: { enabled in
+                if enabled {
+                    onUseSelection()
+                } else {
+                    find.scope = .document
+                    find.replacementCount = nil
+                }
+            }), identifier: "findOnlySelection")
+            .disabled(readOnly)
+            .help(readOnly ? settings.text(.findSourceOnlyHelp) : "")
+            .accessibilityIdentifier("findOnlySelection")
+    }
+
+    private var regularExpression: some View {
+        FindOptionToggle(title: settings.text(.findRegex), isOn: $find.usesRegex, identifier: "findRegex")
+            .help(settings.text(.findRegexHelp))
     }
 }
 

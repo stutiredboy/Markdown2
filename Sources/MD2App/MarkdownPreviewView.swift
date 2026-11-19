@@ -686,6 +686,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
             // pins once because it chases the still-changing total height.
             window.__md2ScrollToViewportAnchor = function (payload, silent) {
                 var fractionPinned = false;
+                // A source handoff can supply just a line or fraction. Keep
+                // its first settled offset to detect later reader navigation.
+                var rememberOffset = !silent && (payload.fromEditor || anchoredScrollY === null);
                 keepPinned(function () {
                     var targetY = sourceLineTargetY(payload.line);
                     if (targetY !== null) { return targetY; }
@@ -698,7 +701,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
                     var max = document.documentElement.scrollHeight - window.innerHeight;
                     var f = Math.min(1, Math.max(0, payload.fraction || 0));
                     return max > 0 ? max * f : 0;
-                }, silent, !silent && payload.fromEditor);
+                }, silent, rememberOffset);
             };
 
             // Continuous Side by Side follow: scroll directly to the rendered
@@ -1047,13 +1050,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             guard let webView, let coordinator else { return }
             coordinator.invalidateResourceContext(in: webView)
         }
-        viewportReader?.capture = { [weak webView, weak coordinator] completion in
-            guard let webView, let coordinator else {
-                completion(nil)
-                return
-            }
-            coordinator.capturePosition(in: webView, completion: completion)
-        }
+        registerViewportCapture(in: webView, coordinator: coordinator)
         viewportReader?.follow = { [weak webView, weak coordinator] line in
             guard let webView, let coordinator, coordinator.isLoaded else { return }
             webView.evaluateJavaScript(
@@ -1069,6 +1066,16 @@ struct MarkdownPreviewView: NSViewRepresentable {
         }
 
         return webView
+    }
+
+    private func registerViewportCapture(in webView: WKWebView, coordinator: Coordinator) {
+        viewportReader?.capture = { [weak webView, weak coordinator] completion in
+            guard let webView, let coordinator, coordinator.resourceContextIsActive else {
+                completion(nil)
+                return
+            }
+            coordinator.capturePosition(in: webView, completion: completion)
+        }
     }
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
@@ -1107,13 +1114,6 @@ struct MarkdownPreviewView: NSViewRepresentable {
         }
 
         let coordinator = context.coordinator
-        viewportReader?.capture = { [weak webView, weak coordinator] completion in
-            guard let webView, let coordinator else {
-                completion(nil)
-                return
-            }
-            coordinator.capturePosition(in: webView, completion: completion)
-        }
         viewportReader?.follow = { [weak webView, weak coordinator] line in
             guard let webView, let coordinator, coordinator.isLoaded else { return }
             webView.evaluateJavaScript(
@@ -1139,6 +1139,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             context.coordinator.resourceContextIsActive = true
         }
         guard context.coordinator.resourceContextIsActive else { return }
+        registerViewportCapture(in: webView, coordinator: coordinator)
         context.coordinator.applyFrontMatterVisibility(in: webView)
         context.coordinator.applyLineNumbersVisibility(in: webView)
         if htmlChanged || baseURLChanged || resourceContextChanged {
@@ -1795,9 +1796,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
             return json
         }
 
-        /// How long a mode-switch capture waits for the page's JavaScript
-        /// before falling back to the cached anchor.
-        private static let captureTimeout: TimeInterval = 0.25
+        /// Give a busy WebKit process a short window to answer before
+        /// restoring the cached anchor. Capture remains asynchronous.
+        private static let captureTimeout: TimeInterval = 0.5
         private var pendingCaptureID = 0
         private var pendingCaptureCompletion: ((PreviewViewportReader.Position?) -> Void)?
         private var captureTimeoutWorkItem: DispatchWorkItem?

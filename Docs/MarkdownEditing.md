@@ -118,8 +118,8 @@ minimum editor width. The bar occupies its own space above the source so it
 cannot cover the first line. Close the bar to return focus to the editor.
 
 Case matching and whole-word matching are document-local options shared by
-source and preview. By default searches ignore case and accents; Match case
-changes only case handling. Matches always cover complete Unicode grapheme
+source and preview. By default literal searches ignore case and accents. Match
+case changes only case handling. Literal matches cover complete Unicode grapheme
 clusters, including decomposed accents and emoji. Whole word treats consecutive
 Unicode letters, combining marks, numbers and connector punctuation (including
 `_`) as one token. It does not perform Chinese dictionary segmentation: `中文`
@@ -147,17 +147,52 @@ scope; a rendered selection is never guessed back into source coordinates.
 Replace All shows its source scope and match count, applies a snapshot once, then
 reports the replacement count. Replacement text is not searched recursively. The
 operation is one undo step, separate from surrounding typing. A replacement
-request is canceled with a notice if its source, query, replacement text, caret,
-options or scope changes before the native edit executes. Empty queries,
-zero matches, expired scope and active input-method composition cannot replace
-text. The three options and scope notices occupy additional rows so the fields
-remain usable at 360 points in both supported languages.
+request is canceled if its source, query, replacement text, caret, options or
+scope changes before the native edit executes. Empty queries, zero matches, expired scope and active input-method composition cannot replace
+text. Options and notices wrap so the fields remain usable at 360 points in
+both supported languages.
 
-Preview searches share the source matching engine and reject stale DOM results.
+Preview searches use the same literal matching rules as source and reject stale DOM results.
 To keep large rendered pages bounded, snapshots stop at 2,000,000 UTF-16 units,
 20,000 text/break nodes or 20,000 matches. Exceeding a limit shows an unavailable notice
-and no partial results. Source searching is not subject to these preview limits.
-Regular expressions remain deferred.
+and no partial results.
+
+### Regular expressions in source
+
+Turn on **Regular expression** in the source find bar in Write or Side by Side.
+It applies to the current document and starts off for each new document. Preview
+uses literal matching, including when it adopts the last query from source.
+**Match case** sets the pattern's default case handling, and accents are
+significant. To match a word boundary, put `\b` in the pattern. When you turn
+off **Regular expression**, your previous **Whole word** setting applies again.
+See [ICU pattern syntax](https://unicode-org.github.io/icu/userguide/strings/regexp.html).
+
+Only selection includes matches whose entire range is inside the frozen source
+selection. Anchors and lookarounds still see the surrounding document. Match
+endpoints must land on complete Unicode grapheme boundaries, so a match that
+splits an emoji or a decomposed character is skipped. A zero-width match, such
+as `(?m)^` at a line start, marks an insertion point. Navigation scrolls to that
+point and positions the source caret there. After inserting at a zero-width
+match, Replace advances past the insertion. If it was the only match, use
+Next or Previous to select it again. Replace All visits each original position
+once. Above 1,000 matches, the editor paints only the current highlight
+and keeps the full count and navigation available.
+
+In the replacement field, `$0` inserts the entire match, `$1`, `$2` and so on
+insert numbered capture groups, and `${name}` inserts a named capture from
+`(?<name>…)`. An optional group that did not match inserts an empty string. Use
+`\$` for a literal dollar sign and `\\` for a literal backslash. For example,
+find `(?m)^(\d{4})-(\d{2})-(\d{2})$` and replace with `$3/$2/$1` to turn an
+ISO date on its own line into `day/month/year` order.
+
+Search and replacement work runs in the background and cancels stale
+requests. A pattern or replacement can be at most 4,096 UTF-16 units. Regex
+searches accept up to 2,000,000 UTF-16 units of source and 20,000 matches, and
+replacement expansion accepts up to 2,000,000 UTF-16 units. Each operation
+runs in a private worker process with an ICU backtracking limit and a two-second
+wall-clock deadline. Invalid patterns,
+invalid capture references, and exceeded limits appear in the bar. A failed
+operation does not apply partial replacements.
 
 ## Explicit paste
 

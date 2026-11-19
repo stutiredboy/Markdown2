@@ -79,6 +79,9 @@ struct MarkdownEditorView: NSViewRepresentable {
     // the native editor is the only visible pane. The session owns the values.
     var findOptions = TextSearch.Options()
     var findScope = FindSession.Scope.document
+    var findUsesRegex = false
+    var findRegexResultsEpoch: UInt64 = 0
+    var validatesRegexReplacement = false
     /// Formatting reveal takes precedence over an automatic restored-query jump.
     var findMayRevealMatches = true
     /// A next/previous navigation request; consumed once applied.
@@ -225,7 +228,12 @@ struct MarkdownEditorView: NSViewRepresentable {
             context.coordinator.session.resetText(to: text)
         }
 
+        context.coordinator.configureRegexFind(
+            query: $findQuery, replacement: $findReplacement, navigation: $findNavigation,
+            mayReveal: findMayRevealMatches, showsReplacement: validatesRegexReplacement
+        )
         context.coordinator.updateFind(query: findQuery, in: textView, revealMatches: findMayRevealMatches)
+        context.coordinator.updateRegexReplacementValidation()
 
         if let formatCommand, context.coordinator.session.lastFormatToken != formatCommand.token {
             context.coordinator.session.lastFormatToken = formatCommand.token
@@ -379,6 +387,7 @@ struct MarkdownEditorView: NSViewRepresentable {
     /// this scroll view: the undo actions it registered target it, and the next
     /// editor re-hosts it.
     static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
+        coordinator.cancelHostedRegexWork()
         coordinator.session.unhost(from: scrollView, coordinator: coordinator)
     }
 
@@ -634,6 +643,21 @@ struct MarkdownEditorView: NSViewRepresentable {
         private var lastFindQuery = ""
         private var lastObservedOptions = TextSearch.Options()
         private var lastObservedScope = FindSession.Scope.document
+        private var lastObservedRegex = false
+        private var lastObservedRegexEpoch: UInt64 = 0
+        private var lastObservedFindIdentity: UUID
+        private var regexQueryBinding: Binding<String>?
+        private var regexTemplateBinding: Binding<String>?
+        private var regexNavigationBinding: Binding<FindCommand?>?
+        private var regexMayReveal = false
+        private var regexShowsReplacement = false
+        private var regexSearchTask: Task<Void, Never>?
+        private var regexValidationTask: Task<Void, Never>?
+        private var regexReplacementTask: Task<Void, Never>?
+        private var regexValidationEpoch: UUID?
+        private var pendingRegexNavigation = 0
+        private var pendingRegexNavigationSelection: [NSValue]?
+        private var resumeAfterRegexEdit: (generation: Int, inserted: NSRange, zeroWidth: Bool)?
         private var matches: [NSRange] = []
         private var currentMatchIndex = -1
         private var highlightedRanges: [NSRange] = []
@@ -656,19 +680,16 @@ struct MarkdownEditorView: NSViewRepresentable {
         private var lastFindMutationWasQueryChange = true
         /// The generation whose index is currently painted on the text view.
         private var appliedFindGeneration = -1
-        /// The generation for which a debounced rebuild is armed, if any.
-        private var scheduledFindGeneration: Int?
-        /// The query a pending rebuild will run for, and the preferred match it
-        /// will target. Cleared once the rebuild runs (scheduled or flushed).
-        private var scheduledFindQuery: String?
-        private var scheduledFindPreferredIndex: Int?
-        /// Whether the pending rebuild may reveal the current match (move the
-        /// caret / scroll). Carried from `updateFind` so a document edit that
-        /// supersedes a pending query change still rebuilds without revealing.
-        private var scheduledFindShouldReveal: Bool?
-        /// A token that supersedes a previously armed debounce, so a stale
-        /// scheduled rebuild can detect it was overtaken and drop itself.
-        private var pendingFindToken: UUID?
+        private struct FindRebuild {
+            let generation: Int
+            let query: String
+            let preferredIndex: Int
+            let shouldReveal: Bool
+            let regexSelection: [NSValue]?
+            let token = UUID()
+        }
+
+        private var pendingFindRebuild: FindRebuild?
         /// The query most recently observed by `updateFind` (schedule-time), used
         /// to detect query changes without relying on the fire-time
         /// `lastFindQuery`.
@@ -680,6 +701,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         @MainActor init(text: Binding<String>, session: MarkdownEditorSession = MarkdownEditorSession()) {
             _text = text
             self.session = session
+            lastObservedFindIdentity = session.find.identity
         }
 
         /// The document's undo manager, so the text view, the window, and the
@@ -723,6 +745,11 @@ struct MarkdownEditorView: NSViewRepresentable {
         @MainActor func noteExternalTextChange() {
             findGeneration += 1
             lastFindMutationWasQueryChange = false
+            if session.find.usesRegex {
+                cancelRegexWork()
+                session.find.invalidateRegexResults()
+                lastObservedRegexEpoch = session.find.regexResultsEpoch
+            }
         }
 
         @MainActor func updateFind(query: String, in textView: NSTextView, revealMatches: Bool = true) {
@@ -730,13 +757,30 @@ struct MarkdownEditorView: NSViewRepresentable {
             // while the input method owns the selection for marked text.
             guard !textView.hasMarkedText() else { return }
 
-            if query != lastObservedQuery || session.find.options != lastObservedOptions || session.find.scope != lastObservedScope {
-                lastObservedOptions = session.find.options
-                lastObservedScope = session.find.scope
+            let find = session.find
+            let regex = find.usesRegex
+            let queryChanged = regex ? !(query as NSString).isEqual(to: lastObservedQuery) : query != lastObservedQuery
+            if queryChanged || find.options != lastObservedOptions || find.scope != lastObservedScope
+                || regex != lastObservedRegex
+                || (regex && (find.identity != lastObservedFindIdentity || find.regexResultsEpoch != lastObservedRegexEpoch)) {
+                let wasRegex = lastObservedRegex
+                lastObservedOptions = find.options
+                lastObservedScope = find.scope
+                lastObservedRegex = regex
+                lastObservedRegexEpoch = find.regexResultsEpoch
+                lastObservedFindIdentity = find.identity
+                if regex || wasRegex { cancelRegexWork() }
+                if wasRegex && !regex {
+                    lastFindQuery = ""
+                    matches = []
+                    currentMatchIndex = -1
+                    applyFindHighlights(in: textView)
+                }
                 if revealMatches { cancelSelectionReveal() }
                 lastObservedQuery = query
                 findGeneration += 1
                 lastFindMutationWasQueryChange = true
+                if wasRegex && !regex { reportFindResult() }
             }
 
             // Idempotent: only re-index when the (text, query) state moved past
@@ -745,20 +789,233 @@ struct MarkdownEditorView: NSViewRepresentable {
             // Comparing generations is O(1) and never reads the whole document.
             let generation = findGeneration
             guard generation != appliedFindGeneration,
-                  generation != scheduledFindGeneration else {
+                  generation != pendingFindRebuild?.generation, regexSearchTask == nil else {
                 return
             }
 
             // The query-changed predicate and the reveal intent are computed once
             // here so the preferred index and the reveal decision cannot drift.
-            let queryChanged = query != lastFindQuery
+            let needsFirstMatch = regex
+                ? !(query as NSString).isEqual(to: lastFindQuery)
+                : query != lastFindQuery
+            let preferredIndex = needsFirstMatch ? 0 : currentMatchIndex
+            if regex {
+                matches = []
+                currentMatchIndex = -1
+                applyFindHighlights(in: textView)
+                publishRegexStart(generation: generation, hasQuery: !query.isEmpty && find.canReplace)
+            }
             scheduleFindRebuild(
                 query: query,
                 in: textView,
                 generation: generation,
-                preferredIndex: queryChanged ? 0 : currentMatchIndex,
+                preferredIndex: preferredIndex,
                 shouldReveal: revealMatches && lastFindMutationWasQueryChange
             )
+        }
+
+        @MainActor func configureRegexFind(
+            query: Binding<String>, replacement: Binding<String>, navigation: Binding<FindCommand?>,
+            mayReveal: Bool, showsReplacement: Bool
+        ) {
+            regexQueryBinding = query
+            regexTemplateBinding = replacement
+            regexNavigationBinding = navigation
+            regexMayReveal = mayReveal
+            regexShowsReplacement = showsReplacement
+            if !showsReplacement {
+                regexValidationTask?.cancel()
+                regexValidationTask = nil
+                regexValidationEpoch = nil
+                regexReplacementTask?.cancel()
+                regexReplacementTask = nil
+            }
+        }
+
+        @MainActor func cancelHostedRegexWork() {
+            if lastObservedRegex { cancelRegexWork() }
+        }
+
+        @MainActor private func cancelRegexWork() {
+            regexSearchTask?.cancel()
+            regexSearchTask = nil
+            regexValidationTask?.cancel()
+            regexValidationTask = nil
+            regexValidationEpoch = nil
+            regexReplacementTask?.cancel()
+            regexReplacementTask = nil
+            pendingRegexNavigation = 0
+            pendingRegexNavigationSelection = nil
+            pendingFindRebuild = nil
+        }
+
+        @MainActor private func publishRegexStart(generation: Int, hasQuery: Bool) {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.findGeneration == generation, self.appliedFindGeneration != generation,
+                      self.session.isHosted(by: self), self.session.find.usesRegex else { return }
+                self.session.find.regexStatus = hasQuery ? .searching : .idle
+                self.session.find.currentRegexMatch = nil
+                self.onFindResult(0, 0)
+            }
+        }
+
+        @MainActor private func startRegexSearch(
+            query: String, in textView: NSTextView, preferredIndex: Int, shouldReveal: Bool, selection: [NSValue]?
+        ) {
+            let find = session.find
+            guard !query.isEmpty, find.canReplace else {
+                installFindMatches([], query: query, in: textView, preferredIndex: 0, shouldReveal: false)
+                return
+            }
+            let source = textView.string
+            let generation = findGeneration
+            let identity = find.identity
+            let epoch = find.regexResultsEpoch
+            let sessionScope = find.scope
+            let scope = find.range
+            let caseSensitive = find.options.caseSensitive
+            regexSearchTask = Task { [weak self, weak textView] in
+                let result = await RegexFindWorker.result {
+                    try await RegexFindProcess.matches(of: query, in: source, caseSensitive: caseSensitive, scope: scope)
+                }
+                guard !Task.isCancelled, let self, let textView,
+                      self.findGeneration == generation, self.session.isHosted(by: self) else { return }
+                self.regexSearchTask = nil
+                guard !textView.hasMarkedText(), find.usesRegex, find.identity == identity,
+                      find.regexResultsEpoch == epoch,
+                      find.scope == sessionScope, find.options.caseSensitive == caseSensitive,
+                      query.utf16.elementsEqual((self.regexQueryBinding?.wrappedValue ?? self.lastObservedQuery).utf16)
+                else { return }
+
+                // Use the visible bar's current state and the live selection.
+                // An edit, click, or a mode transition must win over auto-reveal.
+                let resume = self.resumeAfterRegexEdit?.generation == generation
+                let autoReveal = shouldReveal && textView.window?.firstResponder !== textView
+                let reveal = (autoReveal || resume) && self.regexMayReveal && find.isSourceFindVisible
+                    && selection == textView.selectedRanges
+                switch result {
+                case .success(let ranges):
+                    self.installFindMatches(ranges, query: query, in: textView, preferredIndex: max(0, preferredIndex),
+                                            shouldReveal: reveal, immediately: true)
+                    find.currentRegexMatch = self.currentFindRange
+                    find.regexStatus = .ready
+                case .failure(let error):
+                    self.installFindMatches([], query: query, in: textView, preferredIndex: 0,
+                                            shouldReveal: false, immediately: true)
+                    find.regexStatus = Self.regexStatus(for: error)
+                }
+            }
+        }
+
+        @MainActor func updateRegexReplacementValidation() {
+            let find = session.find
+            guard find.usesRegex, regexShowsReplacement, let pattern = regexQueryBinding?.wrappedValue,
+                  !pattern.isEmpty, let template = regexTemplateBinding?.wrappedValue, find.canReplace,
+                  regexValidationEpoch != find.regexReplacementEpoch else { return }
+            regexValidationTask?.cancel()
+            regexReplacementTask?.cancel()
+            regexReplacementTask = nil
+            let epoch = find.regexReplacementEpoch
+            let caseSensitive = find.options.caseSensitive
+            regexValidationEpoch = epoch
+            regexValidationTask = Task { [weak self] in
+                guard let self, self.session.isHosted(by: self), find.regexReplacementEpoch == epoch,
+                      !Task.isCancelled else { return }
+                find.regexReplacementStatus = .searching
+                do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+                let result = await RegexFindWorker.result {
+                    try await RegexFindProcess.validateReplacement(template, for: pattern, caseSensitive: caseSensitive)
+                }
+                guard !Task.isCancelled, self.session.isHosted(by: self), self.regexShowsReplacement, find.usesRegex,
+                      find.regexReplacementEpoch == epoch,
+                      pattern.utf16.elementsEqual((self.regexQueryBinding?.wrappedValue ?? "").utf16),
+                      template.utf16.elementsEqual((self.regexTemplateBinding?.wrappedValue ?? "").utf16) else { return }
+                switch result {
+                case .success: find.regexReplacementStatus = .ready
+                case .failure(let error): find.regexReplacementStatus = Self.regexStatus(for: error)
+                }
+            }
+        }
+
+        @MainActor private func startRegexReplacement(
+            _ action: FindReplaceCommand.Action, snapshot: FindReplacementSnapshot, in textView: NSTextView
+        ) -> Bool {
+            let find = session.find
+            guard regexShowsReplacement, regexReplacementTask == nil, appliedFindGeneration == findGeneration,
+                  find.regexStatus == .ready, find.regexReplacementStatus == .ready, find.canReplace,
+                  (lastFindQuery as NSString).isEqual(to: snapshot.query), !matches.isEmpty else { return false }
+            let target: NSRange?
+            switch action {
+            case .current:
+                guard let currentFindRange, snapshot.currentRegexMatch == currentFindRange else { return false }
+                target = currentFindRange
+            case .all:
+                target = nil
+            }
+            let pattern = snapshot.query
+            let template = snapshot.replacement
+            let source = snapshot.source
+            let scope = find.range
+            let caseSensitive = snapshot.options.caseSensitive
+            let generation = findGeneration
+            find.regexReplacementStatus = .searching
+            regexReplacementTask = Task { [weak self, weak textView] in
+                let result = await RegexFindWorker.result {
+                    try await RegexFindProcess.makeEdit(pattern: pattern, template: template, source: source,
+                                                       caseSensitive: caseSensitive, scope: scope, target: target)
+                }
+                guard !Task.isCancelled, let self, let textView, self.session.isHosted(by: self) else { return }
+                self.regexReplacementTask = nil
+                guard self.regexShowsReplacement, self.findGeneration == generation,
+                      find.regexReplacementEpoch == snapshot.regexReplacementEpoch else { return }
+                guard !textView.hasMarkedText(), target == nil || self.currentFindRange == target,
+                      snapshot.isCurrent(query: self.regexQueryBinding?.wrappedValue ?? "",
+                                         replacement: self.regexTemplateBinding?.wrappedValue ?? "",
+                                         textView: textView, find: find) else {
+                    find.regexReplacementStatus = .ready
+                    find.replacementCount = nil
+                    find.replacementCancelled = true
+                    return
+                }
+                switch result {
+                case .success(let edit):
+                    find.regexReplacementStatus = .ready
+                    if let edit {
+                        self.applyRegexEdit(edit, target: target, query: pattern, in: textView)
+                    } else {
+                        find.replacementCount = 0
+                    }
+                case .failure(let error):
+                    find.regexReplacementStatus = Self.regexStatus(for: error)
+                }
+            }
+            return true
+        }
+
+        @MainActor private func applyRegexEdit(
+            _ edit: RegexFindWorker.Edit, target: NSRange?, query: String, in textView: NSTextView
+        ) {
+            var scope = session.find.scope
+            let inserted = NSRange(location: edit.range.location, length: edit.replacement.utf16.count)
+            if case .selection(let old) = scope {
+                scope = .selection(NSRange(location: old.location, length: old.length + inserted.length - edit.range.length))
+            }
+            guard session.applyFindEdit(range: edit.range, replacement: edit.replacement,
+                                        scope: scope, actionName: target == nil ? "Replace All" : "Replace") else { return }
+            session.find.replacementCount = edit.count
+            updateFind(query: query, in: textView, revealMatches: false)
+            if let target {
+                resumeAfterRegexEdit = (findGeneration, inserted, target.length == 0)
+            }
+        }
+
+        private static func regexStatus(for error: any Error) -> FindSession.RegexStatus {
+            switch error as? RegexSearch.Failure {
+            case .invalidPattern: .invalidPattern
+            case .invalidReplacement: .invalidReplacement
+            case .limitExceeded: .workLimit
+            case .searchFailed, nil: .searchFailed
+            }
         }
 
         /// Arms the debounced rebuild for `query` on `generation`. Idempotent by
@@ -774,80 +1031,30 @@ struct MarkdownEditorView: NSViewRepresentable {
             preferredIndex: Int,
             shouldReveal: Bool
         ) {
-            scheduledFindGeneration = generation
-            scheduledFindQuery = query
-            scheduledFindPreferredIndex = preferredIndex
-            scheduledFindShouldReveal = shouldReveal
-            let token = UUID()
-            pendingFindToken = token
-            DispatchQueue.main.asyncAfter(
-                deadline: .now() + findDebounceInterval
-            ) { [weak self, weak textView] in
-                guard let self, let textView else { return }
-                guard self.pendingFindToken == token else { return }
-                self.flushScheduledFindRebuild(in: textView)
-            }
-        }
-
-        /// The debounce fire path: runs the armed rebuild for the query it was
-        /// scheduled with, re-checking the marked-text guard.
-        @MainActor private func flushScheduledFindRebuild(in textView: NSTextView) {
-            pendingFindToken = nil
-            guard let query = scheduledFindQuery else {
-                scheduledFindGeneration = nil
-                return
-            }
-            let preferredIndex = scheduledFindPreferredIndex ?? currentMatchIndex
-            let shouldReveal = scheduledFindShouldReveal ?? true
-            scheduledFindQuery = nil
-            scheduledFindPreferredIndex = nil
-            scheduledFindShouldReveal = nil
-            scheduledFindGeneration = nil
-            performFindRebuild(
-                query: query,
-                in: textView,
-                preferredIndex: preferredIndex,
-                shouldReveal: shouldReveal
+            let request = FindRebuild(
+                generation: generation, query: query, preferredIndex: preferredIndex, shouldReveal: shouldReveal,
+                regexSelection: session.find.usesRegex ? textView.selectedRanges : nil
             )
+            pendingFindRebuild = request
+            DispatchQueue.main.asyncAfter(deadline: .now() + findDebounceInterval) { [weak self, weak textView] in
+                guard let self, let textView, self.pendingFindRebuild?.token == request.token else { return }
+                self.flushPendingFindRebuild(in: textView)
+            }
         }
 
-        /// Cancels any debounced rebuild and runs it synchronously for the current
-        /// query/text, so navigation and replace always operate on a current match
-        /// list even when a query edit has not settled yet. A no-op when nothing
-        /// is pending. Internal so the headless tests can drive it deterministically.
+        /// Starts pending work immediately. Literal matches are ready before
+        /// return; regex results arrive asynchronously and gate commands by revision.
         @MainActor func flushPendingFindRebuild(in textView: NSTextView) {
-            guard let query = scheduledFindQuery else { return }
-            pendingFindToken = nil
-            let preferredIndex = scheduledFindPreferredIndex ?? currentMatchIndex
-            let shouldReveal = scheduledFindShouldReveal ?? true
-            scheduledFindQuery = nil
-            scheduledFindPreferredIndex = nil
-            scheduledFindShouldReveal = nil
-            scheduledFindGeneration = nil
-            performFindRebuild(
-                query: query,
-                in: textView,
-                preferredIndex: preferredIndex,
-                shouldReveal: shouldReveal
-            )
-        }
-
-        /// Runs a find rebuild unless the input method owns the selection for
-        /// marked text, in which case the request is dropped (a later
-        /// `textDidChange` on commit re-arms it).
-        @MainActor private func performFindRebuild(
-            query: String,
-            in textView: NSTextView,
-            preferredIndex: Int,
-            shouldReveal: Bool
-        ) {
+            guard let request = pendingFindRebuild else { return }
+            pendingFindRebuild = nil
             guard !textView.hasMarkedText() else { return }
-            rebuildFindIndex(
-                query: query,
-                in: textView,
-                preferredIndex: preferredIndex,
-                shouldReveal: shouldReveal
-            )
+            if session.find.usesRegex {
+                startRegexSearch(query: request.query, in: textView, preferredIndex: request.preferredIndex,
+                                 shouldReveal: request.shouldReveal, selection: request.regexSelection)
+            } else {
+                rebuildFindIndex(query: request.query, in: textView, preferredIndex: request.preferredIndex,
+                                 shouldReveal: request.shouldReveal)
+            }
         }
 
         @MainActor func navigateFind(forward: Bool, in textView: NSTextView) {
@@ -855,13 +1062,32 @@ struct MarkdownEditorView: NSViewRepresentable {
             // A pending query-driven rebuild must run first, or navigation would
             // step through the previous query's match list.
             flushPendingFindRebuild(in: textView)
+            if session.find.usesRegex, appliedFindGeneration != findGeneration
+                || session.find.regexStatus == .idle {
+                if regexSearchTask != nil {
+                    let selection = textView.selectedRanges
+                    if pendingRegexNavigationSelection != selection { pendingRegexNavigation = 0 }
+                    pendingRegexNavigation += forward ? 1 : -1
+                    pendingRegexNavigationSelection = selection
+                }
+                return
+            }
             guard !matches.isEmpty else {
                 reportFindResult()
                 return
             }
 
             let delta = forward ? 1 : -1
-            currentMatchIndex = wrappedIndex(currentMatchIndex + delta, count: matches.count)
+            let base = currentMatchIndex < 0 && !forward ? 0 : currentMatchIndex
+            currentMatchIndex = wrappedIndex(base + delta, count: matches.count)
+            if session.find.usesRegex {
+                // A navigation that arrives during updateNSView publishes on the next turn.
+                let generation = findGeneration
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.findGeneration == generation, self.session.find.usesRegex else { return }
+                    self.session.find.currentRegexMatch = self.currentFindRange
+                }
+            }
             applyFindHighlights(in: textView)
             revealCurrentMatch(in: textView)
             reportFindResult()
@@ -895,6 +1121,9 @@ struct MarkdownEditorView: NSViewRepresentable {
                 return false
             }
             session.find.replacementCancelled = false
+            if snapshot.usesRegex {
+                return startRegexReplacement(action, snapshot: snapshot, in: textView)
+            }
             replace(action, replacement: replacement, in: textView)
             return true
         }
@@ -968,11 +1197,18 @@ struct MarkdownEditorView: NSViewRepresentable {
             preferredIndex: Int,
             shouldReveal: Bool
         ) {
-            lastFindQuery = query
-            matches = session.find.canReplace
+            let ranges = session.find.canReplace
                 ? TextSearch.matches(of: query, in: textView.string, options: session.find.options, scope: session.find.range)
                 : []
+            installFindMatches(ranges, query: query, in: textView, preferredIndex: preferredIndex, shouldReveal: shouldReveal)
+        }
 
+        @MainActor private func installFindMatches(
+            _ ranges: [NSRange], query: String, in textView: NSTextView, preferredIndex: Int,
+            shouldReveal: Bool, immediately: Bool = false
+        ) {
+            lastFindQuery = query
+            matches = ranges
             if matches.isEmpty {
                 currentMatchIndex = -1
             } else {
@@ -992,12 +1228,30 @@ struct MarkdownEditorView: NSViewRepresentable {
                 }
             }
 
-            applyFindHighlights(in: textView)
-            if shouldReveal {
-                revealCurrentMatch(in: textView)
+            var reveal = shouldReveal
+            if !matches.isEmpty, immediately {
+                if let resume = resumeAfterRegexEdit, resume.generation == findGeneration {
+                    let end = NSMaxRange(resume.inserted)
+                    let eligible: (NSRange) -> Bool = { range in
+                        !resume.zeroWidth || range.location < resume.inserted.location || range.location > end
+                    }
+                    currentMatchIndex = matches.firstIndex { $0.location >= end && eligible($0) }
+                        ?? matches.firstIndex(where: eligible) ?? -1
+                }
+                if pendingRegexNavigation != 0, pendingRegexNavigationSelection == textView.selectedRanges,
+                   regexNavigationBinding?.wrappedValue != nil {
+                    let base = currentMatchIndex < 0 && pendingRegexNavigation < 0 ? 0 : currentMatchIndex
+                    currentMatchIndex = wrappedIndex(base + pendingRegexNavigation, count: matches.count)
+                    reveal = true
+                }
             }
-            reportFindResult()
+            pendingRegexNavigation = 0
+            pendingRegexNavigationSelection = nil
+            resumeAfterRegexEdit = nil
+            applyFindHighlights(in: textView)
+            if reveal { revealCurrentMatch(in: textView) }
             appliedFindGeneration = findGeneration
+            reportFindResult(immediately: immediately)
         }
 
         @MainActor private func applyFindHighlights(in textView: NSTextView) {
@@ -1010,10 +1264,20 @@ struct MarkdownEditorView: NSViewRepresentable {
             // matches), no temporary attribute churn happens at all — only the
             // current-match color below is touched. This keeps layout invalidation
             // proportional to the change instead of to the whole match set.
-            if highlightedRanges != matches {
-                let diff = FindHighlightDiff.diff(from: highlightedRanges, to: matches)
+            // Zero-width hits have no glyph range. Dense regex results keep the
+            // exact index but paint only the current hit to bound TextKit work.
+            let currentRange = currentFindRange.flatMap { $0.length > 0 ? $0 : nil }
+            let painted = session.find.usesRegex
+                ? (matches.count <= 1_000 ? matches.filter { $0.length > 0 } : [currentRange].compactMap { $0 })
+                : matches
+            if highlightedRanges != painted {
+                let diff = FindHighlightDiff.diff(from: highlightedRanges, to: painted)
                 for range in diff.removed {
-                    layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: range)
+                    let length = (textView.textStorage?.length ?? 0) - range.location
+                    if length > 0 {
+                        layoutManager.removeTemporaryAttribute(.backgroundColor,
+                            forCharacterRange: NSRange(location: range.location, length: min(length, range.length)))
+                    }
                 }
                 for range in diff.added {
                     layoutManager.addTemporaryAttribute(
@@ -1022,19 +1286,12 @@ struct MarkdownEditorView: NSViewRepresentable {
                         forCharacterRange: range
                     )
                 }
-                highlightedRanges = matches
+                highlightedRanges = painted
             }
-
-            // The current match is orange; the previous current match falls back
-            // to the normal highlight if it is still a match.
-            let currentRange: NSRange? =
-                (currentMatchIndex >= 0 && currentMatchIndex < matches.count)
-                ? matches[currentMatchIndex]
-                : nil
 
             if let oldCurrent = paintedCurrentRange,
                oldCurrent != currentRange,
-               let index = matches.firstIndex(of: oldCurrent) {
+               let index = painted.firstIndex(of: oldCurrent) {
                 // Demote only while the range is still a match in the CURRENT
                 // coordinate space. A range that is no longer a match was already
                 // removed by the membership diff above; removing it again here
@@ -1044,7 +1301,7 @@ struct MarkdownEditorView: NSViewRepresentable {
                 layoutManager.addTemporaryAttribute(
                     .backgroundColor,
                     value: normalColor,
-                    forCharacterRange: matches[index]
+                    forCharacterRange: painted[index]
                 )
             }
             if let currentRange {
@@ -1057,9 +1314,12 @@ struct MarkdownEditorView: NSViewRepresentable {
             paintedCurrentRange = currentRange
         }
 
+        private var currentFindRange: NSRange? {
+            matches.indices.contains(currentMatchIndex) ? matches[currentMatchIndex] : nil
+        }
+
         @MainActor private func revealCurrentMatch(in textView: NSTextView) {
-            guard currentMatchIndex >= 0, currentMatchIndex < matches.count else { return }
-            let range = matches[currentMatchIndex]
+            guard let range = currentFindRange else { return }
             // Reveal with a collapsed caret at the END of the match rather than a
             // full-range selection, so an immediate Backspace deletes only the
             // character before the caret — never the whole matched word. The
@@ -1083,7 +1343,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             ((index % count) + count) % count
         }
 
-        @MainActor private func reportFindResult() {
+        @MainActor private func reportFindResult(immediately: Bool = false) {
             let total: Int
             let index: Int
             if matches.isEmpty {
@@ -1094,8 +1354,15 @@ struct MarkdownEditorView: NSViewRepresentable {
                 index = currentMatchIndex + 1
             }
 
-            DispatchQueue.main.async { [weak self] in
-                self?.onFindResult(total, index)
+            if immediately {
+                onFindResult(total, index)
+            } else {
+                let generation = findGeneration
+                let isRegex = session.find.usesRegex
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, !isRegex || self.findGeneration == generation else { return }
+                    self.onFindResult(total, index)
+                }
             }
         }
 
@@ -1546,7 +1813,9 @@ struct MarkdownEditorView: NSViewRepresentable {
 
         deinit {
             NotificationCenter.default.removeObserver(self)
-            pendingFindToken = nil
+            regexSearchTask?.cancel()
+            regexValidationTask?.cancel()
+            regexReplacementTask?.cancel()
         }
 
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
@@ -1652,8 +1921,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             // generation so the next `updateFind` schedules a rebuild, and record
             // the mutation origin so that rebuild does not reveal (a document edit
             // must never move the caret).
-            findGeneration += 1
-            lastFindMutationWasQueryChange = false
+            noteExternalTextChange()
             // The document's own edit (a preview checkbox toggle) is not typing:
             // it must not pull Side by Side's follow to the caret line or re-pin
             // the editor's viewport.

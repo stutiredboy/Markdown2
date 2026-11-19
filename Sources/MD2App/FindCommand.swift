@@ -102,6 +102,9 @@ struct FindReplacementSnapshot {
     let selections: [NSRange]
     let options: TextSearch.Options
     let scope: FindSession.Scope
+    let usesRegex: Bool
+    let regexReplacementEpoch: UUID
+    let currentRegexMatch: NSRange?
     let identity: UUID
 
     init(query: String, replacement: String, textView: NSTextView, find: FindSession) {
@@ -111,11 +114,16 @@ struct FindReplacementSnapshot {
         selections = textView.selectedRanges.map(\.rangeValue)
         options = find.options
         scope = find.scope
+        usesRegex = find.usesRegex
+        regexReplacementEpoch = find.regexReplacementEpoch
+        currentRegexMatch = find.currentRegexMatch
         identity = find.identity
     }
 
     func isCurrent(query: String, replacement: String, textView: NSTextView, find: FindSession) -> Bool {
         identity == find.identity && options == find.options && scope == find.scope
+            && usesRegex == find.usesRegex
+            && (!usesRegex || regexReplacementEpoch == find.regexReplacementEpoch)
             && selections == textView.selectedRanges.map(\.rangeValue)
             && (self.query as NSString).isEqual(to: query)
             && (self.replacement as NSString).isEqual(to: replacement)
