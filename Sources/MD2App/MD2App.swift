@@ -101,6 +101,14 @@ private struct AppCommands: Commands {
             }
             .keyboardShortcut("o")
 
+            RecentDocumentsMenu(
+                title: settings.text(.openRecent),
+                clearTitle: settings.text(.clearMenu),
+                recents: appDelegate.recentDocuments,
+                onOpen: { appDelegate.openRecentDocument($0) },
+                onClear: { appDelegate.clearRecentDocuments() }
+            )
+
             Button(settings.text(.openFolder)) {
                 appDelegate.openFolder()
             }
@@ -110,14 +118,6 @@ private struct AppCommands: Commands {
                 appDelegate.quickOpenFolderFile()
             }
             .keyboardShortcut("p", modifiers: [.command, .shift])
-
-            RecentDocumentsMenu(
-                title: settings.text(.openRecent),
-                clearTitle: settings.text(.clearMenu),
-                recents: appDelegate.recentDocuments,
-                onOpen: { appDelegate.openRecentDocument($0) },
-                onClear: { appDelegate.clearRecentDocuments() }
-            )
         }
 
         CommandGroup(replacing: .saveItem) {
