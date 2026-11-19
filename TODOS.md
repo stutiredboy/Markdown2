@@ -100,6 +100,9 @@ features. See the [daily-writing](Docs/Plans/daily-writing/PLAN.md),
   is persisted before an in-place write so edited text remains recoverable.
   If the process stops mid-write, the linked paths can temporarily expose
   partial bytes. Design how to reconcile those paths from the recovery record.
+- [ ] **Reduce layout cost when returning to deep positions in large documents.**
+  TextKit still measures the wrapped document for nonzero scroll clamps. Keep
+  the exact reading position and caret while reducing layout work in that path.
 
 ## Explicitly deferred
 

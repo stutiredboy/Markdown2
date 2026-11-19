@@ -147,23 +147,41 @@ final class MarkdownStylingController {
     private let worker = MarkdownStyleWorker()
     private var pending: Task<Void, Never>?
     private var previous: MarkdownStylePlan?
+    private weak var previousTarget: NSTextView?
+    private var previousSourceRevision: UInt64?
     private var previousTypography: TypographySettings?
     private var generation = 0
 
-    func schedule(in textView: NSTextView, willApply: @escaping @MainActor () -> Void = {}, didApply: @escaping @MainActor () -> Void = {}) {
+    func schedule(in textView: NSTextView, sourceRevision: (@MainActor () -> UInt64?)? = nil,
+                  willApply: @escaping @MainActor () -> Void = {}, didApply: @escaping @MainActor () -> Void = {}) {
         generation &+= 1
         let revision = generation
         pending?.cancel()
         let text = textView.string
         let typography = (textView as? MarkdownSourceTextView)?.typography ?? TypographySettings()
-        let previous = previousTypography == typography ? previous : nil
+        let previous = previousTarget === textView && previousTypography == typography ? previous : nil
+        let initialSourceRevision = sourceRevision?()
+        // The editor's attributed storage survives switching hosts. A fully
+        // applied plan remains valid when the source and typography match.
+        if previous != nil, let initialSourceRevision, previousSourceRevision == initialSourceRevision {
+            pending = nil
+            return
+        }
+        func sourceIsCurrent(in view: NSTextView) -> Bool {
+            // The session's NSTextStorage delegate increments the revision on
+            // character changes. Attribute edits do not invalidate the plan.
+            if let sourceRevision, let initialSourceRevision {
+                return sourceRevision() == initialSourceRevision
+            }
+            return (view.string as NSString).isEqual(to: text)
+        }
         let worker = worker
         pending = Task { [weak self, weak textView] in
             // Coalesce rapid input and IME commits before doing syntax work.
             try? await Task.sleep(for: .milliseconds(25))
             guard !Task.isCancelled, let (plan, range) = await worker.prepare(text, previous: previous),
                   !Task.isCancelled, let self, self.generation == revision,
-                  let textView, !textView.hasMarkedText(), (textView.string as NSString).isEqual(to: text) else { return }
+                  let textView, !textView.hasMarkedText(), sourceIsCurrent(in: textView) else { return }
             // Loads, large pastes and fence edits can invalidate the entire
             // document. Apply bounded chunks and yield between them so even
             // these updates do not monopolize the main actor.
@@ -172,7 +190,7 @@ final class MarkdownStylingController {
             let source = text as NSString
             repeat {
                 guard !Task.isCancelled, self.generation == revision,
-                      !textView.hasMarkedText(), (textView.string as NSString).isEqual(to: text) else { return }
+                      !textView.hasMarkedText(), sourceIsCurrent(in: textView) else { return }
                 let chunk = source.rangeOfComposedCharacterSequences(for:
                     NSRange(location: cursor, length: min(8_192, NSMaxRange(range) - cursor)))
                 willApply()
@@ -208,6 +226,8 @@ final class MarkdownStylingController {
                 if cursor < NSMaxRange(range) { await Task.yield() }
             } while cursor < NSMaxRange(range)
             self.previous = plan
+            self.previousTarget = textView
+            self.previousSourceRevision = initialSourceRevision
             self.previousTypography = typography
         }
     }

@@ -74,6 +74,7 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate, @preconcurrency
         }
     }
     private weak var coordinator: MarkdownEditorView.Coordinator?
+    let styling = MarkdownStylingController()
     /// True while `applyUndoableEdit` runs, so the mounted editor can tell the
     /// document's own edit from typing.
     private(set) var isApplyingDocumentEdit = false
@@ -139,12 +140,6 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate, @preconcurrency
         if let previous = textView.enclosingScrollView, previous !== scrollView {
             previous.documentView = nil
         }
-        // The text view tracks its host's width through autoresizing, which only
-        // applies size *changes*. Give it the new host's current (still zero)
-        // size, as a freshly built view starts, so it follows this scroll view
-        // instead of keeping its previous host's width on top.
-        textView.frame = NSRect(origin: .zero, size: scrollView.contentSize)
-        textView.minSize = NSSize(width: 0, height: scrollView.contentSize.height)
         // Find highlights belong to the editor that painted them; a new editor
         // starts with no search, so none may survive the switch.
         if let layoutManager = textView.layoutManager {
@@ -154,7 +149,13 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate, @preconcurrency
             )
         }
         self.coordinator = coordinator
-        scrollView.documentView = textView
+        if let editorHost = scrollView as? MarkdownEditorScrollView {
+            editorHost.attachEditor(textView)
+        } else {
+            textView.frame = NSRect(origin: .zero, size: scrollView.contentSize)
+            textView.minSize = NSSize(width: 0, height: scrollView.contentSize.height)
+            scrollView.documentView = textView
+        }
     }
 
     func isHosted(by coordinator: MarkdownEditorView.Coordinator) -> Bool { self.coordinator === coordinator }

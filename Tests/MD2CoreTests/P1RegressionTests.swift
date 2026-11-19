@@ -38,6 +38,90 @@ struct P1RegressionTests {
         #expect(result.body.contains(text))
     }
 
+    @Test @MainActor func rehostDoesNotWrapAtAnUnmeasuredWidth() {
+        let source = String(repeating: "A paragraph with 中文 source text.\n\n", count: 50)
+        let session = MarkdownEditorSession()
+        let editor = session.loadTextView(text: source)
+        let previous = MarkdownEditorScrollView(frame: NSRect(x: 0, y: 0, width: 520, height: 240))
+        let previousCoordinator = MarkdownEditorView.Coordinator(text: .constant(source), session: session)
+        session.host(in: previous, coordinator: previousCoordinator)
+        let previousWidth = editor.frame.width
+        #expect(previousWidth > 0)
+        editor.setSelectedRange(NSRange(location: 12, length: 3))
+
+        let destination = MarkdownEditorScrollView(frame: .zero)
+        let destinationCoordinator = MarkdownEditorView.Coordinator(text: .constant(source), session: session)
+        session.host(in: destination, coordinator: destinationCoordinator)
+        #expect(previous.documentView == nil)
+        #expect(destination.documentView === editor)
+        #expect(editor.frame.width == previousWidth)
+        #expect(editor.selectedRange() == NSRange(location: 12, length: 3))
+
+        destination.setFrameSize(NSSize(width: 700, height: 320))
+        destination.tile()
+        destination.layout()
+        #expect(editor.frame.width == destination.contentSize.width)
+        #expect(editor.autoresizingMask.contains(.width))
+        #expect(editor.selectedRange() == NSRange(location: 12, length: 3))
+
+        let sourceEditor = editor as? MarkdownSourceTextView
+        sourceEditor?.typography = TypographySettings(fontSize: 32, zoom: 2)
+        destination.setFrameSize(NSSize(width: DocumentLayoutMetrics.splitEditorMinWidth, height: 320))
+        destination.tile()
+        destination.layout()
+        #expect(editor.frame.width == destination.contentSize.width)
+        #expect(editor.textContainerInset.width * 2 < editor.frame.width)
+    }
+
+    @Test @MainActor func topAnchorLeavesTheDocumentTailUnlaid() throws {
+        let section = "Markdown paragraph with English and 中文. Another short sentence.\n\n"
+        let storage = NSTextStorage(string: String(repeating: section, count: 3_000),
+                                    attributes: [.font: NSFont.systemFont(ofSize: 16)])
+        let layout = NSLayoutManager()
+        storage.addLayoutManager(layout)
+        let container = NSTextContainer(containerSize: NSSize(width: 600, height: CGFloat.greatestFiniteMagnitude))
+        layout.addTextContainer(container)
+        let frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        let editor = NSTextView(frame: frame, textContainer: container)
+        editor.isVerticallyResizable = true
+        editor.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        let scroll = NSScrollView(frame: frame)
+        scroll.documentView = editor
+        layout.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length), actualCharacterRange: nil)
+        try #require(layout.firstUnlaidCharacterIndex() < storage.length)
+
+        let anchor = try #require(MarkdownEditorView.Coordinator.viewportAnchor(in: scroll))
+        #expect(anchor.sourceLine == 1)
+        #expect(anchor.scrollFraction == 0)
+        #expect(anchor.editorPosition?.characterIndex == 0)
+        #expect(layout.firstUnlaidCharacterIndex() < storage.length)
+    }
+
+    @Test @MainActor func retainedStylingReappliesOnlyAfterSourceChanges() async {
+        let session = MarkdownEditorSession()
+        let editor = session.loadTextView(text: "# Heading\n\n**Before**")
+        var applies = 0
+        func style() async {
+            session.styling.schedule(in: editor, sourceRevision: { session.structuredSourceRevision },
+                                     willApply: { applies += 1 })
+            await session.styling.flush()
+        }
+
+        await style()
+        let initialCount = applies
+        #expect(initialCount > 0)
+        await style()
+        #expect(applies == initialCount)
+        editor.textStorage?.replaceCharacters(in: NSRange(location: 11, length: 10), with: "`After`")
+        await style()
+        #expect(applies > initialCount)
+
+        let reference = NSTextView()
+        reference.string = editor.string
+        MarkdownTextStyler.apply(to: reference)
+        #expect(editor.textStorage?.isEqual(to: reference.textStorage!) == true)
+    }
+
     @Test @MainActor func renderingYieldsMainActorAndLatestRevisionWins() async throws {
         let store = DocumentStore()
         let chunk = "## 标题 Example\n\n中文 **bold** and `code`.\n\n- item one\n- item two\n\n"

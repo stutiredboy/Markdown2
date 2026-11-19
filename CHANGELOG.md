@@ -23,6 +23,7 @@
 - Protect the open Markdown source from being overwritten by HTML or PDF export.
 - Keep literal Replace All responsive in documents with many matches while preserving a single Undo step.
 - Reduce source styling delays when opening large documents and keep the editor responsive during coloring.
+- Switch modes in large documents without wrapping the source at a temporary zero width. Keep the source column usable at maximum zoom in a narrow pane.
 - Preserve ordered-list numbering, links with balanced parentheses, fenced code languages, and headings next to tables in rendered output. PDF export preserves square-root signs.
 - Keep Find and Replace usable in narrow editor panes and preserve the search when switching modes.
 - Show deeply nested Markdown as source if it exceeds the rendering limits. Standalone HTML embeds only validated local images and reports omitted images.

@@ -5,12 +5,31 @@ import UniformTypeIdentifiers
 
 /// Fresh SwiftUI hosts can attach and acquire their size on different turns.
 /// Notify the pending selection reveal when either prerequisite changes.
-private final class MarkdownEditorScrollView: NSScrollView {
+final class MarkdownEditorScrollView: NSScrollView {
     var onLayout: (() -> Void)?
+
+    func attachEditor(_ editor: NSTextView) {
+        // The clip view sizes its document during attachment. Seed it with the
+        // retained width before SwiftUI's first layout so a zero-width mount
+        // cannot force TextKit to rewrap the entire document.
+        if contentSize.width <= 0 {
+            let width = editor.frame.width > 0 ? editor.frame.width : DocumentLayoutMetrics.splitEditorMinWidth
+            let size = NSScrollView.frameSize(forContentSize: NSSize(width: width, height: 1),
+                horizontalScrollerClass: nil, verticalScrollerClass: hasVerticalScroller ? NSScroller.self : nil,
+                borderType: borderType, controlSize: .regular, scrollerStyle: scrollerStyle)
+            setFrameSize(size)
+        }
+        editor.setFrameOrigin(.zero)
+        editor.setFrameSize(NSSize(width: contentSize.width, height: max(contentSize.height, editor.frame.height)))
+        editor.minSize = NSSize(width: 0, height: contentSize.height)
+        documentView = editor
+    }
+
     override func layout() {
         super.layout()
         onLayout?()
     }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         onLayout?()
@@ -395,6 +414,8 @@ struct MarkdownEditorView: NSViewRepresentable {
     /// the fallback when no source-line anchor is available.
     private func scroll(toFraction fraction: Double, in scrollView: NSScrollView) -> Bool {
         guard let documentView = scrollView.documentView else { return false }
+        let clamped = min(max(fraction, 0), 1)
+        if clamped == 0 { return scroll(toVerticalOffset: 0, in: scrollView) }
         // Settle layout first so the content height reflects the real wrapped
         // text rather than a freshly created, not-yet-laid-out text view.
         if let textView = documentView as? NSTextView,
@@ -402,7 +423,6 @@ struct MarkdownEditorView: NSViewRepresentable {
            let textContainer = textView.textContainer {
             layoutManager.ensureLayout(for: textContainer)
         }
-        let clamped = min(max(fraction, 0), 1)
         let visibleHeight = scrollView.contentView.bounds.height
         guard visibleHeight > 0 else { return false }
         let contentHeight = scrollableContentHeight(for: documentView)
@@ -467,6 +487,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             return true
         }
 
+        if charRange.location == 0 { return scroll(toVerticalOffset: 0, in: scrollView) }
         layoutManager.ensureLayout(for: textContainer)
         let glyphRange = layoutManager.glyphRange(forCharacterRange: charRange, actualCharacterRange: nil)
         let rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
@@ -478,8 +499,8 @@ struct MarkdownEditorView: NSViewRepresentable {
     private func scroll(toVerticalOffset offset: CGFloat, in scrollView: NSScrollView) -> Bool {
         let visibleHeight = scrollView.contentView.bounds.height
         guard visibleHeight > 0, let documentView = scrollView.documentView else { return false }
-        // The shared clamp keeps short documents pinned to the top.
-        let targetY = CGFloat(clampedScrollOffset(
+        // The top is valid regardless of the document's wrapped height.
+        let targetY: CGFloat = offset <= 0 ? 0 : CGFloat(clampedScrollOffset(
             targetY: Double(offset),
             contentHeight: Double(scrollableContentHeight(for: documentView)),
             viewportHeight: Double(visibleHeight)
@@ -1439,6 +1460,14 @@ struct MarkdownEditorView: NSViewRepresentable {
             isProgrammaticScroll = true
             var attempts = 0
             var lastContentHeight = CGFloat(-1)
+            let seeksTop: Bool
+            if let position = anchor.editorPosition {
+                seeksTop = position.characterIndex == 0 && position.verticalOffset <= 0
+            } else if let line = anchor.targetSourceLine {
+                seeksTop = line == 1
+            } else {
+                seeksTop = anchor.scrollFraction <= 0
+            }
 
             func step() {
                 guard self.settlingAnchor == anchor, self.session.isHosted(by: self),
@@ -1458,7 +1487,7 @@ struct MarkdownEditorView: NSViewRepresentable {
                     appliedNow = apply(anchor, scrollView)
                 }
                 let contentHeight = scrollView.documentView
-                    .map { scrollableContentHeight(for: $0) } ?? 0
+                    .map { seeksTop ? $0.bounds.height : scrollableContentHeight(for: $0) } ?? 0
                 // Stable only when the scroll applied against unchanged
                 // geometry *and* the viewport actually shows content — an
                 // empty visible rect means the offset points into the void.
@@ -1510,13 +1539,13 @@ struct MarkdownEditorView: NSViewRepresentable {
         /// stable top content inset. Computed on demand so a switch right
         /// after a scroll never sees a stale debounced value.
         @MainActor static func viewportAnchor(in scrollView: NSScrollView) -> ViewportAnchor? {
+            let offset = Double(scrollView.contentView.bounds.origin.y)
+            let atTop = offset <= 0
             guard let textView = scrollView.documentView as? NSTextView,
                   let line = topVisibleLine(in: scrollView) else { return nil }
 
             let visibleHeight = Double(scrollView.contentView.bounds.height)
-            let contentHeight = Double(scrollableContentHeight(for: textView))
-            let offset = Double(scrollView.contentView.bounds.origin.y)
-            let maxOffset = contentHeight - visibleHeight
+            let maxOffset = atTop ? 0 : Double(scrollableContentHeight(for: textView)) - visibleHeight
             let fraction = maxOffset > 0 ? offset / maxOffset : 0
 
             return ViewportAnchor(
@@ -1561,7 +1590,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             let origin = textView.textContainerOrigin
             rect.origin.x -= origin.x
             rect.origin.y -= origin.y
-            if layoutWholeDocument {
+            if layoutWholeDocument, scrollView.contentView.bounds.minY > 0 {
                 // Styling restores the viewport through a bounds change. Lay
                 // out the resized content before AppKit clamps that offset.
                 layoutManager.ensureLayout(for: textContainer)
@@ -1871,7 +1900,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             }
         }
 
-        private let styling = MarkdownStylingController()
+        private var styling: MarkdownStylingController { session.styling }
 
         @MainActor func centerTypewriterCaret(in textView: NSTextView) {
             let selection = textView.selectedRange()
@@ -1912,7 +1941,9 @@ struct MarkdownEditorView: NSViewRepresentable {
         }
 
         @MainActor func scheduleStyle(in textView: NSTextView) {
-            styling.schedule(in: textView, willApply: { [weak self] in
+            styling.schedule(in: textView, sourceRevision: { [weak session] in
+                session?.structuredSourceRevision
+            }, willApply: { [weak self] in
                 self?.isApplyingStyle = true
             }, didApply: { [weak self] in
                 self?.isApplyingStyle = false
@@ -2044,10 +2075,25 @@ final class MarkdownSourceTextView: NSTextView {
 
     var typography: TypographySettings = .init() {
         didSet {
-            let width = max(58, ceil(gutterFontSize * 3.2 + Self.gutterTrailingInset))
-            textContainerInset.width = width
+            guard typography != oldValue else { return }
+            updateHorizontalInset(for: frame.width)
             invalidateGutter()
         }
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        let previousWidth = frame.width
+        if newSize.width < previousWidth { updateHorizontalInset(for: newSize.width) }
+        super.setFrameSize(newSize)
+        if newSize.width > previousWidth { updateHorizontalInset(for: newSize.width) }
+    }
+
+    private func updateHorizontalInset(for width: CGFloat) {
+        guard width > 0 else { return }
+        let preferred = max(58, ceil(gutterFontSize * Self.gutterWidthFactor + Self.gutterTrailingInset))
+        // Leave room for text even in the narrowest pane at maximum zoom.
+        let inset = min(preferred, floor(width / 4))
+        if textContainerInset.width != inset { textContainerInset.width = inset }
     }
     lazy var markdownPasteController = MarkdownPasteController(editor: self)
     private var isPasting = false
@@ -2245,6 +2291,7 @@ final class MarkdownSourceTextView: NSTextView {
 
     /// Right margin between a gutter number and the text container's left edge.
     private static let gutterTrailingInset: CGFloat = 8
+    private static let gutterWidthFactor: CGFloat = 3.2
     /// Match the editor zoom; the inset grows above its 58pt minimum when
     /// five-digit numbers need more room at large sizes.
     private var gutterFontSize: CGFloat { typography.effectiveFontSize * 0.875 }
@@ -2326,8 +2373,9 @@ final class MarkdownSourceTextView: NSTextView {
             forFragmentStarts: fragmentStarts,
             in: string as NSString
         )
+        let fittedFontSize = min(gutterFontSize, max(1, (stripWidth - Self.gutterTrailingInset) / Self.gutterWidthFactor))
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: gutterFontSize, weight: .regular),
+            .font: NSFont.monospacedDigitSystemFont(ofSize: fittedFontSize, weight: .regular),
             .foregroundColor: NSColor.secondaryLabelColor
         ]
 
