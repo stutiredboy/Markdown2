@@ -1047,8 +1047,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
             guard let webView, let coordinator else { return }
             coordinator.invalidateResourceContext(in: webView)
         }
+        // ContentView keeps one reader across modes. The newest mount owns
+        // capture even while SwiftUI is still updating the outgoing web view.
         viewportReader?.capture = { [weak webView, weak coordinator] completion in
-            guard let webView, let coordinator else {
+            guard let webView, webView.window != nil, let coordinator, coordinator.resourceContextIsActive else {
                 completion(nil)
                 return
             }
@@ -1107,13 +1109,6 @@ struct MarkdownPreviewView: NSViewRepresentable {
         }
 
         let coordinator = context.coordinator
-        viewportReader?.capture = { [weak webView, weak coordinator] completion in
-            guard let webView, let coordinator else {
-                completion(nil)
-                return
-            }
-            coordinator.capturePosition(in: webView, completion: completion)
-        }
         viewportReader?.follow = { [weak webView, weak coordinator] line in
             guard let webView, let coordinator, coordinator.isLoaded else { return }
             webView.evaluateJavaScript(
@@ -1795,9 +1790,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
             return json
         }
 
-        /// How long a mode-switch capture waits for the page's JavaScript
-        /// before falling back to the cached anchor.
-        private static let captureTimeout: TimeInterval = 0.25
+        /// Give a busy WebKit process a short window to answer before
+        /// restoring the cached anchor. Capture remains asynchronous.
+        private static let captureTimeout: TimeInterval = 0.5
         private var pendingCaptureID = 0
         private var pendingCaptureCompletion: ((PreviewViewportReader.Position?) -> Void)?
         private var captureTimeoutWorkItem: DispatchWorkItem?

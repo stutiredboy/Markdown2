@@ -172,8 +172,8 @@ final class NativeWritingPolishGUITests: XCTestCase {
         // can substitute for the fresh position of the live page.
         try switchMode(to: .write, in: harness)
         let destination = nativeSource.range(of: "Ordinary draft paragraph 72.")
-        XCTAssertTrue(editor.visibleRect.intersects(harness.targetRect(destination, in: editor)),
-                      "Read navigation must take precedence over the passive source bookmark")
+        try harness.waitForTarget(destination, in: editor,
+                                  context: "Read navigation must take precedence over the passive source bookmark")
         XCTAssertEqual(editor.selectedRange(), workingSelection,
                        "Read navigation changes the viewport while retaining the source selection")
         XCTAssertTrue(harness.window.firstResponder === editor)
