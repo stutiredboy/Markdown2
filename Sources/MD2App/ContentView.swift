@@ -325,7 +325,7 @@ struct ContentView: View {
                 formulaSheet.dismiss()
                 formulaFocus = nil
             }
-            editorFindQuery = lastFindQuery
+            setEditorFindQuery(lastFindQuery)
             previewFindQuery = lastFindQuery
             clickedOutlineHeadingID = nil
             editorSelection = nil
@@ -572,7 +572,7 @@ struct ContentView: View {
             showEditorFind(showsReplace: true)
         case .next, .previous:
             if !lastFindQuery.isEmpty {
-                editorFindQuery = lastFindQuery
+                setEditorFindQuery(lastFindQuery)
                 editorFindNavigation = FindCommand(action)
             } else {
                 showEditorFind(showsReplace: editorFindShowsReplace)
@@ -586,7 +586,11 @@ struct ContentView: View {
 
     private func showEditorFind(showsReplace: Bool) {
         if !editorFindVisible { document.editorSession.find.rememberSelection(in: document.editorSession.textView) }
-        editorFindQuery = lastFindQuery
+        setEditorFindQuery(lastFindQuery)
+        if !showsReplace, document.editorSession.find.usesRegex {
+            document.editorSession.find.invalidateRegexReplacement()
+        }
+        document.editorSession.find.isSourceFindVisible = true
         withAnimation(findDialogEntranceAnimation) {
             editorFindVisible = true
             editorFindShowsReplace = showsReplace
@@ -602,6 +606,7 @@ struct ContentView: View {
     }
 
     private func dismissEditorFind(refocusEditor: Bool = false) {
+        document.editorSession.find.isSourceFindVisible = false
         if focusedFindPane == .editor { focusedFindPane = nil }
         if editorFindVisible {
             withAnimation(findDialogExitAnimation) {
@@ -610,6 +615,7 @@ struct ContentView: View {
         }
         editorFindNavigation = nil
         editorReplaceCommand = nil
+        if document.editorSession.find.usesRegex { document.editorSession.find.invalidateRegexReplacement() }
         if refocusEditor {
             editorSurfaceFocusToken = UUID()
         }
@@ -677,11 +683,31 @@ struct ContentView: View {
                 if pane == .editor {
                     document.editorSession.revealSelectionOnNextHost = false
                     document.showsFormattingTargetNotice = false
-                    editorFindQuery = query
+                    setEditorFindQuery(query)
                 }
                 else { previewFindQuery = query }
             }
         )
+    }
+
+    private func setEditorFindQuery(_ query: String) {
+        let find = document.editorSession.find
+        if find.usesRegex, !(editorFindQuery as NSString).isEqual(to: query) {
+            find.invalidateRegexResults()
+            find.replacementCount = nil
+        }
+        editorFindQuery = query
+    }
+
+    private var editorReplacementBinding: Binding<String> {
+        Binding(get: { editorFindReplacement }, set: { replacement in
+            let find = document.editorSession.find
+            if find.usesRegex, !(editorFindReplacement as NSString).isEqual(to: replacement) {
+                find.invalidateRegexReplacement()
+                find.replacementCount = nil
+            }
+            editorFindReplacement = replacement
+        })
     }
 
     /// Localized "i of n" match status, "No results", or empty when idle.
@@ -691,7 +717,10 @@ struct ContentView: View {
     }
 
     private var editorStatusText: String {
-        matchStatusText(query: editorFindQuery, total: editorMatchTotal, index: editorMatchIndex)
+        if document.editorSession.find.usesRegex, editorMatchTotal > 0, editorMatchIndex == 0 {
+            return String(format: settings.text(.findRegexMatchCount), editorMatchTotal)
+        }
+        return matchStatusText(query: editorFindQuery, total: editorMatchTotal, index: editorMatchIndex)
     }
 
     private func matchStatusText(query: String, total: Int, index: Int) -> String {
@@ -768,6 +797,7 @@ struct ContentView: View {
         }
         // A mode change starts a clean sync slate.
         splitSyncSource = nil
+        if document.editorSession.find.usesRegex { dismissEditorFind() }
         mode = newMode
         if newMode == .split {
             realignPreviewToEditorAfterEntry()
@@ -973,7 +1003,7 @@ struct ContentView: View {
                 NativeFindBar(pane: .editor) {
                     EditorFindBar(
                         query: findQueryBinding(for: .editor),
-                        replacement: $editorFindReplacement,
+                        replacement: editorReplacementBinding,
                         showsReplace: editorFindShowsReplace,
                         focusToken: editorFindFocusToken,
                         statusText: editorStatusText,
@@ -1020,7 +1050,11 @@ struct ContentView: View {
                 findQuery: $editorFindQuery,
                 findOptions: document.editorSession.find.options,
                 findScope: document.editorSession.find.scope,
-                findMayRevealMatches: editorFindVisible && !document.showsFormattingTargetNotice,
+                findUsesRegex: document.editorSession.find.usesRegex,
+                findRegexResultsEpoch: document.editorSession.find.regexResultsEpoch,
+                validatesRegexReplacement: editorFindVisible && editorFindShowsReplace,
+                findMayRevealMatches: editorFindVisible && !document.showsFormattingTargetNotice
+                    && (!document.editorSession.find.usesRegex || !inSplit || focusedPane == .editor),
                 findNavigation: $editorFindNavigation,
                 findReplacement: $editorFindReplacement,
                 replaceCommand: $editorReplaceCommand,

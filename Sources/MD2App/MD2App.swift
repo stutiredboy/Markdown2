@@ -27,6 +27,15 @@ private struct RecentDocumentsMenu: View {
 }
 
 @main
+enum Markdown2Main {
+    @MainActor static func main() {
+        if CommandLine.arguments.dropFirst().elementsEqual([RegexFindProcess.workerArgument]) {
+            exit(RegexFindProcess.runChild())
+        }
+        MD2Application.main()
+    }
+}
+
 struct MD2Application: App {
     @NSApplicationDelegateAdaptor(MD2AppDelegate.self) private var appDelegate
 

@@ -505,6 +505,9 @@ enum L10nKey: String, CaseIterable, Sendable {
     case pasteLiteralFallbackNotice, pasteUnavailableNotice, pasteLimitNotice, pasteCancelledNotice, pasteUnsafeContextNotice
     case findMatchCase
     case findWholeWord
+    case findRegex, findRegexHelp, findRegexWholeWordHelp, findRegexReplacementHelp
+    case findRegexSearching, findRegexPreparingReplacement, findRegexInvalidPattern, findRegexSearchLimit
+    case findRegexInvalidReplacement, findRegexReplacementLimit, findRegexSearchFailed, findRegexMatchCount
     case findOnlySelection
     case findSourceSelection
     case findWholeDocument
@@ -834,13 +837,25 @@ enum L10n {
         .formattingTargetNotice: "Source selection shown. Select the text to format, then run the command again.",
         .findMatchCase: "Match case",
         .findWholeWord: "Whole word",
+        .findRegex: "Regular expression",
+        .findRegexHelp: "Use a regular expression to search the Markdown source.",
+        .findRegexWholeWordHelp: "Use \\b in the pattern to match a word boundary.",
+        .findRegexReplacementHelp: "Use $0 for the whole match, $1 for a numbered group, and ${name} for a named group.",
+        .findRegexSearching: "Searching source…",
+        .findRegexPreparingReplacement: "Preparing replacement…",
+        .findRegexInvalidPattern: "Invalid regular expression. Check the pattern.",
+        .findRegexSearchLimit: "Regular-expression search limit exceeded. Simplify the pattern or narrow the selection.",
+        .findRegexInvalidReplacement: "Invalid replacement. Check the capture group names and numbers.",
+        .findRegexReplacementLimit: "Replacement limit exceeded. Shorten the replacement or narrow the selection.",
+        .findRegexSearchFailed: "Regular-expression search could not finish. Edit the pattern to retry.",
+        .findRegexMatchCount: "%lld found",
         .findOnlySelection: "Only selection",
         .findSourceSelection: "Source selection",
         .findWholeDocument: "Whole document",
         .findSelectionInvalid: "Selection expired. Select source text again or turn off Only selection.",
         .findSelectionFrozen: "Search is limited to the frozen source selection.",
         .findUseSelection: "Use selection",
-        .findSourceOnlyHelp: "Selection scope and replacement require the source editor.",
+        .findSourceOnlyHelp: "Regular expressions, selection scope, and replacement require the source editor.",
         .findScopeCount: "%@ · %d matches",
         .findReplacementCancelled: "Search changed. Replacement canceled; run it again.",
         .findReplacedCount: "%@ · Replaced %d",
@@ -1163,13 +1178,25 @@ enum L10n {
         .formattingTargetNotice: "已显示源码选区。请选择要格式化的文字，再次执行命令。",
         .findMatchCase: "区分大小写",
         .findWholeWord: "整词",
+        .findRegex: "正则表达式",
+        .findRegexHelp: "使用正则表达式查找 Markdown 源码。",
+        .findRegexWholeWordHelp: "用 \\b 匹配单词边界。",
+        .findRegexReplacementHelp: "用 $0 引用整个匹配，用 $1 引用编号捕获组，用 ${name} 引用命名捕获组。",
+        .findRegexSearching: "正在查找源码…",
+        .findRegexPreparingReplacement: "正在准备替换…",
+        .findRegexInvalidPattern: "正则表达式无效。请检查表达式。",
+        .findRegexSearchLimit: "超出正则表达式查找限制。请简化表达式或缩小选区。",
+        .findRegexInvalidReplacement: "替换内容无效。请检查捕获组的名称和编号。",
+        .findRegexReplacementLimit: "超出替换限制。请缩短替换内容或缩小选区。",
+        .findRegexSearchFailed: "正则表达式查找未能完成。请编辑表达式后重试。",
+        .findRegexMatchCount: "%lld 处匹配",
         .findOnlySelection: "仅选区",
         .findSourceSelection: "源码选区",
         .findWholeDocument: "全文",
         .findSelectionInvalid: "选区已失效。请重新选择源码，或关闭“仅选区”。",
         .findSelectionFrozen: "查找范围已固定为源码选区。",
         .findUseSelection: "使用选区",
-        .findSourceOnlyHelp: "仅选区和替换需在源码编辑器中使用。",
+        .findSourceOnlyHelp: "正则表达式、仅选区和替换需在源码编辑器中使用。",
         .findScopeCount: "%@ · %d 处匹配",
         .findReplacementCancelled: "查找状态已变化，替换已取消。请重新执行。",
         .findReplacedCount: "%@ · 已替换 %d 处",

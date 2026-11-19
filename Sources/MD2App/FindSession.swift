@@ -12,8 +12,43 @@ final class FindSession {
         case invalid
     }
 
-    var options = TextSearch.Options()
-    var scope: Scope = .document
+    enum RegexStatus: Equatable {
+        case idle
+        case searching
+        case ready
+        case invalidPattern
+        case invalidReplacement
+        case workLimit
+        case searchFailed
+    }
+
+    var options = TextSearch.Options() {
+        didSet {
+            if usesRegex, options.caseSensitive != oldValue.caseSensitive { invalidateRegexResults() }
+        }
+    }
+    var scope: Scope = .document {
+        didSet {
+            if usesRegex, scope != oldValue { invalidateRegexResults() }
+        }
+    }
+    var usesRegex = false {
+        didSet {
+            if usesRegex != oldValue {
+                replacementCount = nil
+                invalidateRegexResults()
+            }
+        }
+    }
+    var isSourceFindVisible = false
+    var regexStatus: RegexStatus = .idle
+    var regexReplacementStatus: RegexStatus = .idle
+    private(set) var regexResultsEpoch: UInt64 = 0
+    private(set) var regexReplacementEpoch = UUID()
+    var currentRegexMatch: NSRange?
+
+    var hasCurrentRegexMatch: Bool { currentRegexMatch != nil }
+
     var replacementCount: Int?
     var replacementCancelled = false
     private(set) var identity = UUID()
@@ -50,8 +85,23 @@ final class FindSession {
         replacementCount = nil
     }
 
+    func invalidateRegexResults() {
+        regexResultsEpoch &+= 1
+        regexStatus = .idle
+        currentRegexMatch = nil
+        invalidateRegexReplacement()
+    }
+
+    func invalidateRegexReplacement() {
+        replacementCancelled = false
+        regexReplacementEpoch = UUID()
+        regexReplacementStatus = .idle
+    }
+
     func reset() {
         identity = UUID()
+        usesRegex = false
+        invalidateRegexResults()
         replacementCancelled = false
         options = .init()
         scope = .document

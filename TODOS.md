@@ -48,13 +48,10 @@ features. See the [daily-writing](Docs/Plans/daily-writing/PLAN.md),
   report is read-only and invalidated on reload or permission change. See the
   [inspection scope and permission policy](Docs/RemoteResources.md).
 
-- [ ] **P2 — Regular-expression find and replace.** Literal matching is complete;
-  regex is an opt-in extension. First define source/preview scope, capture-group
-  replacement, zero-length matches and an enforceable work/cancellation budget.
-  Acceptance: malformed or pathological patterns fail visibly without blocking
-  typing; Unicode/UTF-16, frozen selection scope and stale requests remain safe;
-  Replace All shows its scope/count and is one Undo operation. Keep the literal
-  search defaults unchanged.
+- [x] **P2 — Regular-expression find and replace.** Opt in from the source
+  find bar. Regex supports captures, zero-width matches, frozen selection scope
+  and a single Undo for Replace All. The bar reports invalid input and work
+  limits. See [regular-expression matching and replacement](Docs/MarkdownEditing.md#regular-expressions-in-source).
 
 - [x] **P2 — Native writing polish.** The Mode menu offers opt-in Typewriter
   Scrolling, and the toolbar help shows the current mode shortcuts. Switching

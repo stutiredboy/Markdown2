@@ -5,6 +5,7 @@
 - Browse saved revisions from File → Browse Local History and open a selected revision as a separate copy.
 - Copy pasted or dropped images into a document-relative folder, link to the originals, or collect existing local images. Use Create Copy to open a separate Markdown file beside the original.
 - Find with case and whole-word options in the editor or preview, and replace within a selected source range.
+- Turn on regular expressions in the source find bar to search Markdown and reuse capture groups in replacements. Replace All shows the scope and count and can be undone in one step.
 - Edit source tables from the keyboard or Format menu. The Edit menu offers explicit paste as Markdown, Table, or Plain Text.
 - Edit a standalone single-line `$$…$$` formula directly in Preview. The change preserves surrounding Markdown and can be undone in one step. Other formula forms can be opened in source.
 - Control remote images per document session and inspect the referenced origins. Offline HTML exports embed validated local images and show placeholders for omitted images.

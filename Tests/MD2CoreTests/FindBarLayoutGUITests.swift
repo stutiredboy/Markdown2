@@ -128,7 +128,8 @@ final class FindBarLayoutGUITests: XCTestCase {
         let views = descendants(root)
         let buttons = views.compactMap { $0 as? NSButton }
         let fields = views.compactMap { $0 as? NSTextField }.filter { $0.isEditable }
-        XCTAssertEqual(buttons.count, 8, "previous, next, close, three options, replace, replace all")
+        XCTAssertEqual(buttons.count, 9, "previous, next, close, four options, replace, replace all")
+        XCTAssertEqual(buttons.filter { $0.accessibilityIdentifier() == "findRegex" }.count, 1)
         XCTAssertEqual(fields.count, 2, "query and replacement must both be measured")
         XCTAssertTrue(fields.contains { $0 === query })
         XCTAssertEqual(fields.filter { $0.placeholderString == harness.settings.text(.replaceWith) }.count, 1)
