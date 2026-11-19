@@ -1047,15 +1047,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             guard let webView, let coordinator else { return }
             coordinator.invalidateResourceContext(in: webView)
         }
-        // ContentView keeps one reader across modes. The newest mount owns
-        // capture even while SwiftUI is still updating the outgoing web view.
-        viewportReader?.capture = { [weak webView, weak coordinator] completion in
-            guard let webView, webView.window != nil, let coordinator, coordinator.resourceContextIsActive else {
-                completion(nil)
-                return
-            }
-            coordinator.capturePosition(in: webView, completion: completion)
-        }
+        registerViewportCapture(in: webView, coordinator: coordinator)
         viewportReader?.follow = { [weak webView, weak coordinator] line in
             guard let webView, let coordinator, coordinator.isLoaded else { return }
             webView.evaluateJavaScript(
@@ -1071,6 +1063,16 @@ struct MarkdownPreviewView: NSViewRepresentable {
         }
 
         return webView
+    }
+
+    private func registerViewportCapture(in webView: WKWebView, coordinator: Coordinator) {
+        viewportReader?.capture = { [weak webView, weak coordinator] completion in
+            guard let webView, let coordinator, coordinator.resourceContextIsActive else {
+                completion(nil)
+                return
+            }
+            coordinator.capturePosition(in: webView, completion: completion)
+        }
     }
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
@@ -1134,6 +1136,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             context.coordinator.resourceContextIsActive = true
         }
         guard context.coordinator.resourceContextIsActive else { return }
+        registerViewportCapture(in: webView, coordinator: coordinator)
         context.coordinator.applyFrontMatterVisibility(in: webView)
         context.coordinator.applyLineNumbersVisibility(in: webView)
         if htmlChanged || baseURLChanged || resourceContextChanged {

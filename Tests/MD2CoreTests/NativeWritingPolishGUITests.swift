@@ -148,8 +148,8 @@ final class NativeWritingPolishGUITests: XCTestCase {
             XCTAssertEqual(editor.selectedRange(), workingSelection, "\(mode) displaced the working selection")
             if mode != .read {
                 XCTAssertTrue(harness.store.editorSession.textView === editor)
-                XCTAssertTrue(editor.visibleRect.intersects(harness.targetRect(workingSelection, in: editor)),
-                              "\(mode) lost the working line")
+                try harness.waitForTarget(workingSelection, in: editor,
+                                          context: "\(mode) keeps the working line visible")
             }
             XCTAssertNil(harness.queryField)
         }

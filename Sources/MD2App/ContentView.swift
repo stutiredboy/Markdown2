@@ -774,10 +774,7 @@ struct ContentView: View {
     /// own anchor binding: the outgoing surface's final `updateNSView` pass
     /// must not be able to consume the incoming surface's target.
     private func deliver(anchor: ViewportAnchor, to newMode: EditorMode) {
-        // Only a measured native viewport can be restored as an exact
-        // passive round trip. A fallback line cannot establish that bookmark.
-        sourceBeforeRead = newMode == .read && anchor.editorPosition != nil
-            ? (anchor, document.sourceLineRevision) : nil
+        sourceBeforeRead = newMode == .read ? (anchor, document.sourceLineRevision) : nil
         document.jumpLine = nil
         document.jumpHeadingID = nil
         document.jumpFraction = nil
