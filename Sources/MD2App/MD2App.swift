@@ -101,6 +101,16 @@ private struct AppCommands: Commands {
             }
             .keyboardShortcut("o")
 
+            Button(settings.text(.openFolder)) {
+                appDelegate.openFolder()
+            }
+            .keyboardShortcut("o", modifiers: [.command, .shift])
+
+            Button(settings.text(.folderQuickOpen)) {
+                appDelegate.quickOpenFolderFile()
+            }
+            .keyboardShortcut("p", modifiers: [.command, .shift])
+
             RecentDocumentsMenu(
                 title: settings.text(.openRecent),
                 clearTitle: settings.text(.clearMenu),

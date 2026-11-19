@@ -9,7 +9,28 @@ struct DocumentFileIdentity: Codable, Sendable {
     // Keep a live inode reference too. Do not serialize descriptors across runs.
     private var copyReference: DocumentCopyFileReference? = nil
     private var handle: FileHandle? = nil
-    private enum CodingKeys: String, CodingKey { case bookmark }
+    private var folderEntry: FolderEntry? = nil
+    private enum CodingKeys: String, CodingKey { case bookmark, folderEntry }
+
+    /// A recovered folder document must reattach to its verified file before
+    /// it can save. Device, inode and birth time detect replacements at the
+    /// same path even when their contents are identical.
+    private struct FolderEntry: Codable, Equatable, Sendable {
+        var device: dev_t
+        var inode: ino_t
+        var birthSecond: Int
+        var birthNanosecond: Int
+
+        init(_ reference: DocumentCopyFileReference) {
+            device = reference.identity.device
+            inode = reference.identity.inode
+            let birthTime = reference.birthTime
+            birthSecond = birthTime.second
+            birthNanosecond = birthTime.nanosecond
+        }
+    }
+
+    var isFolderFile: Bool { folderEntry != nil }
 
     init(url: URL) {
         bookmark = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
@@ -21,11 +42,29 @@ struct DocumentFileIdentity: Codable, Sendable {
         self.copyReference = copyReference
     }
 
+    init(folderReference: DocumentCopyFileReference) {
+        copyReference = folderReference
+        folderEntry = FolderEntry(folderReference)
+    }
+
+    func matchesFolderEntry(_ reference: DocumentCopyFileReference) -> Bool {
+        folderEntry == FolderEntry(reference)
+    }
+
+    func reopenFolderFile(at url: URL) -> DocumentCopyFileReference? {
+        guard isFolderFile,
+              let reference = try? DocumentCopyFileReference.open(at: url, noFollowAncestors: true),
+              matchesFolderEntry(reference) else { return nil }
+        return reference
+    }
+
     func resolve(fallback: URL) -> URL? {
         if let copyReference {
             guard let resolved = copyReference.currentURL() else { return nil }
+            if isFolderFile { return reopenFolderFile(at: resolved) == nil ? nil : resolved }
             return resolved.resolvingSymlinksInPath() == fallback.resolvingSymlinksInPath() ? fallback : resolved
         }
+        if isFolderFile { return reopenFolderFile(at: fallback) == nil ? nil : fallback }
         if let liveURL = liveURL() { return usableURL(liveURL, fallback: fallback) }
         if let bookmark {
             var stale = false

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Browse an explicitly selected Markdown folder with File → Open Folder and jump to indexed files by name or relative path with Quick Open.
 - Browse saved revisions from File → Browse Local History and open a selected revision as a separate copy.
 - Copy pasted or dropped images into a document-relative folder, link to the originals, or collect existing local images. Use Create Copy to open a separate Markdown file beside the original.
 - Find with case and whole-word options in the editor or preview, and replace within a selected source range.
