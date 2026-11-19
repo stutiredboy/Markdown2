@@ -66,10 +66,8 @@ final class FolderWorkflowGUITests: XCTestCase {
 
         XCTAssertEqual(AXUIElementPerformAction(originalWindow, kAXRaiseAction as CFString), .success)
         _ = try app.documentWindow(fixture.guide, focused: true)
-        try app.focus(editor)
-        try app.key(kVK_ANSI_A, flags: .maskCommand)
-        try app.type(fixture.guideText + "\nUnsaved draft")
-        _ = try app.waitFor("dirty in-memory editor text") { app.value(editor)?.hasSuffix("Unsaved draft") == true ? editor : nil }
+        let draft = fixture.guideText + "\nUnsaved draft"
+        try app.replaceEditorText(draft, in: editor)
         try app.key(kVK_ANSI_P, flags: [.maskCommand, .maskShift])
         _ = try app.waitFor("Quick Open gives keyboard focus to the search field") {
             app.focusedElement.flatMap { app.identifier($0) == "folder-quick-open" ? $0 : nil }
@@ -79,12 +77,9 @@ final class FolderWorkflowGUITests: XCTestCase {
         let reusedWindow = try app.documentWindow(fixture.guide, focused: true)
         XCTAssertTrue(CFEqual(reusedWindow, originalWindow), "quick open must focus the existing native window")
         XCTAssertEqual(app.windows.filter { app.isWindow($0, for: fixture.guide) }.count, 1)
-        XCTAssertEqual(app.value(editor), fixture.guideText + "\nUnsaved draft")
+        XCTAssertEqual(app.value(editor), draft)
         XCTAssertEqual(try String(contentsOf: fixture.guide, encoding: .utf8), fixture.guideText)
-        try app.focus(editor)
-        try app.key(kVK_ANSI_A, flags: .maskCommand)
-        try app.type(fixture.guideText)
-        _ = try app.waitFor("the editor is restored to its original text") { app.value(editor) == fixture.guideText ? editor : nil }
+        try app.replaceEditorText(fixture.guideText, in: editor)
 
         try app.key(kVK_ANSI_P, flags: [.maskCommand, .maskShift])
         try app.search("Pending.md", field: search, list: list, expecting: "Pending.md")
@@ -108,9 +103,7 @@ final class FolderWorkflowGUITests: XCTestCase {
             app.descendant(addedWindow) { app.attribute(kAXRoleAttribute, of: $0) as? String == kAXTextAreaRole }
         }
         let saved = "# Saved through the ordinary document editor"
-        try app.focus(addedEditor)
-        try app.key(kVK_ANSI_A, flags: .maskCommand)
-        try app.type(saved)
+        try app.replaceEditorText(saved, in: addedEditor)
         try app.key(kVK_ANSI_S, flags: .maskCommand)
         _ = try app.waitFor("ordinary Save writes the selected file") {
             (try? String(contentsOf: added, encoding: .utf8)) == saved ? addedEditor : nil
@@ -246,8 +239,29 @@ private struct FolderTestApplication {
     }
 
     func focus(_ element: AXUIElement) throws {
-        let result = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-        guard result == .success else { throw FolderTestError("Focusing \(labels(element)) failed: \(result.rawValue)") }
+        try set(kAXFocusedAttribute, to: kCFBooleanTrue, on: element)
+    }
+
+    func replaceEditorText(_ replacement: String, in editor: AXUIElement) throws {
+        try selectText(in: editor)
+        try set(kAXSelectedTextAttribute, to: replacement as CFString, on: editor)
+        _ = try waitFor("the editor has published the exact replacement") { value(editor) == replacement ? editor : nil }
+    }
+
+    private func selectText(in element: AXUIElement) throws {
+        try focus(element)
+        let previous = value(element) ?? ""
+        guard !previous.isEmpty else { return }
+        var range = CFRange(location: 0, length: previous.utf16.count)
+        try set(kAXSelectedTextRangeAttribute, to: XCTUnwrap(AXValueCreate(.cfRange, &range)), on: element)
+        _ = try waitFor("the input field has selected its current text") {
+            (attribute(kAXSelectedTextAttribute, of: element) as? String) == previous ? element : nil
+        }
+    }
+
+    private func set(_ attribute: String, to value: CFTypeRef, on element: AXUIElement) throws {
+        let result = AXUIElementSetAttributeValue(element, attribute as CFString, value)
+        guard result == .success else { throw FolderTestError("Setting \(attribute) failed: \(result.rawValue)") }
     }
 
     func openSelection(using button: AXUIElement) throws {
@@ -258,8 +272,7 @@ private struct FolderTestApplication {
     }
 
     func search(_ query: String, field: AXUIElement, list: AXUIElement, expecting name: String) throws {
-        try focus(field)
-        try key(kVK_ANSI_A, flags: .maskCommand)
+        try selectText(in: field)
         try type(query)
         _ = try waitFor("the path query \(query) shows \(name)") {
             value(field) == query ? row(name, in: list) : nil
