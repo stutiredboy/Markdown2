@@ -4,6 +4,14 @@ Choose **File → Open Folder…** (`Shift+Cmd+O`) to browse one Markdown folder
 
 **File → Quick Open…** (`Shift+Cmd+P`) focuses the search field. Type part of a filename or relative path, use the arrow keys to select a result, then press Return. Matching ignores case, accents and character width. Clear the field to return to the tree. If the browser is closed, Quick Open asks you to choose a folder.
 
+## Favorite folders
+
+Select the star beside the browser’s path to add the current folder to your favorites. Select the filled star to remove it. The same actions appear at the top of **File → Favorite Folders** as **Favorite Current Folder** or **Remove Current Folder from Favorites** while a browser window is open.
+
+Choose a favorite from that submenu to replace the current folder browser and load the selected folder’s Markdown tree. Open document windows stay open. Favorites appear in the order you added them and persist across launches. When folders share a name, the menu includes their parent folder names. Hover over an entry to see its full path.
+
+Use **Remove a Favorite** to remove an individual folder or **Clear Favorite Folders** to empty the list. Markdown2 saves each folder’s canonical path in its local preferences and checks that path again when you open a favorite. If the path is missing, inaccessible, or now points through a symbolic link or to a Finder alias, the alert explains the problem. Choose **Keep** if the folder may become available again, for example when you reconnect an external drive, or **Remove from Favorites** to drop the entry.
+
 ## Scope and limits
 
 - The browser lives in its own window. Opening a different folder replaces the current folder. Closing the browser ends that session and cancels its work. Open document windows can stay open.

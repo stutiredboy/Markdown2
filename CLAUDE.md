@@ -176,6 +176,15 @@ relaunch. After changing that struct or how the command tree is built, run
 landing. It needs Accessibility trust and an unlocked screen, like the Open Recent
 suite.
 
+Favorite Folders guards apply to both the File submenu and the folder
+browser’s star. The independent SwiftUI menu view observes the favorites model
+directly so the current-folder action and list update during the session.
+After changing the view, the model, or its browser and command integration,
+run `MD2_RUN_GUI_TESTS=1 swift test --filter FavoriteFoldersGUITests` locally
+with Accessibility trust and an unlocked desktop. The suite relaunches an
+isolated bundle to verify persistence and checks the choices for unavailable
+paths.
+
 ## Skill routing
 
 When the user's request matches an available skill, invoke it via the Skill tool. When in doubt, invoke the skill.

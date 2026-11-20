@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Star the current folder in the browser and reopen it across launches from File → Favorite Folders. Remove individual favorites or clear the list from the same menu.
+
 ## 0.9.0 - 2026-11-19
 
 ### Added

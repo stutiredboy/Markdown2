@@ -16,7 +16,7 @@ final class FolderWorkflowGUITests: XCTestCase {
 
         let fixture = try FolderFixture()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
-        let app = try await FolderTestApplication.launch(fixture: fixture)
+        let app = try await FolderTestApplication.launch(in: fixture.directory, arguments: [fixture.guide.path])
         defer { app.close() }
 
         let originalWindow = try app.documentWindow(fixture.guide)
@@ -118,10 +118,33 @@ final class FolderWorkflowGUITests: XCTestCase {
         for number in 0..<2_005 {
             try Data().write(to: bulk.appendingPathComponent("Note \(number).md"))
         }
+        // Establish a real return to the folder after the fixture is complete.
+        // Raising a browser that already owns focus does not trigger a rescan.
+        XCTAssertEqual(AXUIElementPerformAction(addedWindow, kAXRaiseAction as CFString), .success)
+        _ = try app.waitFor("the Added document to be focused while the folder browser is idle") {
+            guard let focused = app.focusedWindow, CFEqual(focused, addedWindow),
+                  (app.attribute(kAXEnabledAttribute, of: refresh) as? Bool) == true else { return nil }
+            return focused
+        }
+        func liveStatus() -> AXUIElement? {
+            app.descendant(browser) { app.identifier($0) == "folder-status" }
+        }
         let start = ContinuousClock.now
         try app.key(kVK_ANSI_P, flags: [.maskCommand, .maskShift])
-        _ = try app.waitFor("returning to the large folder announces a partial list") {
-            app.labels(status).contains { $0.contains("Partial list") } ? status : nil
+        do {
+            _ = try app.waitFor("returning to the large folder announces a partial list") {
+                guard app.focusedElement.flatMap(app.identifier) == "folder-quick-open",
+                      let currentStatus = liveStatus(),
+                      app.labels(currentStatus).contains(where: { $0.contains("Partial list") }) else { return nil }
+                return currentStatus
+            }
+        } catch {
+            let focusedWindow = app.focusedWindow.map(app.title) ?? "none"
+            let refreshEnabled = app.attribute(kAXEnabledAttribute, of: refresh) as? Bool
+            throw FolderTestError(
+                "\(error). Status: \(liveStatus().map(app.labels) ?? []); focused window: \(focusedWindow); "
+                    + "Refresh enabled: \(String(describing: refreshEnabled))"
+            )
         }
         print("Large folder refreshed to a partial list in \(start.duration(to: .now))")
     }
@@ -167,16 +190,18 @@ private struct FolderFixture {
 }
 
 @MainActor
-private struct FolderTestApplication {
+struct FolderTestApplication {
     private let process: NSRunningApplication
+    private let pid: pid_t
     private let priorApplication: NSRunningApplication?
     private let bundleIdentifier: String
+    private let appURL: URL
     private let accessibility: AXUIElement
 
-    static func launch(fixture: FolderFixture) async throws -> Self {
+    static func launch(in directory: URL, arguments: [String]) async throws -> Self {
         let priorApplication = NSWorkspace.shared.frontmostApplication
         let identifier = "dev.codex.md2.folder-test.\(UUID().uuidString.lowercased())"
-        let appURL = fixture.directory.appendingPathComponent("Markdown2.app", isDirectory: true)
+        let appURL = directory.appendingPathComponent("Markdown2.app", isDirectory: true)
         let productURL = Bundle(for: FolderWorkflowGUITests.self).bundleURL.deletingLastPathComponent()
         try RuntimeAppBundleBuilder(bundleIdentifier: identifier)
             .build(bundleURL: appURL, executableURL: productURL.appendingPathComponent("Markdown2"))
@@ -184,31 +209,56 @@ private struct FolderTestApplication {
         defaults.setPersistentDomain([
             "MD2.DefaultMode": "write", "MD2.NewDocumentMode": "write",
             "MD2.Language": "english", "AppleLanguages": ["en"],
-            "MD2.ShowsOutlineByDefault": false, "AppleWindowTabbingMode": "manual"
+            "MD2.ShowsOutlineByDefault": false, "AppleWindowTabbingMode": "manual",
+            "MD2.RestoresWindowsOnLaunch": false
         ], forName: identifier)
         defaults.synchronize()
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
-        configuration.createsNewApplicationInstance = true
-        configuration.arguments = [fixture.guide.path]
-        configuration.environment = ["MARKDOWN2_DISABLE_APP_BUNDLE_BOOTSTRAP": "1"]
         do {
-            let process = try await NSWorkspace.shared.openApplication(at: appURL, configuration: configuration)
-            let accessibility = AXUIElementCreateApplication(process.processIdentifier)
-            AXUIElementSetMessagingTimeout(accessibility, 2)
-            return Self(process: process, priorApplication: priorApplication,
-                        bundleIdentifier: identifier, accessibility: accessibility)
+            return try await launch(at: appURL, identifier: identifier, arguments: arguments,
+                                    priorApplication: priorApplication)
         } catch {
             defaults.removePersistentDomain(forName: identifier)
             throw error
         }
     }
 
-    func close() {
+    private static func launch(
+        at appURL: URL, identifier: String, arguments: [String], priorApplication: NSRunningApplication?
+    ) async throws -> Self {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.createsNewApplicationInstance = true
+        configuration.arguments = arguments
+        configuration.environment = ["MARKDOWN2_DISABLE_APP_BUNDLE_BOOTSTRAP": "1"]
+        let process = try await NSWorkspace.shared.openApplication(at: appURL, configuration: configuration)
         let pid = process.processIdentifier
-        if !process.isTerminated { process.forceTerminate() }
-        let deadline = Date().addingTimeInterval(5)
-        while pid > 0, kill(pid, 0) == 0, Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
+        guard pid > 0 else { throw FolderTestError("The isolated app exited before reporting its process ID") }
+        let accessibility = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(accessibility, 2)
+        return Self(process: process, pid: pid, priorApplication: priorApplication,
+                    bundleIdentifier: identifier, appURL: appURL, accessibility: accessibility)
+    }
+
+    func relaunch(arguments: [String] = []) async throws -> Self {
+        let quitRequested = process.terminate()
+        guard waitForExit(timeout: 10) else {
+            throw FolderTestError("The isolated app did not quit (quit requested: \(quitRequested)). Windows: \(windows.map(title))")
+        }
+        return try await Self.launch(at: appURL, identifier: bundleIdentifier, arguments: arguments,
+                                     priorApplication: priorApplication)
+    }
+
+    private func waitForExit(timeout: TimeInterval = 5) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while kill(pid, 0) == 0, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        return kill(pid, 0) != 0
+    }
+
+    func close() {
+        if kill(pid, 0) == 0 { process.forceTerminate() }
+        _ = waitForExit()
         UserDefaults(suiteName: bundleIdentifier)?.removePersistentDomain(forName: bundleIdentifier)
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         try? FileManager.default.removeItem(at: support.appendingPathComponent(bundleIdentifier, isDirectory: true))
@@ -220,12 +270,14 @@ private struct FolderTestApplication {
         }
     }
 
+    var menuBar: AXUIElement? { elementAttribute(kAXMenuBarAttribute, of: accessibility) }
+    var focusedWindow: AXUIElement? { elementAttribute(kAXFocusedWindowAttribute, of: accessibility) }
     var focusedElement: AXUIElement? { elementAttribute(kAXFocusedUIElementAttribute, of: accessibility) }
     var windows: [AXUIElement] { attribute(kAXWindowsAttribute, of: accessibility) as? [AXUIElement] ?? [] }
 
     func documentWindow(_ url: URL, focused: Bool = false) throws -> AXUIElement {
         try waitFor("\(focused ? "focused " : "")document \(url.lastPathComponent)") {
-            let candidates = focused ? [elementAttribute(kAXFocusedWindowAttribute, of: accessibility)].compactMap { $0 } : windows
+            let candidates = focused ? [focusedWindow].compactMap { $0 } : windows
             return candidates.first { isWindow($0, for: url) }
         }
     }
@@ -295,7 +347,7 @@ private struct FolderTestApplication {
                     event.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
                 }
             }
-            event.postToPid(process.processIdentifier)
+            event.postToPid(pid)
         }
     }
 
@@ -342,7 +394,7 @@ private struct FolderTestApplication {
         return value
     }
 
-    private func elementAttribute(_ name: String, of element: AXUIElement) -> AXUIElement? {
+    func elementAttribute(_ name: String, of element: AXUIElement) -> AXUIElement? {
         guard let value = attribute(name, of: element), CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
         return (value as! AXUIElement)
     }

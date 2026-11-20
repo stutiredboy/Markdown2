@@ -396,6 +396,10 @@ enum L10nKey: String, CaseIterable, Sendable {
     case new
     case open
     case openFolder, folderQuickOpen, folderAuthorizationFailed, folderSaveUnavailable
+    case favoriteFolders, favoriteFoldersEmpty, favoriteFoldersManage, favoriteFoldersClear
+    case favoriteFolderAddCurrent, favoriteFolderRemoveCurrent, favoriteFolderRemove, favoriteFolderKeep
+    case favoriteFolderUnavailable, favoriteFolderMoved, favoriteFolderPermissionDenied, favoriteFolderLink
+    case favoriteFolderCannotAdd, favoriteFolderAdded, favoriteFolderRemoved, favoriteFoldersCleared
     case openRecent
     case clearMenu
     case recentDocumentMissingDetail
@@ -643,6 +647,22 @@ enum L10n {
         .folderQuickOpen: "Quick Open…",
         .folderAuthorizationFailed: "Choose a readable folder in its original location.",
         .folderSaveUnavailable: "The original file could not be verified. Your edits are still in this window.",
+        .favoriteFolders: "Favorite Folders",
+        .favoriteFoldersEmpty: "No Favorite Folders",
+        .favoriteFoldersManage: "Remove a Favorite",
+        .favoriteFoldersClear: "Clear Favorite Folders",
+        .favoriteFolderAddCurrent: "Favorite Current Folder",
+        .favoriteFolderRemoveCurrent: "Remove Current Folder from Favorites",
+        .favoriteFolderRemove: "Remove from Favorites",
+        .favoriteFolderKeep: "Keep",
+        .favoriteFolderUnavailable: "Favorite Folder Unavailable",
+        .favoriteFolderMoved: "The folder was moved, deleted, or is on a volume that is currently unavailable.",
+        .favoriteFolderPermissionDenied: "You don’t have permission to read the folder.",
+        .favoriteFolderLink: "The saved path now points to a symbolic link or alias.",
+        .favoriteFolderCannotAdd: "Couldn’t Favorite This Folder",
+        .favoriteFolderAdded: "Added %@ to Favorite Folders.",
+        .favoriteFolderRemoved: "Removed %@ from Favorite Folders.",
+        .favoriteFoldersCleared: "Cleared Favorite Folders.",
         .openRecent: "Open Recent",
         .clearMenu: "Clear Menu",
         .recentDocumentMissingDetail: "The file no longer exists at its recorded location.",
@@ -1011,6 +1031,22 @@ enum L10n {
         .folderQuickOpen: "快速打开…",
         .folderAuthorizationFailed: "请选择位于原始位置且可读取的文件夹。",
         .folderSaveUnavailable: "无法验证原文件。编辑内容仍保留在此窗口中。",
+        .favoriteFolders: "收藏的文件夹",
+        .favoriteFoldersEmpty: "暂无收藏的文件夹",
+        .favoriteFoldersManage: "移除收藏项",
+        .favoriteFoldersClear: "清空收藏夹",
+        .favoriteFolderAddCurrent: "收藏当前文件夹",
+        .favoriteFolderRemoveCurrent: "从收藏夹移除当前文件夹",
+        .favoriteFolderRemove: "从收藏夹移除",
+        .favoriteFolderKeep: "保留",
+        .favoriteFolderUnavailable: "收藏的文件夹不可用",
+        .favoriteFolderMoved: "文件夹已移动、删除，或所在的存储卷暂时不可用。",
+        .favoriteFolderPermissionDenied: "你没有读取此文件夹的权限。",
+        .favoriteFolderLink: "收藏的路径现在指向符号链接或替身。",
+        .favoriteFolderCannotAdd: "无法收藏此文件夹",
+        .favoriteFolderAdded: "已收藏 %@。",
+        .favoriteFolderRemoved: "已从收藏夹移除 %@。",
+        .favoriteFoldersCleared: "已清空收藏夹。",
         .openRecent: "打开最近使用的",
         .clearMenu: "清除菜单",
         .recentDocumentMissingDetail: "文件已不在原来的位置（可能已被移动或删除）。",

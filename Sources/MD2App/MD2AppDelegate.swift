@@ -12,9 +12,11 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Recent-documents list (persists across launches). Noted on every
     /// successful open and first save.
     let recentDocuments = RecentDocumentsModel(recorder: SystemRecentDocumentsRecorder())
+    let favoriteFolders = FavoriteFoldersModel(recorder: UserDefaultsFavoriteFoldersRecorder())
     private var documentWindows: [DocumentWindow] = []
     private var folderBrowser: FolderBrowserWindowController?
     private var folderAuthorization: Task<Void, Never>?
+    private var favoriteFolderAddition: Task<Void, Never>?
     private let recoveryRepository = DocumentRecoveryRepository.applicationRepository()
     private let historyRepository = DocumentHistoryRepository.applicationRepository
     private var isTerminating = false
@@ -37,6 +39,11 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     override init() {
         super.init()
+        let notifications = NotificationCenter.default
+        for name in [NSMenu.didAddItemNotification, NSMenu.didChangeItemNotification] {
+            notifications.addObserver(self, selector: #selector(updateFavoriteFoldersMenuAccessibility),
+                                      name: name, object: nil)
+        }
         attachmentCommandState.observeCurrentDocument { [weak self] in self?.currentDocumentStore }
         // Read before Finder can deliver openURLs and create this session's records.
         do { pendingRecoverySnapshots = try recoveryRepository.load() }
@@ -59,8 +66,13 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 for documentWindow in self.documentWindows {
                     documentWindow.store.reRenderForSettingsChange()
                 }
+                self.folderBrowser?.updateLocalizedText()
             }
         }
+    }
+
+    @objc private func updateFavoriteFoldersMenuAccessibility(_ notification: Notification) {
+        FavoriteFoldersMenu.updateNativeAccessibility(notification, settings: settings)
     }
 
     /// The document store backing the frontmost window. Menu commands such as
@@ -262,10 +274,21 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.resolvesAliases = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
+        authorizeFolder(url, quickOpen: quickOpen)
+    }
+
+    func openFavoriteFolder(_ entry: FavoriteFolderEntry) {
+        authorizeFolder(entry.url, quickOpen: false, favorite: entry)
+    }
+
+    private func authorizeFolder(_ url: URL, quickOpen: Bool, favorite: FavoriteFolderEntry? = nil) {
         folderAuthorization?.cancel()
         folderAuthorization = Task.detached(priority: .userInitiated) { [weak self] in
-            let result = Result { try FolderIndex.authorize(url) }
-            await self?.presentFolder(result, quickOpen: quickOpen)
+            let result = Result {
+                if favorite != nil { return try FolderIndex.authorizeFavorite(url) }
+                return try FolderIndex.authorize(url)
+            }
+            await self?.presentFolder(result, quickOpen: quickOpen, favorite: favorite)
         }
     }
 
@@ -277,25 +300,119 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func presentFolder(_ result: Result<FolderIndex.Root, Error>, quickOpen: Bool) {
+    private func presentFolder(
+        _ result: Result<FolderIndex.Root, Error>, quickOpen: Bool, favorite: FavoriteFolderEntry?
+    ) {
         guard !Task.isCancelled, !isTerminating else { return }
         folderAuthorization = nil
-        guard case let .success(root) = result else {
-            let alert = NSAlert()
-            alert.messageText = settings.text(.openFolder)
-            alert.informativeText = settings.text(.folderAuthorizationFailed)
-            alert.runModal()
+        let root: FolderIndex.Root
+        switch result {
+        case .success(let authorizedRoot):
+            root = authorizedRoot
+        case .failure(let error):
+            if let favorite {
+                presentUnavailableFavorite(favorite, reason: error as? FolderIndex.FavoriteFailure)
+            } else {
+                let alert = NSAlert()
+                alert.messageText = settings.text(.openFolder)
+                alert.informativeText = settings.text(.folderAuthorizationFailed)
+                alert.runModal()
+            }
             return
         }
 
         folderBrowser?.close()
-        let browser = FolderBrowserWindowController(root: root, text: settings.text, onOpen: { [weak self] opened, decoded in
-            try self?.openFolderDocument(opened, decoded: decoded)
-        }, onClose: { [weak self] in
-            self?.folderBrowser = nil
-        })
+        let browser = FolderBrowserWindowController(
+            root: root, text: settings.text, favorites: favoriteFolders,
+            onToggleFavorite: { [weak self] in self?.toggleCurrentFavoriteFolder() },
+            onOpen: { [weak self] opened, decoded in try self?.openFolderDocument(opened, decoded: decoded) },
+            onClose: { [weak self] in
+                self?.folderBrowser = nil
+                self?.favoriteFolders.currentRoot = nil
+                self?.favoriteFolderAddition?.cancel()
+                self?.favoriteFolderAddition = nil
+            }
+        )
         folderBrowser = browser
+        favoriteFolders.currentRoot = root
         browser.show(quickOpen: quickOpen)
+    }
+
+    func toggleCurrentFavoriteFolder() {
+        guard let root = folderBrowser?.root else { return }
+        let name = root.url.lastPathComponent.isEmpty ? root.url.path : root.url.lastPathComponent
+        if favoriteFolders.contains(root) {
+            favoriteFolders.remove(root)
+            announceFavoriteChange(String(format: settings.text(.favoriteFolderRemoved), name))
+            return
+        }
+        guard favoriteFolderAddition == nil else { return }
+        favoriteFolderAddition = Task.detached(priority: .userInitiated) { [weak self] in
+            let authorized = try? FolderIndex.authorizeFavorite(root.url)
+            await self?.finishAddingFavorite(root, name: name, authorized: authorized)
+        }
+    }
+
+    private func finishAddingFavorite(_ root: FolderIndex.Root, name: String, authorized: FolderIndex.Root?) {
+        guard !Task.isCancelled, !isTerminating, folderBrowser?.root == root else { return }
+        favoriteFolderAddition = nil
+        guard authorized == root else {
+            let alert = NSAlert()
+            alert.messageText = settings.text(.favoriteFolderCannotAdd)
+            alert.informativeText = settings.text(.folderRootUnavailable)
+            let acknowledge = alert.addButton(withTitle: settings.text(.ok))
+            acknowledge.setAccessibilityLabel(acknowledge.title)
+            acknowledge.setAccessibilityIdentifier("favorite-folder-cannot-add-ok")
+            alert.window.setAccessibilityLabel(alert.messageText)
+            alert.window.setAccessibilityIdentifier("favorite-folder-cannot-add")
+            alert.runModal()
+            return
+        }
+        favoriteFolders.add(root)
+        announceFavoriteChange(String(format: settings.text(.favoriteFolderAdded), name))
+    }
+
+    func removeFavoriteFolder(_ entry: FavoriteFolderEntry) {
+        favoriteFolders.remove(entry)
+        announceFavoriteChange(String(format: settings.text(.favoriteFolderRemoved), entry.title))
+    }
+
+    func clearFavoriteFolders() {
+        favoriteFolderAddition?.cancel()
+        favoriteFolderAddition = nil
+        favoriteFolders.clear()
+        announceFavoriteChange(settings.text(.favoriteFoldersCleared))
+    }
+
+    private func presentUnavailableFavorite(_ entry: FavoriteFolderEntry, reason: FolderIndex.FavoriteFailure?) {
+        let key: L10nKey
+        switch reason {
+        case .missingOrMoved: key = .favoriteFolderMoved
+        case .permissionDenied: key = .favoriteFolderPermissionDenied
+        case .symbolicLinkOrAlias: key = .favoriteFolderLink
+        case .unavailable, nil: key = .folderRootUnavailable
+        }
+        let alert = NSAlert()
+        alert.messageText = settings.text(.favoriteFolderUnavailable)
+        alert.informativeText = "\(settings.text(key))\n\n\(entry.path)"
+        let keep = alert.addButton(withTitle: settings.text(.favoriteFolderKeep))
+        let remove = alert.addButton(withTitle: settings.text(.favoriteFolderRemove))
+        keep.setAccessibilityLabel(keep.title)
+        keep.setAccessibilityIdentifier("favorite-folder-keep")
+        remove.setAccessibilityLabel(remove.title)
+        remove.setAccessibilityIdentifier("favorite-folder-remove")
+        alert.window.setAccessibilityLabel(alert.messageText)
+        alert.window.setAccessibilityIdentifier("favorite-folder-unavailable")
+        if alert.runModal() == .alertSecondButtonReturn {
+            removeFavoriteFolder(entry)
+        }
+    }
+
+    private func announceFavoriteChange(_ message: String) {
+        let element: NSResponder = NSApp.keyWindow ?? NSApp
+        NSAccessibility.post(element: element, notification: .announcementRequested, userInfo: [
+            .announcement: message, .priority: NSAccessibilityPriorityLevel.medium.rawValue
+        ])
     }
 
     func createCopy() {
