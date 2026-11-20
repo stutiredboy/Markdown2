@@ -159,6 +159,55 @@ struct FolderIndexTests {
         #expect(try FolderIndex.scan(reapproved).files.count == 1)
     }
 
+    @Test func favoriteAuthorizationRejectsMissingDirectoriesAndReplacementAliases() throws {
+        let fixture = try FolderIndexFixture()
+        defer { fixture.remove() }
+        let root = try FolderIndex.authorize(fixture.root)
+        #expect(try FolderIndex.authorizeFavorite(root.url) == root)
+
+        let previous = fixture.directory.appending(path: "previous", directoryHint: .isDirectory)
+        try FileManager.default.moveItem(at: fixture.root, to: previous)
+        #expect(throws: FolderIndex.FavoriteFailure.missingOrMoved) { try FolderIndex.authorizeFavorite(root.url) }
+
+        try FileManager.default.createSymbolicLink(at: fixture.root, withDestinationURL: previous)
+        #expect(throws: FolderIndex.FavoriteFailure.symbolicLinkOrAlias) { try FolderIndex.authorizeFavorite(root.url) }
+        try FileManager.default.removeItem(at: fixture.root)
+
+        let alias = URL(filePath: root.url.path, directoryHint: .notDirectory)
+        try Data().write(to: alias)
+        try fixture.setFinderFlags(0x80, at: alias)
+        #expect(throws: FolderIndex.Failure.rootUnavailable) { try FolderIndex.authorize(alias) }
+        #expect(throws: FolderIndex.FavoriteFailure.symbolicLinkOrAlias) { try FolderIndex.authorizeFavorite(root.url) }
+    }
+
+    @Test func favoriteAuthorizationRejectsSymbolicLinksInAnAncestor() throws {
+        let fixture = try FolderIndexFixture()
+        defer { fixture.remove() }
+        let note = try fixture.file("nested/test.md")
+        let root = try FolderIndex.authorize(note.deletingLastPathComponent())
+        let previous = fixture.directory.appending(path: "previous", directoryHint: .isDirectory)
+        try FileManager.default.moveItem(at: fixture.root, to: previous)
+        try FileManager.default.createSymbolicLink(at: fixture.root, withDestinationURL: previous)
+
+        #expect(throws: FolderIndex.FavoriteFailure.symbolicLinkOrAlias) { try FolderIndex.authorizeFavorite(root.url) }
+        let relocated = try FolderIndex.authorize(previous.appending(path: "nested", directoryHint: .isDirectory))
+        #expect(try FolderIndex.authorize(root.url) == relocated)
+    }
+
+    @Test func favoriteAuthorizationReportsLostSearchPermission() throws {
+        let fixture = try FolderIndexFixture()
+        defer { fixture.remove() }
+        let root = try FolderIndex.authorize(fixture.root)
+
+        #expect(chmod(root.url.path, 0o400) == 0)
+        defer { _ = chmod(root.url.path, 0o700) }
+        // A privileged test runner is permitted to search this directory.
+        if geteuid() != 0 {
+            #expect(try FolderIndex.authorize(root.url) == root)
+            #expect(throws: FolderIndex.FavoriteFailure.permissionDenied) { try FolderIndex.authorizeFavorite(root.url) }
+        }
+    }
+
     @Test func cancelledWorkAndOversizedDocumentsFailWithoutContentReads() async throws {
         let fixture = try FolderIndexFixture()
         defer { fixture.remove() }

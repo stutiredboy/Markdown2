@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 
 /// Browses one explicitly chosen folder. The index contains names and paths;
 /// files are opened through the app's document window pipeline.
@@ -9,12 +10,15 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
 
     let root: FolderIndex.Root
     private let text: (L10nKey) -> String
+    private let favorites: FavoriteFoldersModel
+    private let onToggleFavorite: () -> Void
     private let onOpen: OpenDocument
     private let onClose: () -> Void
 
     private let search = NSSearchField()
     private let outline = FolderBrowserOutline()
     private let status = NSTextField(wrappingLabelWithString: "")
+    private let favoriteButton = NSButton()
     private let refreshButton = NSButton()
     private let cancelButton = NSButton()
     private let openButton = NSButton()
@@ -22,6 +26,7 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
 
     private var scanTask: Task<Void, Never>?
     private var openTask: Task<Void, Never>?
+    private var favoritesObservation: AnyCancellable?
     private var shouldRefreshOnActivation = false
     private var snapshot: FolderIndex.Snapshot?
     private var issue: L10nKey?
@@ -35,11 +40,15 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
     init(
         root: FolderIndex.Root,
         text: @escaping (L10nKey) -> String,
+        favorites: FavoriteFoldersModel,
+        onToggleFavorite: @escaping () -> Void,
         onOpen: @escaping OpenDocument,
         onClose: @escaping () -> Void
     ) {
         self.root = root
         self.text = text
+        self.favorites = favorites
+        self.onToggleFavorite = onToggleFavorite
         self.onOpen = onOpen
         self.onClose = onClose
         let window = NSWindow(
@@ -49,8 +58,6 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
             defer: false
         )
         super.init(window: window)
-        let folderName = root.url.lastPathComponent.isEmpty ? root.url.path : root.url.lastPathComponent
-        window.title = String(format: text(.folderWindowTitle), folderName)
         window.setAccessibilityIdentifier("folder-browser-window")
         window.contentMinSize = NSSize(width: 390, height: 290)
         window.isRestorable = false
@@ -58,6 +65,11 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
         window.tabbingMode = .disallowed
         window.delegate = self
         configureContents(in: window)
+        updateLocalizedText()
+        favoritesObservation = favorites.$entries.dropFirst().sink { [weak self] entries in
+            guard let self else { return }
+            updateFavoriteButton(isFavorite: entries.contains { $0.url == root.url })
+        }
         window.center()
     }
 
@@ -95,17 +107,31 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
         path.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         path.textColor = .secondaryLabelColor
         path.lineBreakMode = .byTruncatingMiddle
+        path.cell?.truncatesLastVisibleLine = true
         path.toolTip = root.url.path
+        path.setContentHuggingPriority(.defaultLow, for: .horizontal)
         path.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         path.setAccessibilityIdentifier("folder-root-path")
 
-        search.placeholderString = text(.folderFilterPlaceholder)
+        favoriteButton.setButtonType(.pushOnPushOff)
+        favoriteButton.bezelStyle = .rounded
+        favoriteButton.imagePosition = .imageOnly
+        favoriteButton.target = self
+        favoriteButton.action = #selector(toggleFavorite)
+        favoriteButton.setAccessibilityIdentifier("folder-favorite-toggle")
+        favoriteButton.setContentHuggingPriority(.required, for: .horizontal)
+        favoriteButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        favoriteButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 30).isActive = true
+        let pathRow = NSStackView(views: [path, favoriteButton])
+        pathRow.distribution = .fill
+        pathRow.alignment = .centerY
+        pathRow.spacing = 8
+
         search.delegate = self
         search.target = self
         search.action = #selector(searchAction)
         search.sendsSearchStringImmediately = true
         search.maximumRecents = 0
-        search.setAccessibilityLabel(text(.folderQuickOpenField))
         search.setAccessibilityIdentifier("folder-quick-open")
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("folder-name"))
@@ -123,7 +149,6 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
         outline.target = self
         outline.doubleAction = #selector(openClickedRow)
         outline.onReturn = { [weak self] in self?.openSelection() }
-        outline.setAccessibilityLabel(text(.folderFileList))
         outline.setAccessibilityIdentifier("folder-file-list")
 
         let scroll = NSScrollView()
@@ -137,9 +162,9 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
         status.setAccessibilityIdentifier("folder-status")
         status.setContentCompressionResistancePriority(.required, for: .vertical)
 
-        configure(refreshButton, title: .folderRefresh, identifier: "folder-refresh", action: #selector(refresh))
-        configure(cancelButton, title: .folderCancelScan, identifier: "folder-cancel-scan", action: #selector(cancelScan))
-        configure(openButton, title: .folderOpenSelection, identifier: "folder-open-selection", action: #selector(openSelection))
+        configure(refreshButton, identifier: "folder-refresh", action: #selector(refresh))
+        configure(cancelButton, identifier: "folder-cancel-scan", action: #selector(cancelScan))
+        configure(openButton, identifier: "folder-open-selection", action: #selector(openSelection))
 
         progress.style = .spinning
         progress.controlSize = .small
@@ -153,7 +178,7 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
         actions.spacing = 8
         actions.detachesHiddenViews = true
 
-        let body = NSStackView(views: [path, search, scroll, status, actions])
+        let body = NSStackView(views: [pathRow, search, scroll, status, actions])
         body.orientation = .vertical
         body.alignment = .leading
         body.spacing = 8
@@ -167,7 +192,7 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
             body.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
             body.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14),
             body.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14),
-            path.widthAnchor.constraint(equalTo: body.widthAnchor),
+            pathRow.widthAnchor.constraint(equalTo: body.widthAnchor),
             search.widthAnchor.constraint(equalTo: body.widthAnchor),
             scroll.widthAnchor.constraint(equalTo: body.widthAnchor),
             status.widthAnchor.constraint(equalTo: body.widthAnchor),
@@ -176,16 +201,41 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
 
         window.initialFirstResponder = search
         window.autorecalculatesKeyViewLoop = true
-        updateState()
     }
 
-    private func configure(_ button: NSButton, title: L10nKey, identifier: String, action: Selector) {
-        button.title = text(title)
+    private func configure(_ button: NSButton, identifier: String, action: Selector) {
         button.bezelStyle = .rounded
         button.target = self
         button.action = action
         button.setAccessibilityIdentifier(identifier)
         button.setContentHuggingPriority(.required, for: .horizontal)
+    }
+
+    func updateLocalizedText() {
+        let name = root.url.lastPathComponent.isEmpty ? root.url.path : root.url.lastPathComponent
+        window?.title = String(format: text(.folderWindowTitle), name)
+        search.placeholderString = text(.folderFilterPlaceholder)
+        search.setAccessibilityLabel(text(.folderQuickOpenField))
+        outline.setAccessibilityLabel(text(.folderFileList))
+        refreshButton.title = text(.folderRefresh)
+        cancelButton.title = text(.folderCancelScan)
+        openButton.title = text(.folderOpenSelection)
+        updateFavoriteButton(isFavorite: favorites.contains(root))
+        updateState()
+    }
+
+    private func updateFavoriteButton(isFavorite: Bool) {
+        let label = text(isFavorite ? .favoriteFolderRemoveCurrent : .favoriteFolderAddCurrent)
+        favoriteButton.image = NSImage(systemSymbolName: isFavorite ? "star.fill" : "star", accessibilityDescription: nil)
+        favoriteButton.toolTip = label
+        favoriteButton.setAccessibilityLabel(label)
+        favoriteButton.state = isFavorite ? .on : .off
+    }
+
+    @objc private func toggleFavorite() {
+        // The model remains authoritative while a new favorite is being revalidated.
+        favoriteButton.state = favorites.contains(root) ? .on : .off
+        onToggleFavorite()
     }
 
     @objc private func refresh() {

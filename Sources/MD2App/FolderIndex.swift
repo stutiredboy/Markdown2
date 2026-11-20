@@ -10,6 +10,13 @@ enum FolderIndex {
         case fileTooLarge
     }
 
+    enum FavoriteFailure: Error, Equatable {
+        case missingOrMoved
+        case permissionDenied
+        case symbolicLinkOrAlias
+        case unavailable
+    }
+
     struct Limits: Sendable {
         var entries = 20_000
         var files = 2_000
@@ -129,15 +136,72 @@ enum FolderIndex {
         guard let canonical = realpath(selectedURL.path, nil) else { throw Failure.rootUnavailable }
         defer { free(canonical) }
         guard let path = String(validatingCString: canonical) else { throw Failure.rootUnavailable }
-        let url = URL(filePath: path, directoryHint: .isDirectory)
-        let descriptor = Darwin.open(url.path, directoryFlags | O_NOFOLLOW_ANY)
-        guard descriptor >= 0 else { throw Failure.rootUnavailable }
-        defer { Darwin.close(descriptor) }
-        var info = stat()
-        guard fstat(descriptor, &info) == 0, Identity(selected) == Identity(info) else {
+        let root: Root
+        do {
+            root = try authorizeCanonicalPath(path)
+        } catch is FavoriteFailure {
             throw Failure.rootUnavailable
         }
+        guard root.identity == Identity(selected) else { throw Failure.rootUnavailable }
+        return root
+    }
+
+    /// A favorite already has a canonical path. Reauthorize that exact
+    /// pathname, rejecting links even when they resolve to the same directory.
+    static func authorizeFavorite(_ url: URL) throws -> Root {
+        try Task.checkCancellation()
+        guard url.isFileURL else { throw FavoriteFailure.unavailable }
+        return try authorizeCanonicalPath(url.path, requiresSearchPermission: true)
+    }
+
+    /// Validates preference paths lexically. Keep the exact realpath bytes;
+    /// Foundation's file path initializer can decompose Unicode characters.
+    static func canonicalDirectoryURL(for path: String) -> URL? {
+        let slash = UInt8(ascii: "/")
+        let bytes = path.utf8
+        guard bytes.first == slash, !bytes.contains(0) else { return nil }
+        if bytes.count > 1 {
+            let components = bytes.dropFirst().split(separator: slash, omittingEmptySubsequences: false)
+            guard components.allSatisfy({ !$0.isEmpty && !$0.elementsEqual(".".utf8) && !$0.elementsEqual("..".utf8) }) else {
+                return nil
+            }
+        }
+        var components = URLComponents()
+        components.scheme = "file"
+        components.host = ""
+        components.path = path == "/" ? path : path + "/"
+        return components.url
+    }
+
+    private static func authorizeCanonicalPath(_ path: String, requiresSearchPermission: Bool = false) throws -> Root {
+        guard let url = canonicalDirectoryURL(for: path) else { throw FavoriteFailure.unavailable }
+        let descriptor = Darwin.open(path, directoryFlags | O_NOFOLLOW_ANY)
+        guard descriptor >= 0 else {
+            let error = errno
+            // Finder aliases are files. Only inspect their metadata to explain
+            // why the no-follow directory open failed.
+            if error == ENOTDIR, let flags = try? finderFlags(path, in: AT_FDCWD), flags.contains(.alias) {
+                throw FavoriteFailure.symbolicLinkOrAlias
+            }
+            throw favoriteFailure(for: error)
+        }
+        defer { Darwin.close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0 else { throw favoriteFailure(for: errno) }
+        if requiresSearchPermission, faccessat(descriptor, ".", X_OK, AT_EACCESS) != 0 {
+            throw favoriteFailure(for: errno)
+        }
+        try Task.checkCancellation()
         return Root(url: url, identity: Identity(info))
+    }
+
+    private static func favoriteFailure(for error: Int32) -> FavoriteFailure {
+        switch error {
+        case ENOENT, ENXIO, ESTALE, ENODEV: .missingOrMoved
+        case EACCES, EPERM: .permissionDenied
+        case ELOOP: .symbolicLinkOrAlias
+        default: .unavailable
+        }
     }
 
     static func scan(_ root: Root, limits: Limits = .init()) throws -> Snapshot {
@@ -247,7 +311,7 @@ enum FolderIndex {
         var buffer = [UInt8](repeating: 0, count: finderOffset + 32)
         let status = buffer.withUnsafeMutableBytes {
             getattrlistat(directory, name, &attributes, $0.baseAddress!, $0.count,
-                          UInt(FSOPT_NOFOLLOW | FSOPT_PACK_INVAL_ATTRS))
+                          UInt(FSOPT_NOFOLLOW | FSOPT_NOFOLLOW_ANY | FSOPT_PACK_INVAL_ATTRS))
         }
         guard status == 0 else { throw Failure.fileUnavailable }
         let bits = UInt16(buffer[finderOffset + 8]) << 8 | UInt16(buffer[finderOffset + 9])

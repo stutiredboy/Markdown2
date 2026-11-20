@@ -26,6 +26,83 @@ private struct RecentDocumentsMenu: View {
     }
 }
 
+/// The live list and current folder are dependencies of this command view.
+struct FavoriteFoldersMenu: View {
+    @ObservedObject var settings: AppSettings
+    @ObservedObject var favorites: FavoriteFoldersModel
+    let onToggleCurrent: () -> Void
+    let onOpen: (FavoriteFolderEntry) -> Void
+    let onRemove: (FavoriteFolderEntry) -> Void
+    let onClear: () -> Void
+
+    var body: some View {
+        Menu(settings.text(.favoriteFolders)) {
+            if let root = favorites.currentRoot {
+                let key: L10nKey = favorites.contains(root) ? .favoriteFolderRemoveCurrent : .favoriteFolderAddCurrent
+                Button(settings.text(key), action: onToggleCurrent)
+                Divider()
+            }
+            if favorites.entries.isEmpty {
+                Button(settings.text(.favoriteFoldersEmpty)) {}
+                    .disabled(true)
+            } else {
+                ForEach(favorites.entries) { entry in
+                    Button(entry.title) { onOpen(entry) }
+                        .help(entry.path)
+                }
+                Divider()
+                Menu(settings.text(.favoriteFoldersManage)) {
+                    ForEach(favorites.entries) { entry in
+                        Button(entry.title) { onRemove(entry) }
+                            .help(entry.path)
+                    }
+                }
+            }
+            Button(settings.text(.favoriteFoldersClear), action: onClear)
+                .disabled(favorites.entries.isEmpty)
+        }
+    }
+
+    /// SwiftUI maps `help` to the native tooltip. The command bridge does not
+    /// propagate accessibility modifiers, so annotate the generated items
+    /// when AppKit adds or changes them.
+    static func updateNativeAccessibility(_ notification: Notification, settings: AppSettings) {
+        guard let menu = notification.object as? NSMenu,
+              let index = notification.userInfo?["NSMenuItemIndex"] as? Int,
+              let item = menu.item(at: index), !item.isSeparatorItem else { return }
+
+        let favoritesTitle = settings.text(.favoriteFolders)
+        let manageTitle = settings.text(.favoriteFoldersManage)
+        let identifier: String
+        if item.hasSubmenu && item.title == favoritesTitle {
+            identifier = "favorite-folders-menu"
+        } else if menu.title == favoritesTitle {
+            if let path = item.toolTip {
+                identifier = "favorite-folders-open-\(path)"
+            } else {
+                switch item.title {
+                case settings.text(.favoriteFolderAddCurrent), settings.text(.favoriteFolderRemoveCurrent):
+                    identifier = "favorite-folders-current"
+                case settings.text(.favoriteFoldersEmpty):
+                    identifier = "favorite-folders-empty"
+                case manageTitle:
+                    identifier = "favorite-folders-manage"
+                case settings.text(.favoriteFoldersClear):
+                    identifier = "favorite-folders-clear"
+                default: return
+                }
+            }
+        } else if menu.title == manageTitle, let path = item.toolTip {
+            identifier = "favorite-folders-remove-\(path)"
+        } else {
+            return
+        }
+        item.setAccessibilityIdentifier(identifier)
+        item.setAccessibilityLabel(item.title)
+        item.setAccessibilityHelp(item.toolTip)
+    }
+}
+
 @main
 enum Markdown2Main {
     @MainActor static func main() {
@@ -118,6 +195,15 @@ private struct AppCommands: Commands {
                 appDelegate.quickOpenFolderFile()
             }
             .keyboardShortcut("p", modifiers: [.command, .shift])
+
+            FavoriteFoldersMenu(
+                settings: settings,
+                favorites: appDelegate.favoriteFolders,
+                onToggleCurrent: { appDelegate.toggleCurrentFavoriteFolder() },
+                onOpen: { appDelegate.openFavoriteFolder($0) },
+                onRemove: { appDelegate.removeFavoriteFolder($0) },
+                onClear: { appDelegate.clearFavoriteFolders() }
+            )
         }
 
         CommandGroup(replacing: .saveItem) {
