@@ -351,9 +351,18 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let starter = current.flatMap { $0.store.isReusableEmptyDocument && $0.canRetireCleanTab ? $0 : nil }
             let previousLanding = folder?.landingWindow
             endFolderSession()
+            let isFavorite = favoriteFolders.contains(root)
+            let remoteImages = FolderRemoteImages(
+                rootPath: root.url.path,
+                isAllowed: favoriteFolders.allowsRemoteImages(in: root),
+                isFavorite: isFavorite && root.favoriteRemoteImageGrantID != nil,
+                canRememberPermission: root.favoriteRemoteImageGrantID != nil
+            )
             let browser = FolderBrowserController(
                 root: root, text: settings.text, favorites: favoriteFolders,
                 onToggleFavorite: { [weak self] in self?.toggleCurrentFavoriteFolder() },
+                remoteImages: remoteImages,
+                onIndexInvalidated: { [weak self] in self?.refreshFolderRemoteImages() },
                 onOpen: { [weak self] opened, decoded, intent in
                     try self?.openFolderDocument(opened, decoded: decoded, intent: intent)
                 }
@@ -368,7 +377,13 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 let frame = previousLanding?.frame ?? starter?.window.frame
                 host = .landing(makeFolderLanding(root: root, sidebar: sidebar, frame: frame))
             }
-            let session = FolderSession(browser: browser, sidebar: sidebar, host: host)
+            let session = FolderSession(
+                browser: browser, sidebar: sidebar, host: host, remoteImages: remoteImages, isFavorite: isFavorite
+            )
+            remoteImages.onPermissionChange = { [weak self, weak session] allowed in
+                guard let self, let session, self.folder === session else { return }
+                self.setFolderRemoteImages(allowed, in: session)
+            }
             folder = session
             favoriteFolders.currentRoot = root
             observeFolderGroup(session)
@@ -386,6 +401,12 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func observeFolderGroup(_ session: FolderSession) {
+        session.selectionObservation = session.group?.observe(\.selectedWindow) { [weak self, weak session] _, _ in
+            DispatchQueue.main.async {
+                guard let self, let session, self.folder === session else { return }
+                self.updateFolderPreviewSelection(in: session)
+            }
+        }
         session.groupObservation = session.group?.observe(\.windows) { [weak self, weak session] _, _ in
             // AppKit is still mutating its selected window during the KVO callback.
             DispatchQueue.main.async {
@@ -420,8 +441,15 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         folder.preview?.setPreview(false)
         folder.sidebar.activate(in: nil)
         folder.browser.stop()
-        for document in documentWindows where document.contentState.folderSidebar === folder.sidebar {
-            document.contentState.folderSidebar = nil
+        folder.remoteImages.isAllowed = false
+        for document in documentWindows {
+            if document.contentState.folderSidebar === folder.sidebar {
+                document.contentState.folderSidebar = nil
+                document.contentState.isFolderPreviewSelected = false
+            }
+            if document.contentState.folderRemoteImages === folder.remoteImages {
+                applyFolderRemoteImages(to: document, in: nil, member: nil)
+            }
         }
         favoriteFolders.currentRoot = nil
         favoriteFolderAddition?.cancel()
@@ -442,10 +470,16 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let sidebar = belongs ? folder.sidebar : nil
             if document.contentState.folderSidebar !== sidebar {
                 document.contentState.folderSidebar = sidebar
+                if !belongs { document.contentState.isFolderPreviewSelected = false }
             }
         }
-        if !hasDocuments { endFolderSession() }
-        else if let selected = group.selectedWindow { updateFolderSidebar(for: selected) }
+        if !hasDocuments {
+            endFolderSession()
+        } else {
+            updateFolderPreviewSelection(in: folder)
+            refreshFolderRemoteImages()
+            if let selected = group.selectedWindow { updateFolderSidebar(for: selected) }
+        }
     }
 
     private func updateFolderSidebar(for window: NSWindow) {
@@ -461,6 +495,8 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         folder.sidebar.activate(in: window)
         folder.browser.setCurrentFile(document.store.fileURL)
+        updateFolderPreviewSelection(in: folder)
+        refreshFolderRemoteImages(for: document)
         if !document.isPreview {
             folder.announcedPreview = nil
         } else if window.isKeyWindow, folder.announcedPreview !== document, NSWorkspace.shared.isVoiceOverEnabled {
@@ -471,11 +507,90 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    private func setFolderRemoteImages(_ allowed: Bool, in session: FolderSession) {
+        let root = session.browser.root
+        guard !allowed || FolderIndex.isCurrent(root) else {
+            refreshFolderRemoteImages()
+            return
+        }
+        favoriteFolders.setRemoteImagesAllowed(allowed, in: root)
+        if session.remoteImages.isAllowed != allowed { session.remoteImages.isAllowed = allowed }
+        refreshFolderRemoteImages()
+    }
+
+    private func folderFavoriteStatusChanged() {
+        guard let session = folder else { return }
+        let root = session.browser.root
+        let isFavorite = favoriteFolders.contains(root)
+        guard session.isFavorite != isFavorite else { return }
+        session.isFavorite = isFavorite
+        session.remoteImages.isFavorite = isFavorite && root.favoriteRemoteImageGrantID != nil
+        setFolderRemoteImages(isFavorite && session.remoteImages.isAllowed, in: session)
+    }
+
+    private func updateFolderPreviewSelection(in session: FolderSession) {
+        guard let group = session.group else { return }
+        let selected = group.selectedWindow
+        for document in documentWindows where document.contentState.folderSidebar === session.sidebar {
+            let showing = document.window === selected && document.window.isVisible && !document.window.isMiniaturized
+            if document.contentState.isFolderPreviewSelected != showing {
+                document.contentState.isFolderPreviewSelected = showing
+            }
+        }
+    }
+
+    private func refreshFolderRemoteImages() {
+        if let folder, folder.remoteImages.isAllowed, !FolderIndex.isCurrent(folder.browser.root) {
+            folder.remoteImages.isAllowed = false
+        }
+        for document in documentWindows {
+            refreshFolderRemoteImages(for: document)
+        }
+    }
+
+    private func refreshFolderRemoteImages(for document: DocumentWindow) {
+        let member = folder.flatMap { folderRemoteImageMember(document, in: $0) }
+        applyFolderRemoteImages(to: document, in: folder, member: member)
+    }
+
+    private func folderRemoteImageMember(_ document: DocumentWindow, in session: FolderSession) -> Data? {
+        guard session.group?.windows.contains(document.window) == true,
+              let backing = document.store.remoteImageBacking,
+              let url = FolderIndex.verifyRemoteImageMember(at: backing.url, in: session.browser.root,
+                                                           reference: backing.reference) else { return nil }
+        // Use the verified relative file location as the session exception key.
+        // Comparing bytes keeps distinct filenames apart on byte-sensitive volumes.
+        return Data(url.path.utf8)
+    }
+
+    private func applyFolderRemoteImages(to document: DocumentWindow, in session: FolderSession?,
+                                         member: Data?) {
+        let permission = member == nil ? nil : session?.remoteImages
+        if document.contentState.folderRemoteImages !== permission {
+            document.contentState.folderRemoteImages = permission
+        }
+        let blocked = member.map { member in
+            session?.blockedRemoteImagePaths.contains(member) == true
+        } ?? false
+        document.store.setFolderRemoteImages(allowed: permission?.isAllowed == true, blockedForFile: blocked)
+    }
+
+    private func setFolderRemoteImageOverride(_ choice: RemoteImageOverride, for document: DocumentWindow) {
+        guard let folder, let member = folderRemoteImageMember(document, in: folder) else {
+            applyFolderRemoteImages(to: document, in: nil, member: nil)
+            return
+        }
+        if choice == .block { folder.blockedRemoteImagePaths.insert(member) }
+        else { folder.blockedRemoteImagePaths.remove(member) }
+        applyFolderRemoteImages(to: document, in: folder, member: member)
+    }
+
     func toggleCurrentFavoriteFolder() {
         guard let root = folderBrowser?.root else { return }
         let name = root.url.lastPathComponent.isEmpty ? root.url.path : root.url.lastPathComponent
         if favoriteFolders.contains(root) {
             favoriteFolders.remove(root)
+            folderFavoriteStatusChanged()
             announceFavoriteChange(String(format: settings.text(.favoriteFolderRemoved), name))
             return
         }
@@ -502,11 +617,13 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
         favoriteFolders.add(root)
+        folderFavoriteStatusChanged()
         announceFavoriteChange(String(format: settings.text(.favoriteFolderAdded), name))
     }
 
     func removeFavoriteFolder(_ entry: FavoriteFolderEntry) {
         favoriteFolders.remove(entry)
+        folderFavoriteStatusChanged()
         announceFavoriteChange(String(format: settings.text(.favoriteFolderRemoved), entry.title))
     }
 
@@ -514,6 +631,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         favoriteFolderAddition?.cancel()
         favoriteFolderAddition = nil
         favoriteFolders.clear()
+        folderFavoriteStatusChanged()
         announceFavoriteChange(settings.text(.favoriteFoldersCleared))
     }
 
@@ -907,6 +1025,15 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         )
         documentWindows.append(documentWindow)
+        store.onRemoteImageBackingChanged = { [weak self, weak documentWindow] in
+            guard let self, let documentWindow,
+                  self.folder != nil || documentWindow.contentState.folderRemoteImages != nil else { return }
+            self.refreshFolderRemoteImages(for: documentWindow)
+        }
+        store.onRemoteImageOverrideChanged = { [weak self, weak documentWindow] choice in
+            guard let self, let documentWindow, self.folder != nil else { return }
+            self.setFolderRemoteImageOverride(choice, for: documentWindow)
+        }
         attachmentCommandState.refresh()
         window.delegate = self
         window.contentView = NSHostingView(rootView: contentView)
@@ -961,6 +1088,14 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func windowDidBecomeKey(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
         updateFolderSidebar(for: window)
+    }
+
+    func windowDidMiniaturize(_ notification: Notification) {
+        if let folder { updateFolderPreviewSelection(in: folder) }
+    }
+
+    func windowDidDeminiaturize(_ notification: Notification) {
+        if let folder { updateFolderPreviewSelection(in: folder) }
     }
 
     func windowDidMove(_ notification: Notification) { recordWindowFrame(notification) }
@@ -1118,15 +1253,22 @@ private final class FolderSession {
 
     let browser: FolderBrowserController
     let sidebar: FolderSidebarState
+    let remoteImages: FolderRemoteImages
+    var isFavorite: Bool
+    var blockedRemoteImagePaths = Set<Data>()
     var host: Host
     weak var preview: DocumentWindow?
     weak var announcedPreview: DocumentWindow?
     var groupObservation: NSKeyValueObservation?
+    var selectionObservation: NSKeyValueObservation?
 
-    init(browser: FolderBrowserController, sidebar: FolderSidebarState, host: Host) {
+    init(browser: FolderBrowserController, sidebar: FolderSidebarState, host: Host,
+         remoteImages: FolderRemoteImages, isFavorite: Bool) {
         self.browser = browser
         self.sidebar = sidebar
         self.host = host
+        self.remoteImages = remoteImages
+        self.isFavorite = isFavorite
     }
 
     var landingWindow: NSWindow? {

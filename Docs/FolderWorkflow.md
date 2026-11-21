@@ -18,6 +18,9 @@ Choose a favorite from that submenu to load its Markdown tree into the sidebar. 
 
 Use **Remove a Favorite** to remove an individual folder or **Clear Favorite Folders** to empty the list. Markdown2 saves each folder’s canonical path in its local preferences and checks that path again when you open a favorite. If the path is missing, inaccessible, or now points through a symbolic link or to a Finder alias, the alert explains the problem. Choose **Keep** if the folder may become available again, for example when you reconnect an external drive, or **Remove from Favorites** to drop the entry.
 
+The folder menu next to the star manages [remote image permission](RemoteResources.md#allow-images-for-a-folder).
+Permissions for verified favorite folders can be remembered across launches.
+
 ## Scope and limits
 
 - One folder session belongs to one native tab group. Opening a different folder replaces the current session. Closing the folder before choosing a document, or closing the group's last tab, ends the session and cancels its work. Hiding the sidebar keeps the session available.

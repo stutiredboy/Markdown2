@@ -142,6 +142,7 @@ struct ContentView: View {
     /// Latest debounced viewport anchor reported by the preview — the cached
     /// fallback when the live capture does not answer in time.
     @State private var previewAnchor: ViewportAnchor?
+    @State private var suspendedFolderPreview: (identity: UUID, anchor: ViewportAnchor)?
     /// Returning from a passive preview restores the source's exact wrapped row.
     /// Read navigation takes precedence, and edits invalidate the UTF-16 offset.
     @State private var sourceBeforeRead: (anchor: ViewportAnchor, revision: Int)?
@@ -236,11 +237,10 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             DocumentCopyNotice(flow: document.copyFlow, settings: settings, onOpen: onOpenCreatedCopy)
-            RemoteResourceNotice(document: document, settings: settings) { allowed in
+            RemoteResourceNotice(document: document, settings: settings, contentState: contentState) {
                 // Reuse the last reported anchor without awaiting the page that
                 // is about to be retired. The new safe host consumes this target.
                 if let previewAnchor { document.previewJumpAnchor = previewAnchor }
-                document.setRemoteImagesAllowed(allowed)
             }
             HStack(spacing: 0) {
                 sidebar
@@ -288,6 +288,7 @@ struct ContentView: View {
         .onChange(of: document.documentIdentity) { _, _ in
             formulaSheet.dismiss()
             formulaFocus = nil
+            suspendedFolderPreview = nil
             sourceBeforeRead = nil
             outlineSourceLine = 1
             clickedOutlineHeadingID = nil
@@ -307,6 +308,19 @@ struct ContentView: View {
         .onChange(of: document.remoteResourceContextToken) { _, _ in
             // A new preview page has no record of the outgoing page's scroll.
             if mode == .read { sourceBeforeRead = nil }
+        }
+        .onChange(of: suspendsFolderPreview) { _, isSuspended in
+            if isSuspended {
+                if mode != .write, let previewAnchor {
+                    suspendedFolderPreview = (document.documentIdentity, previewAnchor)
+                }
+            } else {
+                defer { suspendedFolderPreview = nil }
+                if let suspendedFolderPreview, suspendedFolderPreview.identity == document.documentIdentity,
+                   document.previewJumpAnchor == nil, document.jumpHeadingID == nil, document.jumpFraction == nil {
+                    document.previewJumpAnchor = suspendedFolderPreview.anchor
+                }
+            }
         }
         .onChange(of: mode) { _, _ in
             if mode != .read {
@@ -542,6 +556,12 @@ struct ContentView: View {
 
     private var showsFrontMatterInPreview: Bool {
         hasDisplayableFrontMatter && showsFrontMatterMetadata
+    }
+
+    private var suspendsFolderPreview: Bool {
+        document.remoteResourcePolicy == .allowRemoteImages
+            && document.remoteImageOverride != .allow
+            && !contentState.isFolderPreviewSelected
     }
 
     private var minimumWindowWidth: CGFloat {
@@ -1165,7 +1185,11 @@ struct ContentView: View {
     private func previewPane(inSplit: Bool) -> some View {
         let resourceToken = document.remoteResourceContextToken
         ZStack(alignment: .top) {
-            if document.hasCurrentResourcePreview {
+            if suspendsFolderPreview {
+                // Hidden folder tabs keep their permission for explicit output
+                // but only the selected tab starts a network-capable preview.
+                Color.clear
+            } else if document.hasCurrentResourcePreview {
                 MarkdownPreviewView(
                     html: document.rendered.html,
                     bodyHTML: document.rendered.body,

@@ -4,6 +4,12 @@ import Foundation
 import MD2Core
 import UniformTypeIdentifiers
 
+enum RemoteImageOverride: Equatable {
+    case inherit
+    case allow
+    case block
+}
+
 @MainActor
 final class DocumentStore: ObservableObject {
     @Published var text: String {
@@ -29,9 +35,19 @@ final class DocumentStore: ObservableObject {
     }
 
     @Published private(set) var rendered: RenderedDocument
-    /// A trusted, window-local session grant. Never serialized into the document,
-    /// recovery record, UserDefaults, or export profile.
+    /// Effective policy, separate from the document's own choice and the
+    /// folder's optional grant. The document choice and file veto are ephemeral.
     @Published private(set) var remoteResourcePolicy: RemoteResourcePolicy = .blocked
+    @Published private(set) var remoteImageOverride: RemoteImageOverride = .inherit
+    private var folderAllowsRemoteImages = false
+    private var remoteImageFileReference: DocumentCopyFileReference?
+    var onRemoteImageBackingChanged: (() -> Void)?
+    var onRemoteImageOverrideChanged: ((RemoteImageOverride) -> Void)?
+
+    var remoteImageBacking: (url: URL, reference: DocumentCopyFileReference)? {
+        guard !isClosed, !backingFileMissing, let fileURL, let remoteImageFileReference else { return nil }
+        return (fileURL, remoteImageFileReference)
+    }
     @Published private(set) var remoteResourceContextToken = UUID()
     @Published private(set) var renderedRemoteResourceContextToken: UUID?
     private var remoteResourceInvalidator: (@MainActor () -> Void)?
@@ -62,10 +78,39 @@ final class DocumentStore: ObservableObject {
     /// Called by a native control only. This deliberately bypasses the source
     /// text pipeline: permission changes create no dirty, save, or Undo action.
     func setRemoteImagesAllowed(_ allowed: Bool) {
-        let policy: RemoteResourcePolicy = allowed ? .allowRemoteImages : .blocked
-        guard !isClosed, policy != remoteResourcePolicy else { return }
+        setRemoteImageOverride(allowed ? .allow : .inherit)
+    }
+
+    func setRemoteImageOverride(_ choice: RemoteImageOverride) {
+        guard !isClosed else { return }
+        if remoteImageOverride != choice { remoteImageOverride = choice }
+        onRemoteImageOverrideChanged?(choice)
+        updateRemoteImagePolicy()
+    }
+
+    func setFolderRemoteImages(allowed: Bool, blockedForFile: Bool) {
+        guard !isClosed else { return }
+        folderAllowsRemoteImages = allowed
+        if blockedForFile, remoteImageOverride != .block { remoteImageOverride = .block }
+        else if !blockedForFile, remoteImageOverride == .block { remoteImageOverride = .inherit }
+        updateRemoteImagePolicy()
+    }
+
+    private func updateRemoteImagePolicy() {
+        let allowsImages = remoteImageOverride == .allow || (remoteImageOverride == .inherit && folderAllowsRemoteImages)
+        let policy: RemoteResourcePolicy = allowsImages ? .allowRemoteImages : .blocked
+        guard policy != remoteResourcePolicy else { return }
         replaceRemoteResourceContext(policy: policy)
         renderImmediately()
+    }
+
+    private func refreshInheritedRemoteImages() {
+        if folderAllowsRemoteImages && remoteImageOverride == .inherit { onRemoteImageBackingChanged?() }
+    }
+
+    private func resetRemoteImageChoices() {
+        if remoteImageOverride != .inherit { remoteImageOverride = .inherit }
+        folderAllowsRemoteImages = false
     }
 
     /// SwiftUI teardown runs later; cancel the active WebKit context synchronously
@@ -626,9 +671,11 @@ final class DocumentStore: ObservableObject {
         // the first. Print and Export are mutually exclusive.
         guard !isClosed, !isProducingDerivedArtifact else { return }
 
+        onRemoteImageBackingChanged?()
         let contextToken = remoteResourceContextToken
-        guard let url = pdfDestinationPicker(pdfFileName), resourceContextIsCurrent(contextToken),
-              !isProducingDerivedArtifact, allowsExport(to: url) else {
+        guard let url = pdfDestinationPicker(pdfFileName) else { return }
+        onRemoteImageBackingChanged?()
+        guard resourceContextIsCurrent(contextToken), !isProducingDerivedArtifact, allowsExport(to: url) else {
             return
         }
 
@@ -641,6 +688,7 @@ final class DocumentStore: ObservableObject {
         let snapshot = makeRenderSnapshot()
         let remoteImageBlockedLabel = alertText(.remoteImageBlocked)
         let rendered = await renderWorker.render(snapshot)
+        refreshInheritedRemoteImages()
         guard resourceContextIsCurrent(contextToken), allowsExport(to: url) else { return }
 
         let exporter = pdfExporterFactory?(url, profile) ?? PDFExporter(destinationURL: url, profile: profile,
@@ -679,6 +727,7 @@ final class DocumentStore: ObservableObject {
     /// Failures surface through the normal `alert` path.
     func print() async {
         guard !isClosed, !isProducingDerivedArtifact else { return }
+        onRemoteImageBackingChanged?()
         let contextToken = remoteResourceContextToken
 
         let preparationID = UUID()
@@ -690,6 +739,7 @@ final class DocumentStore: ObservableObject {
         let snapshot = makeRenderSnapshot()
         let remoteImageBlockedLabel = alertText(.remoteImageBlocked)
         let rendered = await renderWorker.render(snapshot)
+        refreshInheritedRemoteImages()
         guard resourceContextIsCurrent(contextToken) else { return }
 
         let printer = documentPrinterFactory()
@@ -1182,10 +1232,13 @@ final class DocumentStore: ObservableObject {
         copyFileReference = nil
         fileIdentity = nil
         self.fileURL = nil
+        remoteImageFileReference = nil
+        resetRemoteImageChoices()
         lastKnownFingerprint = nil
         backingFileMissing = false
         updateHistoryIdentity(nil)
         replaceRemoteResourceContext()
+        onRemoteImageBackingChanged?()
         renderImmediately()
         persistRecoveryNow()
     }
@@ -1221,9 +1274,11 @@ final class DocumentStore: ObservableObject {
 
     private func installLoadedFile(_ decoded: MarkdownFileDecoder.DecodedFile, url: URL, data: Data,
                                    fingerprint: DocumentFileFingerprint, identity: DocumentFileIdentity,
-                                   reference: DocumentCopyFileReference? = nil, historyID: DocumentHistoryFileID?) {
+                                   reference: DocumentCopyFileReference? = nil,
+                                   imageReference: DocumentCopyFileReference? = nil, historyID: DocumentHistoryFileID?) {
         fileFormat = decoded.format
         copyFileReference = reference
+        remoteImageFileReference = reference ?? imageReference
         fileIdentity = identity
         backingFileMissing = false
         encodingWarningShown = false
@@ -1235,6 +1290,7 @@ final class DocumentStore: ObservableObject {
         pendingExternalReload = nil
         pendingReloadDiscardRevision = nil
         startWatchingFile()
+        onRemoteImageBackingChanged?()
         persistRecoveryNow()
         recordHistory(data, reason: .opened, fileID: historyID)
     }
@@ -1253,14 +1309,15 @@ final class DocumentStore: ObservableObject {
             // fingerprint hashes them, so the stored hash always matches the
             // exact on-disk content (no re-encoding drift).
             let readID = historyIdentity(at: url)
-            let data = try Data(contentsOf: url)
+            let (data, imageReference) = try readOrdinaryDocument(at: url)
             let historyID = unchangedHistoryIdentity(readID, at: url)
             guard let decoded = MarkdownFileDecoder.decode(data) else {
                 showUndecodableFile(url)
                 return false
             }
             installLoadedFile(decoded, url: url, data: data, fingerprint: .of(data: data, at: url),
-                              identity: DocumentFileIdentity(url: url), historyID: historyID)
+                              identity: DocumentFileIdentity(url: url),
+                              imageReference: imageReference, historyID: historyID)
             let directory = url.deletingLastPathComponent()
             Task.detached(priority: .background) { LegacyPreviewCleaner.clean(in: directory) }
             return true
@@ -1271,6 +1328,17 @@ final class DocumentStore: ObservableObject {
             )
             return false
         }
+    }
+
+    /// Folder inheritance requires a pin to the bytes actually read. Ordinary
+    /// opens retain their existing fallback for links and larger files.
+    private func readOrdinaryDocument(at url: URL) throws -> (Data, DocumentCopyFileReference?) {
+        if FolderIndex.isMarkdownExtension(url.pathExtension),
+           let reference = try? DocumentCopyFileReference.open(at: url),
+           let data = try? reference.read(at: url, maximumCount: FolderIndex.maximumOpenBytes) {
+            return (data, reference)
+        }
+        return (try Data(contentsOf: url), nil)
     }
 
     @discardableResult
@@ -1343,14 +1411,17 @@ final class DocumentStore: ObservableObject {
                     return false
                 }
             }
-            let (newCopyReference, savedHistoryID) = try Self.writePreservingMetadata(writtenData, to: url,
+            let (newCopyReference, savedHistoryID, imageReference) = try Self.writePreservingMetadata(writtenData, to: url,
                 replacingReference: writingBackingFile ? copyFileReference : nil, copyIO: copySaveIO,
                 protectsLinkedDestination: folderBacked,
                 requiresVacantDestination: requiresVacantDestination,
                 securedLinkedSaveRecovery: needsLinkedSaveRecovery,
                 captureHistoryIdentity: historyRepository != nil,
+                trackImageIdentity: FolderIndex.isMarkdownExtension(url.pathExtension)
+                    && writtenData.count <= FolderIndex.maximumOpenBytes,
                 verifyNewFile: keepsLocalHistory() && historyRepository?.canRecord(byteCount: writtenData.count) == true)
             copyFileReference = newCopyReference
+            remoteImageFileReference = newCopyReference ?? imageReference
             lastKnownFingerprint = DocumentFileFingerprint.of(data: writtenData, at: url)
             fileURL = url
             fileIdentity = newCopyReference.map {
@@ -1363,6 +1434,7 @@ final class DocumentStore: ObservableObject {
             encodingConversionRequest = nil
             hasExternalConflict = false
             startWatchingFile()
+            onRemoteImageBackingChanged?()
             persistRecoveryNow()
             recordHistory(writtenData, reason: .saved, fileID: savedHistoryID, replacing: priorHistoryID)
             return true
@@ -1396,8 +1468,9 @@ final class DocumentStore: ObservableObject {
                                                 requiresVacantDestination: Bool,
                                                 securedLinkedSaveRecovery: Bool,
                                                 captureHistoryIdentity: Bool,
+                                                trackImageIdentity: Bool,
                                                 verifyNewFile: Bool) throws
-        -> (DocumentCopyFileReference?, DocumentHistoryFileID?) {
+        -> (DocumentCopyFileReference?, DocumentHistoryFileID?, DocumentCopyFileReference?) {
         try replacingReference?.validate(at: url)
         func inspectDestination() throws -> DocumentCopyFileIdentity? {
             if protectsLinkedDestination, let replacingReference {
@@ -1428,6 +1501,11 @@ final class DocumentStore: ObservableObject {
             return identity
         }
 
+        func matchingImageReference(_ reference: DocumentCopyFileReference?) -> DocumentCopyFileReference? {
+            guard let reference, (try? reference.validate(at: url)) != nil else { return nil }
+            return reference
+        }
+
         let manager = FileManager.default
         guard let destinationIdentity else {
             if replacingReference != nil { throw DocumentCopyOpenError.unavailable }
@@ -1438,26 +1516,34 @@ final class DocumentStore: ObservableObject {
                 let staged = replacement.appendingPathComponent(UUID().uuidString)
                 try data.write(to: staged)
                 let descriptor = captureHistoryIdentity ? Darwin.open(staged.path, O_EVTONLY | O_CLOEXEC) : -1
+                let imageReference = trackImageIdentity ? try? DocumentCopyFileReference.open(at: staged) : nil
                 defer { if descriptor >= 0 { Darwin.close(descriptor) } }
                 guard renamex_np(staged.path, url.path, UInt32(RENAME_EXCL)) == 0 else {
                     if errno == EEXIST { throw UnverifiedSaveDestination() }
                     throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
                 }
-                return (nil, historyIdentity(matching: descriptor))
+                return (nil, historyIdentity(matching: descriptor), matchingImageReference(imageReference))
             }
             try data.write(to: url, options: .atomic)
+            let imageReference: DocumentCopyFileReference?
+            if trackImageIdentity, let pin = try? DocumentCopyFileReference.open(at: url),
+               let current = try? pin.read(at: url, expectedCount: data.count), current == data {
+                imageReference = pin
+            } else {
+                imageReference = nil
+            }
             // Foundation's new-file write does not expose its temporary
             // descriptor. Confirm the first save's bytes before indexing it.
-            guard captureHistoryIdentity else { return (nil, nil) }
+            guard captureHistoryIdentity else { return (nil, nil, imageReference) }
             let descriptor = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
-            guard descriptor >= 0 else { return (nil, nil) }
+            guard descriptor >= 0 else { return (nil, nil, imageReference) }
             let bytes = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
             defer { try? bytes.close() }
-            guard let identity = historyIdentity(matching: bytes.fileDescriptor) else { return (nil, nil) }
-            if !verifyNewFile { return (nil, identity) }
+            guard let identity = historyIdentity(matching: bytes.fileDescriptor) else { return (nil, nil, imageReference) }
+            if !verifyNewFile { return (nil, identity, imageReference) }
             guard let current = try? (bytes.read(upToCount: data.count + 1) ?? Data()),
-                  current == data, historyIdentity(matching: bytes.fileDescriptor) == identity else { return (nil, nil) }
-            return (nil, identity)
+                  current == data, historyIdentity(matching: bytes.fileDescriptor) == identity else { return (nil, nil, imageReference) }
+            return (nil, identity, imageReference)
         }
         if replacingReference == nil && !protectsLinkedDestination && hasMultipleHardLinks(at: url) {
             // Replacing an inode severs its other names. For a hard-linked file,
@@ -1479,7 +1565,7 @@ final class DocumentStore: ObservableObject {
                 try? handle.synchronize()
                 throw error
             }
-            return (nil, historyIdentity(matching: handle.fileDescriptor))
+            return (nil, historyIdentity(matching: handle.fileDescriptor), nil)
         }
         let replacement = try manager.url(for: .itemReplacementDirectory, in: .userDomainMask,
                                           appropriateFor: url, create: true)
@@ -1493,6 +1579,8 @@ final class DocumentStore: ObservableObject {
         let historyDescriptor = captureHistoryIdentity ? Darwin.open(temporary.path, O_EVTONLY | O_CLOEXEC) : -1
         defer { if historyDescriptor >= 0 { Darwin.close(historyDescriptor) } }
         let reference: DocumentCopyFileReference?
+        let imageReference = trackImageIdentity && replacingReference == nil
+            ? try? DocumentCopyFileReference.open(at: temporary) : nil
         if let replacingReference {
             reference = try DocumentCopyFileReference.open(at: temporary)
             try replacingReference.validate(at: url)
@@ -1506,7 +1594,7 @@ final class DocumentStore: ObservableObject {
             _ = try manager.replaceItemAt(url, withItemAt: temporary, backupItemName: nil, options: [])
         }
         try reference?.validate(at: url)
-        return (reference, historyIdentity(matching: historyDescriptor))
+        return (reference, historyIdentity(matching: historyDescriptor), matchingImageReference(imageReference))
     }
 
     private static func hasMultipleHardLinks(at url: URL) -> Bool {
@@ -1524,6 +1612,7 @@ final class DocumentStore: ObservableObject {
     }
 
     private func setDocumentText(_ newText: String, fileURL newFileURL: URL?, dirty: Bool) {
+        resetRemoteImageChoices()
         replaceRemoteResourceContext()
         headingNavigationTask?.cancel()
         headingNavigationTask = nil
@@ -1559,6 +1648,7 @@ final class DocumentStore: ObservableObject {
 
     private func startRenderIfNeeded() {
         guard !isClosed, renderTask == nil, hasPendingRender else { return }
+        refreshInheritedRemoteImages()
         let contextToken = remoteResourceContextToken
         let generation = renderGeneration
         let revision = sourceLineRevision
@@ -1568,6 +1658,7 @@ final class DocumentStore: ObservableObject {
         renderTask = Task { [weak self] in
             let result = await worker.render(snapshot)
             guard let self else { return }
+            self.refreshInheritedRemoteImages()
             self.renderTask = nil
             if self.renderGeneration == generation, self.resourceContextIsCurrent(contextToken) {
                 self.renderedSourceLineRevision = revision
@@ -1703,9 +1794,14 @@ final class DocumentStore: ObservableObject {
         guard let fileURL else { return }
 
         let readID = historyIdentity(at: fileURL)
-        guard !backingFileMissing,
-              let data = try? copyFileReference?.read(at: fileURL) ?? Data(contentsOf: fileURL),
-              let decoded = MarkdownFileDecoder.decode(data) else {
+        let loaded: (Data, DocumentCopyFileReference?)? = if backingFileMissing {
+            nil
+        } else if let copyFileReference {
+            (try? copyFileReference.read(at: fileURL)).map { ($0, copyFileReference) }
+        } else {
+            try? readOrdinaryDocument(at: fileURL)
+        }
+        guard let (data, imageReference) = loaded, let decoded = MarkdownFileDecoder.decode(data) else {
             alert = DocumentAlert(
                 message: alertText(.alertCouldNotOpen, fileURL.lastPathComponent),
                 detail: alertText(.alertExternalReloadFailedDetail)
@@ -1728,7 +1824,9 @@ final class DocumentStore: ObservableObject {
             return
         }
 
+        resetRemoteImageChoices()
         replaceRemoteResourceContext(keepingConversionNotice: true)
+        remoteImageFileReference = imageReference
         cancelAutosave()
         jumpLine = nil
         jumpHeadingID = nil
@@ -1751,6 +1849,7 @@ final class DocumentStore: ObservableObject {
         hasExternalConflict = false
         externalConflictRequest = nil
         startWatchingFile()
+        onRemoteImageBackingChanged?()
         persistRecoveryNow()
         recordHistory(data, reason: .externalReload, fileID: historyID)
     }
@@ -1827,6 +1926,7 @@ final class DocumentStore: ObservableObject {
     /// also rebase relative images/links and the window's represented URL.
     func refreshFileLocation() {
         guard let previous = fileURL, !isClosed else { return }
+        defer { onRemoteImageBackingChanged?() }
         if let identity = fileIdentity, identity.isFolderFile, copyFileReference == nil {
             guard let reference = identity.reopenFolderFile(at: previous) else {
                 markBackingFileMissing()
@@ -1853,6 +1953,7 @@ final class DocumentStore: ObservableObject {
 
     private func markBackingFileMissing() {
         backingFileMissing = true
+        onRemoteImageBackingChanged?()
         isDirty = true
         cancelAutosave()
         persistRecoveryNow()
@@ -1929,6 +2030,8 @@ final class DocumentStore: ObservableObject {
     }
 
     func restore(_ snapshot: DocumentRecoverySnapshot, openingFolderFile: FolderIndex.OpenedFile? = nil) {
+        remoteImageFileReference = nil
+        defer { onRemoteImageBackingChanged?() }
         historyFileID = nil
         historyLineage = UUID()
         recoveryID = snapshot.id
@@ -2000,6 +2103,7 @@ final class DocumentStore: ObservableObject {
                                   identity: identity, reference: reference, historyID: historyID)
                 return
             }
+            if snapshot.identity?.matchesFolderEntry(reference) == true { remoteImageFileReference = reference }
             if snapshot.fingerprint?.contentHash != current.contentHash {
                 raiseExternalConflict()
             } else {
@@ -2025,6 +2129,8 @@ final class DocumentStore: ObservableObject {
             }
         }
         isClosed = true
+        resetRemoteImageChoices()
+        remoteImageFileReference = nil
         replaceRemoteResourceContext()
         renderDebounceTask?.cancel()
         renderDebounceTask = nil

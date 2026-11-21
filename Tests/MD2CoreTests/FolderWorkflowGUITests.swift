@@ -468,6 +468,7 @@ final class FolderWorkflowGUITests: XCTestCase {
 @MainActor
 private final class FolderTestFavoritesRecorder: FavoriteFoldersRecording {
     var favoriteFolderPaths: [String] = []
+    var remoteImageGrantIDs: [String: String] = [:]
 }
 
 private struct FolderPreviewFixture {
@@ -542,7 +543,8 @@ struct FolderTestApplication {
     private let accessibility: AXUIElement
 
     static func launch(
-        in directory: URL, arguments: [String], opensBlankDocumentOnLaunch: Bool = false
+        in directory: URL, arguments: [String], opensBlankDocumentOnLaunch: Bool = false,
+        presentationMode: EditorMode = .write
     ) async throws -> Self {
         let priorApplication = NSWorkspace.shared.frontmostApplication
         let identifier = "dev.codex.md2.folder-test.\(UUID().uuidString.lowercased())"
@@ -552,7 +554,7 @@ struct FolderTestApplication {
             .build(bundleURL: appURL, executableURL: productURL.appendingPathComponent("Markdown2"))
         let defaults = try XCTUnwrap(UserDefaults(suiteName: identifier))
         defaults.setPersistentDomain([
-            "MD2.DefaultMode": "write", "MD2.NewDocumentMode": "write",
+            "MD2.DefaultMode": presentationMode.rawValue, "MD2.NewDocumentMode": presentationMode.rawValue,
             "MD2.Language": "english", "AppleLanguages": ["en"],
             "MD2.ShowsOutlineByDefault": false, "AppleWindowTabbingMode": "manual",
             "MD2.RestoresWindowsOnLaunch": false, "MD2.OpensBlankDocumentOnLaunch": opensBlankDocumentOnLaunch
@@ -802,10 +804,14 @@ struct FolderTestApplication {
     }
 
     func pressFileCommand(_ name: String) throws {
-        let command = try waitFor("the enabled File → \(name) command") {
+        try pressMenuCommand("File", name)
+    }
+
+    func pressMenuCommand(_ menuName: String, _ name: String) throws {
+        let command = try waitFor("the enabled \(menuName) → \(name) command") {
             guard let menuBar,
-                  let file = children(menuBar).first(where: { title($0) == "File" }),
-                  let menu = children(file).first else { return nil }
+                  let menuItem = children(menuBar).first(where: { title($0) == menuName }),
+                  let menu = children(menuItem).first else { return nil }
             return children(menu).first {
                 title($0) == name && (attribute(kAXEnabledAttribute, of: $0) as? Bool) == true
             }

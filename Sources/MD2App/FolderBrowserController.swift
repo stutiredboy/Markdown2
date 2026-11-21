@@ -16,14 +16,18 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
     let view = NSView()
     private let text: (L10nKey) -> String
     private let favorites: FavoriteFoldersModel
+    private let remoteImages: FolderRemoteImages?
     private let onToggleFavorite: () -> Void
     private let scan: @Sendable (FolderIndex.Root) throws -> FolderIndex.Snapshot
+    private let onIndexInvalidated: () -> Void
     private let onOpen: OpenDocument
 
     private let search = NSSearchField()
     private let outline = FolderBrowserOutline()
     private let status = NSTextField(wrappingLabelWithString: "")
     private let favoriteButton = NSButton()
+    private let permissionsButton = NSPopUpButton(frame: .zero, pullsDown: true)
+    private let permissionsSheet = RemoteResourceSheet()
     private let refreshButton = NSButton()
     private let cancelButton = NSButton()
     private let openButton = NSButton()
@@ -34,6 +38,7 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
     private var activeOpen: OpenRequest?
     private var queuedOpens: [OpenRequest] = []
     private var favoritesObservation: AnyCancellable?
+    private var remoteImagesObservation: AnyCancellable?
     private var watcher: FolderIndexWatcher?
     private var isStarted = false
     private var needsRefresh = false
@@ -56,14 +61,18 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
         text: @escaping (L10nKey) -> String,
         favorites: FavoriteFoldersModel,
         onToggleFavorite: @escaping () -> Void,
+        remoteImages: FolderRemoteImages? = nil,
         scan: @escaping @Sendable (FolderIndex.Root) throws -> FolderIndex.Snapshot = { try FolderIndex.scan($0) },
+        onIndexInvalidated: @escaping () -> Void = {},
         onOpen: @escaping OpenDocument
     ) {
         self.root = root
         self.text = text
         self.favorites = favorites
+        self.remoteImages = remoteImages
         self.onToggleFavorite = onToggleFavorite
         self.scan = scan
+        self.onIndexInvalidated = onIndexInvalidated
         self.onOpen = onOpen
         super.init()
         configureContents()
@@ -71,6 +80,9 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
         favoritesObservation = favorites.$entries.dropFirst().sink { [weak self] entries in
             guard let self else { return }
             updateFavoriteButton(isFavorite: entries.contains { $0.url == root.url })
+        }
+        remoteImagesObservation = remoteImages?.$isAllowed.dropFirst().sink { [weak self] isAllowed in
+            self?.updatePermissionsMenu(isAllowed: isAllowed)
         }
     }
 
@@ -87,6 +99,7 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
 
     func stop() {
         isStarted = false
+        permissionsSheet.dismiss()
         watcher = nil
         pendingRefresh?.cancel()
         scanTask?.cancel()
@@ -180,6 +193,18 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
         favoriteButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         favoriteButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 30).isActive = true
         let pathRow = NSStackView(views: [path, favoriteButton])
+        if remoteImages != nil {
+            permissionsButton.bezelStyle = .rounded
+            permissionsButton.imagePosition = .imageOnly
+            (permissionsButton.cell as? NSPopUpButtonCell)?.arrowPosition = .noArrow
+            permissionsButton.setAccessibilityIdentifier("folder-remote-images-menu")
+            permissionsButton.setContentHuggingPriority(.required, for: .horizontal)
+            permissionsButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+            permissionsButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 30).isActive = true
+            permissionsSheet.anchor = view
+            // Keep the star adjacent to Quick Open in the keyboard loop.
+            pathRow.insertArrangedSubview(permissionsButton, at: 1)
+        }
         pathRow.distribution = .fill
         pathRow.alignment = .centerY
         pathRow.spacing = 8
@@ -277,6 +302,7 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
             button.setAccessibilityLabel(label)
         }
         updateFavoriteButton(isFavorite: favorites.contains(root))
+        if let remoteImages { updatePermissionsMenu(isAllowed: remoteImages.isAllowed) }
         updateState()
     }
 
@@ -286,6 +312,51 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
         favoriteButton.toolTip = label
         favoriteButton.setAccessibilityLabel(label)
         favoriteButton.state = isFavorite ? .on : .off
+    }
+
+    private func updatePermissionsMenu(isAllowed: Bool) {
+        let title = text(.remoteImagesFolderPermissions)
+        let status = text(isAllowed ? .remoteImagesAllowedByFolder : .remoteImagesBlocked)
+        let action = FolderRemoteImages.Action(isAllowed: isAllowed)
+        let menu = NSMenu(title: title)
+        menu.autoenablesItems = false
+
+        // The first item supplies the label and icon for a pull-down button.
+        let label = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        label.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: nil)
+        menu.addItem(label)
+        let statusItem = NSMenuItem(title: status, action: nil, keyEquivalent: "")
+        statusItem.isEnabled = false
+        menu.addItem(statusItem)
+        let item = NSMenuItem(title: text(action.title), action: #selector(changeFolderPermission), keyEquivalent: "")
+        item.target = self
+        item.representedObject = action == .allow
+        item.setAccessibilityIdentifier(action.identifier)
+        item.setAccessibilityLabel(item.title)
+        menu.addItem(item)
+
+        permissionsButton.menu = menu
+        permissionsButton.setAccessibilityLabel(title)
+        permissionsButton.setAccessibilityHelp(status)
+        permissionsButton.toolTip = title + " — " + status
+    }
+
+    @objc private func changeFolderPermission(_ sender: NSMenuItem) {
+        guard isStarted, let remoteImages, let window = view.window,
+              let allow = sender.representedObject as? Bool, allow != remoteImages.isAllowed else { return }
+        if allow {
+            // Finish AppKit menu tracking before attaching the confirmation.
+            DispatchQueue.main.async { [weak self, weak window] in
+                guard let self, let window, self.isStarted, self.view.window === window,
+                      !remoteImages.isAllowed else { return }
+                self.permissionsSheet.presentFolderPermission(remoteImages, text: self.text) { [weak self, weak window] in
+                    guard let self, let window else { return false }
+                    return self.isStarted && self.view.window === window
+                }
+            }
+        } else {
+            remoteImages.onPermissionChange(false)
+        }
     }
 
     @objc private func toggleFavorite() {
@@ -300,6 +371,8 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
     }
 
     private func invalidateIndex() {
+        guard isStarted else { return }
+        onIndexInvalidated()
         guard isStarted else { return }
         needsRefresh = true
         schedulePendingRefresh()
@@ -338,6 +411,7 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
                 indexIssue = .folderRootUnavailable
                 replaceSnapshot(nil)
                 updateState(announce: true)
+                onIndexInvalidated()
                 schedulePendingRefresh()
             }
         }

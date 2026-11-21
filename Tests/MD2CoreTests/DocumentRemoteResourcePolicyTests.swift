@@ -188,6 +188,79 @@ struct DocumentRemoteResourcePolicyTests {
     }
 
     @Test(arguments: [false, true])
+    func revokingFolderPermissionCancelsInheritedPreviewAndNativeOutput(printing: Bool) async {
+        let exporter = DeferredRemoteExporter()
+        let printer = DeferredRemotePrinter()
+        let store = DocumentStore(
+            pdfDestinationPicker: { _ in URL(fileURLWithPath: "/unused.pdf") },
+            pdfExporterFactory: { _, _ in exporter },
+            documentPrinterFactory: { printer }
+        )
+        store.setFolderRemoteImages(allowed: true, blockedForFile: false)
+        var invalidated = false
+        let authorizedToken = store.remoteResourceContextToken
+        store.registerRemoteResourceInvalidator(for: authorizedToken) { invalidated = true }
+        if printing { await store.print() } else { await store.exportPDF() }
+        #expect((printing ? printer.policy : exporter.policies.last) == .allowRemoteImages)
+
+        store.setFolderRemoteImages(allowed: false, blockedForFile: false)
+        #expect(invalidated)
+        #expect(store.remoteResourceContextToken != authorizedToken)
+        #expect(store.remoteResourcePolicy == .blocked)
+        #expect((printing ? printer.cancelCount : exporter.cancelCount) == 1)
+    }
+
+    @Test(arguments: [false, true])
+    func nativeOutputRechecksFolderBackingAfterRendering(printing: Bool) async {
+        let gate = DocumentRenderingTestGate()
+        let worker = DocumentRenderWorker(beforeRendering: { await gate.pauseIfArmed() })
+        let exporter = DeferredRemoteExporter()
+        let printer = DeferredRemotePrinter()
+        let store = DocumentStore(
+            pdfDestinationPicker: { _ in URL(fileURLWithPath: "/unused.pdf") },
+            pdfExporterFactory: { _, _ in exporter },
+            documentPrinterFactory: { printer },
+            renderWorker: worker
+        )
+        store.setFolderRemoteImages(allowed: true, blockedForFile: false)
+        await store.flushPendingRender()
+        var fileIsStillInFolder = true
+        store.onRemoteImageBackingChanged = { [weak store] in
+            if !fileIsStillInFolder { store?.setFolderRemoteImages(allowed: false, blockedForFile: false) }
+        }
+        await gate.arm()
+        let job = Task {
+            if printing { await store.print() } else { await store.exportPDF() }
+        }
+        await gate.waitUntilStarted()
+        fileIsStillInFolder = false
+        await gate.release()
+        await job.value
+        #expect(exporter.policies.isEmpty)
+        #expect(printer.policy == nil)
+        #expect(store.remoteResourcePolicy == .blocked)
+    }
+
+    @Test func documentChoiceHasPriorityOverFolderGrant() {
+        let store = DocumentStore()
+        store.setFolderRemoteImages(allowed: true, blockedForFile: true)
+        #expect(store.remoteImageOverride == .block)
+        #expect(store.remoteResourcePolicy == .blocked)
+        store.setFolderRemoteImages(allowed: false, blockedForFile: true)
+        #expect(store.remoteImageOverride == .block)
+        store.setFolderRemoteImages(allowed: true, blockedForFile: true)
+        #expect(store.remoteResourcePolicy == .blocked)
+
+        store.setRemoteImageOverride(.allow)
+        let token = store.remoteResourceContextToken
+        store.setFolderRemoteImages(allowed: false, blockedForFile: false)
+        #expect(store.remoteImageOverride == .allow)
+        #expect(store.remoteResourcePolicy == .allowRemoteImages)
+        #expect(store.remoteResourceContextToken == token)
+        #expect(!store.isDirty)
+    }
+
+    @Test(arguments: [false, true])
     func nativeExportKeepsItsCapturedLabelWhenLanguageChangesDuringRendering(printing: Bool) async {
         let gate = DocumentRenderingTestGate()
         let worker = DocumentRenderWorker(beforeRendering: { await gate.pauseIfArmed() })

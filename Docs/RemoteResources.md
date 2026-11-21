@@ -49,6 +49,34 @@ not inherit browser login cookies or share a document's browser cache with anoth
 document or export. These controls concern document resources; they do not promise
 that macOS makes no DNS or other platform network requests.
 
+## Allow images for a folder
+
+With a folder open, choose **Allow for This Folder…** from the Files sidebar’s
+folder menu or the **Permissions** menu in an eligible document’s Remote Images
+bar. Confirm the full folder path. The grant covers verified Markdown files in
+that folder and its subfolders while they belong to its tab group. Files from
+the tree or Quick Open can inherit the grant as they open. Only the selected
+preview loads inherited images. Choosing the folder or granting permission
+does not scan documents for images or preload background tabs. **Details…**
+continues to report origins for the current document.
+
+For an ordinary folder, the grant ends when you close or switch the folder, or
+quit Markdown2. Starring an allowed folder remembers the grant. A remembered
+grant applies when you next open the same verified directory at the same path.
+If the filesystem cannot supply a stable directory identity, the grant remains
+session-only. A replacement directory at the same path starts blocked.
+
+Use **Block in This Document** to override the grant for a file. The exception
+is kept for that verified path during the folder session, including when you
+preview it again. **Use Folder Permission** clears the exception. Leaving the
+tab group or losing the verified file drops its inherited permission.
+
+**Revoke Folder Permission** removes both the live and remembered grant.
+Removing or clearing the favorite also revokes it. Work that depends on the
+folder grant is canceled, including preview, PDF and Print. An independent
+document grant keeps its usual lifetime. Scripts and other remote resource
+types remain blocked under the existing rules.
+
 ## What each export includes
 
 | Output | Remote-resource behavior |
@@ -98,8 +126,9 @@ For self-contained offline sharing, choose **HTML**.
 ## Implementation and verification
 
 The trusted `RemoteResourcePolicy` argument is separate from source syntax.
-`DocumentStore` owns a window-local policy/identity epoch; `DocumentRenderWorker`
-captures it, and obsolete completions cannot publish after an epoch change.
+`DocumentStore` owns a window-local policy and identity epoch. It combines the
+individual choice and the verified folder grant. The renderer captures the
+policy, and obsolete completions cannot publish after an epoch change.
 `WebDocumentLoader` enforces native WebKit resource rules in addition to the page
 CSP. Policy-only changes retire the old host even when the Markdown is identical.
 HTML rendering forces the offline policy and validates embedded image bytes.
