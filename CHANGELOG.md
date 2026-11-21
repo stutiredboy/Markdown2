@@ -10,7 +10,7 @@
 
 ### Changed
 
-- Browse files in a collapsible Files and Outline sidebar. Click or press Space to skim in one native preview tab, and double-click, press Return, or edit to keep the file open as a regular tab. Return to the tree with Shift+Cmd+B. Folder indexing now refreshes on filesystem changes or on request.
+- Browse files in a collapsible Files and Outline sidebar. Click a file or use Up and Down in the tree to skim in one native preview tab. Double-click, press Return, or edit to keep the file open as a regular tab. Return to the tree with Shift+Cmd+B. Folder indexing now refreshes on filesystem changes or on request.
 
 ### Fixed
 
