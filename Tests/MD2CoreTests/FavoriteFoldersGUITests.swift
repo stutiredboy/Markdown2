@@ -5,7 +5,7 @@ import XCTest
 
 @testable import MD2App
 
-/// Drives the real folder picker, window and File menu under a fresh bundle ID
+/// Drives the real folder picker, sidebar and File menu under a fresh bundle ID
 /// for each case. Relaunch keeps that domain so persistence crosses processes.
 final class FavoriteFoldersGUITests: XCTestCase {
     @MainActor
@@ -21,10 +21,8 @@ final class FavoriteFoldersGUITests: XCTestCase {
         let fileCommands = app.children(fileMenu).map(app.title).filter { !$0.isEmpty }
         XCTAssertEqual(Array(fileCommands.prefix(3)), ["New", "Open...", "Open Recent"])
         let openFolder = try XCTUnwrap(fileCommands.firstIndex(of: "Open Folder…"))
-        let quickOpen = try XCTUnwrap(fileCommands.firstIndex(of: "Quick Open…"))
-        let favorites = try XCTUnwrap(fileCommands.firstIndex(of: "Favorite Folders"))
-        XCTAssertEqual(quickOpen, openFolder + 1)
-        XCTAssertEqual(favorites, quickOpen + 1)
+        XCTAssertEqual(Array(fileCommands.dropFirst(openFolder).prefix(5)),
+                       ["Open Folder…", "Quick Open…", "Focus Folder Browser", "Reveal in Folder Browser", "Favorite Folders"])
         app.assertAccessibility(try app.favoriteMenuItem("Favorite Folders"), id: "favorite-folders-menu")
         app.assertAccessibility(try app.favoriteItem("No Favorite Folders", enabled: false),
                                 id: "favorite-folders-empty")
@@ -46,7 +44,7 @@ final class FavoriteFoldersGUITests: XCTestCase {
 
         app = try await app.relaunch()
         let favorite = try app.favoriteItem(fixture.folder.lastPathComponent)
-        XCTAssertTrue(app.browsers.isEmpty, "a favorite should open only when selected")
+        XCTAssertTrue(app.folderWindows.isEmpty, "a favorite should open only when selected")
         try app.press(favorite)
         let reopened = try app.waitForFolder(containing: fixture.guide)
         _ = try app.favoriteToggle(in: reopened, label: "Remove Current Folder from Favorites", selected: true)
@@ -107,11 +105,11 @@ final class FavoriteFoldersGUITests: XCTestCase {
         let firstTitle = "Notes — Saved"
         let secondTitle = "Notes — Current"
         try app.press(app.favoriteItem(firstTitle))
-        let first = try app.waitForFolder(containing: fixture.guide)
-        XCTAssertFalse(CFEqual(first, alternate))
+        _ = try app.waitForFolder(containing: fixture.guide)
+        XCTAssertTrue(CFEqual(try app.documentWindow(alternateGuide), document))
         try app.press(app.favoriteItem(secondTitle))
         let current = try app.waitForFolder(containing: alternateGuide)
-        XCTAssertEqual(app.browsers.count, 1)
+        XCTAssertEqual(app.folderWindows.count, 1)
         XCTAssertTrue(CFEqual(try app.documentWindow(alternateGuide), document))
 
         try FileManager.default.moveItem(at: fixture.folder, to: fixture.directory.appending(path: "Moved"))
@@ -199,8 +197,6 @@ private extension FolderTestApplication {
         return barItem.flatMap(menu(of:))
     }
 
-    var browsers: [AXUIElement] { windows.filter { identifier($0) == "folder-browser-window" } }
-
     func menu(of item: AXUIElement) -> AXUIElement? {
         children(item).first { attribute(kAXRoleAttribute, of: $0) as? String == kAXMenuRole }
     }
@@ -235,15 +231,6 @@ private extension FolderTestApplication {
         }
     }
 
-    func press(_ element: AXUIElement) throws {
-        // Actions opening or closing a modal surface can finish after AX replies.
-        AXUIElementSetMessagingTimeout(element, 1)
-        let result = AXUIElementPerformAction(element, kAXPressAction as CFString)
-        guard result == .success || result == .cannotComplete else {
-            throw FavoriteFolderTestError("Could not press \(labels(element)): \(result.rawValue)")
-        }
-    }
-
     func assertAccessibility(
         _ element: AXUIElement, id: String, help: String? = nil,
         file: StaticString = #filePath, line: UInt = #line
@@ -251,31 +238,6 @@ private extension FolderTestApplication {
         XCTAssertEqual(identifier(element), id, title(element), file: file, line: line)
         if let help {
             XCTAssertEqual(attribute(kAXHelpAttribute, of: element) as? String, help, title(element), file: file, line: line)
-        }
-    }
-
-    func chooseDocumentFolder(containing guide: URL) throws -> AXUIElement {
-        _ = try documentWindow(guide, focused: true)
-        try key(kVK_ANSI_O, flags: [.maskCommand, .maskShift])
-        let picker = try waitFor("the Open Folder picker") { windows.first { title($0).hasPrefix("Open Folder") } }
-        let choose = try waitFor("the Open Folder picker's enabled Open button") {
-            descendant(picker) { title($0) == "Open" && (attribute(kAXEnabledAttribute, of: $0) as? Bool) == true }
-        }
-        try press(choose)
-        return try waitForFolder(containing: guide)
-    }
-
-    func waitForFolder(containing guide: URL) throws -> AXUIElement {
-        let folder = guide.deletingLastPathComponent()
-        let parent = folder.deletingLastPathComponent().lastPathComponent
-        let expectedSuffix = "/\(parent)/\(folder.lastPathComponent)"
-        return try waitFor("a folder tree at \(expectedSuffix) containing \(guide.lastPathComponent)") {
-            browsers.first { window in
-                guard let path = descendant(window, matching: { identifier($0) == "folder-root-path" }),
-                      labels(path).contains(where: { $0.hasSuffix(expectedSuffix) }),
-                      let list = descendant(window, matching: { identifier($0) == "folder-file-list" }) else { return false }
-                return row(guide.lastPathComponent, in: list) != nil
-            }
         }
     }
 
@@ -353,19 +315,16 @@ private extension FolderTestApplication {
     func waitForAlertToClose(current: AXUIElement) throws {
         _ = try waitFor("the alert to close while leaving the existing browser") {
             guard !windows.contains(where: { identifier($0) == "favorite-folder-unavailable" }),
-                  browsers.count == 1, let browser = browsers.first, CFEqual(browser, current) else { return nil }
+                  folderWindows.count == 1, let browser = folderWindows.first, CFEqual(browser, current) else { return nil }
             return browser
         }
     }
 
     func assertMinimumBrowserLayout(_ browser: AXUIElement) throws {
-        // NSWindow applies its content minimum even though AXSize measures
-        // the frame, which includes the title bar.
         var requested = CGSize(width: 390, height: 290)
         let size = try XCTUnwrap(AXValueCreate(.cgSize, &requested))
         XCTAssertEqual(AXUIElementSetAttributeValue(browser, kAXSizeAttribute as CFString, size), .success)
         let windowFrame = try frame(of: browser)
-        XCTAssertEqual(windowFrame.width, 390, accuracy: 1)
         let path = try frame(of: element("folder-root-path", in: browser))
         let star = try frame(of: element("folder-favorite-toggle", in: browser))
         let search = try frame(of: element("folder-quick-open", in: browser))
@@ -375,21 +334,6 @@ private extension FolderTestApplication {
         XCTAssertGreaterThan(star.width, 16)
         XCTAssertFalse(star.intersects(path))
         XCTAssertFalse(star.intersects(search))
-    }
-
-    func frame(of element: AXUIElement) throws -> CGRect {
-        func geometry(_ name: String) throws -> AXValue {
-            let value = try XCTUnwrap(attribute(name, of: element))
-            guard CFGetTypeID(value) == AXValueGetTypeID() else {
-                throw FavoriteFolderTestError("No geometry in \(name) for \(labels(element))")
-            }
-            return value as! AXValue
-        }
-        var origin = CGPoint.zero
-        var size = CGSize.zero
-        XCTAssertTrue(AXValueGetValue(try geometry(kAXPositionAttribute), .cgPoint, &origin))
-        XCTAssertTrue(AXValueGetValue(try geometry(kAXSizeAttribute), .cgSize, &size))
-        return CGRect(origin: origin, size: size)
     }
 }
 

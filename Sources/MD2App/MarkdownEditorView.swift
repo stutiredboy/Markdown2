@@ -110,7 +110,8 @@ struct MarkdownEditorView: NSViewRepresentable {
     /// A replace-current/all request; consumed once applied.
     @Binding var replaceCommand: FindReplaceCommand?
     /// Changes whenever the editor surface should become first responder.
-    let focusToken: UUID
+    /// A folder tab without a request leaves focus in the file browser.
+    let focusToken: UUID?
     /// A source line to select and reveal (a preview gutter click); applied
     /// once per token, after any mode-switch anchor has settled, then cleared
     /// so an editor mounted later does not replay it.
@@ -197,7 +198,6 @@ struct MarkdownEditorView: NSViewRepresentable {
 
         DispatchQueue.main.async {
             guard session.isHosted(by: coordinator) else { return }
-            textView.window?.makeFirstResponder(textView)
             coordinator.reportSelection(in: textView)
         }
 
@@ -296,9 +296,12 @@ struct MarkdownEditorView: NSViewRepresentable {
         if context.coordinator.lastFocusToken != focusToken {
             let coordinator = context.coordinator
             coordinator.lastFocusToken = focusToken
-            DispatchQueue.main.async {
-                guard coordinator.session.isHosted(by: coordinator) else { return }
-                textView.window?.makeFirstResponder(textView)
+            if let focusToken {
+                DispatchQueue.main.async {
+                    guard coordinator.lastFocusToken == focusToken,
+                          coordinator.session.isHosted(by: coordinator) else { return }
+                    textView.window?.makeFirstResponder(textView)
+                }
             }
         }
 

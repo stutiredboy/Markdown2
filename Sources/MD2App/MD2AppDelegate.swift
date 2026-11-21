@@ -14,7 +14,8 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let recentDocuments = RecentDocumentsModel(recorder: SystemRecentDocumentsRecorder())
     let favoriteFolders = FavoriteFoldersModel(recorder: UserDefaultsFavoriteFoldersRecorder())
     private var documentWindows: [DocumentWindow] = []
-    private var folderBrowser: FolderBrowserWindowController?
+    private var folder: FolderSession?
+    private var folderBrowser: FolderBrowserController? { folder?.browser }
     private var folderAuthorization: Task<Void, Never>?
     private var favoriteFolderAddition: Task<Void, Never>?
     private let recoveryRepository = DocumentRecoveryRepository.applicationRepository()
@@ -67,6 +68,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     documentWindow.store.reRenderForSettingsChange()
                 }
                 self.folderBrowser?.updateLocalizedText()
+                self.folder?.preview?.updateTabTitle()
             }
         }
     }
@@ -98,7 +100,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return true
         }
 
-        if knownModeShortcuts.contains(shortcut) {
+        if knownModeShortcuts.contains(shortcut), shortcut != settings.folderBrowserShortcut {
             return true
         }
 
@@ -171,9 +173,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         _ sender: NSApplication,
         hasVisibleWindows flag: Bool
     ) -> Bool {
-        if documentWindows.isEmpty, let folderBrowser {
-            if !flag { folderBrowser.show() }
-        } else if documentWindows.isEmpty {
+        if documentWindows.isEmpty {
             newDocument()
         } else if !flag {
             documentWindows.last?.window.makeKeyAndOrderFront(nil)
@@ -233,7 +233,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         )
     }
 
-    /// Closes the frontmost document or folder window in response to ⌘W. Routing through
+    /// Closes the frontmost document in response to ⌘W. Routing through
     /// `performClose(_:)` (rather than `close()`) drives the window through
     /// `windowShouldClose(_:)`, so the existing unsaved-changes prompt runs and
     /// no save/discard logic is duplicated. No-ops safely when no document
@@ -241,8 +241,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func closeCurrentDocument() {
         let target: NSWindow?
         if let keyWindow = NSApp.keyWindow {
-            target = keyWindow == folderBrowser?.window
-                ? keyWindow : documentWindows.first(where: { $0.window == keyWindow })?.window
+            target = documentWindows.first(where: { $0.window == keyWindow })?.window
         } else {
             // No key window at all — fall back to the most recent document window.
             target = documentWindows.first?.window
@@ -293,10 +292,32 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func quickOpenFolderFile() {
-        if let folderBrowser {
-            folderBrowser.show(quickOpen: true)
-        } else {
+        guard let folder, let window = folder.group.selectedWindow else {
             openFolder(quickOpen: true)
+            return
+        }
+        window.makeKeyAndOrderFront(nil)
+        folder.sidebar.showFiles(in: window) { [weak browser = folder.browser] in
+            browser?.focusQuickOpen()
+        }
+    }
+
+    func focusFolderBrowser() {
+        guard let folder, let window = folder.group.selectedWindow else { return }
+        window.makeKeyAndOrderFront(nil)
+        folder.sidebar.activate(in: window, focusFiles: true)
+    }
+
+    func revealInFolderBrowser() {
+        guard let folder, let url = currentDocumentStore?.fileURL, folder.browser.canReveal(url),
+              let window = folder.group.selectedWindow else {
+            NSSound.beep()
+            return
+        }
+        window.makeKeyAndOrderFront(nil)
+        folder.sidebar.showFiles(in: window) { [weak browser = folder.browser] in
+            browser?.reveal(url)
+            browser?.focusTree()
         }
     }
 
@@ -321,21 +342,88 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
 
-        folderBrowser?.close()
-        let browser = FolderBrowserWindowController(
-            root: root, text: settings.text, favorites: favoriteFolders,
-            onToggleFavorite: { [weak self] in self?.toggleCurrentFavoriteFolder() },
-            onOpen: { [weak self] opened, decoded in try self?.openFolderDocument(opened, decoded: decoded) },
-            onClose: { [weak self] in
-                self?.folderBrowser = nil
-                self?.favoriteFolders.currentRoot = nil
-                self?.favoriteFolderAddition?.cancel()
-                self?.favoriteFolderAddition = nil
+        if folderBrowser?.root != root {
+            let window = documentWindows.first { $0.store === currentDocumentStore }?.window ?? newDocument()
+            guard let group = window.tabGroup else { return }
+            endFolderSession()
+            let browser = FolderBrowserController(
+                root: root, text: settings.text, favorites: favoriteFolders,
+                onToggleFavorite: { [weak self] in self?.toggleCurrentFavoriteFolder() },
+                onOpen: { [weak self] opened, decoded, intent in
+                    try self?.openFolderDocument(opened, decoded: decoded, intent: intent)
+                }
+            )
+            let sidebar = FolderSidebarState(browserView: browser.view, focusBrowser: { [weak browser] in
+                browser?.focusTree()
+            })
+            let session = FolderSession(browser: browser, sidebar: sidebar, group: group)
+            folder = session
+            favoriteFolders.currentRoot = root
+            session.groupObservation = group.observe(\.windows) { [weak self, weak session] _, _ in
+                // AppKit is still mutating its selected window during the KVO callback.
+                DispatchQueue.main.async {
+                    guard let self, let session, self.folder === session else { return }
+                    self.reconcileFolderTabs()
+                }
             }
-        )
-        folderBrowser = browser
-        favoriteFolders.currentRoot = root
-        browser.show(quickOpen: quickOpen)
+            reconcileFolderTabs()
+            browser.start()
+        }
+
+        if quickOpen { quickOpenFolderFile() }
+        else { focusFolderBrowser() }
+    }
+
+    private func endFolderSession() {
+        guard let folder else { return }
+        self.folder = nil
+        folder.preview?.setPreview(false)
+        folder.sidebar.activate(in: nil)
+        folder.browser.stop()
+        for document in documentWindows where document.contentState.folderSidebar === folder.sidebar {
+            document.contentState.folderSidebar = nil
+        }
+        favoriteFolders.currentRoot = nil
+        favoriteFolderAddition?.cancel()
+        favoriteFolderAddition = nil
+    }
+
+    private func reconcileFolderTabs() {
+        guard let folder else { return }
+        let groupWindows = folder.group.windows
+        if let preview = folder.preview, !groupWindows.contains(preview.window) {
+            preview.setPreview(false)
+            folder.preview = nil
+        }
+        var hasDocuments = false
+        for document in documentWindows {
+            let belongs = groupWindows.contains(document.window)
+            hasDocuments = hasDocuments || belongs
+            let sidebar = belongs ? folder.sidebar : nil
+            if document.contentState.folderSidebar !== sidebar {
+                document.contentState.folderSidebar = sidebar
+            }
+        }
+        if !hasDocuments { endFolderSession() }
+        else if let selected = folder.group.selectedWindow { updateFolderSidebar(for: selected) }
+    }
+
+    private func updateFolderSidebar(for window: NSWindow) {
+        guard let folder, folder.group.windows.contains(window),
+              let document = documentWindows.first(where: { $0.window === window }) else { return }
+        if document.contentState.folderSidebar !== folder.sidebar {
+            document.contentState.folderSidebar = folder.sidebar
+        }
+        folder.sidebar.activate(in: window)
+        folder.browser.setCurrentFile(document.store.fileURL)
+        if !document.isPreview {
+            folder.announcedPreview = nil
+        } else if window.isKeyWindow, folder.announcedPreview !== document, NSWorkspace.shared.isVoiceOverEnabled {
+            folder.announcedPreview = document
+            NSAccessibility.post(element: window, notification: .announcementRequested, userInfo: [
+                .announcement: window.tab.toolTip, .priority: NSAccessibilityPriorityLevel.medium.rawValue
+            ])
+        }
     }
 
     func toggleCurrentFavoriteFolder() {
@@ -448,15 +536,20 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         openDocument(target) { $0.open(target.fileURL) }
     }
 
-    private func openFolderDocument(_ opened: FolderIndex.OpenedFile, decoded: MarkdownFileDecoder.DecodedFile?) throws {
+    private func openFolderDocument(
+        _ opened: FolderIndex.OpenedFile, decoded: MarkdownFileDecoder.DecodedFile?,
+        intent: FolderBrowserController.OpenIntent
+    ) throws {
+        guard let folder else { return }
         try opened.validate()
-        try openDocument(DocumentLinkTarget(opened.url), folderFile: opened) {
+        let open = FolderOpen(session: folder, intent: intent, keepTreeFocus: folder.browser.hasTreeFocus)
+        try openDocument(DocumentLinkTarget(opened.url), folderFile: opened, folderOpen: open) {
             try $0.openVerifiedFolderFile(opened, decoded: decoded)
         }
     }
 
     private func openDocument(_ target: DocumentLinkTarget, folderFile: FolderIndex.OpenedFile? = nil,
-                              load: (DocumentStore) throws -> Void) rethrows {
+                              folderOpen: FolderOpen? = nil, load: (DocumentStore) throws -> Void) rethrows {
         let url = target.fileURL
         let resolvedURL = folderFile?.url ?? url.resolvingSymlinksInPath()
         func matches(_ store: DocumentStore) -> Bool {
@@ -479,7 +572,11 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             document.store.detachUnavailableFolderDraft(replacedBy: url, verifiedReference: folderFile?.fileReference)
         }
         if let existing = documentWindows.first(where: { matches($0.store) }) {
-            existing.window.makeKeyAndOrderFront(nil)
+            if let folderOpen { presentFolderDocument(existing, open: folderOpen, canPreview: false) }
+            else {
+                existing.setPreview(false)
+                existing.window.makeKeyAndOrderFront(nil)
+            }
             // Re-opening an already-open document still bumps its recency,
             // matching platform behavior. (Fresh opens are noted through the
             // window's fileURL transition.)
@@ -490,21 +587,92 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Explicit opens consume only this file's recovery record. Unrelated
         // drafts stay on disk and in the pending list, including when another
         // file is opened later in this process.
-        if restoreDocumentWindows(matching: url, folderFile: folderFile) { return }
+        if restoreDocumentWindows(matching: url, folderFile: folderFile, folderOpen: folderOpen) { return }
 
-        if let reusable = documentWindows.first(where: { $0.store.isReusableEmptyDocument }) {
+        if let reusable = reusableStarter(for: folderOpen) {
             try load(reusable.store)
-            reusable.window.makeKeyAndOrderFront(nil)
+            if let folderOpen, reusable.store.fileURL != nil {
+                presentFolderDocument(reusable, open: folderOpen, canPreview: true)
+            } else {
+                reusable.window.makeKeyAndOrderFront(nil)
+            }
             return
         }
 
-        let documentWindow = makeDocumentWindow(store: makeDocumentStore())
-        do { try load(documentWindow.store) }
-        catch {
-            documentWindow.window.close()
-            throw error
+        if let folderOpen {
+            // Load before touching the current preview. A stale entry or a
+            // decoding error must leave the old tab and its view intact.
+            let store = makeDocumentStore()
+            try load(store)
+            guard store.fileURL != nil else {
+                if let selected = folderOpen.session.group.selectedWindow {
+                    documentStore(for: selected)?.alert = store.alert
+                }
+                return
+            }
+            let document = makeDocumentWindow(store: store, folderSidebar: folderOpen.session.sidebar)
+            presentFolderDocument(document, open: folderOpen, canPreview: true)
+        } else {
+            let document = makeDocumentWindow(store: makeDocumentStore())
+            do { try load(document.store) }
+            catch {
+                document.window.close()
+                throw error
+            }
+            document.window.makeKeyAndOrderFront(nil)
         }
-        documentWindow.window.makeKeyAndOrderFront(nil)
+    }
+
+    private func reusableStarter(for open: FolderOpen?) -> DocumentWindow? {
+        if let open {
+            return documentWindows.first {
+                $0.window === open.session.group.selectedWindow && $0.store.isReusableEmptyDocument
+            }
+        }
+        return documentWindows.first { $0.store.isReusableEmptyDocument }
+    }
+
+    private func presentFolderDocument(_ document: DocumentWindow, open: FolderOpen, canPreview: Bool) {
+        let session = open.session
+        let window = document.window
+        let isPreview = open.intent == .preview && (canPreview || document.isPreview)
+            && !document.store.isDirty && document.store.fileURL != nil
+        let previous = isPreview && session.preview?.isPreview == true ? session.preview : nil
+        let replacementIndex = previous.flatMap { session.group.windows.firstIndex(of: $0.window) }
+        if !session.group.windows.contains(window) {
+            if let replacementIndex { session.group.insertWindow(window, at: replacementIndex) }
+            else { session.group.addWindow(window) }
+        }
+        if document.contentState.folderSidebar !== session.sidebar {
+            document.contentState.folderSidebar = session.sidebar
+        }
+        document.setPreview(isPreview)
+        if isPreview { session.preview = document }
+        else if session.preview === document { session.preview = nil }
+        if isPreview && !session.group.isTabBarVisible { window.toggleTabBar(nil) }
+        session.group.selectedWindow = window
+        window.makeKeyAndOrderFront(nil)
+        updateFolderSidebar(for: window)
+
+        if let previous, previous !== document {
+            // Pin any preview with work that a close would discard, including
+            // an uncommitted composition or an in-flight attachment edit.
+            let canClose = previous.isPreview && !previous.store.isDirty
+                && previous.store.editorSession.textView?.hasMarkedText() != true
+                && !previous.store.isWorkingOnAttachments && !previous.store.isProducingDerivedArtifact
+                && !previous.store.backingFileMissing && previous.window.attachedSheet == nil
+                && session.group.windows.contains(previous.window)
+            if canClose && previous.store.closeDocument(discardRecovery: true) {
+                previous.window.close()
+            } else {
+                previous.setPreview(false)
+            }
+        }
+        if open.intent == .pinAndFocusEditor {
+            document.contentState.focusEditor()
+        } else if open.keepTreeFocus {
+            session.sidebar.activate(in: window, focusFiles: true)
+        }
     }
 
     /// Restored records stay on disk until explicit window close. An explicit
@@ -512,7 +680,8 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// pending for full session recovery, which preserves them as untitled drafts.
     @discardableResult
     private func restoreDocumentWindows(matching requestedURL: URL? = nil, onlyDirty: Bool = false,
-                                        folderFile: FolderIndex.OpenedFile? = nil) -> Bool {
+                                        folderFile: FolderIndex.OpenedFile? = nil,
+                                        folderOpen: FolderOpen? = nil) -> Bool {
         if let folderFile, (try? folderFile.validate()) == nil { return false }
         if requestedURL == nil, !pendingRecoverySnapshots.isEmpty,
            recoveryRepository.restorationWasInterrupted {
@@ -564,21 +733,24 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     snapshot.isDirty = true
                     url = nil
                 }
-                if let url, let existing = documentWindows.first(where: {
-                    $0.store.fileURL?.resolvingSymlinksInPath() == url.resolvingSymlinksInPath()
-                        || (requestedURL != nil && $0.store.isReusableEmptyDocument)
-                }) {
+                let existing = url.flatMap { url in
+                    documentWindows.first { $0.store.fileURL?.resolvingSymlinksInPath() == url.resolvingSymlinksInPath() }
+                        ?? (requestedURL != nil ? reusableStarter(for: folderOpen) : nil)
+                }
+                let document: DocumentWindow
+                if let existing {
                     let temporaryID = existing.store.recoveryID
                     existing.store.restore(snapshot, openingFolderFile: folderFile)
                     if temporaryID != snapshot.id { try recoveryRepository.remove(temporaryID) }
-                    if let frame = snapshot.windowFrame { existing.window.setFrame(from: frame) }
-                    existing.window.makeKeyAndOrderFront(nil)
+                    if folderOpen == nil, let frame = snapshot.windowFrame { existing.window.setFrame(from: frame) }
+                    document = existing
                 } else {
                     let store = makeDocumentStore()
                     store.restore(snapshot, openingFolderFile: folderFile)
-                    let window = makeDocumentWindow(store: store).window
-                    window.makeKeyAndOrderFront(nil)
+                    document = makeDocumentWindow(store: store, folderSidebar: folderOpen?.session.sidebar)
                 }
+                if let folderOpen { presentFolderDocument(document, open: folderOpen, canPreview: true) }
+                else { document.window.makeKeyAndOrderFront(nil) }
                 pendingRecoverySnapshots.removeAll { $0.id == snapshot.id }
                 restoredCount += 1
             }
@@ -628,8 +800,10 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // MARK: - Window management
 
     @discardableResult
-    private func makeDocumentWindow(store: DocumentStore) -> DocumentWindow {
-        let restoredFrame = store.windowFrame
+    private func makeDocumentWindow(store: DocumentStore, folderSidebar: FolderSidebarState? = nil) -> DocumentWindow {
+        let restoredFrame = folderSidebar == nil ? store.windowFrame : nil
+        let contentState = DocumentWindowContentState()
+        contentState.folderSidebar = folderSidebar
         let contentView = ContentView(
             document: store,
             settings: settings,
@@ -638,7 +812,8 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             onOpenCreatedCopy: { [weak self, weak store] receipt in
                 guard let store else { return }
                 self?.openCreatedCopy(receipt, from: store)
-            }
+            },
+            contentState: contentState
         )
 
         let window = ModeShortcutWindow(
@@ -653,6 +828,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         window.title = store.displayTitle
         window.isReleasedWhenClosed = false
+        window.autorecalculatesKeyViewLoop = true
 
         let previous = documentWindows.last?.window
         // A window asks its delegate for an undo manager once and keeps the
@@ -663,7 +839,12 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window: window,
             store: store,
             settings: settings,
-            onFileBacked: { [weak self] url in self?.noteRecentDocument(url) }
+            contentState: contentState,
+            onFileBacked: { [weak self] url in self?.noteRecentDocument(url) },
+            onFileURLChanged: { [weak self, weak window] in
+                guard let window, window.isKeyWindow else { return }
+                self?.updateFolderSidebar(for: window)
+            }
         )
         documentWindows.append(documentWindow)
         attachmentCommandState.refresh()
@@ -717,6 +898,11 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return confirmDiscardOrSaveIfNeeded(for: store) && store.closeDocument(discardRecovery: true)
     }
 
+    func windowDidBecomeKey(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        updateFolderSidebar(for: window)
+    }
+
     func windowDidMove(_ notification: Notification) { recordWindowFrame(notification) }
     func windowDidResize(_ notification: Notification) { recordWindowFrame(notification) }
 
@@ -731,6 +917,9 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // cancels it, but the hosting view can keep references alive briefly.
         documentStore(for: window)?.closeDocument(discardRecovery: !isTerminating)
         documentWindows.removeAll { $0.window == window }
+        if let folder, !documentWindows.contains(where: { folder.group.windows.contains($0.window) }) {
+            endFolderSession()
+        }
         attachmentCommandState.refresh()
     }
 
@@ -855,6 +1044,28 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 }
 
+@MainActor
+private final class FolderSession {
+    let browser: FolderBrowserController
+    let sidebar: FolderSidebarState
+    let group: NSWindowTabGroup
+    weak var preview: DocumentWindow?
+    weak var announcedPreview: DocumentWindow?
+    var groupObservation: NSKeyValueObservation?
+
+    init(browser: FolderBrowserController, sidebar: FolderSidebarState, group: NSWindowTabGroup) {
+        self.browser = browser
+        self.sidebar = sidebar
+        self.group = group
+    }
+}
+
+private struct FolderOpen {
+    let session: FolderSession
+    let intent: FolderBrowserController.OpenIntent
+    let keepTreeFocus: Bool
+}
+
 private final class ModeShortcutWindow: NSWindow {
     var modeShortcutHandler: ((NSEvent) -> Bool)?
 
@@ -873,8 +1084,11 @@ private final class ModeShortcutWindow: NSWindow {
 private final class DocumentWindow {
     let window: NSWindow
     let store: DocumentStore
+    let contentState: DocumentWindowContentState
+    private(set) var isPreview = false
     private let settings: AppSettings
     private var cancellable: AnyCancellable?
+    private var dirtyCancellable: AnyCancellable?
     private var conflictCancellable: AnyCancellable?
     private var encodingCancellable: AnyCancellable?
     private var isPresentingEncoding = false
@@ -883,25 +1097,34 @@ private final class DocumentWindow {
     /// becoming file-backed (open into this window, or an untitled document's
     /// first save) is reported exactly once per URL — re-saves do not re-note.
     private var lastReportedFileURL: URL?
+    private var displayedTab = (title: "", previewHelp: Optional<String>.none)
 
     init(
         window: NSWindow,
         store: DocumentStore,
         settings: AppSettings,
-        onFileBacked: @escaping (URL) -> Void = { _ in }
+        contentState: DocumentWindowContentState,
+        onFileBacked: @escaping (URL) -> Void,
+        onFileURLChanged: @escaping () -> Void
     ) {
         self.window = window
         self.store = store
         self.settings = settings
+        self.contentState = contentState
+        lastReportedFileURL = store.fileURL
+        if let url = store.fileURL { onFileBacked(url) }
+        updateTabTitle()
+        dirtyCancellable = store.$isDirty.sink { [weak self] dirty in
+            if dirty { self?.setPreview(false) }
+        }
         cancellable = store.objectWillChange.sink { [weak self] _ in
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.window.title = self.store.displayTitle
-                self.window.isDocumentEdited = self.store.isDirty
-                self.window.representedURL = self.store.fileURL
-                if let url = self.store.fileURL, url != self.lastReportedFileURL {
-                    self.lastReportedFileURL = url
-                    onFileBacked(url)
+                self.updateTabTitle()
+                if self.store.fileURL != self.lastReportedFileURL {
+                    self.lastReportedFileURL = self.store.fileURL
+                    if let url = self.store.fileURL { onFileBacked(url) }
+                    onFileURLChanged()
                 }
             }
         }
@@ -914,6 +1137,30 @@ private final class DocumentWindow {
             DispatchQueue.main.async {
                 self?.presentConflictPromptIfNeeded()
             }
+        }
+    }
+
+    func setPreview(_ preview: Bool) {
+        guard preview != isPreview else { return }
+        isPreview = preview
+        updateTabTitle()
+    }
+
+    func updateTabTitle() {
+        let title = store.displayTitle
+        if window.title != title { window.title = title }
+        if window.isDocumentEdited != store.isDirty { window.isDocumentEdited = store.isDirty }
+        if window.representedURL != store.fileURL { window.representedURL = store.fileURL }
+        let previewHelp = isPreview ? String(format: settings.text(.folderPreviewTabHelp), title) : nil
+        guard displayedTab != (title, previewHelp) else { return }
+        displayedTab = (title, previewHelp)
+        if let previewHelp {
+            let font = NSFontManager.shared.convert(.systemFont(ofSize: NSFont.smallSystemFontSize), toHaveTrait: .italicFontMask)
+            window.tab.attributedTitle = NSAttributedString(string: title, attributes: [.font: font])
+            window.tab.toolTip = previewHelp
+        } else {
+            window.tab.attributedTitle = nil
+            window.tab.toolTip = title
         }
     }
 

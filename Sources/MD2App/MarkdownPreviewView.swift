@@ -131,7 +131,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
     /// A next/previous navigation request; consumed (set to nil) once applied.
     @Binding var findNavigation: FindCommand?
     /// Changes whenever the preview surface should become first responder.
-    let focusToken: UUID
+    /// A folder tab without a request leaves focus in the file browser.
+    let focusToken: UUID?
     /// Kept by ContentView across resource-context replacements. Legacy direct
     /// callers without a session retain the coordinator-local focus behavior.
     var focusState: PreviewFocusState? = nil
@@ -1560,17 +1561,17 @@ struct MarkdownPreviewView: NSViewRepresentable {
         var onFindUnavailable: (Bool) -> Void = { _ in }
         var lastFocusToken: UUID?
 
-        func updateFocusRequest(_ token: UUID, state: PreviewFocusState?, in webView: WKWebView) {
+        func updateFocusRequest(_ token: UUID?, state: PreviewFocusState?, in webView: WKWebView) {
             guard resourceContextIsActive, acceptsFindHost(webView) else { return }
             focusState = state
             let changed = lastFocusToken != token
             lastFocusToken = token
-            let requested = changed && (state?.consume(token) ?? true)
+            let requested = token.map { changed && (state?.consume($0) ?? true) } ?? false
             guard requested || state?.hasPendingRestoration == true else { return }
             DispatchQueue.main.async { [weak self, weak webView] in
                 guard let self, let webView, self.resourceContextIsActive,
                       self.lastFocusToken == token, self.acceptsFindHost(webView),
-                      state == nil || state?.lastConsumedToken == token else { return }
+                      !requested || state == nil || state?.lastConsumedToken == token else { return }
                 if requested || state?.consumeRestoration(in: webView) == true {
                     webView.window?.makeFirstResponder(webView)
                 }
