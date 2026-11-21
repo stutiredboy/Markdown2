@@ -7,6 +7,7 @@ import Testing
 @MainActor
 private final class InMemoryFavoriteFoldersRecorder: FavoriteFoldersRecording {
     var favoriteFolderPaths: [String] = []
+    var remoteImageGrantIDs: [String: String] = [:]
 }
 
 @MainActor
@@ -111,6 +112,64 @@ struct FavoriteFoldersTests {
         model.remove(try #require(model.entries.first))
         let remaining = try #require(model.entries.first)
         #expect(remaining.path.utf8.elementsEqual(decomposed.utf8))
+    }
+
+    @Test func remoteImageApprovalSurvivesReloadOnlyForTheSameFavoriteDirectory() throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let folder = try makeFolder("Notes", in: directory)
+        let root = try FolderIndex.authorize(folder)
+        let suite = "md2-remote-image-favorites-tests-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let model = FavoriteFoldersModel(recorder: UserDefaultsFavoriteFoldersRecorder(defaults: defaults))
+        #expect(!model.setRemoteImagesAllowed(true, in: root))
+        model.add(root)
+        #expect(!model.allowsRemoteImages(in: root))
+        try #require(model.setRemoteImagesAllowed(true, in: root))
+
+        let reopened = try FolderIndex.authorizeFavorite(root.url)
+        let recorder = UserDefaultsFavoriteFoldersRecorder(defaults: try #require(UserDefaults(suiteName: suite)))
+        let restored = FavoriteFoldersModel(recorder: recorder)
+        #expect(restored.allowsRemoteImages(in: reopened))
+
+        let moved = directory.appending(path: "Moved", directoryHint: .isDirectory)
+        try FileManager.default.moveItem(at: folder, to: moved)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        let replacement = try FolderIndex.authorizeFavorite(root.url)
+        #expect(restored.contains(replacement))
+        #expect(!restored.allowsRemoteImages(in: reopened))
+        #expect(!restored.setRemoteImagesAllowed(true, in: reopened))
+        #expect(!restored.allowsRemoteImages(in: replacement))
+
+        try #require(restored.setRemoteImagesAllowed(true, in: replacement))
+        #expect(restored.allowsRemoteImages(in: replacement))
+        restored.remove(replacement)
+        #expect(recorder.remoteImageGrantIDs.isEmpty)
+        restored.add(replacement)
+        #expect(!restored.allowsRemoteImages(in: replacement))
+        try #require(restored.setRemoteImagesAllowed(true, in: replacement))
+        restored.setRemoteImagesAllowed(false, in: replacement)
+        #expect(!restored.allowsRemoteImages(in: replacement))
+        try #require(restored.setRemoteImagesAllowed(true, in: replacement))
+        restored.clear()
+        #expect(recorder.remoteImageGrantIDs.isEmpty)
+    }
+
+    @Test func addingAFavoriteDiscardsOrphanedRemoteImageApproval() throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let root = try FolderIndex.authorize(try makeFolder("Orphan", in: directory))
+        let id = try #require(root.favoriteRemoteImageGrantID)
+        let recorder = InMemoryFavoriteFoldersRecorder()
+        recorder.remoteImageGrantIDs[root.url.absoluteString] = id
+        let model = FavoriteFoldersModel(recorder: recorder)
+
+        #expect(!model.allowsRemoteImages(in: root))
+        model.add(root)
+        #expect(recorder.remoteImageGrantIDs.isEmpty)
+        #expect(!model.allowsRemoteImages(in: root))
     }
 
     private func makeDirectory() throws -> URL {

@@ -11,8 +11,17 @@ final class DocumentWindowContentState: ObservableObject {
             }
         }
     }
+    @Published var folderRemoteImages: FolderRemoteImages? {
+        didSet {
+            remoteImagesObservation = folderRemoteImages?.objectWillChange.sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+        }
+    }
+    @Published var isFolderPreviewSelected = false
     @Published private(set) var editorFocusRequest: UUID?
     private var sidebarObservation: AnyCancellable?
+    private var remoteImagesObservation: AnyCancellable?
 
     func focusEditor() {
         folderSidebar?.cancelPendingFocus()

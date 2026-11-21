@@ -74,27 +74,33 @@ final class DocumentCopyFileReference: @unchecked Sendable, Equatable {
     /// Move handling uses the pinned object; it never falls back to a reused
     /// pathname when the object has been unlinked or acquired another link.
     func currentURL() -> URL? {
-        var path = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-        guard fcntl(descriptor, F_GETPATH, &path) == 0 else { return nil }
-        let url = URL(fileURLWithPath: String(decoding: path.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self))
+        guard let path = currentPath() else { return nil }
+        let url = URL(fileURLWithPath: path)
         guard !url.pathComponents.contains(".Trash"), !url.pathComponents.contains(".Trashes"),
               (try? validate(at: url)) != nil else { return nil }
         return url
     }
 
-    func read(at url: URL, expectedCount: Int? = nil) throws -> Data {
+    /// The exact kernel spelling of the pinned entry, before URL normalization.
+    func currentPath() -> String? {
+        var path = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        guard fcntl(descriptor, F_GETPATH, &path) == 0 else { return nil }
+        return String(validating: path.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+    }
+
+    func read(at url: URL, expectedCount: Int? = nil, maximumCount: Int = Int.max) throws -> Data {
         try validate(at: url)
-        let data = try readPinned(expectedCount: expectedCount)
+        let data = try readPinned(expectedCount: expectedCount, maximumCount: maximumCount)
         try validate(at: url)
         return data
     }
 
     /// Folder opens validate their directory-relative path independently. Read
     /// this descriptor directly so resolution cannot race with another open.
-    func readPinned(expectedCount: Int? = nil) throws -> Data {
+    func readPinned(expectedCount: Int? = nil, maximumCount: Int = Int.max) throws -> Data {
         var before = stat()
         guard fstat(descriptor, &before) == 0, before.st_size >= 0,
-              before.st_size <= Int.max else { throw DocumentCopyOpenError.unavailable }
+              before.st_size <= maximumCount else { throw DocumentCopyOpenError.unavailable }
         let count = Int(before.st_size)
         guard expectedCount == nil || expectedCount == count else { throw DocumentCopyOpenError.changed }
         var data = Data(count: count)

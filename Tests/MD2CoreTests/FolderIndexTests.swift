@@ -159,6 +159,105 @@ struct FolderIndexTests {
         #expect(try FolderIndex.scan(reapproved).files.count == 1)
     }
 
+    @Test func remoteImagesRequireThePinnedFileInsideTheAuthorizedRoot() throws {
+        let fixture = try FolderIndexFixture()
+        defer { fixture.remove() }
+        let root = try FolderIndex.authorize(fixture.root)
+        let member = try fixture.file("notes/中文 100%?#.MARKDOWN")
+        let reference = try DocumentCopyFileReference.open(at: member)
+        let sibling = try fixture.file("notes/中文 100%?#.MARKDOWN", under: fixture.outside)
+        let siblingReference = try DocumentCopyFileReference.open(at: sibling)
+
+        #expect(FolderIndex.isCurrent(root))
+        #expect(FolderIndex.verifyRemoteImageMember(at: member, in: root, reference: reference)
+                == root.url.appending(path: "notes/中文 100%?#.MARKDOWN"))
+        #expect(FolderIndex.verifyRemoteImageMember(at: member, in: root, reference: siblingReference) == nil)
+        #expect(FolderIndex.verifyRemoteImageMember(at: sibling, in: root, reference: siblingReference) == nil)
+
+        let alias = fixture.root.appending(path: "alias.md")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: member)
+        #expect(FolderIndex.verifyRemoteImageMember(at: alias, in: root, reference: reference) == nil)
+        let aliasParent = fixture.root.appending(path: "alias-notes")
+        try FileManager.default.createSymbolicLink(at: aliasParent, withDestinationURL: member.deletingLastPathComponent())
+        let aliasedPath = aliasParent.appending(path: member.lastPathComponent)
+        #expect(FolderIndex.verifyRemoteImageMember(at: aliasedPath, in: root, reference: reference) == nil)
+
+        let hardLink = fixture.outside.appending(path: "extra.md")
+        try FileManager.default.linkItem(at: member, to: hardLink)
+        #expect(FolderIndex.verifyRemoteImageMember(at: member, in: root, reference: reference) == nil)
+        try FileManager.default.removeItem(at: hardLink)
+
+        let moved = fixture.outside.appending(path: "moved.md")
+        try FileManager.default.moveItem(at: member, to: moved)
+        try fixture.file("notes/中文 100%?#.MARKDOWN")
+        #expect(FolderIndex.verifyRemoteImageMember(at: member, in: root, reference: reference) == nil)
+        #expect(FolderIndex.verifyRemoteImageMember(at: moved, in: root, reference: reference) == nil)
+
+        let previous = fixture.directory.appending(path: "previous")
+        try FileManager.default.moveItem(at: fixture.root, to: previous)
+        let lookalike = try fixture.file("notes/中文 100%?#.MARKDOWN")
+        let lookalikeReference = try DocumentCopyFileReference.open(at: lookalike)
+        #expect(!FolderIndex.isCurrent(root))
+        #expect(FolderIndex.verifyRemoteImageMember(at: lookalike, in: root, reference: lookalikeReference) == nil)
+    }
+
+    @Test func remoteImagesExcludeUnlistedFileTypesAndIneligibleDirectories() throws {
+        let fixture = try FolderIndexFixture()
+        defer { fixture.remove() }
+        let root = try FolderIndex.authorize(fixture.root)
+        let invisible = try fixture.file("invisible.md")
+        try fixture.setFinderFlags(0x40, at: invisible)
+        let alias = try fixture.file("finder.md")
+        try fixture.setFinderFlags(0x80, at: alias)
+        let files = try [invisible, alias, fixture.file(".git/note.md"), fixture.file("node_modules/note.md"),
+                         fixture.file("Archive.app/Contents/note.md"), fixture.file("notes/sample.txt")]
+        for file in files {
+            let reference = try DocumentCopyFileReference.open(at: file)
+            #expect(FolderIndex.verifyRemoteImageMember(at: file, in: root, reference: reference) == nil)
+        }
+    }
+
+    @Test func remoteImageMembershipUsesActualEntrySpellingEvenOnCaseInsensitiveVolumes() throws {
+        let fixture = try FolderIndexFixture()
+        defer { fixture.remove() }
+        let root = try FolderIndex.authorize(fixture.root)
+        let note = try fixture.file("Notes/Note.md")
+        let hidden = try fixture.file("node_modules/Note.md")
+        let spelling = root.url.appending(path: "nOTES/nOTE.MD")
+        let excludedSpelling = root.url.appending(path: "NODE_MODULES/nOTE.MD")
+        let noteReference = try DocumentCopyFileReference.open(at: note)
+        let hiddenReference = try DocumentCopyFileReference.open(at: hidden)
+        let actual = try #require(FolderIndex.verifyRemoteImageMember(at: note, in: root, reference: noteReference))
+        let fromAlternateSpelling = FolderIndex.verifyRemoteImageMember(at: spelling, in: root, reference: noteReference)
+
+        if FileManager.default.fileExists(atPath: spelling.path) {
+            #expect(fromAlternateSpelling?.path.utf8.elementsEqual(actual.path.utf8) == true)
+        } else {
+            #expect(fromAlternateSpelling == nil)
+        }
+        #expect(FolderIndex.verifyRemoteImageMember(at: excludedSpelling, in: root, reference: hiddenReference) == nil)
+    }
+
+    @Test func remoteImageMembershipPreservesKernelPathBytes() throws {
+        let fixture = try FolderIndexFixture()
+        defer { fixture.remove() }
+        let root = try FolderIndex.authorize(fixture.root)
+        let path = root.url.path + "/Caf\u{e9}.md"
+        let descriptor = Darwin.open(path, O_CREAT | O_EXCL | O_WRONLY, 0o600)
+        try #require(descriptor >= 0)
+        Darwin.close(descriptor)
+
+        var components = URLComponents()
+        components.scheme = "file"
+        components.host = ""
+        components.path = path
+        let url = try #require(components.url)
+        let reference = try DocumentCopyFileReference.open(at: url)
+        let actualPath = try #require(reference.currentPath())
+        let verified = try #require(FolderIndex.verifyRemoteImageMember(at: url, in: root, reference: reference))
+        #expect(verified.path.utf8.elementsEqual(actualPath.utf8))
+    }
+
     @Test func favoriteAuthorizationRejectsMissingDirectoriesAndReplacementAliases() throws {
         let fixture = try FolderIndexFixture()
         defer { fixture.remove() }

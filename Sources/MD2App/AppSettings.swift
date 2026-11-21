@@ -580,6 +580,11 @@ enum L10nKey: String, CaseIterable, Sendable {
     case remoteImagesDetails, remoteImagesDetailsTitle, remoteImagesOrigins, remoteImagesOriginCount
     case remoteImagesDetailsScope, remoteImagesDetailsOtherBlocked, remoteImagesDetailsUnknown, remoteImagesDetailsInspecting
     case remoteImagesNoReferences, remoteImagesDetailsPartial
+    case remoteImagesPermissions, remoteImagesFolderPermissions
+    case remoteImagesFolderAllow, remoteImagesFolderRevoke, remoteImagesFolderConfirmTitle, remoteImagesFolderExplanation
+    case remoteImagesFolderSession, remoteImagesFolderCanFavorite, remoteImagesFolderFavorite
+    case remoteImagesAllowedByFolder, remoteImagesAllowedByDocument, remoteImagesBlockedByDocument
+    case remoteImagesBlockDocument, remoteImagesUseFolderPermission
     case remoteImageBlocked, offlineHTMLRemoteImageBlocked, offlineHTMLLocalImageUnavailable
     case alertExternalFormatExported, alertExternalFormatNetworkBoundary
     case imageLoadFailed
@@ -991,6 +996,20 @@ enum L10n {
         .remoteImagesDetailsInspecting: "Inspecting the preview…",
         .remoteImagesNoReferences: "No remote image references found in this scope.",
         .remoteImagesDetailsPartial: "This list is incomplete. Some references could not be classified or exceeded inspection limits.",
+        .remoteImagesPermissions: "Permissions…",
+        .remoteImagesFolderPermissions: "Folder Permissions",
+        .remoteImagesFolderAllow: "Allow for This Folder…",
+        .remoteImagesFolderRevoke: "Remove Folder Permission",
+        .remoteImagesFolderConfirmTitle: "Allow Remote Images for This Folder",
+        .remoteImagesFolderExplanation: "Allow HTTP(S) images in the preview, PDF export and print of Markdown files opened from this folder or its subfolders. Other remote resources stay blocked.",
+        .remoteImagesFolderSession: "This permission lasts while the folder is open.",
+        .remoteImagesFolderCanFavorite: "This permission lasts while the folder is open. Adding it to Favorites saves the permission for later.",
+        .remoteImagesFolderFavorite: "This permission is saved for this favorite folder. Removing the folder from Favorites revokes it.",
+        .remoteImagesAllowedByFolder: "Remote images allowed by folder",
+        .remoteImagesAllowedByDocument: "Remote images allowed for this document",
+        .remoteImagesBlockedByDocument: "Remote images blocked in this document",
+        .remoteImagesBlockDocument: "Block in This Document",
+        .remoteImagesUseFolderPermission: "Use Folder Permission",
         .remoteImageBlocked: "Remote image blocked — use the document’s Remote Images control to allow it",
         .offlineHTMLRemoteImageBlocked: "Remote image omitted from offline HTML",
         .offlineHTMLLocalImageUnavailable: "Image could not be embedded in offline HTML",
@@ -1381,6 +1400,20 @@ enum L10n {
         .remoteImagesDetailsInspecting: "正在检查预览…",
         .remoteImagesNoReferences: "此范围内未发现远程图片引用。",
         .remoteImagesDetailsPartial: "列表不完整。部分引用无法识别，或超出了检查范围。",
+        .remoteImagesPermissions: "权限…",
+        .remoteImagesFolderPermissions: "文件夹权限",
+        .remoteImagesFolderAllow: "为此文件夹允许…",
+        .remoteImagesFolderRevoke: "撤销文件夹权限",
+        .remoteImagesFolderConfirmTitle: "允许此文件夹加载远程图片",
+        .remoteImagesFolderExplanation: "允许在预览、导出 PDF 和打印从此文件夹或其子文件夹打开的 Markdown 文件时加载 HTTP(S) 图片。其他远程资源仍被阻止。",
+        .remoteImagesFolderSession: "此权限在文件夹打开期间有效。",
+        .remoteImagesFolderCanFavorite: "此权限在文件夹打开期间有效。收藏此文件夹后，下次打开时也会保留权限。",
+        .remoteImagesFolderFavorite: "此权限将随收藏文件夹保存。移除收藏会撤销权限。",
+        .remoteImagesAllowedByFolder: "远程图片由文件夹权限允许",
+        .remoteImagesAllowedByDocument: "已为本文档允许远程图片",
+        .remoteImagesBlockedByDocument: "已为本文档阻止远程图片",
+        .remoteImagesBlockDocument: "在本文档中阻止",
+        .remoteImagesUseFolderPermission: "使用文件夹权限",
         .remoteImageBlocked: "远程图片已阻止，可通过本文档的「远程图片」控件允许加载",
         .offlineHTMLRemoteImageBlocked: "离线 HTML 已省略远程图片",
         .offlineHTMLLocalImageUnavailable: "此图片无法嵌入离线 HTML",

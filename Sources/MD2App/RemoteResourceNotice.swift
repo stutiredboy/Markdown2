@@ -3,33 +3,56 @@ import Combine
 import MD2Core
 import SwiftUI
 
-/// Native, discoverable session control. Permission comes only from the owning
-/// document window, and changing it does not edit the source.
+/// Displays effective remote-image permission and the available native controls.
 struct RemoteResourceNotice: View {
     @ObservedObject var document: DocumentStore
     @ObservedObject var settings: AppSettings
-    var setImagesAllowed: (Bool) -> Void
+    @ObservedObject var contentState: DocumentWindowContentState
+    var preservePreviewPosition: () -> Void
     @State private var sheet = RemoteResourceSheet()
 
     private var allowsImages: Bool { document.remoteResourcePolicy == .allowRemoteImages }
-    private var status: String { settings.text(allowsImages ? .remoteImagesAllowed : .remoteImagesBlocked) }
+    private var folder: FolderRemoteImages? { contentState.folderRemoteImages }
+
+    private var status: String {
+        guard folder != nil else {
+            return settings.text(allowsImages ? .remoteImagesAllowed : .remoteImagesBlocked)
+        }
+        return switch document.remoteImageOverride {
+        case .allow: settings.text(.remoteImagesAllowedByDocument)
+        case .block: settings.text(.remoteImagesBlockedByDocument)
+        case .inherit: settings.text(allowsImages ? .remoteImagesAllowedByFolder : .remoteImagesBlocked)
+        }
+    }
 
     var body: some View {
         HStack(spacing: 10) {
             ViewThatFits(in: .horizontal) {
+                if let folder, allowsImages, document.remoteImageOverride == .inherit {
+                    let name = (folder.rootPath as NSString).lastPathComponent
+                    noticeLabel("\(status) · \(name)").help(folder.rootPath)
+                }
                 noticeLabel(status)
                 noticeLabel(settings.text(.remoteImages))
             }
             Spacer(minLength: 8)
-            // Keep the same control after allow/revoke so the window can
-            // restore its previous keyboard focus when the sheet closes.
-            Button(settings.text(allowsImages ? .remoteImagesRevoke : .remoteImagesAllow)) {
-                if allowsImages { setImagesAllowed(false) }
-                else { requestPermission() }
+            if let folder {
+                folderPermissions(folder)
+            } else {
+                // Keep the same control after allow/revoke so the window can
+                // restore its previous keyboard focus when the sheet closes.
+                Button(settings.text(allowsImages ? .remoteImagesRevoke : .remoteImagesAllow)) {
+                    if allowsImages {
+                        preservePreviewPosition()
+                        document.setRemoteImagesAllowed(false)
+                    } else {
+                        requestDocumentPermission()
+                    }
+                }
+                .accessibilityIdentifier(allowsImages ? "remote-images-revoke" : "remote-images-allow")
+                .help(allowsImages ? settings.text(.remoteImagesAllowedExplanation) : "")
+                .fixedSize()
             }
-            .accessibilityIdentifier(allowsImages ? "remote-images-revoke" : "remote-images-allow")
-            .help(allowsImages ? settings.text(.remoteImagesAllowedExplanation) : "")
-            .fixedSize()
             Button(settings.text(.remoteImagesDetails)) { showDetails() }
                 .accessibilityIdentifier("remote-images-details")
                 .accessibilityLabel(settings.text(.remoteImagesDetailsTitle))
@@ -50,6 +73,8 @@ struct RemoteResourceNotice: View {
         .onChange(of: document.remoteResourceContextToken) { _, _ in
             sheet.dismiss()
         }
+        .onChange(of: folder.map(ObjectIdentifier.init)) { _, _ in sheet.dismiss() }
+        .onChange(of: status) { _, _ in sheet.dismissDetails() }
         .onChange(of: document.sourceLineRevision) { _, _ in sheet.dismissDetails() }
         .onChange(of: document.canInspectRemoteResources) { _, available in
             if !available { sheet.dismissDetails() }
@@ -58,20 +83,76 @@ struct RemoteResourceNotice: View {
         .onDisappear { sheet.dismiss() }
     }
 
+    private func folderPermissions(_ folder: FolderRemoteImages) -> some View {
+        let action = folder.action
+        return Menu(settings.text(.remoteImagesPermissions)) {
+            if document.remoteImageOverride != .allow {
+                Button(settings.text(.remoteImagesAllow)) { requestDocumentPermission() }
+                    .accessibilityIdentifier("remote-images-allow")
+            }
+            if allowsImages {
+                Button(settings.text(.remoteImagesBlockDocument)) {
+                    guard contentState.folderRemoteImages === folder else { return }
+                    preservePreviewPosition()
+                    document.setRemoteImageOverride(.block)
+                }
+                .accessibilityIdentifier("remote-images-block-document")
+            }
+            if document.remoteImageOverride != .inherit {
+                Button(settings.text(.remoteImagesUseFolderPermission)) {
+                    guard contentState.folderRemoteImages === folder else { return }
+                    if allowsImages != folder.isAllowed { preservePreviewPosition() }
+                    document.setRemoteImageOverride(.inherit)
+                }
+                .accessibilityIdentifier("remote-images-restore-inheritance")
+            }
+            Divider()
+            Button(settings.text(action.title)) {
+                guard contentState.folderRemoteImages === folder, folder.action == action else { return }
+                switch action {
+                case .revoke:
+                    if document.remoteImageOverride == .inherit, allowsImages { preservePreviewPosition() }
+                    folder.onPermissionChange(false)
+                case .allow:
+                    requestFolderPermission(folder)
+                }
+            }
+            .accessibilityIdentifier(action.identifier)
+        }
+        .accessibilityIdentifier("remote-images-permissions")
+        .help(folder.rootPath)
+        .fixedSize()
+    }
+
     private func noticeLabel(_ title: String) -> some View {
         Label(title, systemImage: allowsImages ? "network" : "network.slash")
             .font(.callout)
             .fixedSize(horizontal: true, vertical: false)
             .accessibilityLabel(status)
+            .accessibilityIdentifier("remote-images-status")
     }
 
-    private func requestPermission() {
+    private func requestDocumentPermission() {
         let context = document.remoteResourceContextToken
+        let folder = folder
         sheet.presentPermission(settings: settings) {
             // A reload or replacement can complete before the sheet's
             // dismissal callback. Never apply the old consent to new content.
-            guard document.remoteResourceContextToken == context else { return }
-            setImagesAllowed(true)
+            guard document.remoteResourceContextToken == context,
+                  contentState.folderRemoteImages === folder else { return }
+            if !allowsImages { preservePreviewPosition() }
+            if folder == nil { document.setRemoteImagesAllowed(true) }
+            else { document.setRemoteImageOverride(.allow) }
+        }
+    }
+
+    private func requestFolderPermission(_ folder: FolderRemoteImages) {
+        let context = document.remoteResourceContextToken
+        sheet.presentFolderPermission(folder, text: settings.text) {
+            guard document.remoteResourceContextToken == context,
+                  contentState.folderRemoteImages === folder else { return false }
+            if document.remoteImageOverride == .inherit, !allowsImages { preservePreviewPosition() }
+            return true
         }
     }
 
@@ -107,7 +188,7 @@ private struct RemoteResourceAnchor: NSViewRepresentable {
 }
 
 @MainActor
-private final class RemoteResourceSheet {
+final class RemoteResourceSheet {
     weak var anchor: NSView?
     private var alert: NSAlert?
     private weak var detailsTextView: NSTextView?
@@ -117,16 +198,41 @@ private final class RemoteResourceSheet {
         let alert = NSAlert()
         alert.messageText = settings.text(.remoteImages)
         alert.informativeText = settings.text(.remoteImagesExplanation) + "\n\n" + settings.text(.remoteImagesPrivacy)
-        let cancel = alert.addButton(withTitle: settings.text(.cancel))
-        cancel.setAccessibilityIdentifier("remote-images-cancel")
-        let confirm = alert.addButton(withTitle: settings.text(.remoteImagesAllowConfirm))
-        confirm.setAccessibilityIdentifier("remote-images-confirm")
-        confirm.keyEquivalent = ""
-        alert.window.initialFirstResponder = cancel
+        configurePermissionActions(alert, text: settings.text, identifier: "remote-images")
 
         present(alert) { response in
             if response == .alertSecondButtonReturn { onConfirm() }
         }
+    }
+
+    func presentFolderPermission(
+        _ folder: FolderRemoteImages, text: (L10nKey) -> String, isCurrent: @escaping () -> Bool
+    ) {
+        let isFavorite = folder.isFavorite
+        let alert = NSAlert()
+        alert.messageText = text(.remoteImagesFolderConfirmTitle)
+        alert.informativeText = [
+            folder.rootPath,
+            text(.remoteImagesFolderExplanation),
+            text(folder.persistenceDescription),
+            text(.remoteImagesPrivacy)
+        ].joined(separator: "\n\n")
+        configurePermissionActions(alert, text: text, identifier: "folder-remote-images")
+
+        present(alert) { [weak folder] response in
+            guard response == .alertSecondButtonReturn, let folder, !folder.isAllowed,
+                  folder.isFavorite == isFavorite, isCurrent() else { return }
+            folder.onPermissionChange(true)
+        }
+    }
+
+    private func configurePermissionActions(_ alert: NSAlert, text: (L10nKey) -> String, identifier: String) {
+        let cancel = alert.addButton(withTitle: text(.cancel))
+        cancel.setAccessibilityIdentifier("\(identifier)-cancel")
+        let confirm = alert.addButton(withTitle: text(.remoteImagesAllowConfirm))
+        confirm.setAccessibilityIdentifier("\(identifier)-confirm")
+        confirm.keyEquivalent = ""
+        alert.window.initialFirstResponder = cancel
     }
 
     func presentDetails(settings: AppSettings, status: String, inspect: @escaping @MainActor () async -> RemoteResourceReport?) {

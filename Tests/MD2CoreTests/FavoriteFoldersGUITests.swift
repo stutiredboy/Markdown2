@@ -327,13 +327,19 @@ private extension FolderTestApplication {
         let windowFrame = try frame(of: browser)
         let path = try frame(of: element("folder-root-path", in: browser))
         let star = try frame(of: element("folder-favorite-toggle", in: browser))
+        let permission = try frame(of: element("folder-remote-images-menu", in: browser))
         let search = try frame(of: element("folder-quick-open", in: browser))
         XCTAssertTrue(windowFrame.contains(star))
+        XCTAssertTrue(windowFrame.contains(permission))
         XCTAssertTrue(windowFrame.contains(path))
         XCTAssertGreaterThan(path.width, 0)
         XCTAssertGreaterThan(star.width, 16)
+        XCTAssertGreaterThan(permission.width, 16)
         XCTAssertFalse(star.intersects(path))
         XCTAssertFalse(star.intersects(search))
+        XCTAssertFalse(permission.intersects(path))
+        XCTAssertFalse(permission.intersects(search))
+        XCTAssertFalse(permission.intersects(star))
     }
 }
 

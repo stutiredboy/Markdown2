@@ -4,11 +4,13 @@ import Foundation
 @MainActor
 protocol FavoriteFoldersRecording: AnyObject {
     var favoriteFolderPaths: [String] { get set }
+    var remoteImageGrantIDs: [String: String] { get set }
 }
 
 @MainActor
 final class UserDefaultsFavoriteFoldersRecorder: FavoriteFoldersRecording {
     private static let defaultsKey = "MD2.FavoriteFolders"
+    private static let remoteImagesKey = "MD2.FavoriteFolders.RemoteImageGrants"
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -23,6 +25,14 @@ final class UserDefaultsFavoriteFoldersRecorder: FavoriteFoldersRecording {
             } else {
                 defaults.set(newValue, forKey: Self.defaultsKey)
             }
+        }
+    }
+
+    var remoteImageGrantIDs: [String: String] {
+        get { defaults.dictionary(forKey: Self.remoteImagesKey) as? [String: String] ?? [:] }
+        set {
+            if newValue.isEmpty { defaults.removeObject(forKey: Self.remoteImagesKey) }
+            else { defaults.set(newValue, forKey: Self.remoteImagesKey) }
         }
     }
 }
@@ -52,6 +62,29 @@ final class FavoriteFoldersModel: ObservableObject {
         entries.contains { $0.url == root.url }
     }
 
+    func allowsRemoteImages(in root: FolderIndex.Root) -> Bool {
+        guard contains(root), let grantID = root.favoriteRemoteImageGrantID,
+              recorder.remoteImageGrantIDs[root.url.absoluteString] == grantID else { return false }
+        return FolderIndex.isCurrent(root)
+    }
+
+    /// Returns false when approval cannot be stored for this favorite. The
+    /// caller can still keep a grant in memory for the current folder session.
+    @discardableResult
+    func setRemoteImagesAllowed(_ allowed: Bool, in root: FolderIndex.Root) -> Bool {
+        var grants = recorder.remoteImageGrantIDs
+        let key = root.url.absoluteString
+        if allowed {
+            guard contains(root), let grantID = root.favoriteRemoteImageGrantID,
+                  FolderIndex.isCurrent(root) else { return false }
+            grants[key] = grantID
+        } else {
+            grants.removeValue(forKey: key)
+        }
+        recorder.remoteImageGrantIDs = grants
+        return true
+    }
+
     func add(_ root: FolderIndex.Root) {
         guard !contains(root) else { return }
         update(entries.map(\.path) + [root.url.path])
@@ -74,8 +107,12 @@ final class FavoriteFoldersModel: ObservableObject {
     }
 
     private func update(_ paths: [String]) {
-        recorder.favoriteFolderPaths = paths
         let updated = Self.menuEntries(for: paths)
+        let favorites = Set(entries.map(\.id)).intersection(updated.map(\.id))
+        let grants = recorder.remoteImageGrantIDs
+        let retained = grants.filter { favorites.contains($0.key) }
+        if retained != grants { recorder.remoteImageGrantIDs = retained }
+        recorder.favoriteFolderPaths = paths
         if entries != updated { entries = updated }
     }
 

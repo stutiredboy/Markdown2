@@ -26,6 +26,11 @@ enum FolderIndex {
     struct Root: Equatable, Sendable {
         let url: URL
         fileprivate let identity: Identity
+        let favoriteRemoteImageGrantID: String?
+
+        static func == (lhs: Root, rhs: Root) -> Bool {
+            lhs.url == rhs.url && lhs.identity == rhs.identity
+        }
     }
 
     struct File: Identifiable, Equatable, Sendable {
@@ -116,7 +121,7 @@ enum FolderIndex {
         }
     }
 
-    private static let maximumOpenBytes = 32 * 1024 * 1024
+    static let maximumOpenBytes = 32 * 1024 * 1024
     private static let directoryFlags = O_RDONLY | O_DIRECTORY | O_CLOEXEC
     private static let markdownExtensions: Set<String> = ["md", "markdown"]
 
@@ -174,11 +179,7 @@ enum FolderIndex {
                 return nil
             }
         }
-        var components = URLComponents()
-        components.scheme = "file"
-        components.host = ""
-        components.path = path == "/" ? path : path + "/"
-        return components.url
+        return bytePreservingFileURL(at: path == "/" ? path : path + "/")
     }
 
     private static func authorizeCanonicalPath(_ path: String, requiresSearchPermission: Bool = false) throws -> Root {
@@ -200,7 +201,31 @@ enum FolderIndex {
             throw favoriteFailure(for: errno)
         }
         try Task.checkCancellation()
-        return Root(url: url, identity: Identity(info))
+        let identity = Identity(info)
+        let grantID = persistentDirectoryGrantID(descriptor: descriptor, identity: identity)
+        return Root(url: url, identity: identity, favoriteRemoteImageGrantID: grantID)
+    }
+
+    /// A device number can change across reboots. Only volumes that expose
+    /// a UUID and persistent object identifiers can carry a favorite grant.
+    private static func persistentDirectoryGrantID(descriptor: Int32, identity: Identity) -> String? {
+        guard identity.birthSeconds > 0 else { return nil }
+        var attributes = attrlist()
+        attributes.bitmapcount = UInt16(ATTR_BIT_MAP_COUNT)
+        attributes.volattr = ATTR_VOL_INFO | UInt32(ATTR_VOL_CAPABILITIES | ATTR_VOL_UUID)
+        let capabilitiesOffset = MemoryLayout<UInt32>.size
+        let uuidOffset = capabilitiesOffset + MemoryLayout<vol_capabilities_attr_t>.size
+        var buffer = [UInt8](repeating: 0, count: uuidOffset + MemoryLayout<uuid_t>.size)
+        return buffer.withUnsafeMutableBytes { bytes in
+            guard fgetattrlist(descriptor, &attributes, bytes.baseAddress!, bytes.count, 0) == 0,
+                  bytes.loadUnaligned(as: UInt32.self) == UInt32(bytes.count) else { return nil }
+            let caps = bytes.loadUnaligned(fromByteOffset: capabilitiesOffset, as: vol_capabilities_attr_t.self)
+            let persistentIDs = UInt32(VOL_CAP_FMT_PERSISTENTOBJECTIDS)
+            guard caps.valid.0 & persistentIDs != 0, caps.capabilities.0 & persistentIDs != 0,
+                  bytes[uuidOffset...].contains(where: { $0 != 0 }) else { return nil }
+            let volume = UUID(uuid: bytes.loadUnaligned(fromByteOffset: uuidOffset, as: uuid_t.self))
+            return "v1/\(volume.uuidString)/\(identity.inode)/\(identity.birthSeconds)/\(identity.birthNanoseconds)"
+        }
     }
 
     private static func favoriteFailure(for error: Int32) -> FavoriteFailure {
@@ -222,6 +247,96 @@ enum FolderIndex {
         try withRoot(root) { _ in }
         return Snapshot(nodes: nodes, files: nodes.flatMap(\.files),
                         isLimited: scanner.isLimited, hasUnreadableItems: scanner.hasUnreadableItems)
+    }
+
+    static func isCurrent(_ root: Root) -> Bool {
+        (try? withRoot(root) { descriptor in
+            guard faccessat(descriptor, ".", X_OK, AT_EACCESS) == 0 else { return false }
+            guard let grantID = root.favoriteRemoteImageGrantID else { return true }
+            return persistentDirectoryGrantID(descriptor: descriptor, identity: root.identity) == grantID
+        }) == true
+    }
+
+    /// Checks the actual backing entry, independently of the bounded browser
+    /// index. The expected identity must come from a still-pinned document.
+    /// The path is walked from the authorized root without opening file contents.
+    static func verifyRemoteImageMember(at url: URL, in root: Root, reference: DocumentCopyFileReference) -> URL? {
+        guard let verified = verifiedRemoteImagePath(at: url, in: root, identity: reference.identity),
+              let actualPath = reference.currentPath() else { return nil }
+        if actualPath.utf8.elementsEqual(verified.path.utf8) { return verified }
+        // Filesystems that ignore case or normalization can accept alternate
+        // spellings. Recheck the actual entry and use that spelling for vetoes.
+        guard let actualURL = bytePreservingFileURL(at: actualPath) else { return nil }
+        return verifiedRemoteImagePath(at: actualURL, in: root, identity: reference.identity)
+    }
+
+    private static func verifiedRemoteImagePath(at url: URL, in root: Root, identity: DocumentCopyFileIdentity) -> URL? {
+        guard let path = remoteImageMemberPath(url, in: root), let leaf = path.last,
+              isMarkdownExtension((leaf as NSString).pathExtension) else { return nil }
+        return try? withRoot(root) { descriptor in
+            try verifyRemoteImageEntry(path[...], in: descriptor, root: root, identity: identity)
+            guard isCurrent(root) else { throw Failure.rootUnavailable }
+            let prefix = root.url.path == "/" ? "/" : root.url.path + "/"
+            return bytePreservingFileURL(at: prefix + path.joined(separator: "/"))
+        }
+    }
+
+    private static func bytePreservingFileURL(at path: String) -> URL? {
+        var components = URLComponents()
+        components.scheme = "file"
+        components.host = ""
+        components.path = path
+        return components.url
+    }
+
+    private static func remoteImageMemberPath(_ url: URL, in root: Root) -> [String]? {
+        guard url.isFileURL, (url.host ?? "").isEmpty || url.host == "localhost",
+              url.query == nil, url.fragment == nil else { return nil }
+        let prefix = root.url.path == "/" ? "/" : root.url.path + "/"
+        var path = url.path
+        if !path.utf8.starts(with: prefix.utf8),
+           path.hasPrefix("/var/") || path.hasPrefix("/tmp/") || path.hasPrefix("/etc/") {
+            // Foundation can expose these system aliases even after resolving
+            // a file URL. The descriptor walk still uses the canonical root.
+            path = "/private" + path
+        }
+        guard path.utf8.starts(with: prefix.utf8) else { return nil }
+        let relative = path.utf8.dropFirst(prefix.utf8.count)
+        let parts = relative.split(separator: UInt8(ascii: "/"), omittingEmptySubsequences: false)
+        guard parts.count <= Limits().depth + 1,
+              parts.allSatisfy({ !$0.isEmpty && $0.first != UInt8(ascii: ".") && !$0.contains(0) }) else { return nil }
+        return parts.map { String(decoding: $0, as: UTF8.self) }
+    }
+
+    private static func verifyRemoteImageEntry(_ parts: ArraySlice<String>, in directory: Int32,
+                                               root: Root, identity: DocumentCopyFileIdentity) throws {
+        guard let name = parts.first else { throw Failure.fileUnavailable }
+        if parts.count == 1 {
+            let info = try inspectFile(named: name, in: directory)
+            guard info.st_dev == root.identity.device, DocumentCopyFileIdentity(info) == identity,
+                  faccessat(directory, name, R_OK, AT_EACCESS | AT_SYMLINK_NOFOLLOW) == 0 else {
+                throw Failure.fileUnavailable
+            }
+            return
+        }
+
+        guard name != "node_modules", !isPackageDirectoryExtension((name as NSString).pathExtension.lowercased()) else {
+            throw Failure.fileUnavailable
+        }
+        let child = openat(directory, name, directoryFlags | O_NOFOLLOW)
+        guard child >= 0 else { throw Failure.fileUnavailable }
+        defer { Darwin.close(child) }
+        var info = stat()
+        guard fstat(child, &info) == 0, info.st_dev == root.identity.device,
+              info.st_flags & UInt32(UF_HIDDEN) == 0 else { throw Failure.fileUnavailable }
+        let flags = try finderFlags(name, in: directory)
+        guard flags.intersection([.invisible, .bundle]).isEmpty else { throw Failure.fileUnavailable }
+        try verifyRemoteImageEntry(parts.dropFirst(), in: child, root: root, identity: identity)
+        // Each ancestor must still name the directory traversed above.
+        let checked = Identity(info)
+        guard fstatat(directory, name, &info, AT_SYMLINK_NOFOLLOW) == 0, Identity(info) == checked else {
+            throw Failure.fileUnavailable
+        }
     }
 
     static func open(_ file: File, in root: Root) throws -> OpenedFile {
@@ -290,15 +405,27 @@ enum FolderIndex {
     }
 
     private static func inspectFile(_ leaf: Component, in directory: Int32) throws -> stat {
+        let info = try inspectFile(named: leaf.name, in: directory)
+        guard Identity(info) == leaf.identity else { throw Failure.fileUnavailable }
+        return info
+    }
+
+    private static func inspectFile(named name: String, in directory: Int32) throws -> stat {
         var info = stat()
-        guard fstatat(directory, leaf.name, &info, AT_SYMLINK_NOFOLLOW) == 0,
+        guard fstatat(directory, name, &info, AT_SYMLINK_NOFOLLOW) == 0,
               info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1,
-              info.st_flags & UInt32(UF_HIDDEN) == 0, Identity(info) == leaf.identity else {
+              info.st_flags & UInt32(UF_HIDDEN) == 0 else {
             throw Failure.fileUnavailable
         }
-        let flags = try finderFlags(leaf.name, in: directory)
+        let flags = try finderFlags(name, in: directory)
         guard flags.intersection([.invisible, .alias]).isEmpty else { throw Failure.fileUnavailable }
         return info
+    }
+
+    private static func isPackageDirectoryExtension(_ suffix: String) -> Bool {
+        guard !suffix.isEmpty else { return false }
+        let type = UTType(filenameExtension: suffix, conformingTo: .directory)
+        return type?.conforms(to: .package) == true || type == .framework
     }
 
     private struct FinderFlags: OptionSet {
@@ -446,8 +573,7 @@ enum FolderIndex {
         private mutating func isPackageExtension(_ suffix: String) -> Bool {
             guard !suffix.isEmpty else { return false }
             if let cached = packageExtensions[suffix] { return cached }
-            let type = UTType(filenameExtension: suffix, conformingTo: .directory)
-            let isPackage = type?.conforms(to: .package) == true || type == .framework
+            let isPackage = isPackageDirectoryExtension(suffix)
             packageExtensions[suffix] = isPackage
             return isPackage
         }
