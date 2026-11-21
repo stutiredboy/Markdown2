@@ -9,6 +9,137 @@ import XCTest
 /// Drives the native picker, sidebar, tab group, and editor in an isolated app.
 final class FolderWorkflowGUITests: XCTestCase {
     @MainActor
+    func testOpenFolderWithoutDocumentsShowsFolderUntilFirstPreview() async throws {
+        try requireGUI()
+        let fixture = try FolderPreviewFixture(numberOfNotes: 1)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let app = try await FolderTestApplication.launch(in: fixture.directory, arguments: [])
+        defer { app.close() }
+        _ = try app.waitFor("the application menu") { app.menuBar }
+        XCTAssertTrue(app.windows.isEmpty, "the fixture must start without a document window")
+
+        let malformed = fixture.guide.deletingLastPathComponent().appending(path: "Malformed.md")
+        try Data([0xef, 0xbb, 0xbf, 0xff]).write(to: malformed)
+        let initialLanding = try app.chooseFolderByPath(containing: fixture.guide)
+        try assertFolderLanding(initialLanding, guide: fixture.guide, app: app)
+
+        let badResult = try app.quickFind(malformed.lastPathComponent, expecting: malformed.lastPathComponent)
+        try app.openSelection(using: badResult.open)
+        let errorTitle = String(format: L10n.text(.alertUndecodableFile, language: .english), malformed.lastPathComponent)
+        let dismissError = try app.waitFor("the malformed Markdown error is attached to the landing window") {
+            guard let sheet = app.descendant(initialLanding, matching: {
+                app.attribute(kAXRoleAttribute, of: $0) as? String == kAXSheetRole
+            }), app.descendant(sheet, matching: {
+                app.labels($0).contains(errorTitle)
+            }) != nil else { return nil }
+            return app.descendant(sheet) { app.title($0) == "OK" }
+        }
+        try app.press(dismissError)
+        try assertFolderLanding(initialLanding, guide: fixture.guide, app: app)
+
+        try app.key(kVK_ANSI_W, flags: .maskCommand)
+        _ = try app.waitFor("closing the landing leaves no document window") { app.windows.isEmpty ? app.menuBar : nil }
+        let landing = try app.chooseFolderByPath(containing: fixture.guide, viaQuickOpen: true)
+        try assertFolderLanding(landing, guide: fixture.guide, app: app)
+        _ = try app.waitFor("Quick Open focuses search on the landing") {
+            app.focusedElement.flatMap { app.identifier($0) == "folder-quick-open" ? $0 : nil }
+        }
+
+        try app.focusFiles()
+        let list = try app.element("folder-file-list", in: landing)
+        if app.selectedRow(in: list) == nil { try app.key(kVK_DownArrow) }
+        try app.waitForSelection(fixture.guide, in: list)
+        try app.key(kVK_Space)
+        let preview = try app.documentWindow(fixture.guide, focused: true)
+        try app.waitForTreeFocus()
+        try app.waitForPreview(fixture.guide, in: preview)
+        XCTAssertEqual(try app.nativeTabs(in: preview).map(app.title), [fixture.guide.lastPathComponent])
+        try app.waitForOneWindow(showing: preview)
+        XCTAssertNil(app.descendant(preview) { app.identifier($0) == "folder-landing-prompt" })
+
+        let previewList = try app.element("folder-file-list", in: preview)
+        let nextNote = try XCTUnwrap(fixture.notes.first)
+        try app.key(kVK_DownArrow)
+        try app.waitForSelection(nextNote, in: previewList)
+        try app.key(kVK_Space)
+        let replacement = try app.documentWindow(nextNote, focused: true)
+        try app.waitForPreview(nextNote, in: replacement)
+        XCTAssertEqual(try app.nativeTabs(in: replacement).map(app.title), [nextNote.lastPathComponent])
+        try app.waitForOneWindow(showing: replacement)
+    }
+
+    @MainActor
+    func testOpenFolderReplacesAnUntouchedStartupDocumentBeforeOpeningFirstFile() async throws {
+        try requireGUI()
+        let fixture = try FolderPreviewFixture(numberOfNotes: 1)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let app = try await FolderTestApplication.launch(in: fixture.directory, arguments: [],
+                                                         opensBlankDocumentOnLaunch: true)
+        defer { app.close() }
+        let starter = try app.waitFor("the untouched startup document") {
+            app.windows.first { app.title($0) == "Untitled.md" }
+        }
+        XCTAssertTrue(app.value(try app.editor(in: starter))?.hasPrefix("# Untitled\n") == true)
+
+        let landing = try app.chooseFolderByPath(containing: fixture.guide)
+        try assertFolderLanding(landing, guide: fixture.guide, app: app)
+
+        let found = try app.quickFind(fixture.guide.lastPathComponent, expecting: fixture.guide.lastPathComponent)
+        try app.openSelection(using: found.open)
+        let document = try app.documentWindow(fixture.guide, focused: true)
+        try app.waitForEditorFocus(in: document)
+        try app.waitForOneWindow(showing: document)
+        XCTAssertTrue(app.tabTitles(in: document).allSatisfy { $0 == fixture.guide.lastPathComponent })
+        XCTAssertEqual(app.value(try app.editor(in: document)),
+                       try String(contentsOf: fixture.guide, encoding: .utf8))
+    }
+
+    @MainActor
+    func testOpenFolderPreservesAnEditedUntitledDocument() async throws {
+        try requireGUI()
+        let fixture = try FolderPreviewFixture(numberOfNotes: 1)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let app = try await FolderTestApplication.launch(in: fixture.directory, arguments: [],
+                                                         opensBlankDocumentOnLaunch: true)
+        defer { app.close() }
+        let untitled = try app.waitFor("the untitled editor") {
+            app.windows.first { app.title($0) == "Untitled.md" }
+        }
+        let draft = "# Keep the untitled draft"
+        let editor = try app.editor(in: untitled)
+        try app.replaceEditorText(draft, in: editor)
+
+        let workspace = try app.chooseFolderByPath(containing: fixture.guide)
+        XCTAssertTrue(CFEqual(workspace, untitled))
+        XCTAssertEqual(app.value(editor), draft)
+
+        let found = try app.quickFind(fixture.guide.lastPathComponent, expecting: fixture.guide.lastPathComponent)
+        try app.openSelection(using: found.open)
+        let document = try app.documentWindow(fixture.guide, focused: true)
+        try app.waitForEditorFocus(in: document)
+        let tabs = try app.nativeTabs(in: document)
+        XCTAssertEqual(tabs.count, 2)
+        let draftTab = try XCTUnwrap(tabs.first { app.title($0).hasPrefix("Untitled.md") })
+        try app.press(draftTab)
+        _ = try app.waitFor("the original draft tab is selected") {
+            app.focusedWindow.flatMap { CFEqual($0, untitled) ? $0 : nil }
+        }
+        XCTAssertEqual(app.value(editor), draft)
+    }
+
+    @MainActor
+    private func assertFolderLanding(_ window: AXUIElement, guide: URL, app: FolderTestApplication) throws {
+        XCTAssertEqual(app.title(window), guide.deletingLastPathComponent().lastPathComponent)
+        XCTAssertEqual(app.identifier(window), "folder-landing-window")
+        _ = try app.element("folder-landing-prompt", in: window)
+        try app.waitForOneWindow(showing: window)
+        XCTAssertNil(app.descendant(window) { app.attribute(kAXRoleAttribute, of: $0) as? String == kAXTextAreaRole })
+        XCTAssertTrue(app.tabTitles(in: window).allSatisfy { $0 == app.title(window) })
+        XCTAssertTrue(app.recentDocumentURLs.isEmpty)
+        XCTAssertTrue(try app.recoverySnapshots().isEmpty)
+    }
+
+    @MainActor
     func testFolderPickerTreeQuickOpenAndRefreshPreserveDocumentIdentity() async throws {
         try requireGUI()
         let fixture = try FolderFixture()
@@ -410,7 +541,9 @@ struct FolderTestApplication {
     private let appURL: URL
     private let accessibility: AXUIElement
 
-    static func launch(in directory: URL, arguments: [String]) async throws -> Self {
+    static func launch(
+        in directory: URL, arguments: [String], opensBlankDocumentOnLaunch: Bool = false
+    ) async throws -> Self {
         let priorApplication = NSWorkspace.shared.frontmostApplication
         let identifier = "dev.codex.md2.folder-test.\(UUID().uuidString.lowercased())"
         let appURL = directory.appendingPathComponent("Markdown2.app", isDirectory: true)
@@ -422,7 +555,7 @@ struct FolderTestApplication {
             "MD2.DefaultMode": "write", "MD2.NewDocumentMode": "write",
             "MD2.Language": "english", "AppleLanguages": ["en"],
             "MD2.ShowsOutlineByDefault": false, "AppleWindowTabbingMode": "manual",
-            "MD2.RestoresWindowsOnLaunch": false
+            "MD2.RestoresWindowsOnLaunch": false, "MD2.OpensBlankDocumentOnLaunch": opensBlankDocumentOnLaunch
         ], forName: identifier)
         defaults.synchronize()
         do {
@@ -472,8 +605,10 @@ struct FolderTestApplication {
         if kill(pid, 0) == 0 { process.forceTerminate() }
         _ = waitForExit()
         UserDefaults(suiteName: bundleIdentifier)?.removePersistentDomain(forName: bundleIdentifier)
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        try? FileManager.default.removeItem(at: support.appendingPathComponent(bundleIdentifier, isDirectory: true))
+        let files = FileManager.default
+        let support = files.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(bundleIdentifier, isDirectory: true)
+        if files.fileExists(atPath: support.path) { try? files.removeItem(at: support) }
         if let priorApplication, !priorApplication.isTerminated {
             priorApplication.activate()
             let deadline = Date().addingTimeInterval(5)
@@ -502,13 +637,66 @@ struct FolderTestApplication {
 
     func chooseDocumentFolder(containing guide: URL) throws -> AXUIElement {
         _ = try documentWindow(guide, focused: true)
-        try key(kVK_ANSI_O, flags: [.maskCommand, .maskShift])
+        return try chooseFolder(containing: guide, navigateToPath: false)
+    }
+
+    func chooseFolderByPath(containing guide: URL, viaQuickOpen: Bool = false) throws -> AXUIElement {
+        try chooseFolder(containing: guide, navigateToPath: true, viaQuickOpen: viaQuickOpen)
+    }
+
+    private func chooseFolder(
+        containing guide: URL, navigateToPath: Bool, viaQuickOpen: Bool = false
+    ) throws -> AXUIElement {
+        if navigateToPath {
+            try pressFileCommand(viaQuickOpen ? "Quick Open…" : "Open Folder…")
+        } else {
+            try key(kVK_ANSI_O, flags: [.maskCommand, .maskShift])
+        }
         let picker = try waitFor("the Open Folder picker") { windows.first { title($0).hasPrefix("Open Folder") } }
+        if navigateToPath {
+            // AppKit's remote picker services Go to Folder outside the app PID.
+            _ = try waitFor("the app's native picker becomes frontmost") {
+                NSWorkspace.shared.frontmostApplication?.processIdentifier == pid ? picker : nil
+            }
+            let previousFocus = focusedElement
+            try postKey(UInt16(kVK_ANSI_G), flags: [.maskCommand, .maskShift], toWindowServer: true)
+            let location = try waitFor("Go to Folder's path field") {
+                if let focused = focusedElement,
+                   attribute(kAXRoleAttribute, of: focused) as? String == kAXTextFieldRole,
+                   previousFocus.map({ !CFEqual($0, focused) }) ?? true {
+                    return focused
+                }
+                guard let sheet = descendant(picker, matching: { attribute(kAXRoleAttribute, of: $0) as? String == kAXSheetRole })
+                else { return nil }
+                return descendant(sheet) { attribute(kAXRoleAttribute, of: $0) as? String == kAXTextFieldRole }
+            }
+            let path = guide.deletingLastPathComponent().path
+            try postKey(UInt16(kVK_ANSI_A), flags: .maskCommand, toWindowServer: true)
+            for character in path {
+                try postKey(0, flags: [], text: String(character), toWindowServer: true)
+            }
+            _ = try waitFor("the picker has received the folder path") { value(location) == path ? location : nil }
+            try postKey(UInt16(kVK_Return), flags: [], toWindowServer: true)
+            _ = try waitFor("Go to Folder dismisses its path field") {
+                value(location) == nil ? picker : nil
+            }
+        }
         let choose = try waitFor("the Open Folder picker's enabled Open button") {
             descendant(picker) { title($0) == "Open" && (attribute(kAXEnabledAttribute, of: $0) as? Bool) == true }
         }
         try press(choose)
         return try waitForFolder(containing: guide)
+    }
+
+    var recentDocumentURLs: [URL] {
+        guard let defaults = UserDefaults(suiteName: bundleIdentifier) else { return [] }
+        return SystemRecentDocumentsRecorder(defaults: defaults).recentDocumentURLs
+    }
+
+    func recoverySnapshots() throws -> [DocumentRecoverySnapshot] {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let directory = support.appending(path: bundleIdentifier).appending(path: "Document Recovery")
+        return try DocumentRecoveryRepository(directory: directory).load()
     }
 
     func waitForFolder(containing guide: URL) throws -> AXUIElement {
@@ -646,6 +834,16 @@ struct FolderTestApplication {
         return attribute(kAXTabsAttribute, of: group) as? [AXUIElement] ?? []
     }
 
+    func tabTitles(in window: AXUIElement) -> [String] { tabs(in: window).map(title) }
+
+    func waitForOneWindow(showing expected: AXUIElement) throws {
+        _ = try waitFor("one visible window titled \(title(expected))") {
+            guard let focused = focusedWindow, CFEqual(focused, expected), windows.count == 1,
+                  onScreenWindowCount == 1 else { return nil }
+            return focused
+        }
+    }
+
     func nativeTabs(in window: AXUIElement) throws -> [AXUIElement] {
         _ = try waitFor("native document tabs in the active tab group") { tabs(in: window).first }
         return tabs(in: window)
@@ -739,7 +937,9 @@ struct FolderTestApplication {
         for character in text { try postKey(0, flags: [], text: String(character)) }
     }
 
-    private func postKey(_ key: CGKeyCode, flags: CGEventFlags, text: String? = nil) throws {
+    private func postKey(
+        _ key: CGKeyCode, flags: CGEventFlags, text: String? = nil, toWindowServer: Bool = false
+    ) throws {
         for down in [true, false] {
             let event = try XCTUnwrap(CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: down))
             event.flags = flags
@@ -749,7 +949,11 @@ struct FolderTestApplication {
                     event.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
                 }
             }
-            event.postToPid(pid)
+            if toWindowServer {
+                event.post(tap: .cghidEventTap)
+            } else {
+                event.postToPid(pid)
+            }
         }
     }
 

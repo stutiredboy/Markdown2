@@ -433,7 +433,7 @@ enum L10nKey: String, CaseIterable, Sendable {
     case exportDOCX
     case exportEPUB
     case close
-    case folderQuickOpenField, folderFilterPlaceholder, folderFileList
+    case folderQuickOpenField, folderFilterPlaceholder, folderFileList, folderLandingPrompt
     case folderRefresh, folderCancelScan, folderOpenSelection, folderScanning, folderOpening
     case folderNoFiles, folderOneFile, folderFileCount, folderOneMatch, folderMatchCount
     case folderScanLimited, folderScanUnreadable, folderScanCancelled, folderRefreshCancelled
@@ -743,6 +743,7 @@ enum L10n {
         .folderQuickOpenField: "Quick Open",
         .folderFilterPlaceholder: "Search filenames or paths",
         .folderFileList: "Folder Files",
+        .folderLandingPrompt: "Choose a Markdown file from the sidebar",
         .folderRefresh: "Refresh",
         .folderCancelScan: "Stop Scan",
         .folderOpenSelection: "Open",
@@ -1132,6 +1133,7 @@ enum L10n {
         .folderQuickOpenField: "快速打开",
         .folderFilterPlaceholder: "搜索文件名或路径",
         .folderFileList: "文件夹中的文件",
+        .folderLandingPrompt: "从侧栏选择一个 Markdown 文件",
         .folderRefresh: "刷新",
         .folderCancelScan: "停止扫描",
         .folderOpenSelection: "打开",

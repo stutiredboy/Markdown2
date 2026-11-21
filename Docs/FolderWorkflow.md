@@ -1,6 +1,8 @@
 # Folder workflow
 
-Choose **File → Open Folder…** (`Shift+Cmd+O`) to browse one Markdown folder in the document window's sidebar. Use the sidebar button to hide or show it, and switch between **Files** and **Outline** at the top.
+Choose **File → Open Folder…** (`Shift+Cmd+O`) to browse one Markdown folder. When no document is open, or only the untouched starter is selected, the folder opens to its file tree and a prompt to choose a file. The first file takes over that window.
+
+When working in an open document, the folder appears in its sidebar. Use the sidebar button to hide or show it, and switch between **Files** and **Outline** at the top.
 
 - Click a file to preview it and keep focus in the tree. With the keyboard, move the selection with Up and Down, then press Space to preview. Use the disclosure triangle or Right Arrow to expand a folder.
 - Markdown2 uses one italic preview tab in the folder's native tab group. The next preview replaces it. Double-click a file, press Return, or edit the document to keep that tab open. Return also focuses the document. Already-open documents are reused with their edits intact.
@@ -18,7 +20,7 @@ Use **Remove a Favorite** to remove an individual folder or **Clear Favorite Fol
 
 ## Scope and limits
 
-- One folder session belongs to one native tab group. Opening a different folder replaces the current session. Closing the group's last tab ends the session and cancels its work. Hiding the sidebar keeps the session available.
+- One folder session belongs to one native tab group. Opening a different folder replaces the current session. Closing the folder before choosing a document, or closing the group's last tab, ends the session and cancels its work. Hiding the sidebar keeps the session available.
 - The index reads names and metadata for regular `.md` and `.markdown` files. The tree shows folders that contain indexed files. The scan skips hidden entries, packages, `node_modules`, Finder aliases, symbolic links, files with multiple hard links, and nested volumes.
 - A scan examines up to 20,000 entries, lists up to 2,000 files and goes up to 24 levels below the selected folder. The window reports partial results and inaccessible items. You can cancel a scan or choose a narrower folder. Files over 32 MiB can be opened directly with **File → Open**.
 - Relevant filesystem changes refresh the list after a short delay. You can also select **Refresh**. Switching tabs or returning to the sidebar reuses the existing index. A file that moves, is replaced, or becomes a link between indexing and opening must be refreshed and selected again. Choose the folder again if its root was moved or replaced.
