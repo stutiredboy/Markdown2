@@ -3,6 +3,13 @@ import Combine
 import MD2Core
 import SwiftUI
 
+struct RemoteImagePermissionIcon {
+    let isAllowed: Bool
+
+    var symbolName: String { isAllowed ? "network" : "network.slash" }
+    var tint: NSColor { isAllowed ? .systemGreen : .systemGray }
+}
+
 /// Displays effective remote-image permission and the available native controls.
 struct RemoteResourceNotice: View {
     @ObservedObject var document: DocumentStore
@@ -125,11 +132,19 @@ struct RemoteResourceNotice: View {
     }
 
     private func noticeLabel(_ title: String) -> some View {
-        Label(title, systemImage: allowsImages ? "network" : "network.slash")
-            .font(.callout)
-            .fixedSize(horizontal: true, vertical: false)
-            .accessibilityLabel(status)
-            .accessibilityIdentifier("remote-images-status")
+        let icon = RemoteImagePermissionIcon(isAllowed: allowsImages)
+        return Label {
+            Text(title)
+        } icon: {
+            Image(systemName: icon.symbolName)
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(Color(nsColor: icon.tint))
+                .accessibilityHidden(true)
+        }
+        .font(.callout)
+        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityLabel(status)
+        .accessibilityIdentifier("remote-images-status")
     }
 
     private func requestDocumentPermission() {
