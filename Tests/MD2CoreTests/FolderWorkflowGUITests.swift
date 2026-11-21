@@ -126,6 +126,9 @@ final class FolderWorkflowGUITests: XCTestCase {
         // File > New and the default-launch preference both use newDocument().
         // Issue the command explicitly so the fixture does not depend on the
         // Launch Services event classifying the launch as default.
+        // This command shares a SwiftUI command group with New. Its presence
+        // distinguishes the app's File menu from AppKit's startup menu.
+        _ = try app.menuCommand("File", "Open Folder…")
         try app.pressFileCommand("New")
         return try app.waitFor("the new untitled document") {
             app.focusedWindow.flatMap { app.title($0) == "Untitled.md" ? $0 : nil }
@@ -812,7 +815,11 @@ struct FolderTestApplication {
     }
 
     func pressMenuCommand(_ menuName: String, _ name: String) throws {
-        let command = try waitFor("the enabled \(menuName) → \(name) command") {
+        try press(menuCommand(menuName, name))
+    }
+
+    func menuCommand(_ menuName: String, _ name: String) throws -> AXUIElement {
+        try waitFor("the enabled \(menuName) → \(name) command") {
             guard let menuBar,
                   let menuItem = children(menuBar).first(where: { title($0) == menuName }),
                   let menu = children(menuItem).first else { return nil }
@@ -820,7 +827,6 @@ struct FolderTestApplication {
                 title($0) == name && (attribute(kAXEnabledAttribute, of: $0) as? Bool) == true
             }
         }
-        try press(command)
     }
 
     func currentFile(_ name: String, in list: AXUIElement) -> AXUIElement? {
