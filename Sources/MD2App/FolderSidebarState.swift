@@ -55,6 +55,13 @@ final class FolderSidebarState: ObservableObject {
 
     func showFiles(in window: NSWindow, focus: @escaping () -> Void) {
         setActiveWindow(window)
+        if section == .files, isVisible, browserView.window === window, window.isKeyWindow {
+            // Menu shortcuts can be followed immediately by typing. Once the
+            // browser is mounted, apply focus before the next input event.
+            pendingFocus = nil
+            focus()
+            return
+        }
         if section != .files { section = .files }
         if !isVisible { isVisible = true }
         pendingFocus = focus

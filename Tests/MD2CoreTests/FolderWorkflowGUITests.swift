@@ -37,24 +37,29 @@ final class FolderWorkflowGUITests: XCTestCase {
         let sameDetailsResult = try app.quickFind("Notes/Details.md", expecting: "Details.md")
         try app.openSelection(using: sameDetailsResult.open)
         XCTAssertTrue(CFEqual(try app.documentWindow(fixture.details, focused: true), detailsWindow))
+        try app.waitForEditorFocus(in: detailsWindow)
 
         try app.pressFileCommand("Reveal in Folder Browser")
+        try app.waitForTreeFocus()
         let detailsTree = try app.element("folder-file-list", in: detailsWindow)
-        _ = try app.waitFor("Reveal expands Notes and highlights Details in the tree") {
-            guard app.row("Notes", in: detailsTree) != nil else { return nil }
+        let detailsSearch = try app.element("folder-quick-open", in: detailsWindow)
+        _ = try app.waitFor("Reveal clears search, expands Notes, and highlights Details in the tree") {
+            guard app.value(detailsSearch) == "", app.row("Notes", in: detailsTree) != nil else { return nil }
             return app.currentFile("Details.md", in: detailsTree)
         }
-        try app.waitForTreeFocus()
+        try app.waitForSelection(fixture.details, in: detailsTree)
 
         let guideResult = try app.quickFind("Guide Space.md", expecting: "Guide Space.md")
         try app.openSelection(using: guideResult.open)
         XCTAssertTrue(CFEqual(try app.documentWindow(fixture.guide, focused: true), original))
+        try app.waitForEditorFocus(in: original)
 
         let draft = fixture.guideText + "\nUnsaved draft"
         try app.replaceEditorText(draft, in: editor)
         let guideAgain = try app.quickFind("Guide Space.md", expecting: "Guide Space.md")
         try app.openSelection(using: guideAgain.open)
         XCTAssertTrue(CFEqual(try app.documentWindow(fixture.guide, focused: true), original))
+        try app.waitForEditorFocus(in: original)
         XCTAssertEqual(app.value(editor), draft)
         XCTAssertEqual(try String(contentsOf: fixture.guide, encoding: .utf8), fixture.guideText)
         try app.replaceEditorText(fixture.guideText, in: editor)
@@ -76,8 +81,15 @@ final class FolderWorkflowGUITests: XCTestCase {
         let added = fixture.folder.appendingPathComponent("Added.md")
         try "# Added externally\n".write(to: added, atomically: true, encoding: .utf8)
         try app.press(app.element("folder-refresh", in: original))
-        let addedResult = try app.quickFind("Added.md", expecting: "Added.md")
-        try app.openSelection(using: addedResult.open)
+        let addedSearch = try app.element("folder-quick-open", in: original)
+        let addedList = try app.element("folder-file-list", in: original)
+        try app.key(kVK_ANSI_P, flags: [.maskCommand, .maskShift])
+        try app.type(added.lastPathComponent)
+        _ = try app.waitFor("typing immediately after Quick Open finds Added.md") {
+            guard app.value(addedSearch) == added.lastPathComponent else { return nil }
+            return app.row(added.lastPathComponent, in: addedList)
+        }
+        try app.openSelection(using: app.element("folder-open-selection", in: original))
         let addedWindow = try app.documentWindow(added, focused: true)
         let addedEditor = try app.editor(in: addedWindow)
         let saved = "# Saved through the ordinary document editor"
@@ -588,7 +600,9 @@ struct FolderTestApplication {
     }
 
     func quickFind(_ query: String, expecting name: String) throws -> (list: AXUIElement, open: AXUIElement) {
-        try key(kVK_ANSI_P, flags: [.maskCommand, .maskShift])
+        if focusedElement.flatMap(identifier) != "folder-quick-open" {
+            try key(kVK_ANSI_P, flags: [.maskCommand, .maskShift])
+        }
         let search = try waitFor("Quick Open gives keyboard focus to the search field") {
             focusedElement.flatMap { identifier($0) == "folder-quick-open" ? $0 : nil }
         }

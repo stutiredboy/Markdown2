@@ -135,7 +135,7 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
         guard indexedPaths.contains(filePath) else { return }
         focusTree()
         search.stringValue = ""
-        readQuery()
+        applyQuery("")
         guard let path = treePath(to: filePath, in: tree), let file = path.last else { return }
         for folder in path.dropLast() { outline.expandItem(folder) }
         selectRow(outline.row(forItem: file))
@@ -386,7 +386,10 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
 
     private func readQuery() {
         if let editor = search.currentEditor() as? NSTextView, editor.hasMarkedText() { return }
-        let next = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        applyQuery(search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private func applyQuery(_ next: String) {
         guard next != query else { return }
         rememberTreeState()
         query = next

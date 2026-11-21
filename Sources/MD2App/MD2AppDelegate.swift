@@ -317,7 +317,6 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
         folder.sidebar.showFiles(in: window) { [weak browser = folder.browser] in
             browser?.reveal(url)
-            browser?.focusTree()
         }
     }
 
