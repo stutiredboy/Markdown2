@@ -451,7 +451,7 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         }
     }
 
-    func testLocalHistoryRestoresSelectedRevisionIntoAnIndependentWindow() throws {
+    func testLocalHistoryRestoresSelectedRevisionIntoAnIndependentDocumentTab() throws {
         func wait<Value>(_ label: String, _ read: () -> Value?) throws -> Value {
             let deadline = Date().addingTimeInterval(5)
             repeat {
@@ -597,19 +597,37 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         XCTAssertFalse(CFEqual(originalWindow, copyWindow))
         let copyEditor = try XCTUnwrap(Self.firstElement(ofRole: kAXTextAreaRole as String, in: copyWindow))
         try expectText(historical, in: copyEditor)
-        try expectText(latest, in: source)
         XCTAssertEqual(try Data(contentsOf: restored), historicalBytes)
         XCTAssertEqual(try Data(contentsOf: document), latestBytes)
         XCTAssertEqual(try Data(contentsOf: image), imageBytes)
         XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: restored.deletingLastPathComponent().path)),
                        Set([document.lastPathComponent, filename, "assets"]))
 
-        XCTAssertEqual(AXUIElementPerformAction(originalWindow, kAXRaiseAction as CFString), .success)
+        func selectTab(_ name: String, from current: AXUIElement, to target: AXUIElement) throws {
+            let tab = try wait("the native tab for \(name)") {
+                guard let group = Self.firstElement(ofRole: kAXTabGroupRole, in: current) else { return nil as AXUIElement? }
+                var value: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(group, kAXTabsAttribute as CFString, &value) == .success,
+                      let tabs = value as? [AXUIElement] else { return nil }
+                return tabs.first { Self.title(of: $0) == name }
+            }
+            XCTAssertEqual(AXUIElementPerformAction(tab, kAXPressAction as CFString), .success)
+            let app = AXUIElementCreateApplication(pid)
+            _ = try wait("the \(name) tab to own window focus") {
+                var value: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &value) == .success,
+                      let focused = Self.element(value), CFEqual(target, focused) else { return nil as AXUIElement? }
+                return focused
+            }
+        }
+        try selectTab(document.lastPathComponent, from: copyWindow, to: originalWindow)
+        try expectText(latest, in: source)
         XCTAssertEqual(AXUIElementSetAttributeValue(source, kAXFocusedAttribute as CFString, kCFBooleanTrue), .success)
         try pressMenu("Edit", "Undo")
         try expectText(historical, in: source)
         try pressMenu("Edit", "Redo")
         try expectText(latest, in: source)
+        try selectTab(filename, from: originalWindow, to: copyWindow)
         try expectText(historical, in: copyEditor)
     }
 

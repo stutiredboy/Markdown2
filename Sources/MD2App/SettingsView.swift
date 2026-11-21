@@ -40,6 +40,7 @@ struct SettingsView: View {
 
                 Toggle(settings.text(.showOutlineByDefault), isOn: $settings.showsOutlineByDefault)
 
+                Toggle(settings.text(.preferTabsForDocuments), isOn: $settings.preferTabsForDocuments)
                 Toggle(settings.text(.openBlankOnLaunch), isOn: $settings.opensBlankDocumentOnLaunch)
                 Toggle(settings.text(.restoreWindowsOnLaunch), isOn: $settings.restoresWindowsOnLaunch)
 

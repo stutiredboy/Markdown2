@@ -60,6 +60,17 @@ struct AppSettingsPresentationModeTests {
         #expect(AppSettings(defaults: defaults).restoresWindowsOnLaunch)
     }
 
+    @Test func documentTabsDefaultOnAndPersistAnOptOut() {
+        let suiteName = "AppSettingsTabTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = AppSettings(defaults: defaults)
+        #expect(settings.preferTabsForDocuments)
+        settings.preferTabsForDocuments = false
+        #expect(!AppSettings(defaults: defaults).preferTabsForDocuments)
+    }
+
     @Test func newDocumentModeDoesNotAffectOpenedFileMode() {
         let settings = makeSettings()
         settings.newDocumentMode = .read

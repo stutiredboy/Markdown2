@@ -24,6 +24,8 @@ final class InteractionTestWindow {
         window.animationBehavior = .none
     }
     func host<V: View>(_ root: V, width: CGFloat = 900, height: CGFloat = 650) {
+        window.title = store.displayTitle
+        window.representedURL = store.fileURL
         window.setContentSize(NSSize(width: width, height: height))
         let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
         let host = NSHostingView(rootView: root)

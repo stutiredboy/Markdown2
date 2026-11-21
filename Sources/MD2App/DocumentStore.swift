@@ -1243,17 +1243,35 @@ final class DocumentStore: ObservableObject {
         persistRecoveryNow()
     }
 
-    func openVerifiedFolderFile(_ opened: FolderIndex.OpenedFile, decoded: MarkdownFileDecoder.DecodedFile?) throws {
-        guard isReusableEmptyDocument, !isClosed else { throw FolderIndex.Failure.fileUnavailable }
+    func openVerifiedFolderFile(_ opened: FolderIndex.OpenedFile, decoded: MarkdownFileDecoder.DecodedFile?,
+                                replacingCleanPreview: Bool = false) throws {
+        guard !isClosed, isReusableEmptyDocument || (replacingCleanPreview && !isDirty) else {
+            throw FolderIndex.Failure.fileUnavailable
+        }
         let historyID = historyIdentity(at: opened.url)
         try opened.validate()
         guard let decoded else {
             showUndecodableFile(opened.url)
             return
         }
+        if replacingCleanPreview {
+            approvedAttachmentDestinations.removeAll()
+            jumpLine = nil
+            jumpHeadingID = nil
+            jumpFraction = nil
+            editorJumpAnchor = nil
+            previewJumpAnchor = nil
+            editorLineSelection = nil
+            editorSession.revealSelectionOnNextHost = false
+        }
         installLoadedFile(decoded, url: opened.url, data: opened.data, fingerprint: opened.fingerprint,
                           identity: DocumentFileIdentity(folderReference: opened.fileReference),
                           reference: opened.fileReference, historyID: historyID)
+        if replacingCleanPreview, let textView = editorSession.textView {
+            let start = NSRange(location: 0, length: 0)
+            textView.setSelectedRange(start)
+            textView.scrollRangeToVisible(start)
+        }
     }
 
     /// Consume validated bytes without another path read. The pinned identity

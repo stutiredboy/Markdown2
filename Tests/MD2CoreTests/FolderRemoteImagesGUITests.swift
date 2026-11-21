@@ -46,17 +46,30 @@ final class FolderRemoteImagesGUITests: XCTestCase {
         try await app.openFileThroughWorkspace(ordinary)
         let standalone = try app.documentWindow(ordinary, focused: true)
         try app.waitForRenderedImageFixture("ordinary", in: standalone)
+        try app.waitForImageStatus(.remoteImagesBlocked, in: standalone)
+        XCTAssertTrue(app.tabTitles(in: standalone).isEmpty)
+        XCTAssertNil(app.descendant(standalone) { app.identifier($0) == "folder-file-list" })
         fixture.assertQuiet("ordinary")
-        let grouped = try app.openFolderNote(ordinary)
-        XCTAssertTrue(CFEqual(grouped, standalone))
-        try await fixture.waitForRequest("ordinary")
 
         try await app.openFileThroughWorkspace(outside)
         let outsideWindow = try app.documentWindow(outside, focused: true)
         try app.waitForRenderedImageFixture("outside", in: outsideWindow)
-        fixture.assertQuiet("outside")
+        _ = try app.waitFor("two visible windows with a separate group for externally opened files") {
+            app.onScreenWindowCount == 2 &&
+                app.tabTitles(in: outsideWindow).sorted() == [ordinary.lastPathComponent, outside.lastPathComponent].sorted()
+                ? outsideWindow : nil
+        }
+        XCTAssertNil(app.descendant(outsideWindow) { app.identifier($0) == "folder-file-list" })
+        fixture.assertQuiet("ordinary", "outside")
 
-        try app.focusFiles()
+        let grouped = try app.openFolderNote(ordinary)
+        XCTAssertTrue(CFEqual(grouped, standalone))
+        try await fixture.waitForRequest("ordinary")
+
+        // Merge from the independent window. AppKit can move the entire
+        // folder group into this group; the outside file must stay blocked.
+        try await app.openFileThroughWorkspace(outside)
+        _ = try app.documentWindow(outside, focused: true)
         try app.pressMenuCommand("Window", "Merge All Windows")
         let merged = try app.waitFor("the folder group includes the outside document after merging windows") {
             guard let window = app.focusedWindow else { return nil }

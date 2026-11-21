@@ -261,7 +261,6 @@ struct ContentView: View {
         } action: { density in
             toolbarDensity = density
         }
-        .navigationTitle(document.displayTitle)
         .onDisappear { formulaSheet.dismiss() }
         .task(id: selectedContent) {
             selectionStats = nil
@@ -290,6 +289,9 @@ struct ContentView: View {
             formulaFocus = nil
             suspendedFolderPreview = nil
             sourceBeforeRead = nil
+            editorAnchorLine = 1
+            previewAnchor = nil
+            splitSyncSource = nil
             outlineSourceLine = 1
             clickedOutlineHeadingID = nil
             editorSelection = nil

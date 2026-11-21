@@ -113,6 +113,34 @@ final class DocumentLinkApplicationGUITests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: fixture.target, encoding: .utf8), fixture.text)
     }
 
+    func testLinkSelectsAndNavigatesTargetInNativeTabs() throws {
+        let fixture = try makeFixture(heading: "Destination", fragment: "destination")
+        try launch(fixture.source, mode: .read, preferTabs: true)
+        let source = try waitForWindow(fixture.source, focused: true)
+        XCTAssertTrue(nativeTabs(in: source).isEmpty)
+        try activate(waitForLink("Open destination", in: source), in: source)
+
+        let target = try waitForWindow(fixture.target, focused: true)
+        try waitForPreviewMarker(Self.destinationMarker, in: target)
+        let expectedTabs = [fixture.source.lastPathComponent, fixture.target.lastPathComponent].sorted()
+        try wait("the source and destination are tabs in the same native window") {
+            self.nativeTabs(in: target).map(Self.title).sorted() == expectedTabs
+        }
+
+        // Return to the source through the native tab strip before following
+        // the next link. The hidden source has no interactive WebKit viewport.
+        let sourceTab = try XCTUnwrap(nativeTabs(in: target).first { Self.title($0) == fixture.source.lastPathComponent })
+        XCTAssertEqual(AXUIElementPerformAction(sourceTab, kAXPressAction as CFString), .success)
+        let selectedSource = try waitForWindow(fixture.source, focused: true)
+        try activate(waitForLink("Open top", in: selectedSource), in: selectedSource)
+
+        let selectedTarget = try waitForWindow(fixture.target, focused: true)
+        XCTAssertTrue(CFEqual(target, selectedTarget), "the link must reuse the existing target tab")
+        try waitForPreviewMarker(Self.topMarker, in: selectedTarget)
+        XCTAssertFalse(previewMarkerIsVisible(Self.destinationMarker, in: selectedTarget))
+        XCTAssertEqual(nativeTabs(in: selectedTarget).map(Self.title).sorted(), expectedTabs)
+    }
+
     func testAlreadyOpenDirtyWindowNavigatesItsUnsavedHeadingWithoutReloading() throws {
         let fixture = try makeFixture(heading: "Disk destination", fragment: "draft-destination")
         try launch(fixture.target, mode: .split)
@@ -241,7 +269,7 @@ final class DocumentLinkApplicationGUITests: XCTestCase {
 
     private var isAlive: Bool { pid > 0 && kill(pid, 0) == 0 }
 
-    private func launch(_ url: URL, mode: EditorMode) throws {
+    private func launch(_ url: URL, mode: EditorMode, preferTabs: Bool = false) throws {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: bundleIdentifier))
         // Keep the stored app language and AppKit override in sync. A mismatch
         // relaunches the app before didFinishLaunching and invalidates our PID.
@@ -250,7 +278,8 @@ final class DocumentLinkApplicationGUITests: XCTestCase {
             "MD2.Language": "english", "AppleLanguages": ["en"],
             "MD2.ShowsOutlineByDefault": false,
             "MD2.RestoresWindowsOnLaunch": true, "NSQuitAlwaysKeepsWindows": true,
-            "AppleWindowTabbingMode": "manual"
+            "AppleWindowTabbingMode": preferTabs ? "fullscreen" : "manual",
+            "MD2.PreferTabsForDocuments": preferTabs
         ], forName: bundleIdentifier)
         defaults.synchronize()
         let configuration = NSWorkspace.OpenConfiguration()
@@ -342,6 +371,12 @@ final class DocumentLinkApplicationGUITests: XCTestCase {
     private func isFocused(_ window: AXUIElement) -> Bool {
         guard let focused = Self.attribute(kAXFocusedWindowAttribute, of: AXUIElementCreateApplication(pid)) else { return false }
         return CFEqual(window, focused)
+    }
+
+    private func nativeTabs(in window: AXUIElement) -> [AXUIElement] {
+        guard let group = Self.descendants(window).first(where: { Self.string(kAXRoleAttribute, of: $0) == kAXTabGroupRole })
+        else { return [] }
+        return Self.attribute(kAXTabsAttribute, of: group) as? [AXUIElement] ?? []
     }
 
     private func raise(_ window: AXUIElement) throws {
