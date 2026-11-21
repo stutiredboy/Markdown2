@@ -318,12 +318,14 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
         let title = text(.remoteImagesFolderPermissions)
         let status = text(isAllowed ? .remoteImagesAllowedByFolder : .remoteImagesBlocked)
         let action = FolderRemoteImages.Action(isAllowed: isAllowed)
+        let icon = RemoteImagePermissionIcon(isAllowed: isAllowed)
         let menu = NSMenu(title: title)
         menu.autoenablesItems = false
 
-        // The first item supplies the label and icon for a pull-down button.
+        // The pull-down uses the first item's image. A palette preserves the tint in the rounded button.
         let label = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        label.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: nil)
+        label.image = NSImage(systemSymbolName: icon.symbolName, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(paletteColors: [icon.tint]))
         menu.addItem(label)
         let statusItem = NSMenuItem(title: status, action: nil, keyEquivalent: "")
         statusItem.isEnabled = false
