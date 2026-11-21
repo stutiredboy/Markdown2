@@ -139,9 +139,11 @@ struct ContentView: View {
     /// Latest top-visible source line reported by the editor — the cached
     /// fallback when a live capture is unavailable at switch time.
     @State private var editorAnchorLine = 1
-    /// Latest debounced viewport anchor reported by the preview — the cached
-    /// fallback when the live capture does not answer in time.
-    @State private var previewAnchor: ViewportAnchor?
+    /// Last reported location, used when a live preview capture is unavailable.
+    private var previewAnchor: ViewportAnchor? {
+        get { contentState.previewAnchor }
+        nonmutating set { contentState.previewAnchor = newValue }
+    }
     @State private var suspendedFolderPreview: (identity: UUID, anchor: ViewportAnchor)?
     /// Returning from a passive preview restores the source's exact wrapped row.
     /// Read navigation takes precedence, and edits invalidate the UTF-16 offset.
@@ -237,11 +239,7 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             DocumentCopyNotice(flow: document.copyFlow, settings: settings, onOpen: onOpenCreatedCopy)
-            RemoteResourceNotice(document: document, settings: settings, contentState: contentState) {
-                // Reuse the last reported anchor without awaiting the page that
-                // is about to be retired. The new safe host consumes this target.
-                if let previewAnchor { document.previewJumpAnchor = previewAnchor }
-            }
+            remoteResourceNotice(at: .banner)
             HStack(spacing: 0) {
                 sidebar
                 editorSurface
@@ -252,9 +250,11 @@ struct ContentView: View {
                 stats: document.rendered.stats, selectionStats: selectionStats, url: document.fileURL,
                 format: document.fileFormat, settings: settings, convertingFormat: document.convertingFormat,
                 conversionStoppedForSourceChange: document.conversionStoppedForSourceChange,
-                cancelConversion: document.cancelConversion
+                cancelConversion: document.cancelConversion,
+                remoteImages: remoteResourceNotice(at: .statusBar)
             )
         }
+        .background { remoteResourceNotice(at: .banner).sheetAnchor }
         .frame(minWidth: minimumWindowWidth, minHeight: 540)
         .onGeometryChange(for: DocumentToolbarDensity.self) { geometry in
             DocumentToolbarDensity(windowWidth: geometry.size.width)
@@ -564,6 +564,10 @@ struct ContentView: View {
         document.remoteResourcePolicy == .allowRemoteImages
             && document.remoteImageOverride != .allow
             && !contentState.isFolderPreviewSelected
+    }
+
+    private func remoteResourceNotice(at placement: RemoteResourceNotice.Placement) -> RemoteResourceNotice {
+        RemoteResourceNotice(document: document, settings: settings, contentState: contentState, placement: placement)
     }
 
     private var minimumWindowWidth: CGFloat {
@@ -1202,6 +1206,9 @@ struct ContentView: View {
                     onRegisterResourceInvalidator: { invalidate in
                         document.registerRemoteResourceInvalidator(for: resourceToken, invalidate)
                     },
+                    onRemoteImageDetected: { revision in
+                        document.notePreviewRemoteImage(for: resourceToken, renderedAt: revision)
+                    },
                     liveUpdate: inSplit,
                     showsFrontMatter: showsFrontMatterInPreview,
                     showsLineNumbers: settings.showsLineNumbersInPreview,
@@ -1599,7 +1606,7 @@ private struct OutlineNativeSelectionFollower: NSViewRepresentable {
     }
 }
 
-private struct StatusBar: View {
+private struct StatusBar<RemoteImages: View>: View {
     let stats: DocumentStats
     var selectionStats: DocumentStats?
     let url: URL?
@@ -1608,6 +1615,7 @@ private struct StatusBar: View {
     let convertingFormat: DocumentExportFormat?
     let conversionStoppedForSourceChange: Bool
     let cancelConversion: () -> Void
+    let remoteImages: RemoteImages
 
     var body: some View {
         HStack(spacing: 14) {
@@ -1654,6 +1662,7 @@ private struct StatusBar: View {
                         .truncationMode(.middle)
                 }
             }
+            remoteImages
         }
         .font(.caption)
         .foregroundStyle(.secondary)

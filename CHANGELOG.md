@@ -12,7 +12,7 @@
 
 - Open independent documents together in native tabs, separate from the folder browser. Turn off **Prefer Tabs for Documents** in General settings to open them in separate windows.
 
-- Show allowed remote images with a green globe and blocked remote images with a gray slashed globe in the document bar and Files sidebar.
+- Show a banner when remote images are detected and the document policy blocks loading. When allowed, use the green globe in the status bar to check the source of permission, revoke it or inspect image origins. **View → Remote Images** also provides the document controls. The Files sidebar shows the folder permission.
 
 - Browse files in a collapsible Files and Outline sidebar. Click a file or use Up and Down in the tree to skim in one native preview tab. Double-click, press Return, or edit to keep the file open as a regular tab. Return to the tree with Shift+Cmd+B. Folder indexing now refreshes on filesystem changes or on request.
 

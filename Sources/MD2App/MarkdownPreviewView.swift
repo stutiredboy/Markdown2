@@ -64,6 +64,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
     /// Changes with document identity or native permission, never source edits.
     var remoteResourceContextToken: UUID? = nil
     var onRegisterResourceInvalidator: (@escaping @MainActor () -> Void) -> Void = { _ in }
+    /// Advisory evidence from the rendered page, scoped to its source revision.
+    var onRemoteImageDetected: (_ revision: Int) -> Void = { _ in }
     /// When true (Side by Side mode), content-only changes are applied in place
     /// via `__md2ApplyContent` — preserving scroll position and avoiding the
     /// full-page reload flash — instead of reloading the web view.
@@ -404,14 +406,45 @@ struct MarkdownPreviewView: NSViewRepresentable {
     /// still hold up document end.
     private var brokenImageScript: String {
         """
+        (function () {
+        var remoteNodes = new Set();
+        var reportedRevision;
+        function remoteSource(img) {
+            var selected = img.currentSrc || '';
+            var declared = img.getAttribute('src') || '';
+            var http = /^https?:/i;
+            if (http.test(selected)) { return selected; }
+            return http.test(declared.trim().replace(/[\\t\\n\\r]/g, '')) ? declared : '';
+        }
+        function reportRemoteImage(refresh) {
+            // The live update can retain an engine-generated image or its
+            // placeholder. Forget detached nodes before checking the new body.
+            for (var node of remoteNodes) {
+                if (!node.isConnected) { remoteNodes.delete(node); }
+            }
+            var revision = window.\(Self.sourceLineRevisionVariable);
+            if (remoteNodes.size && Number.isInteger(revision) && (refresh || revision !== reportedRevision)) {
+                reportedRevision = revision;
+                window.webkit.messageHandlers.\(Self.remoteImageMessageName).postMessage(revision);
+            }
+        }
+        window.__md2ReportRemoteImage = reportRemoteImage;
+        window.addEventListener('load', function (event) {
+            var img = event.target;
+            if (event.isTrusted && img && img.tagName === 'IMG' && remoteSource(img)) {
+                remoteNodes.add(img);
+                if (window.\(Self.sourceLineRevisionVariable) !== reportedRevision) { reportRemoteImage(false); }
+            }
+        }, true);
         window.addEventListener('error', function (event) {
             var img = event.target;
             if (!img || img.tagName !== 'IMG') { return; }
             if (img.getAttribute('data-md2-broken') === '1') { return; }
-            var src = img.getAttribute('src') || '';
+            var remote = remoteSource(img);
+            var src = remote || img.getAttribute('src') || '';
             var lower = src.trim().toLowerCase();
             var labelText = '\(Self.escapeForJS(genericImageLoadFailedLabel))';
-            if (/^https?:/.test(lower)) {
+            if (remote) {
                 labelText = window.__md2RemoteImagesAllowed
                     ? '\(Self.escapeForJS(remoteImageUnavailableLabel))'
                     : '\(Self.escapeForJS(remoteImageBlockedLabel))';
@@ -432,10 +465,17 @@ struct MarkdownPreviewView: NSViewRepresentable {
             placeholder.appendChild(path);
             if (img.parentNode) {
                 img.parentNode.replaceChild(placeholder, img);
+                if (event.isTrusted && remote) {
+                    remoteNodes.add(placeholder);
+                    if (window.\(Self.sourceLineRevisionVariable) !== reportedRevision) { reportRemoteImage(false); }
+                }
             }
         }, true);
+        })();
         """
     }
+
+    private static let remoteImageMessageName = "remoteImageDetected"
 
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
@@ -1018,8 +1058,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
         configuration.userContentController.addUserScript(WKUserScript(
             source: brokenImageScript,
             injectionTime: .atDocumentStart,
-            forMainFrameOnly: true
+            forMainFrameOnly: true,
+            in: .defaultClient
         ))
+        configuration.userContentController.add(context.coordinator, contentWorld: .defaultClient, name: Self.remoteImageMessageName)
         Self.installInteractionBridge(on: configuration.userContentController, handler: context.coordinator)
         configuration.userContentController.add(context.coordinator, name: Self.anchorMessageName)
         configuration.userContentController.add(context.coordinator, contentWorld: .defaultClient, name: Self.selectionMessageName)
@@ -1086,6 +1128,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.onSelectionChange = onSelectionChange
+        context.coordinator.onRemoteImageDetected = onRemoteImageDetected
         if context.coordinator.typography != typography {
             context.coordinator.typography = typography
             if context.coordinator.isLoaded { context.coordinator.applyTypography(in: webView, preservingAnchor: true) }
@@ -1487,6 +1530,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
         var typography: TypographySettings = .init()
         var onSelectionChange: (String?) -> Void = { _ in }
+        var onRemoteImageDetected: (Int) -> Void = { _ in }
 
         func applyTypography(in webView: WKWebView, preservingAnchor: Bool = false) {
             let css = String(data: try! JSONEncoder().encode(typography.previewCSS), encoding: .utf8)!
@@ -1713,6 +1757,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
         private func finishLiveContent(generation: Int, error: Error?, in webView: WKWebView) {
             if error == nil, generation == liveUpdateGeneration {
                 hasContentInFlight = false
+                // Recheck retained images even when a preferences-only render
+                // changed the body without changing its source revision.
+                pageRevision = nil
                 labelPage(in: webView)
             }
             if let query = lastFindQuery, !query.isEmpty {
@@ -1728,7 +1775,11 @@ struct MarkdownPreviewView: NSViewRepresentable {
             guard !hasContentInFlight, pageRevision != sourceLineRevision else { return }
             pageRevision = sourceLineRevision
             webView.evaluateJavaScript(
-                "window.\(MarkdownPreviewView.sourceLineRevisionVariable) = \(sourceLineRevision); true;",
+                """
+                window.\(MarkdownPreviewView.sourceLineRevisionVariable) = \(sourceLineRevision);
+                if (window.__md2ReportRemoteImage) { window.__md2ReportRemoteImage(true); }
+                true;
+                """,
                 in: nil, in: .defaultClient
             )
         }
@@ -2015,6 +2066,15 @@ struct MarkdownPreviewView: NSViewRepresentable {
         ) {
             guard resourceContextIsActive, message.frameInfo.isMainFrame else { return }
             switch message.name {
+            case MarkdownPreviewView.remoteImageMessageName:
+                let frameURL = message.frameInfo.request.url?.absoluteURL
+                var page = frameURL.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }
+                page?.fragment = nil
+                guard message.world == .defaultClient, !hasContentInFlight,
+                      let webView = message.webView, acceptsFindHost(webView),
+                      let documentURL = documentLoader.documentPageURL, page?.url == documentURL,
+                      let revision = message.body as? Int, revision == pageRevision else { return }
+                onRemoteImageDetected(revision)
             case MarkdownPreviewView.selectionMessageName:
                 guard message.world == .defaultClient else { return }
                 onSelectionChange(message.body as? String)

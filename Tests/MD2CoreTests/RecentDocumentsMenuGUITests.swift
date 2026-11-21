@@ -700,10 +700,174 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
 
     // MARK: - Remote-image permission
 
+    private enum RemoteImageSurface: String {
+        case banner = "remote-images-notice"
+        case statusMenu = "remote-images-status-menu"
+    }
+
+    private static func remoteImageAttribute(_ name: String, of element: AXUIElement) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
+        return value as? String
+    }
+
+    private static func remoteImageControl(_ id: String, in root: AXUIElement) -> AXUIElement? {
+        if remoteImageAttribute(kAXIdentifierAttribute, of: root) == id { return root }
+        for child in children(of: root) {
+            if let found = remoteImageControl(id, in: child) { return found }
+        }
+        return nil
+    }
+
+    private func pressRemoteImageMenuItem(
+        _ id: String, title: String, in window: AXUIElement, pid: pid_t
+    ) throws {
+        let opener = try XCTUnwrap(Self.remoteImageControl(RemoteImageSurface.statusMenu.rawValue, in: window))
+        let status = L10n.text(.remoteImagesAllowed, language: .english)
+        XCTAssertTrue([kAXValueAttribute, kAXDescriptionAttribute, kAXHelpAttribute, kAXTitleAttribute].contains {
+            Self.remoteImageAttribute($0, of: opener)?.contains(status) == true
+        }, "The status menu must announce session permission")
+        AXUIElementSetMessagingTimeout(opener, 1)
+        let result = AXUIElementPerformAction(opener, kAXPressAction as CFString)
+        XCTAssertTrue(result == .success || result == .cannotComplete, "The allowed status menu can be opened by AXPress")
+
+        func action(in root: AXUIElement) -> AXUIElement? {
+            if Self.remoteImageAttribute(kAXRoleAttribute, of: root) == kAXMenuItemRole,
+               Self.isEnabled(root),
+               (Self.remoteImageAttribute(kAXIdentifierAttribute, of: root) == id || Self.title(of: root) == title) {
+                return root
+            }
+            for child in Self.children(of: root) {
+                if let result = action(in: child) { return result }
+            }
+            return nil
+        }
+        let deadline = Date().addingTimeInterval(5)
+        repeat {
+            let roots = [opener, window, AXUIElementCreateApplication(pid)]
+            if let item = roots.lazy.compactMap(action(in:)).first {
+                AXUIElementSetMessagingTimeout(item, 1)
+                let result = AXUIElementPerformAction(item, kAXPressAction as CFString)
+                XCTAssertTrue(result == .success || result == .cannotComplete, title)
+                return
+            }
+            usleep(50_000)
+        } while Date() < deadline
+        throw GuardFailure("The allowed status menu did not expose the enabled action \(title)")
+    }
+
+    private func pressRemoteImageAppMenuRevoke(pid: pid_t) throws {
+        let application = AXUIElementCreateApplication(pid)
+        var value: CFTypeRef?
+        XCTAssertEqual(AXUIElementCopyAttributeValue(application, kAXMenuBarAttribute as CFString, &value), .success)
+        let menuBar = try XCTUnwrap(Self.element(value))
+        let path = ["View", "Remote Images", "Block Remote Images"]
+        func item(at depth: Int) -> AXUIElement? {
+            var parent = menuBar
+            for title in path.prefix(depth + 1) {
+                guard let item = Self.children(of: parent).first(where: { Self.title(of: $0) == title }) else { return nil }
+                if title == path[depth] { return item }
+                guard let menu = Self.children(of: item).first(where: {
+                    Self.remoteImageAttribute(kAXRoleAttribute, of: $0) == kAXMenuRole
+                }) else { return nil }
+                parent = menu
+            }
+            return nil
+        }
+        for (depth, title) in path.enumerated() {
+            let deadline = Date().addingTimeInterval(5)
+            while item(at: depth).map(Self.isEnabled) != true, Date() < deadline { usleep(50_000) }
+            let command = try XCTUnwrap(item(at: depth), title)
+            XCTAssertTrue(Self.isEnabled(command), title)
+            AXUIElementSetMessagingTimeout(command, 1)
+            let result = AXUIElementPerformAction(command, kAXPressAction as CFString)
+            XCTAssertTrue(result == .success || result == .cannotComplete, title)
+        }
+    }
+
+    func testRemoteImageNoticeFollowsSourceEdits() throws {
+        let document = try makeDocument("notes/RemoteImagePresence.md")
+        let noImages = "# No remote images\n\n[Ordinary link](https://example.invalid/page)\n\n![local](assets/local.png)\n"
+        let withImage = noImages + "\n![pic](http://localhost:1/remote.png)\n"
+        try Data(noImages.utf8).write(to: document)
+        let pid = try launch(recents: [], language: "english", appleLanguages: ["en"])
+        try open(document)
+
+        func waitForSource(_ expected: String, surface: RemoteImageSurface?) throws -> AXUIElement {
+            let host = try waitForWindow(pid: pid) { window in
+                guard Self.title(of: window).hasPrefix(document.lastPathComponent),
+                      let editor = Self.firstElement(ofRole: kAXTextAreaRole, in: window),
+                      Self.remoteImageAttribute(kAXValueAttribute, of: editor) == expected else { return false }
+                let banner = Self.remoteImageControl(RemoteImageSurface.banner.rawValue, in: window)
+                let statusMenu = Self.remoteImageControl(RemoteImageSurface.statusMenu.rawValue, in: window)
+                return (banner != nil) == (surface == .banner) && (statusMenu != nil) == (surface == .statusMenu)
+            }
+            return try XCTUnwrap(Self.firstElement(ofRole: kAXTextAreaRole, in: host))
+        }
+
+        func replace(_ previous: String, with replacement: String, in editor: AXUIElement) throws {
+            XCTAssertEqual(AXUIElementSetAttributeValue(editor, kAXFocusedAttribute as CFString, kCFBooleanTrue), .success)
+            var range = CFRange(location: 0, length: previous.utf16.count)
+            let selection = try XCTUnwrap(AXValueCreate(.cfRange, &range))
+            XCTAssertEqual(AXUIElementSetAttributeValue(editor, kAXSelectedTextRangeAttribute as CFString, selection), .success)
+            XCTAssertEqual(AXUIElementSetAttributeValue(editor, kAXSelectedTextAttribute as CFString, replacement as CFString), .success)
+        }
+
+        func switchMode(_ key: String, title: String) throws {
+            let command = try menuItem(commandCharacter: key, pid: pid, modifiers: 0)
+            XCTAssertEqual(Self.title(of: command), title)
+            XCTAssertEqual(AXUIElementPerformAction(command, kAXPressAction as CFString), .success)
+        }
+
+        func waitForPreview(showsBanner: Bool) throws {
+            _ = try waitForWindow(pid: pid) { window in
+                guard Self.title(of: window).hasPrefix(document.lastPathComponent),
+                      Self.firstElement(ofRole: kAXTextAreaRole, in: window) == nil,
+                      Self.firstElement(ofRole: "AXWebArea", in: window) != nil else { return false }
+                return (Self.remoteImageControl(RemoteImageSurface.banner.rawValue, in: window) != nil) == showsBanner
+                    && Self.remoteImageControl(RemoteImageSurface.statusMenu.rawValue, in: window) == nil
+            }
+        }
+
+        let editor = try waitForSource(noImages, surface: nil)
+        try replace(noImages, with: withImage, in: editor)
+        _ = try waitForSource(withImage, surface: .banner)
+        try switchMode("2", title: "Preview")
+        try waitForPreview(showsBanner: true)
+
+        try switchMode("3", title: "Side by Side")
+        let splitEditor = try waitForSource(withImage, surface: .banner)
+        try replace(withImage, with: noImages, in: splitEditor)
+        _ = try waitForSource(noImages, surface: nil)
+        try switchMode("2", title: "Preview")
+        try waitForPreview(showsBanner: false)
+
+        try switchMode("1", title: "Edit")
+        let cleanEditor = try waitForSource(noImages, surface: nil)
+        try replace(noImages, with: withImage, in: cleanEditor)
+        let blocked = try waitForWindow(pid: pid) {
+            Self.title(of: $0).hasPrefix(document.lastPathComponent)
+                && Self.remoteImageControl("remote-images-allow", in: $0) != nil
+        }
+        let allow = try XCTUnwrap(Self.remoteImageControl("remote-images-allow", in: blocked))
+        XCTAssertEqual(AXUIElementPerformAction(allow, kAXPressAction as CFString), .success)
+        let prompt = try waitForWindow(pid: pid) { Self.remoteImageControl("remote-images-confirm", in: $0) != nil }
+        let confirm = try XCTUnwrap(Self.remoteImageControl("remote-images-confirm", in: prompt))
+        XCTAssertEqual(AXUIElementPerformAction(confirm, kAXPressAction as CFString), .success)
+        let allowed = try waitForSource(withImage, surface: .statusMenu)
+        try replace(withImage, with: noImages, in: allowed)
+        let withoutImages = try waitForSource(noImages, surface: nil)
+
+        // The status indicator goes away with the last image. The View menu
+        // must still let the user revoke this document's active session grant.
+        try pressRemoteImageAppMenuRevoke(pid: pid)
+        try replace(noImages, with: withImage, in: withoutImages)
+        _ = try waitForSource(withImage, surface: .banner)
+    }
+
     func testRemoteImagePermissionSheetCancelsConfirmsRevokesAndClosesOnReload() throws {
-        // This exercises the native permission UI without an authored URL.
         let document = try makeDocument("notes/RemoteImagePermission.md")
-        let original = "# Permission test\n\nOriginal text.\n"
+        let original = "# Permission test\n\n![Remote](http://localhost:1/permission.png)\n"
         try Data(original.utf8).write(to: document)
         let pid = try launch(recents: [], language: "english", appleLanguages: ["en"])
         try open(document)
@@ -712,19 +876,10 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         let allow = "remote-images-allow"
         let cancel = "remote-images-cancel"
         let confirm = "remote-images-confirm"
-        let revoke = "remote-images-revoke"
-        func attribute(_ name: String, of element: AXUIElement) -> String? {
-            var value: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
-            return value as? String
-        }
-        func control(_ id: String, in root: AXUIElement) -> AXUIElement? {
-            if attribute(kAXIdentifierAttribute, of: root) == id { return root }
-            for child in Self.children(of: root) {
-                if let found = control(id, in: child) { return found }
-            }
-            return nil
-        }
+        let statusMenu = RemoteImageSurface.statusMenu.rawValue
+        let banner = RemoteImageSurface.banner.rawValue
+        let attribute = Self.remoteImageAttribute
+        let control = Self.remoteImageControl
         func sheet(in window: AXUIElement) -> AXUIElement? {
             Self.firstElement(ofRole: kAXSheetRole, in: window)
         }
@@ -732,33 +887,35 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             Self.title(of: window) == document.lastPathComponent
         }
         func press(_ id: String, in root: AXUIElement) throws {
-            let button = try XCTUnwrap(control(id, in: root), id)
-            XCTAssertEqual(attribute(kAXRoleAttribute, of: button), kAXButtonRole)
+            let button = try XCTUnwrap(control(id, root), id)
+            XCTAssertEqual(attribute(kAXRoleAttribute, button), kAXButtonRole)
             XCTAssertEqual(AXUIElementPerformAction(button, kAXPressAction as CFString), .success, id)
         }
-        func expectState(_ id: String, source: String) throws -> AXUIElement {
+        func expectState(allowed: Bool, source: String) throws -> AXUIElement {
+            let id = allowed ? statusMenu : allow
             let window: AXUIElement
             do {
                 window = try waitForWindow(pid: pid) {
-                    guard isDocument($0), sheet(in: $0) == nil, control(id, in: $0) != nil,
+                    guard isDocument($0), sheet(in: $0) == nil, control(id, $0) != nil,
                           let editor = Self.firstElement(ofRole: kAXTextAreaRole, in: $0) else { return false }
-                    return attribute(kAXValueAttribute, of: editor) == source
+                    return attribute(kAXValueAttribute, editor) == source
                 }
             } catch {
                 let current = Self.windows(pid: pid).first(where: isDocument)
                 let editor = current.flatMap { Self.firstElement(ofRole: kAXTextAreaRole, in: $0) }
                 throw GuardFailure("Expected permission control \(id) and source \(source.debugDescription); "
-                    + "actual source \(editor.flatMap { attribute(kAXValueAttribute, of: $0) }?.debugDescription ?? "missing"), "
-                    + "allow=\(current.flatMap { control(allow, in: $0) } != nil), "
-                    + "revoke=\(current.flatMap { control(revoke, in: $0) } != nil), "
+                    + "actual source \(editor.flatMap { attribute(kAXValueAttribute, $0) }?.debugDescription ?? "missing"), "
+                    + "allow=\(current.flatMap { control(allow, $0) } != nil), "
+                    + "status menu=\(current.flatMap { control(statusMenu, $0) } != nil), "
                     + "sheet=\(current.flatMap(sheet(in:)) != nil); \(error)")
             }
-            XCTAssertNil(control(id == allow ? revoke : allow, in: window))
+            XCTAssertNil(control(allowed ? allow : statusMenu, window))
+            XCTAssertEqual(control(banner, window) != nil, !allowed)
             XCTAssertEqual(try Data(contentsOf: document), Data(source.utf8))
             return window
         }
         func openPrompt(in window: AXUIElement) throws -> AXUIElement {
-            let opener = try XCTUnwrap(control(allow, in: window), allow)
+            let opener = try XCTUnwrap(control(allow, window), allow)
             var focusSettable = DarwinBoolean(false)
             if AXUIElementIsAttributeSettable(opener, kAXFocusedAttribute as CFString, &focusSettable) == .success,
                focusSettable.boolValue {
@@ -770,19 +927,19 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
                 guard isDocument($0), let attached = sheet(in: $0) else { return false }
                 var focused: CFTypeRef?
                 AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &focused)
-                guard let focus = Self.element(focused), attribute(kAXIdentifierAttribute, of: focus) == cancel else { return false }
-                return control(cancel, in: attached) != nil && control(confirm, in: attached) != nil
+                guard let focus = Self.element(focused), attribute(kAXIdentifierAttribute, focus) == cancel else { return false }
+                return control(cancel, attached) != nil && control(confirm, attached) != nil
             }
             return try XCTUnwrap(sheet(in: host), "native sheet attached to the fixture window")
         }
 
-        var window = try expectState(allow, source: original)
+        var window = try expectState(allowed: false, source: original)
         try press(cancel, in: openPrompt(in: window))
-        window = try expectState(allow, source: original)
+        window = try expectState(allowed: false, source: original)
         try press(confirm, in: openPrompt(in: window))
-        window = try expectState(revoke, source: original)
-        try press(revoke, in: window)
-        window = try expectState(allow, source: original)
+        window = try expectState(allowed: true, source: original)
+        try pressRemoteImageMenuItem("remote-images-revoke", title: "Block Remote Images", in: window, pid: pid)
+        window = try expectState(allowed: false, source: original)
 
         // A clean external reload changes the document context while the
         // prompt is active. Appending in place gives the watcher one new version.
@@ -794,7 +951,7 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             _ = try writer.seekToEnd()
             try writer.write(contentsOf: Data(addition.utf8))
         }
-        _ = try expectState(allow, source: original + addition)
+        _ = try expectState(allowed: false, source: original + addition)
     }
 
     func testRemoteResourceDetailsReportDoesNotFetchAndClosesOnReload() throws {
@@ -830,19 +987,10 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         let close = "remote-images-details-close"
         let allow = "remote-images-allow"
         let confirm = "remote-images-confirm"
-        let revoke = "remote-images-revoke"
-        func attribute(_ name: String, of element: AXUIElement) -> String? {
-            var value: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
-            return value as? String
-        }
-        func element(_ id: String, in root: AXUIElement) -> AXUIElement? {
-            if attribute(kAXIdentifierAttribute, of: root) == id { return root }
-            for child in Self.children(of: root) {
-                if let found = element(id, in: child) { return found }
-            }
-            return nil
-        }
+        let statusMenu = RemoteImageSurface.statusMenu.rawValue
+        let banner = RemoteImageSurface.banner.rawValue
+        let attribute = Self.remoteImageAttribute
+        let element = Self.remoteImageControl
         func sheet(in window: AXUIElement) -> AXUIElement? {
             Self.firstElement(ofRole: kAXSheetRole, in: window)
         }
@@ -850,14 +998,15 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             Self.title(of: window) == document.lastPathComponent
         }
         func press(_ id: String, in root: AXUIElement) throws {
-            let button = try XCTUnwrap(element(id, in: root), id)
+            let button = try XCTUnwrap(element(id, root), id)
             XCTAssertEqual(AXUIElementPerformAction(button, kAXPressAction as CFString), .success, id)
         }
         func windowWithPolicy(_ id: String, requiresPreview: Bool = false) throws -> AXUIElement {
             do {
                 return try waitForWindow(pid: pid) {
-                    isDocument($0) && sheet(in: $0) == nil && element(id, in: $0) != nil
-                        && element(details, in: $0).map { Self.isEnabled($0) } == true
+                    isDocument($0) && sheet(in: $0) == nil && element(id, $0) != nil
+                        && (element(banner, $0) != nil) == (id == allow)
+                        && (id == statusMenu || element(details, $0).map { Self.isEnabled($0) } == true)
                         && (!requiresPreview || Self.firstElement(ofRole: "AXWebArea", in: $0) != nil)
                 }
             } catch {
@@ -865,23 +1014,27 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             }
         }
         func accessibleText(in root: AXUIElement) -> [String] {
-            [attribute(kAXValueAttribute, of: root) ?? "", Self.title(of: root)]
+            [attribute(kAXValueAttribute, root) ?? "", Self.title(of: root)]
                 + Self.children(of: root).flatMap { accessibleText(in: $0) }
         }
         func openDetails(in window: AXUIElement, origin: String, references: Int) throws -> AXUIElement {
-            try press(details, in: window)
+            if element(statusMenu, window) != nil {
+                try pressRemoteImageMenuItem(details, title: "Details…", in: window, pid: pid)
+            } else {
+                try press(details, in: window)
+            }
             let host = try waitForWindow(pid: pid) {
-                guard isDocument($0), let attached = sheet(in: $0), element(close, in: attached) != nil,
-                      let origins = element("remote-images-origins", in: attached),
-                      let summary = attribute(kAXValueAttribute, of: origins) else { return false }
+                guard isDocument($0), let attached = sheet(in: $0), element(close, attached) != nil,
+                      let origins = element("remote-images-origins", attached),
+                      let summary = attribute(kAXValueAttribute, origins) else { return false }
                 return summary.contains(origin)
             }
             let detailsSheet = try XCTUnwrap(sheet(in: host))
-            let origins = try XCTUnwrap(element("remote-images-origins", in: detailsSheet))
-            let summary = try XCTUnwrap(attribute(kAXValueAttribute, of: origins))
+            let origins = try XCTUnwrap(element("remote-images-origins", detailsSheet))
+            let summary = try XCTUnwrap(attribute(kAXValueAttribute, origins))
             XCTAssertEqual(summary.trimmingCharacters(in: .whitespacesAndNewlines), "\(origin) — \(references)")
             let scope = accessibleText(in: detailsSheet).joined(separator: " ").lowercased()
-            for text in ["css", "svg", "diagrams", "blocked request count and redirect destinations are unknown"] {
+            for text in ["css", "svg", "diagram", "blocked request count and redirect destinations are unknown"] {
                 XCTAssertTrue(scope.contains(text), "Missing inspection limit \(text) in \(scope)")
             }
             return detailsSheet
@@ -907,10 +1060,10 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
 
         try press(allow, in: windowWithPolicy(allow))
         let prompt = try waitForWindow(pid: pid) {
-            isDocument($0) && sheet(in: $0).flatMap { element(confirm, in: $0) } != nil
+            isDocument($0) && sheet(in: $0).flatMap { element(confirm, $0) } != nil
         }
         try press(confirm, in: XCTUnwrap(sheet(in: prompt)))
-        let allowed = try windowWithPolicy(revoke, requiresPreview: true)
+        let allowed = try windowWithPolicy(statusMenu, requiresPreview: true)
         guard waitForRequests({
             let paths = originalServer.requests.compactMap { $0.path.split(separator: "?", maxSplits: 1).first }
             return paths.contains("/direct.png") && paths.contains("/raw.png")
@@ -922,7 +1075,7 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         try press(close, in: allowedDetails)
         assertQuiet(originalServer, after: requestsBeforeInspection)
 
-        try press(revoke, in: windowWithPolicy(revoke))
+        try pressRemoteImageMenuItem("remote-images-revoke", title: "Block Remote Images", in: windowWithPolicy(statusMenu), pid: pid)
         _ = try openDetails(in: windowWithPolicy(allow), origin: originalOrigin, references: 2)
         do {
             let writer = try FileHandle(forWritingTo: document)
@@ -931,11 +1084,11 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             try writer.write(contentsOf: bytes)
             try writer.truncate(atOffset: UInt64(bytes.count))
         }
-        let reloaded = try waitForWindow(pid: pid) {
-            guard isDocument($0), sheet(in: $0) == nil, let editor = Self.firstElement(ofRole: kAXTextAreaRole, in: $0) else { return false }
-            return attribute(kAXValueAttribute, of: editor) == replacement
+        _ = try waitForWindow(pid: pid) {
+            guard isDocument($0), sheet(in: $0) == nil, element(allow, $0) != nil,
+                  let editor = Self.firstElement(ofRole: kAXTextAreaRole, in: $0) else { return false }
+            return attribute(kAXValueAttribute, editor) == replacement
         }
-        XCTAssertNotNil(element(allow, in: reloaded))
         let updated = try openDetails(in: windowWithPolicy(allow), origin: replacementOrigin, references: 1)
         try press(close, in: updated)
         assertQuiet(replacementServer)

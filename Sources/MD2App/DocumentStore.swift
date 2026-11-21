@@ -51,6 +51,12 @@ final class DocumentStore: ObservableObject {
     @Published private(set) var remoteResourceContextToken = UUID()
     @Published private(set) var renderedRemoteResourceContextToken: UUID?
     private var remoteResourceInvalidator: (@MainActor () -> Void)?
+    private var remoteResourceReport = RemoteResourceReport(origins: [], isPartial: false)
+    @Published private var previewDetectedRemoteImage = false
+
+    var hasRemoteImageEvidence: Bool {
+        remoteResourceReport.hasRemoteImages || previewDetectedRemoteImage
+    }
 
     var hasCurrentResourcePreview: Bool {
         renderedRemoteResourceContextToken == remoteResourceContextToken
@@ -62,17 +68,19 @@ final class DocumentStore: ObservableObject {
 
     func inspectRemoteResources() async -> RemoteResourceReport? {
         guard !Task.isCancelled, canInspectRemoteResources else { return nil }
-        let token = remoteResourceContextToken
-        let generation = renderGeneration
-        let body = rendered.body
-        let inspection = Task.detached(priority: .userInitiated) { RemoteResourceReport.inspect(body: body) }
-        let report = await withTaskCancellationHandler {
-            await inspection.value
-        } onCancel: {
-            inspection.cancel()
+        if previewDetectedRemoteImage, !remoteResourceReport.hasRemoteImages {
+            return RemoteResourceReport(origins: remoteResourceReport.origins, isPartial: true)
         }
-        guard resourceContextIsCurrent(token), renderGeneration == generation else { return nil }
-        return report
+        return remoteResourceReport
+    }
+
+    /// Preview observations are advisory. An old render or WebKit host cannot
+    /// affect the current document's controls.
+    func notePreviewRemoteImage(for token: UUID, renderedAt revision: Int) {
+        guard resourceContextIsCurrent(token), hasCurrentResourcePreview,
+              revision == renderedSourceLineRevision, revision == sourceLineRevision,
+              !previewDetectedRemoteImage else { return }
+        previewDetectedRemoteImage = true
     }
 
     /// Called by a native control only. This deliberately bypasses the source
@@ -100,7 +108,7 @@ final class DocumentStore: ObservableObject {
         let allowsImages = remoteImageOverride == .allow || (remoteImageOverride == .inherit && folderAllowsRemoteImages)
         let policy: RemoteResourcePolicy = allowsImages ? .allowRemoteImages : .blocked
         guard policy != remoteResourcePolicy else { return }
-        replaceRemoteResourceContext(policy: policy)
+        replaceRemoteResourceContext(policy: policy, keepingImageEvidence: true)
         renderImmediately()
     }
 
@@ -122,7 +130,8 @@ final class DocumentStore: ObservableObject {
 
     private func replaceRemoteResourceContext(
         policy: RemoteResourcePolicy = .blocked,
-        keepingConversionNotice: Bool = false
+        keepingConversionNotice: Bool = false,
+        keepingImageEvidence: Bool = false
     ) {
         remoteResourceInvalidator?()
         remoteResourceInvalidator = nil
@@ -131,6 +140,10 @@ final class DocumentStore: ObservableObject {
         remoteResourceContextToken = UUID()
         remoteResourcePolicy = policy
         renderedRemoteResourceContextToken = nil
+        if !keepingImageEvidence {
+            remoteResourceReport = RemoteResourceReport(origins: [], isPartial: false)
+            previewDetectedRemoteImage = false
+        }
         renderGeneration &+= 1
         pdfExporter?.cancel()
         documentPrinter?.cancel()
@@ -1674,7 +1687,7 @@ final class DocumentStore: ObservableObject {
         let snapshot = makeRenderSnapshot()
         let worker = renderWorker
         renderTask = Task { [weak self] in
-            let result = await worker.render(snapshot)
+            let (result, report) = await worker.renderForPreview(snapshot)
             guard let self else { return }
             self.refreshInheritedRemoteImages()
             self.renderTask = nil
@@ -1682,6 +1695,12 @@ final class DocumentStore: ObservableObject {
                 self.renderedSourceLineRevision = revision
                 self.renderedTextMutationRevision = mutationRevision
                 self.renderedEditableFormulaLines = Set(result.displayFormulaEdits.keys)
+                // A permission change rebuilds the same body. Retain its
+                // runtime evidence so the status control can revoke the grant.
+                if self.previewDetectedRemoteImage, self.rendered.body != result.body {
+                    self.previewDetectedRemoteImage = false
+                }
+                self.remoteResourceReport = report
                 self.rendered = result
                 self.renderedRemoteResourceContextToken = contextToken
                 self.hasPendingRender = false

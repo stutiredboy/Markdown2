@@ -734,7 +734,7 @@ struct FolderTestApplication {
                 }
             }
             let path = guide.deletingLastPathComponent().path
-            try pastePickerPath(path, in: location)
+            try enterPickerPath(path, in: location)
             try postKey(UInt16(kVK_Return), flags: [], toWindowServer: true)
 
             // On macOS 15 the first Return can precede the path suggestions.
@@ -763,16 +763,46 @@ struct FolderTestApplication {
             (attribute(kAXFocusedAttribute, of: field) as? Bool) == true
     }
 
-    private func pastePickerPath(_ path: String, in location: AXUIElement) throws {
+    private func enterPickerPath(_ path: String, in location: AXUIElement) throws {
         _ = try waitFor("the native Go to Folder field owns keyboard focus") {
             guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
-                  pickerFieldHasFocus(location) else { return nil }
+                  pickerFieldHasFocus(location), value(location) != nil else { return nil }
             return location
         }
+        let previousPath = try XCTUnwrap(value(location))
         // Go to Folder can retain its last path. In that case no edit is
-        // needed, and the existing value cannot confirm a new paste.
-        guard value(location) != path else { return }
+        // needed to submit this test's destination.
+        guard previousPath != path else { return }
 
+        func canSet(_ name: String) -> Bool {
+            var settable = DarwinBoolean(false)
+            return AXUIElementIsAttributeSettable(location, name as CFString, &settable) == .success
+                && settable.boolValue
+        }
+        let canSelect = canSet(kAXSelectedTextRangeAttribute)
+        let canReplace = canSet(kAXSelectedTextAttribute)
+        if !previousPath.isEmpty {
+            if canSelect {
+                var range = CFRange(location: 0, length: previousPath.utf16.count)
+                try set(kAXSelectedTextRangeAttribute, to: XCTUnwrap(AXValueCreate(.cfRange, &range)), on: location)
+            } else {
+                try postKey(UInt16(kVK_ANSI_A), flags: .maskCommand, toWindowServer: true)
+            }
+            _ = try waitFor("the native picker selected its previous path") {
+                guard pickerFieldHasFocus(location),
+                      (attribute(kAXSelectedTextAttribute, of: location) as? String) == previousPath else { return nil }
+                return location
+            }
+        }
+        if canReplace {
+            try set(kAXSelectedTextAttribute, to: path as CFString, on: location)
+            try waitForPickerPath(path, in: location)
+        } else {
+            try pastePickerPath(path, in: location)
+        }
+    }
+
+    private func pastePickerPath(_ path: String, in location: AXUIElement) throws {
         let board = NSPasteboard.general
         let saved = board.pasteboardItems?.map { item in
             item.types.compactMap { type in item.data(forType: type).map { (type, $0) } }
@@ -794,10 +824,21 @@ struct FolderTestApplication {
             throw FolderTestError("Could not put the folder path on the pasteboard")
         }
         writtenChangeCount = board.changeCount
-        try postKey(UInt16(kVK_ANSI_A), flags: .maskCommand, toWindowServer: true)
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+              pickerFieldHasFocus(location) else {
+            throw FolderTestError("The Go to Folder field lost focus before paste")
+        }
         try postKey(UInt16(kVK_ANSI_V), flags: .maskCommand, toWindowServer: true)
+        try waitForPickerPath(path, in: location)
+    }
+
+    private func waitForPickerPath(_ path: String, in location: AXUIElement) throws {
         _ = try waitFor("the picker has received the complete folder path") {
-            value(location) == path ? location : nil
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+                  let field = focusedElement ?? (pickerFieldHasFocus(location) ? location : nil),
+                  attribute(kAXRoleAttribute, of: field) as? String == kAXTextFieldRole,
+                  value(field) == path else { return nil }
+            return field
         }
     }
 

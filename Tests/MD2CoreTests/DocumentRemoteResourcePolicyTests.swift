@@ -364,6 +364,7 @@ struct DocumentRemoteResourcePolicyTests {
         store.open(first)
         await store.flushPendingRender()
         #expect(store.canInspectRemoteResources)
+        #expect(store.hasRemoteImageEvidence)
         let blocked = try #require(await store.inspectRemoteResources())
         #expect(blocked.origins.map(\.displayName) == ["https://original.invalid"])
         #expect(blocked.origins.map(\.referenceCount) == [2])
@@ -400,6 +401,38 @@ struct DocumentRemoteResourcePolicyTests {
         #expect(store.text == replacementText)
         #expect(!store.isDirty)
         #expect(!store.undoManager.canUndo)
+    }
+
+    @Test func previewImageEvidenceSurvivesPermissionChangesAndRejectsStalePages() async {
+        let store = DocumentStore()
+        defer { store.closeDocument(discardRecovery: true) }
+        store.text = "[Ordinary link](https://example.invalid/image.png)"
+        await store.flushPendingRender()
+        #expect(!store.hasRemoteImageEvidence)
+
+        let blockedToken = store.remoteResourceContextToken
+        let revision = store.renderedSourceLineRevision
+        store.notePreviewRemoteImage(for: blockedToken, renderedAt: revision)
+        #expect(store.hasRemoteImageEvidence)
+        #expect(await store.inspectRemoteResources()?.isPartial == true)
+
+        store.setRemoteImagesAllowed(true)
+        await store.flushPendingRender()
+        #expect(store.hasRemoteImageEvidence)
+        #expect(store.remoteResourcePolicy == .allowRemoteImages)
+
+        store.setRemoteImagesAllowed(false)
+        await store.flushPendingRender()
+        #expect(store.hasRemoteImageEvidence)
+        #expect(store.remoteResourcePolicy == .blocked)
+
+        let currentToken = store.remoteResourceContextToken
+        store.text = "Images removed."
+        await store.flushPendingRender()
+        #expect(!store.hasRemoteImageEvidence)
+        store.notePreviewRemoteImage(for: currentToken, renderedAt: revision)
+        store.notePreviewRemoteImage(for: blockedToken, renderedAt: store.renderedSourceLineRevision)
+        #expect(!store.hasRemoteImageEvidence)
     }
 
     @Test func offlineWorkerNeverInheritsAllowedSnapshot() async {

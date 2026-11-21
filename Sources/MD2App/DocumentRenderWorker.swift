@@ -21,6 +21,11 @@ actor DocumentRenderWorker {
         self.beforeRendering = beforeRendering
     }
 
+    func renderForPreview(_ snapshot: DocumentRenderSnapshot) async -> (RenderedDocument, RemoteResourceReport) {
+        let rendered = await render(snapshot)
+        return (rendered, RemoteResourceReport.inspect(body: rendered.body))
+    }
+
     /// Rendering, local file reads, image decoding and base64 encoding all stay
     /// on this worker; bounded image validation must not block editor input.
     func renderSelfContainedHTML(

@@ -3,7 +3,7 @@ import Testing
 @testable import MD2App
 
 struct RemoteResourceReportTests {
-    @Test func countsRenderedImagesButLeavesCodeLinksAndDiagramInternalsOutsideScope() {
+    @Test func countsRenderedImagesAndRecognizableDiagramImagesButLeavesCodeAndLinksOut() {
         let source = #"""
         ![inline](HTTPS://Example.test:443/one.png?token=secret#part)
 
@@ -32,11 +32,82 @@ struct RemoteResourceReportTests {
             let rendered = MarkdownRenderer().render(source, assetMode: .appScheme, remoteResourcePolicy: policy)
             let report = RemoteResourceReport.inspect(body: rendered.body)
             #expect(report.origins == [
+                .init(displayName: "https://diagram.test", referenceCount: 1),
                 .init(displayName: "https://example.test", referenceCount: 3),
                 .init(displayName: "https://other.test:444", referenceCount: 1)
             ])
+            #expect(report.hasRemoteImages)
             #expect(!report.isPartial)
         }
+    }
+
+    @Test(arguments: [
+        "",
+        "Plain text. https://plain.test/image.png",
+        "![local](attachments/local.png)",
+        "[link](https://link.test/image.png) <https://autolink.test/image.png>",
+        #"<img SRC="attachments/local.png" TITLE='src="HTTPS://title.test/image.png"' ALT='src="HTTP://alt.test/image.png"'>"#,
+        #"<img alt="https://alt.test/image.png" src="data:image/png;base64,AAAA">"#,
+        #"`<img src="https://example.test/image.png">`"#,
+        "~~~mermaid\ngraph TD\nA[plain] --> B[plain]\nclick A \"https://link.test/image.png\"\n~~~",
+    ])
+    func leavesDocumentsWithoutRemoteImagesQuiet(_ source: String) {
+        let rendered = MarkdownRenderer().render(source, assetMode: .appScheme)
+        let report = RemoteResourceReport.inspect(body: rendered.body)
+        #expect(!report.hasRemoteImages)
+        #expect(report.origins.isEmpty)
+        #expect(!report.isPartial)
+    }
+
+    @Test func handlesSupportedAlternateCSSSVGAndPosterImageDeclarations() {
+        let report = RemoteResourceReport.inspect(body: #"""
+        <picture><source srcset="data:image/svg+xml,https://data.test/image.png 1x, https://cdn.test/large.png 2x">
+            <img srcset="local.png, https://cdn.test/small.png" alt="src='https://alt.test/false.png'">
+        </picture>
+        <div style="background-image:url(&quot;https://css.test/bg.png&quot;); content:'url(https://literal.test/example.png)'"></div>
+        <style>@import url(https://styles.test/import.css);
+            @font-face{src:url(https://font.test/font.woff)}
+            /* url(https://comment.test/image.png) */
+            .image{mask-image:\75 rl(\68 ttps://css.test/mask.svg)}
+        </style>
+        <svg><image xlink:href="http://svg.test/image.png"/>
+            <feImage href="http://svg.test/filter.png" xlink:href="http://ignored.test/duplicate.png" />
+            <rect fill="url(https://svg.test/paint.svg#color)" stroke="url(#local-paint)" />
+            <a href="https://link.test/image.svg">link</a>
+        </svg>
+        <video poster='https://poster.test/poster.png' src='https://video.test/video.mp4'></video>
+        <!-- <img src="https://comment.test/image.png"> -->
+        """#)
+        #expect(report.hasRemoteImages)
+        #expect(report.origins == [
+            .init(displayName: "http://svg.test", referenceCount: 2),
+            .init(displayName: "https://cdn.test", referenceCount: 2),
+            .init(displayName: "https://css.test", referenceCount: 2),
+            .init(displayName: "https://poster.test", referenceCount: 1),
+            .init(displayName: "https://svg.test", referenceCount: 1)
+        ])
+        #expect(!report.isPartial)
+    }
+
+    @Test func countsCSSImagesInDiagramStyleDeclarations() {
+        let rendered = MarkdownRenderer().render("""
+        ~~~mermaid
+        graph TD
+        A[label]
+        style A fill:url(https://diagram.test/paint.svg)
+        ~~~
+        """, assetMode: .appScheme)
+        let report = RemoteResourceReport.inspect(body: rendered.body)
+        #expect(report.origins == [.init(displayName: "https://diagram.test", referenceCount: 1)])
+        #expect(report.hasRemoteImages)
+    }
+
+    @Test func flagsAnAmbiguousRemoteURLWithoutReportingAGuessedOrigin() {
+        let rendered = MarkdownRenderer().render(#"<img src="https:/unusual.test/image.png">"#, assetMode: .appScheme)
+        let report = RemoteResourceReport.inspect(body: rendered.body)
+        #expect(report.hasRemoteImages)
+        #expect(report.isPartial)
+        #expect(report.origins.isEmpty)
     }
 
     @Test func normalizesEquivalentOriginsAndKeepsDistinctSchemesPortsAndTrailingDot() {
@@ -68,6 +139,7 @@ struct RemoteResourceReportTests {
         <img src="https:/single-slash.test/x"><img src="https://[invalid]/x">
         """#)
         #expect(report.origins == [.init(displayName: "https://safe.test", referenceCount: 1)])
+        #expect(report.hasRemoteImages)
         #expect(report.isPartial)
     }
 

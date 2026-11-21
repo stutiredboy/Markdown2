@@ -4,24 +4,40 @@ Markdown2 blocks automatic HTTP(S) resources from document content by default.
 Local images and the bundled math, diagram, font and style assets keep working.
 Ordinary links remain available when you choose to open them.
 
+## Where the controls appear
+
+- A document with detected remote image references shows a banner when its
+  image-loading policy is blocked.
+- When loading is allowed, the green **Remote Images** globe in the status bar
+  opens the permission menu. The menu shows whether permission comes from this
+  session, the folder or a document override.
+- Documents without detected image references show neither indicator. The
+  **View → Remote Images** menu also provides the document controls, including
+  revocation after the last reference has been removed from an allowed document.
+
+Detection follows the current render in Write, Split and Read mode. It works
+offline. Ordinary hyperlinks and local or data images leave the indicators hidden.
+Preview can also report a blocked HTTP(S) image produced at runtime.
+
 ## Inspect declared image origins
 
-Choose **Details…** in the document's **Remote Images** bar in Write, Split or
-Read mode. The report shows the scheme, host and nondefault port of supported
-absolute HTTP(S) image sources in the current rendered body. Markdown reference
-images and supported HTML images count too. Each rendered image element counts
-once, including repeated uses of the same address. Credentials, paths, queries
+Choose **Details…** in the banner, the status bar menu or **View → Remote Images**.
+The report shows the scheme, host and nondefault port of supported absolute
+HTTP(S) image references in the current rendered body. It counts recognized
+references, including repeated uses of an address. Credentials, paths, queries
 and fragments are excluded. Origins appear as selectable text.
 
-Actual blocked-request counts and redirect destinations are unknown. Alternate
-image sources, CSS resources, resources inside SVG and assets created by diagram
-engines fall outside the inventory. The sheet marks the list incomplete when it
+The inspection covers Markdown and reference images, plus supported rendered
+HTML, responsive image candidates, video posters, SVG, CSS image URLs and
+image references that can be read from diagram source. Runtime-only evidence
+can make the list incomplete. Actual blocked-request counts and redirect
+destinations are unknown. The sheet also marks the list incomplete when it
 encounters an ambiguous or unsupported HTTP(S) address or reaches an inspection
-limit (2 MiB of rendered body, 8,192 UTF-16 units per image source, or 128 origins).
+limit (2 MiB of rendered body, 8,192 UTF-16 units per URL, or 128 origins).
 
-Opening Details reads an existing render in memory. It issues no requests and
-leaves the source, Undo history and permission intact. Reloading the document or
-changing its image permission dismisses the sheet and invalidates its report.
+Opening Details reads the current render's report in memory. It issues no
+requests and leaves the source, Undo history and permission intact. Reloading
+the document or changing its image permission dismisses the sheet.
 
 ## Allow images for one document
 
@@ -52,8 +68,8 @@ that macOS makes no DNS or other platform network requests.
 ## Allow images for a folder
 
 With a folder open, choose **Allow for This Folder…** from the Files sidebar’s
-folder menu or the **Permissions** menu in an eligible document’s Remote Images
-bar. Confirm the full folder path. The grant covers verified Markdown files in
+folder menu or the **Permissions…** menu in an eligible document’s banner.
+Confirm the full folder path. The grant covers verified Markdown files in
 that folder and its subfolders while they belong to its tab group. Files from
 the tree or Quick Open can inherit the grant as they open. Only the selected
 preview loads inherited images. Choosing the folder or granting permission
@@ -71,7 +87,7 @@ is kept for that verified path during the folder session, including when you
 preview it again. **Use Folder Permission** clears the exception. Leaving the
 tab group or losing the verified file drops its inherited permission.
 
-**Revoke Folder Permission** removes both the live and remembered grant.
+**Remove Folder Permission** removes both the live and remembered grant.
 Removing or clearing the favorite also revokes it. Work that depends on the
 folder grant is canceled, including preview, PDF and Print. An independent
 document grant keeps its usual lifetime. Scripts and other remote resource

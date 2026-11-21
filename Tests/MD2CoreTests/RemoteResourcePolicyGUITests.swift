@@ -34,6 +34,38 @@ final class RemoteResourcePolicyGUITests: XCTestCase, RenderedPageTesting {
         XCTAssertFalse(web.configuration.websiteDataStore.isPersistent)
     }
 
+    @MainActor func testDynamicallyBlockedImageReportsTheDisplayedRevisionWithoutFetching() throws {
+        let server = try ResourceRequestServer()
+        defer { server.stop() }
+        XCTAssertTrue(spin { server.port != nil })
+        try positiveControl(server)
+
+        let revision = 42
+        let host = ResourcePreviewHost(markdown: "# No authored remote images", policy: .blocked,
+                                       sourceLineRevision: revision)
+        defer { host.close() }
+        let web = try host.ready()
+        _ = try js("""
+        const local = new Image();
+        local.src = 'missing-local-image.png';
+        document.querySelector('main').appendChild(local);
+        true
+        """, in: web)
+        XCTAssertTrue(try waitFor("[...document.querySelectorAll('.md2-broken-image')].some(i => i.textContent.includes('missing-local-image.png'))", in: web))
+        XCTAssertEqual(host.detectedRemoteImageRevisions, [])
+
+        let path = "/dynamic-\(UUID())/blocked.png"
+        _ = try js("""
+        const remote = new Image();
+        remote.src = '\(server.base + path)';
+        document.querySelector('main').appendChild(remote);
+        true
+        """, in: web)
+        XCTAssertTrue(spin { host.detectedRemoteImageRevisions == [revision] })
+        XCTAssertTrue((try js("document.querySelector('main').textContent", in: web) as? String)?.contains(path) == true)
+        XCTAssertFalse(server.requests.contains { $0.path == path })
+    }
+
     @MainActor func testGrantLoadsImageClassAndRedirectsButNoOtherResourceClass() throws {
         let server = try ResourceRequestServer()
         defer { server.stop() }
@@ -324,13 +356,18 @@ final class RemoteResourcePolicyGUITests: XCTestCase, RenderedPageTesting {
     let window: NSWindow
     let hosting: NSHostingView<MarkdownPreviewView>
     var token = UUID()
+    private let sourceLineRevision: Int
+    private(set) var detectedRemoteImageRevisions: [Int] = []
     var invalidator: (@MainActor () -> Void)?
     var web: WKWebView? { find(hosting) }
     var coordinator: MarkdownPreviewView.Coordinator? { web?.navigationDelegate as? MarkdownPreviewView.Coordinator }
 
-    init(markdown: String, policy: RemoteResourcePolicy, renderedPolicy: RemoteResourcePolicy? = nil) {
+    init(markdown: String, policy: RemoteResourcePolicy, renderedPolicy: RemoteResourcePolicy? = nil,
+         sourceLineRevision: Int = 0) {
         _ = NSApplication.shared
-        hosting = NSHostingView(rootView: Self.preview(markdown, policy: policy, renderedPolicy: renderedPolicy, token: token))
+        self.sourceLineRevision = sourceLineRevision
+        hosting = NSHostingView(rootView: Self.preview(markdown, policy: policy, renderedPolicy: renderedPolicy,
+                                                       token: token, revision: sourceLineRevision))
         window = NSWindow(contentRect: NSRect(x: -30_000, y: -30_000, width: 800, height: 600), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = hosting; window.orderFrontRegardless()
         show(markdown, policy: policy, renderedPolicy: renderedPolicy)
@@ -338,8 +375,10 @@ final class RemoteResourcePolicyGUITests: XCTestCase, RenderedPageTesting {
 
     func show(_ markdown: String, policy: RemoteResourcePolicy, renderedPolicy: RemoteResourcePolicy? = nil, token: UUID? = nil) {
         if let token { self.token = token }
-        var view = Self.preview(markdown, policy: policy, renderedPolicy: renderedPolicy, token: self.token)
+        var view = Self.preview(markdown, policy: policy, renderedPolicy: renderedPolicy,
+                                token: self.token, revision: sourceLineRevision)
         view.onRegisterResourceInvalidator = { [weak self] in self?.invalidator = $0 }
+        view.onRemoteImageDetected = { [weak self] in self?.detectedRemoteImageRevisions.append($0) }
         hosting.rootView = view
         // SwiftUI may have built its initial host before the registration closure
         // was replaced. This invokes the exact production coordinator primitive.
@@ -357,11 +396,12 @@ final class RemoteResourcePolicyGUITests: XCTestCase, RenderedPageTesting {
 
     func close() { if let web { coordinator?.invalidateResourceContext(in: web) }; window.orderOut(nil); window.contentView = nil }
 
-    private static func preview(_ text: String, policy: RemoteResourcePolicy, renderedPolicy: RemoteResourcePolicy?, token: UUID) -> MarkdownPreviewView {
+    private static func preview(_ text: String, policy: RemoteResourcePolicy, renderedPolicy: RemoteResourcePolicy?,
+                                token: UUID, revision: Int) -> MarkdownPreviewView {
         let rendered = MarkdownRenderer().render(text, assetMode: .appScheme, remoteResourcePolicy: renderedPolicy ?? policy)
         return MarkdownPreviewView(html: rendered.html, bodyHTML: rendered.body, baseURL: nil,
             remoteResourcePolicy: policy, remoteResourceContextToken: token, liveUpdate: true,
-            jumpHeadingID: .constant(nil), jumpFraction: .constant(nil), jumpAnchor: .constant(nil),
+            sourceLineRevision: revision, jumpHeadingID: .constant(nil), jumpFraction: .constant(nil), jumpAnchor: .constant(nil),
             findQuery: .constant(""), findNavigation: .constant(nil), focusToken: UUID())
     }
 

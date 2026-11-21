@@ -93,7 +93,7 @@ final class WebDocumentLoader {
             for script in retained { controller.addUserScript(script) }
             controller.addUserScript(WKUserScript(
                 source: "\(marker) window.__md2RemoteImagesAllowed = \(remoteResourcePolicy == .allowRemoteImages ? "true" : "false");",
-                injectionTime: .atDocumentStart, forMainFrameOnly: true))
+                injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .defaultClient))
             // Install the new restriction before removing the preceding one.
             if remoteResourcePolicy == .allowRemoteImages {
                 controller.add(rules.images)
