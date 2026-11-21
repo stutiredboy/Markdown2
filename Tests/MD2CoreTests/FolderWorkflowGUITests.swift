@@ -551,7 +551,8 @@ struct FolderTestApplication {
     private let accessibility: AXUIElement
 
     static func launch(
-        in directory: URL, arguments: [String], presentationMode: EditorMode = .write
+        in directory: URL, arguments: [String], presentationMode: EditorMode = .write,
+        favoriteFolderPaths: [String] = []
     ) async throws -> Self {
         let priorApplication = NSWorkspace.shared.frontmostApplication
         let identifier = "dev.codex.md2.folder-test.\(UUID().uuidString.lowercased())"
@@ -566,6 +567,7 @@ struct FolderTestApplication {
             "MD2.ShowsOutlineByDefault": false, "AppleWindowTabbingMode": "manual",
             "MD2.RestoresWindowsOnLaunch": false, "MD2.OpensBlankDocumentOnLaunch": false
         ], forName: identifier)
+        UserDefaultsFavoriteFoldersRecorder(defaults: defaults).favoriteFolderPaths = favoriteFolderPaths
         defaults.synchronize()
         do {
             return try await launch(at: appURL, identifier: identifier, arguments: arguments,
@@ -593,10 +595,15 @@ struct FolderTestApplication {
                     bundleIdentifier: identifier, appURL: appURL, accessibility: accessibility)
     }
 
-    func relaunch(arguments: [String] = []) async throws -> Self {
+    func relaunch(arguments: [String] = [], favoriteFolderPaths: [String]? = nil) async throws -> Self {
         let quitRequested = process.terminate()
         guard waitForExit(timeout: 10) else {
             throw FolderTestError("The isolated app did not quit (quit requested: \(quitRequested)). Windows: \(windows.map(title))")
+        }
+        if let favoriteFolderPaths {
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: bundleIdentifier))
+            UserDefaultsFavoriteFoldersRecorder(defaults: defaults).favoriteFolderPaths = favoriteFolderPaths
+            defaults.synchronize()
         }
         return try await Self.launch(at: appURL, identifier: bundleIdentifier, arguments: arguments,
                                      priorApplication: priorApplication)

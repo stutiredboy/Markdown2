@@ -122,18 +122,19 @@ final class FolderRemoteImagesGUITests: XCTestCase {
         let revoked = try fixture.note("Favorite Workspace/Revoked.md", "favorite-revoked")
         let afterRemoval = try fixture.note("Favorite Workspace/After Removal.md", "favorite-removed")
         let reopened = try fixture.note("Favorite Workspace/Reopened.md", "favorite-reopened")
-        let directory = guide.deletingLastPathComponent()
+        let directory = try FolderIndex.authorize(guide.deletingLastPathComponent()).url
         let favoriteName = directory.lastPathComponent
-        let anchor = directory.appending(path: "Anchor.md")
-        try "# Folder anchor\n".write(to: anchor, atomically: true, encoding: .utf8)
-        // A document-backed picker starts at its parent, so this permissions
-        // test does not depend on the system Go to Folder completion sheet.
-        var app = try await FolderTestApplication.launch(in: fixture.directory, arguments: [anchor.path],
-                                                         presentationMode: .split)
+        // Seed the favorite path so the test can use the real landing without
+        // depending on the system Go to Folder completion sheet.
+        var app = try await FolderTestApplication.launch(in: fixture.directory, arguments: [],
+                                                         presentationMode: .split, favoriteFolderPaths: [directory.path])
         defer { app.close() }
 
-        let workspace = try app.chooseDocumentFolder(containing: anchor)
-        try app.grantFolderImages(from: .sidebar, in: workspace)
+        try app.press(app.favoriteFolderItem(favoriteName))
+        let initialLanding = try app.waitForFolder(containing: guide)
+        try app.press(app.element("folder-favorite-toggle", in: initialLanding))
+        _ = try app.favoriteFolderItem("No Favorite Folders", enabled: false)
+        try app.grantFolderImages(from: .sidebar, in: initialLanding)
         _ = try app.openFolderNote(guide)
         try await fixture.waitForRequest("favorite-initial")
         let granted = try app.documentWindow(guide, focused: true)
@@ -183,8 +184,11 @@ final class FolderRemoteImagesGUITests: XCTestCase {
         try app.waitForRenderedImageFixture("favorite-removed", in: removed)
         fixture.assertQuiet("favorite-active-after-removal", "favorite-removed")
 
-        app = try await app.relaunch(arguments: [anchor.path])
-        _ = try app.chooseDocumentFolder(containing: anchor)
+        // Restore only the favorite path. Any orphaned image grant would
+        // still be present and would fetch on this fresh open.
+        app = try await app.relaunch(favoriteFolderPaths: [directory.path])
+        try app.press(app.favoriteFolderItem(favoriteName))
+        _ = try app.waitForFolder(containing: guide)
         let reopenedWindow = try app.openFolderNote(reopened)
         try app.waitForRenderedImageFixture("favorite-reopened", in: reopenedWindow)
         fixture.assertQuiet("favorite-reopened")
