@@ -114,11 +114,9 @@ enum DirectLaunchBootstrap {
         currentDirectoryPath: String = FileManager.default.currentDirectoryPath
     ) -> [String] {
         let currentDirectoryURL = URL(fileURLWithPath: currentDirectoryPath, isDirectory: true)
-        return arguments.map { argument in
-            guard !argument.isEmpty, !argument.hasPrefix("-") else {
-                return argument
-            }
-
+        var normalized = arguments
+        for index in documentArgumentIndices(arguments) {
+            let argument = arguments[index]
             let expandedPath = (argument as NSString).expandingTildeInPath
             let url: URL
             if expandedPath.hasPrefix("/") {
@@ -126,8 +124,29 @@ enum DirectLaunchBootstrap {
             } else {
                 url = currentDirectoryURL.appendingPathComponent(expandedPath)
             }
-            return url.standardizedFileURL.path
+            normalized[index] = url.standardizedFileURL.path
         }
+        return normalized
+    }
+
+    static func documentArgumentIndices(_ arguments: [String]) -> [Int] {
+        var indices: [Int] = []
+        var isOptionValue = false
+        var pathsOnly = false
+        for (index, argument) in arguments.enumerated() {
+            if isOptionValue {
+                isOptionValue = false
+            } else if !pathsOnly && argument == "--" {
+                pathsOnly = true
+            } else if !pathsOnly && argument.hasPrefix("-") {
+                // Cocoa preference overrides use `-key value`. Long flags
+                // and Launch Services' process serial number stand alone.
+                isOptionValue = !argument.hasPrefix("--") && !argument.hasPrefix("-psn_")
+            } else if !argument.isEmpty {
+                indices.append(index)
+            }
+        }
+        return indices
     }
 }
 

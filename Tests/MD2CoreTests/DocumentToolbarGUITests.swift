@@ -296,6 +296,8 @@ private final class ToolbarWindowHarness {
         )
         window.isReleasedWhenClosed = false
         window.animationBehavior = .none
+        window.title = store.displayTitle
+        window.representedURL = store.fileURL
         window.contentView = NSHostingView(
             rootView: ContentView(document: store, settings: settings, onOpen: {})
         )

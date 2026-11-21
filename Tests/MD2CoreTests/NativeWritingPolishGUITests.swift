@@ -79,7 +79,12 @@ final class NativeWritingPolishGUITests: XCTestCase {
                     if let sourceOffset { XCTAssertGreaterThan(sourceOffset, 250) }
                     let preview = activePreview(in: harness)
                     XCTAssertEqual(preview != nil, mode != .write)
-                    let previewOffset = try preview.map { try XCTUnwrap(harness.js("scrollY", $0) as? Double) }
+                    let previewOffset = try preview.map { web in
+                        if mode == .split {
+                            return try settledPreviewScroll(in: harness, web: web)
+                        }
+                        return try XCTUnwrap(harness.js("scrollY", web) as? Double)
+                    }
                     for enabled in [true, false] {
                         harness.settings.usesTypewriterScrolling = enabled
                         harness.spin()
@@ -102,6 +107,25 @@ final class NativeWritingPolishGUITests: XCTestCase {
                 try harness.press(.closeFind)
             }
         }
+    }
+
+    @MainActor
+    private func settledPreviewScroll(in harness: InteractionTestWindow, web: WKWebView) throws -> Double {
+        // The preceding source scroll asynchronously drives the preview. Take
+        // the baseline after that follow has settled, before toggling typewriter.
+        var offset: Double?
+        var changedAt = ContinuousClock.now
+        var settled = false
+        harness.spin(until: {
+            guard let current = (try? harness.js("scrollY", web)) as? Double else { return false }
+            if offset != current {
+                offset = current
+                changedAt = .now
+            }
+            settled = changedAt.duration(to: .now) >= .milliseconds(350)
+            return settled
+        })
+        return try XCTUnwrap(settled ? offset : nil, "the split preview never settled after scrolling the source")
     }
 
     @MainActor

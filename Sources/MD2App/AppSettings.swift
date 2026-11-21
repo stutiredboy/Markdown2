@@ -38,6 +38,10 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    @Published var preferTabsForDocuments: Bool {
+        didSet { defaults.set(preferTabsForDocuments, forKey: Keys.preferTabsForDocuments) }
+    }
+
     @Published private(set) var modeShortcuts: ModeShortcutConfiguration {
         didSet {
             guard let data = try? JSONEncoder().encode(modeShortcuts) else { return }
@@ -165,6 +169,9 @@ final class AppSettings: ObservableObject {
 
         let newModeValue = defaults.string(forKey: Keys.newDocumentMode) ?? EditorMode.write.rawValue
         newDocumentMode = EditorMode(rawValue: newModeValue) ?? .write
+
+        preferTabsForDocuments = defaults.object(forKey: Keys.preferTabsForDocuments) == nil
+            || defaults.bool(forKey: Keys.preferTabsForDocuments)
 
         if let data = defaults.data(forKey: Keys.modeShortcuts),
            let decoded = try? JSONDecoder().decode(ModeShortcutConfiguration.self, from: data),
@@ -362,6 +369,7 @@ private enum Keys {
     static let language = "MD2.Language"
     static let defaultMode = "MD2.DefaultMode"
     static let newDocumentMode = "MD2.NewDocumentMode"
+    static let preferTabsForDocuments = "MD2.PreferTabsForDocuments"
     static let modeShortcuts = "MD2.ModeShortcuts"
     static let usesTypewriterScrolling = "MD2.UsesTypewriterScrolling"
     static let showsOutlineByDefault = "MD2.ShowsOutlineByDefault"
@@ -468,6 +476,7 @@ enum L10nKey: String, CaseIterable, Sendable {
     case chineseSimplified
     case defaultOpenMode
     case newDocumentMode
+    case preferTabsForDocuments
     case modeShortcuts
     case resetModeShortcuts
     case clickToRecordShortcut
@@ -806,6 +815,7 @@ enum L10n {
         .chineseSimplified: "Simplified Chinese",
         .defaultOpenMode: "Mode When Opening a File",
         .newDocumentMode: "Mode for New Documents",
+        .preferTabsForDocuments: "Prefer Tabs for Documents",
         .modeShortcuts: "Mode Shortcuts",
         .resetModeShortcuts: "Reset Shortcuts",
         .clickToRecordShortcut: "Click to record a shortcut",
@@ -1210,6 +1220,7 @@ enum L10n {
         .chineseSimplified: "简体中文",
         .defaultOpenMode: "打开文件时的模式",
         .newDocumentMode: "新建文档时的模式",
+        .preferTabsForDocuments: "优先在标签页中打开文稿",
         .modeShortcuts: "模式快捷键",
         .resetModeShortcuts: "重置快捷键",
         .clickToRecordShortcut: "点击录制快捷键",

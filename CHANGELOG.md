@@ -10,11 +10,15 @@
 
 ### Changed
 
+- Open independent documents together in native tabs, separate from the folder browser. Turn off **Prefer Tabs for Documents** in General settings to open them in separate windows.
+
 - Show allowed remote images with a green globe and blocked remote images with a gray slashed globe in the document bar and Files sidebar.
 
 - Browse files in a collapsible Files and Outline sidebar. Click a file or use Up and Down in the tree to skim in one native preview tab. Double-click, press Return, or edit to keep the file open as a regular tab. Return to the tree with Shift+Cmd+B. Folder indexing now refreshes on filesystem changes or on request.
 
 ### Fixed
+
+- Show the filename in the title bar when the tab bar is hidden and on the tab when it is shown. The first folder preview uses the single-document title bar, and a second document reveals the tabs.
 
 - Open folders to the file tree and an empty document area when no document is selected. The first file takes over the window without creating an Untitled tab.
 

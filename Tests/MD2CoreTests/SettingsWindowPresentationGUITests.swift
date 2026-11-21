@@ -160,12 +160,18 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
                             in: try waitForRecord(stage: "didFinishLaunching"))
     }
 
-    func testArgumentLaunchOpensOnlyRequestedDocumentAndRetainsOtherDrafts() throws {
+    func testArgumentLaunchOpensRequestedDocumentsInTabsAndRetainsOtherDrafts() throws {
+        try requireAccessibilityTrust()
         let records = try seedPreviousSession()
         let requested = temporaryRoot.appendingPathComponent("Requested.md")
+        let second = temporaryRoot.appendingPathComponent("Second Request.md")
         try "# Requested\n".write(to: requested, atomically: true, encoding: .utf8)
-        let app = try launchApp(arguments: [requested.path])
-        assertOnlyDocuments([requested.lastPathComponent], in: try waitForRecord(stage: "didFinishLaunching"))
+        try "# Second requested\n".write(to: second, atomically: true, encoding: .utf8)
+        let app = try launchApp(arguments: [requested.path, second.path])
+        let titles = [requested.lastPathComponent, second.lastPathComponent]
+        assertOnlyDocuments(titles, in: try waitForRecord(stage: "didFinishLaunching"))
+        let selected = try assertFocusedDocument(second, pid: app.processIdentifier)
+        XCTAssertEqual(Self.nativeTabs(in: selected).map(Self.title(of:)).sorted(), titles.sorted())
         try terminate(app)
         for (url, original) in records { XCTAssertEqual(try Data(contentsOf: url), original) }
     }
@@ -234,7 +240,7 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
         }
     }
 
-    func testFinderOpensAndReopensTheRequestedDocumentAmongSeveralWindows() throws {
+    func testFinderOpensAndReselectsTheRequestedDocumentAmongSeveralTabs() throws {
         try requireAccessibilityTrust()
         let app = try launchApp(arguments: [fixtureURL.path])
         _ = try waitForRecord(stage: "didFinishLaunching")
@@ -384,6 +390,40 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
         try assertNoSettingsWindow(in: record)
     }
 
+    func testRestoringMultipleDocumentsUsesTheFirstWindowSizeForTheTabGroup() throws {
+        try requireAccessibilityTrust()
+        Self.writeGuardPreferences([
+            "MD2.RestoresWindowsOnLaunch": true, "NSQuitAlwaysKeepsWindows": true,
+            "MD2.DefaultMode": EditorMode.write.rawValue, "MD2.ShowsOutlineByDefault": false
+        ])
+        let other = temporaryRoot.appendingPathComponent("Other.md")
+        try "# Other\n".write(to: other, atomically: true, encoding: .utf8)
+        for (index, url) in [fixtureURL!, other].enumerated() {
+            let frame = index == 0 ? "24 60 890 610 0 0 1024 768 " : "45 70 970 675 0 0 1024 768 "
+            var snapshot = DocumentRecoverySnapshot(id: UUID(), text: "", fileURL: url,
+                identity: DocumentFileIdentity(url: url), format: MarkdownFileFormat(),
+                fingerprint: DocumentFileFingerprint.current(at: url), isDirty: false, windowFrame: frame)
+            snapshot.updatedAt = Date(timeIntervalSince1970: TimeInterval(index))
+            try seedSnapshot(snapshot)
+        }
+
+        let app = try launchApp(arguments: [])
+        let titles = [fixtureURL.lastPathComponent, other.lastPathComponent]
+        assertOnlyDocuments(titles, in: try waitForRecord(stage: "didFinishLaunching"))
+        let selected = try assertFocusedDocument(other, pid: app.processIdentifier)
+        let tabs = Self.nativeTabs(in: selected)
+        XCTAssertEqual(tabs.map(Self.title(of:)).sorted(), titles.sorted())
+        let lastFrame = try XCTUnwrap(Self.windowFrame(titled: other.lastPathComponent, pid: app.processIdentifier))
+        XCTAssertEqual(lastFrame.width, 890, accuracy: 2, "the second saved frame must not resize the tab group")
+
+        let firstTab = try XCTUnwrap(tabs.first { Self.title(of: $0) == fixtureURL.lastPathComponent })
+        XCTAssertEqual(AXUIElementPerformAction(firstTab, kAXPressAction as CFString), .success)
+        try assertFocusedDocument(fixtureURL, pid: app.processIdentifier)
+        let firstFrame = try XCTUnwrap(Self.windowFrame(titled: fixtureURL.lastPathComponent, pid: app.processIdentifier))
+        XCTAssertEqual(firstFrame.width, lastFrame.width, accuracy: 2)
+        XCTAssertEqual(firstFrame.height, lastFrame.height, accuracy: 2)
+    }
+
     func testUntitledRecoverySurvivesForcedTerminationAndRelaunch() throws {
         // Seed the durable record produced by DocumentStore's independently
         // tested throttled writer; then exercise two real application launches.
@@ -425,8 +465,7 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
         }
         let app = try launchApp(arguments: [])
         let record = try waitForRecord(stage: "didFinishLaunching")
-        XCTAssertEqual(record.windows.filter { $0.isVisible && $0.title.contains(fixtureURL.lastPathComponent) }.count, 1)
-        XCTAssertEqual(record.windows.filter { $0.isVisible && $0.title == "Untitled.md *" }.count, 1)
+        assertOnlyDocuments([fixtureURL.lastPathComponent + " *", "Untitled.md *"], in: record)
         try terminate(app)
         let snapshots = try FileManager.default.contentsOfDirectory(at: Self.recoveryDirectory,
             includingPropertiesForKeys: nil).filter { $0.pathExtension == "json" }.map {
@@ -551,7 +590,10 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
 
     // MARK: - Evidence
 
-    private func assertFocusedDocument(_ url: URL, pid: pid_t, file: StaticString = #filePath, line: UInt = #line) throws {
+    @discardableResult
+    private func assertFocusedDocument(
+        _ url: URL, pid: pid_t, file: StaticString = #filePath, line: UInt = #line
+    ) throws -> AXUIElement {
         // Include the early activation retries; asserting only that a window
         // exists misses the old document being brought back in front of it.
         usleep(1_500_000)
@@ -562,6 +604,7 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
         let focused = try XCTUnwrap(Self.element(value), file: file, line: line)
         XCTAssertEqual(Self.title(of: focused), url.lastPathComponent, "the opened document must remain in front",
                        file: file, line: line)
+        return focused
     }
 
     private func waitForRecord(
@@ -849,6 +892,21 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
             return []
         }
         return children
+    }
+
+    private static func nativeTabs(in window: AXUIElement) -> [AXUIElement] {
+        for child in children(of: window) {
+            var role: CFTypeRef?
+            if AXUIElementCopyAttributeValue(child, kAXRoleAttribute as CFString, &role) == .success,
+               (role as? String) == kAXTabGroupRole {
+                var value: CFTypeRef?
+                if AXUIElementCopyAttributeValue(child, kAXTabsAttribute as CFString, &value) == .success,
+                   let tabs = value as? [AXUIElement] { return tabs }
+            }
+            let nested = nativeTabs(in: child)
+            if !nested.isEmpty { return nested }
+        }
+        return []
     }
 
     private static func element(_ value: CFTypeRef?) -> AXUIElement? {

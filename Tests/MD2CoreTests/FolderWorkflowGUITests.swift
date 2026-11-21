@@ -9,9 +9,29 @@ import XCTest
 /// Drives the native picker, sidebar, tab group, and editor in an isolated app.
 final class FolderWorkflowGUITests: XCTestCase {
     @MainActor
+    func testNativePreviewTabUsesItalicsUntilPinned() throws {
+        try requireGUI()
+        _ = NSApplication.shared
+        let window = ModeShortcutWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+                                        styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let document = DocumentWindow(window: window, store: DocumentStore(), settings: AppSettings(),
+                                      contentState: DocumentWindowContentState(),
+                                      onFileBacked: { _ in }, onFileURLChanged: {})
+        document.setPreview(true)
+        let title = try XCTUnwrap(window.tab.attributedTitle)
+        XCTAssertEqual(title.string, window.title)
+        let font = try XCTUnwrap(title.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
+        XCTAssertTrue(NSFontManager.shared.traits(of: font).contains(.italicFontMask))
+        document.setPreview(false)
+        XCTAssertNil(window.tab.attributedTitle)
+    }
+
+    @MainActor
     func testOpenFolderWithoutDocumentsShowsFolderUntilFirstPreview() async throws {
         try requireGUI()
-        let fixture = try FolderPreviewFixture(numberOfNotes: 1)
+        let fixture = try FolderPreviewFixture(numberOfNotes: 2)
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let app = try await FolderTestApplication.launch(in: fixture.directory, arguments: [])
         defer { app.close() }
@@ -51,19 +71,49 @@ final class FolderWorkflowGUITests: XCTestCase {
         try app.key(kVK_DownArrow)
         let preview = try app.documentWindow(fixture.guide, focused: true)
         try app.waitForTreeFocus()
-        try app.waitForPreview(fixture.guide, in: preview)
-        XCTAssertEqual(try app.nativeTabs(in: preview).map(app.title), [fixture.guide.lastPathComponent])
+        try app.waitForDocumentChrome(in: preview, title: fixture.guide.lastPathComponent, tabs: [])
         try app.waitForOneWindow(showing: preview)
         XCTAssertNil(app.descendant(preview) { app.identifier($0) == "folder-landing-prompt" })
 
-        let previewList = try app.element("folder-file-list", in: preview)
-        try app.waitForSelection(fixture.guide, in: previewList)
-        let nextNote = try XCTUnwrap(fixture.notes.first)
+        try app.waitForSelection(fixture.guide, in: app.element("folder-file-list", in: preview))
+        let previewEditor = try app.editor(in: preview)
+        try app.focus(previewEditor)
+        try app.key(kVK_ANSI_A, flags: .maskCommand)
+        _ = try app.waitFor("the original preview has a source selection") {
+            let selected = app.attribute(kAXSelectedTextAttribute, of: previewEditor) as? String
+            return selected?.isEmpty == false ? previewEditor : nil
+        }
+        try app.focusFiles()
+        for (key, note) in [(kVK_DownArrow, fixture.notes[0]), (kVK_DownArrow, fixture.notes[1]),
+                            (kVK_UpArrow, fixture.notes[0])] {
+            try app.key(key)
+            let replacement = try app.documentWindow(note, focused: true)
+            XCTAssertTrue(CFEqual(replacement, preview), "keyboard skimming replaces the same preview window")
+            try app.waitForTreeFocus()
+            try app.waitForDocumentChrome(in: replacement, title: note.lastPathComponent, tabs: [])
+            try app.waitForOneWindow(showing: replacement)
+            let editor = try app.editor(in: replacement)
+            XCTAssertEqual(app.value(editor), try String(contentsOf: note, encoding: .utf8))
+            XCTAssertEqual(app.attribute(kAXSelectedTextAttribute, of: editor) as? String ?? "", "")
+        }
+
+        try app.key(kVK_Return)
+        try app.waitForEditorFocus(in: preview)
+        try app.waitForDocumentChrome(in: preview, title: fixture.notes[0].lastPathComponent, tabs: [])
+        try app.focusFiles()
         try app.key(kVK_DownArrow)
-        let replacement = try app.documentWindow(nextNote, focused: true)
-        try app.waitForPreview(nextNote, in: replacement)
-        XCTAssertEqual(try app.nativeTabs(in: replacement).map(app.title), [nextNote.lastPathComponent])
-        try app.waitForOneWindow(showing: replacement)
+        let other = try app.documentWindow(fixture.notes[1], focused: true)
+        let titles = Set(fixture.notes.prefix(2).map(\.lastPathComponent))
+        try app.waitForDocumentChrome(in: other, title: fixture.notes[1].lastPathComponent, tabs: titles)
+        try app.waitForPinned(fixture.notes[0], in: other)
+        try app.waitForPreview(fixture.notes[1], in: other)
+        try app.waitForOnScreenWindowCount(1)
+
+        try app.key(kVK_ANSI_W, flags: .maskCommand)
+        let remaining = try app.documentWindow(fixture.notes[0], focused: true)
+        XCTAssertTrue(CFEqual(remaining, preview))
+        try app.waitForDocumentChrome(in: remaining, title: fixture.notes[0].lastPathComponent, tabs: [])
+        try app.waitForOneWindow(showing: remaining)
     }
 
     @MainActor
@@ -543,7 +593,8 @@ struct FolderTestApplication {
 
     static func launch(
         in directory: URL, arguments: [String], presentationMode: EditorMode = .write,
-        favoriteFolderPaths: [String] = []
+        favoriteFolderPaths: [String] = [], systemTabbingMode: String = "manual",
+        preferTabsForDocuments: Bool? = nil
     ) async throws -> Self {
         let priorApplication = NSWorkspace.shared.frontmostApplication
         let identifier = "dev.codex.md2.folder-test.\(UUID().uuidString.lowercased())"
@@ -555,9 +606,12 @@ struct FolderTestApplication {
         defaults.setPersistentDomain([
             "MD2.DefaultMode": presentationMode.rawValue, "MD2.NewDocumentMode": presentationMode.rawValue,
             "MD2.Language": "english", "AppleLanguages": ["en"],
-            "MD2.ShowsOutlineByDefault": false, "AppleWindowTabbingMode": "manual",
+            "MD2.ShowsOutlineByDefault": false, "AppleWindowTabbingMode": systemTabbingMode,
             "MD2.RestoresWindowsOnLaunch": false, "MD2.OpensBlankDocumentOnLaunch": false
         ], forName: identifier)
+        if let preferTabsForDocuments {
+            defaults.set(preferTabsForDocuments, forKey: "MD2.PreferTabsForDocuments")
+        }
         UserDefaultsFavoriteFoldersRecorder(defaults: defaults).favoriteFolderPaths = favoriteFolderPaths
         defaults.synchronize()
         do {
@@ -868,15 +922,26 @@ struct FolderTestApplication {
         try press(menuCommand(menuName, name))
     }
 
+    func pressTabBarMenuCommand(_ name: String) throws {
+        let command = try waitFor("the enabled \(name) command") {
+            enabledMenuCommand(name, menus: ["View", "Window"])
+        }
+        try press(command)
+    }
+
     func menuCommand(_ menuName: String, _ name: String) throws -> AXUIElement {
         try waitFor("the enabled \(menuName) → \(name) command") {
-            guard let menuBar,
-                  let menuItem = children(menuBar).first(where: { title($0) == menuName }),
-                  let menu = children(menuItem).first else { return nil }
-            return children(menu).first {
-                title($0) == name && (attribute(kAXEnabledAttribute, of: $0) as? Bool) == true
-            }
+            enabledMenuCommand(name, menus: [menuName])
         }
+    }
+
+    private func enabledMenuCommand(_ name: String, menus: Set<String>) -> AXUIElement? {
+        guard let menuBar else { return nil }
+        return children(menuBar)
+            .filter { menus.contains(title($0)) }
+            .compactMap { children($0).first }
+            .flatMap(children)
+            .first { title($0) == name && (attribute(kAXEnabledAttribute, of: $0) as? Bool) == true }
     }
 
     func currentFile(_ name: String, in list: AXUIElement) -> AXUIElement? {
@@ -894,19 +959,44 @@ struct FolderTestApplication {
         }
     }
 
+    private func tabGroup(in window: AXUIElement) -> AXUIElement? {
+        descendant(window) { attribute(kAXRoleAttribute, of: $0) as? String == kAXTabGroupRole }
+    }
+
     private func tabs(in window: AXUIElement) -> [AXUIElement] {
-        guard let group = descendant(window, matching: { attribute(kAXRoleAttribute, of: $0) as? String == kAXTabGroupRole })
-        else { return [] }
+        guard let group = tabGroup(in: window) else { return [] }
         return attribute(kAXTabsAttribute, of: group) as? [AXUIElement] ?? []
     }
 
     func tabTitles(in window: AXUIElement) -> [String] { tabs(in: window).map(title) }
+
+    func waitForDocumentChrome(in window: AXUIElement, title expected: String, tabs expectedTabs: Set<String>) throws {
+        // AXTitle survives hiding NSWindow.titleVisibility. AppKit separately
+        // exposes the visible title bar text as AXTitleUIElement.
+        _ = try waitFor("title \(expected), native tabs \(expectedTabs.sorted()), and matching title-bar visibility") {
+            guard title(window) == expected else { return nil }
+            let titleElement = elementAttribute(kAXTitleUIElementAttribute, of: window)
+            if expectedTabs.isEmpty {
+                guard tabGroup(in: window) == nil, let titleElement,
+                      labels(titleElement).contains(expected) else { return nil }
+            } else {
+                guard Set(tabTitles(in: window)) == expectedTabs, titleElement == nil else { return nil }
+            }
+            return window
+        }
+    }
 
     func waitForOneWindow(showing expected: AXUIElement) throws {
         _ = try waitFor("one visible window titled \(title(expected))") {
             guard let focused = focusedWindow, CFEqual(focused, expected), windows.count == 1,
                   onScreenWindowCount == 1 else { return nil }
             return focused
+        }
+    }
+
+    func waitForOnScreenWindowCount(_ count: Int) throws {
+        _ = try waitFor("\(count) on-screen windows") {
+            onScreenWindowCount == count ? accessibility : nil
         }
     }
 
@@ -1072,7 +1162,7 @@ struct FolderTestApplication {
     }
 }
 
-private struct FolderTestError: Error, CustomStringConvertible {
+struct FolderTestError: Error, CustomStringConvertible {
     let description: String
     init(_ description: String) { self.description = description }
 }

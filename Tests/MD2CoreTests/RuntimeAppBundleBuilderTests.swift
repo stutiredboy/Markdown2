@@ -21,6 +21,17 @@ struct RuntimeAppBundleBuilderTests {
         #expect(arguments == ["/Users/example/Notes.md"])
     }
 
+    @Test func relaunchArgumentsKeepPreferenceValuesAndNormalizeAllDocumentPaths() {
+        let arguments = ["-psn_0_123", "-MD2.PreferTabsForDocuments", "NO", "First.md", "--", "-Second.md"]
+        let normalized = DirectLaunchBootstrap.normalizedRelaunchArguments(
+            arguments, currentDirectoryPath: "/tmp/Markdown2"
+        )
+
+        #expect(DirectLaunchBootstrap.documentArgumentIndices(arguments) == [3, 5])
+        #expect(normalized == ["-psn_0_123", "-MD2.PreferTabsForDocuments", "NO",
+                               "/tmp/Markdown2/First.md", "--", "/tmp/Markdown2/-Second.md"])
+    }
+
     @Test func buildCopiesCompanionResourceBundles() throws {
         let fileManager = FileManager.default
         let root = fileManager.temporaryDirectory
