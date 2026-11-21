@@ -4,7 +4,7 @@ Choose **File → Open Folder…** (`Shift+Cmd+O`) to browse one Markdown folder
 
 When working in an open document, the folder appears in its sidebar. Use the sidebar button to hide or show it, and switch between **Files** and **Outline** at the top.
 
-- Click a file to preview it and keep focus in the tree. With the keyboard, move the selection with Up and Down, then press Space to preview. Use the disclosure triangle or Right Arrow to expand a folder.
+- Click a file or use Up and Down in the file tree to preview each file you select while keeping focus in the tree. Space previews the selected file. Use the disclosure triangle or Right Arrow to expand a folder.
 - Markdown2 uses one italic preview tab in the folder's native tab group. The next preview replaces it. Double-click a file, press Return, or edit the document to keep that tab open. Return also focuses the document. Already-open documents are reused with their edits intact.
 - Press `Shift+Cmd+B` (**File → Focus Folder Browser**) to return to the tree. The File menu shows the active shortcut if your mode shortcuts use this key combination. The current document has a highlight separate from the keyboard selection. Choose **File → Reveal in Folder Browser** to expand the current file's path and select it in the tree.
 

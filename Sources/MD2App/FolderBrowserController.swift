@@ -229,7 +229,7 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
         outline.delegate = self
         outline.onClick = { [weak self] item, count in self?.clickedItem(item, count: count) }
         outline.onReturn = { [weak self] in self?.openSelection(intent: .pinAndFocusEditor) }
-        outline.onSpace = { [weak self] in self?.openSelection(intent: .preview) }
+        outline.onPreviewSelection = { [weak self] in self?.openSelection(intent: .preview) }
         outline.setAccessibilityIdentifier("folder-file-list")
 
         let scroll = NSScrollView()
@@ -797,7 +797,7 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
 private final class FolderBrowserOutline: NSOutlineView {
     var onClick: ((Any, Int) -> Void)?
     var onReturn: (() -> Void)?
-    var onSpace: (() -> Void)?
+    var onPreviewSelection: (() -> Void)?
 
     private static let commandModifiers: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
 
@@ -813,12 +813,18 @@ private final class FolderBrowserOutline: NSOutlineView {
 
     override func keyDown(with event: NSEvent) {
         if event.modifierFlags.intersection(Self.commandModifiers).isEmpty {
+            if event.specialKey == .upArrow || event.specialKey == .downArrow {
+                let previousRow = selectedRow
+                super.keyDown(with: event)
+                if selectedRow != previousRow { onPreviewSelection?() }
+                return
+            }
             switch event.charactersIgnoringModifiers {
             case "\r", "\u{3}":
                 if !event.isARepeat { onReturn?() }
                 return
             case " ":
-                if !event.isARepeat { onSpace?() }
+                if !event.isARepeat { onPreviewSelection?() }
                 return
             default: break
             }

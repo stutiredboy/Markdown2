@@ -47,9 +47,8 @@ final class FolderWorkflowGUITests: XCTestCase {
 
         try app.focusFiles()
         let list = try app.element("folder-file-list", in: landing)
-        if app.selectedRow(in: list) == nil { try app.key(kVK_DownArrow) }
-        try app.waitForSelection(fixture.guide, in: list)
-        try app.key(kVK_Space)
+        XCTAssertNil(app.selectedRow(in: list))
+        try app.key(kVK_DownArrow)
         let preview = try app.documentWindow(fixture.guide, focused: true)
         try app.waitForTreeFocus()
         try app.waitForPreview(fixture.guide, in: preview)
@@ -58,10 +57,9 @@ final class FolderWorkflowGUITests: XCTestCase {
         XCTAssertNil(app.descendant(preview) { app.identifier($0) == "folder-landing-prompt" })
 
         let previewList = try app.element("folder-file-list", in: preview)
+        try app.waitForSelection(fixture.guide, in: previewList)
         let nextNote = try XCTUnwrap(fixture.notes.first)
         try app.key(kVK_DownArrow)
-        try app.waitForSelection(nextNote, in: previewList)
-        try app.key(kVK_Space)
         let replacement = try app.documentWindow(nextNote, focused: true)
         try app.waitForPreview(nextNote, in: replacement)
         XCTAssertEqual(try app.nativeTabs(in: replacement).map(app.title), [nextNote.lastPathComponent])
@@ -271,17 +269,11 @@ final class FolderWorkflowGUITests: XCTestCase {
 
         var active = fixture.guide
         for note in fixture.notes {
-            let previousWindow = try app.documentWindow(active, focused: true)
-            let previousList = try app.element("folder-file-list", in: previousWindow)
             try app.key(kVK_DownArrow)
-            try app.waitForSelection(note, in: previousList)
-            XCTAssertTrue(app.focusedWindow.map { CFEqual($0, previousWindow) } == true,
-                          "changing the selection with an arrow key must not open a file")
-
-            try app.key(kVK_Space)
             let window = try app.documentWindow(note, focused: true)
             try app.waitForTreeFocus()
             let list = try app.element("folder-file-list", in: window)
+            try app.waitForSelection(note, in: list)
             _ = try app.waitFor("the tree highlights \(note.lastPathComponent) as the current document") {
                 app.currentFile(note.lastPathComponent, in: list)
             }
@@ -312,12 +304,11 @@ final class FolderWorkflowGUITests: XCTestCase {
         }
 
         try app.focusFiles()
-        let pinnedList = try app.element("folder-file-list", in: last)
         let previous = fixture.notes[fixture.notes.count - 2]
         try app.key(kVK_UpArrow)
-        try app.waitForSelection(previous, in: pinnedList)
-        try app.key(kVK_Space)
         let freshPreview = try app.documentWindow(previous, focused: true)
+        try app.waitForTreeFocus()
+        try app.waitForSelection(previous, in: app.element("folder-file-list", in: freshPreview))
         try app.waitForPreview(previous, in: freshPreview)
         XCTAssertEqual(try app.nativeTabs(in: freshPreview).count, 3)
         XCTAssertEqual(app.onScreenWindowCount, 1)
@@ -724,6 +715,10 @@ struct FolderTestApplication {
                   pickerFieldHasFocus(location) else { return nil }
             return location
         }
+        // Go to Folder can retain its last path. In that case no edit is
+        // needed, and the existing value cannot confirm a new paste.
+        guard value(location) != path else { return }
+
         let board = NSPasteboard.general
         let saved = board.pasteboardItems?.map { item in
             item.types.compactMap { type in item.data(forType: type).map { (type, $0) } }
