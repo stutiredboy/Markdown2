@@ -90,6 +90,10 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return documentWindows.last?.store
     }
 
+    func contentState(for store: DocumentStore) -> DocumentWindowContentState? {
+        documentWindows.first(where: { $0.store === store })?.contentState
+    }
+
     private func handleModeShortcutEvent(_ event: NSEvent, for store: DocumentStore) -> Bool {
         guard let shortcut = ModeKeyboardShortcut(event: event) else {
             return false

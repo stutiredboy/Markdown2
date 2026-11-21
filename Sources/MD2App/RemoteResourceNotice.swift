@@ -10,13 +10,20 @@ struct RemoteImagePermissionIcon {
     var tint: NSColor { isAllowed ? .systemGreen : .systemGray }
 }
 
-/// Displays effective remote-image permission and the available native controls.
+/// Presents the same document permissions from the banner and both menus.
 struct RemoteResourceNotice: View {
+    enum Placement {
+        case banner
+        case statusBar
+        case applicationMenu
+    }
+
     @ObservedObject var document: DocumentStore
     @ObservedObject var settings: AppSettings
     @ObservedObject var contentState: DocumentWindowContentState
-    var preservePreviewPosition: () -> Void
-    @State private var sheet = RemoteResourceSheet()
+    let placement: Placement
+
+    private var sheet: RemoteResourceSheet { contentState.remoteResourceSheet }
 
     private var allowsImages: Bool { document.remoteResourcePolicy == .allowRemoteImages }
     private var folder: FolderRemoteImages? { contentState.folderRemoteImages }
@@ -32,119 +39,197 @@ struct RemoteResourceNotice: View {
         }
     }
 
+    @ViewBuilder
     var body: some View {
+        switch placement {
+        case .banner:
+            if document.hasRemoteImageEvidence, !allowsImages { banner }
+        case .statusBar:
+            if document.hasRemoteImageEvidence, allowsImages { statusMenu }
+        case .applicationMenu:
+            // Preserve a route to revoke a grant after the last image is removed.
+            if document.hasRemoteImageEvidence || allowsImages || document.remoteImageOverride != .inherit {
+                Menu(settings.text(.remoteImages)) { menuContents }
+            }
+        }
+    }
+
+    private var banner: some View {
         HStack(spacing: 10) {
             ViewThatFits(in: .horizontal) {
-                if let folder, allowsImages, document.remoteImageOverride == .inherit {
-                    let name = (folder.rootPath as NSString).lastPathComponent
-                    noticeLabel("\(status) · \(name)").help(folder.rootPath)
-                }
                 noticeLabel(status)
                 noticeLabel(settings.text(.remoteImages))
             }
             Spacer(minLength: 8)
             if let folder {
-                folderPermissions(folder)
+                Menu(settings.text(.remoteImagesPermissions)) { folderPermissions(folder) }
+                    .accessibilityIdentifier("remote-images-permissions")
+                    .help(folder.rootPath)
+                    .fixedSize()
             } else {
-                // Keep the same control after allow/revoke so the window can
-                // restore its previous keyboard focus when the sheet closes.
-                Button(settings.text(allowsImages ? .remoteImagesRevoke : .remoteImagesAllow)) {
-                    if allowsImages {
-                        preservePreviewPosition()
-                        document.setRemoteImagesAllowed(false)
-                    } else {
-                        requestDocumentPermission()
-                    }
-                }
-                .accessibilityIdentifier(allowsImages ? "remote-images-revoke" : "remote-images-allow")
-                .help(allowsImages ? settings.text(.remoteImagesAllowedExplanation) : "")
-                .fixedSize()
+                documentPermission
+                    .fixedSize()
             }
-            Button(settings.text(.remoteImagesDetails)) { showDetails() }
-                .accessibilityIdentifier("remote-images-details")
-                .accessibilityLabel(settings.text(.remoteImagesDetailsTitle))
-                .disabled(!document.canInspectRemoteResources)
+            detailsButton
                 .help(document.canInspectRemoteResources ? "" : settings.text(.remoteImagesPreparing))
                 .fixedSize()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
         .background(.bar)
-        .background(RemoteResourceAnchor(sheet: sheet).accessibilityHidden(true))
         .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("remote-images-notice")
         .accessibilityLabel(settings.text(.remoteImages))
         .accessibilityValue(status)
-        .onReceive(document.$remoteResourceContextToken.dropFirst()) { _ in
-            sheet.dismissDetails()
-        }
-        .onChange(of: document.remoteResourceContextToken) { _, _ in
-            sheet.dismiss()
-        }
-        .onChange(of: folder.map(ObjectIdentifier.init)) { _, _ in sheet.dismiss() }
-        .onChange(of: status) { _, _ in sheet.dismissDetails() }
-        .onChange(of: document.sourceLineRevision) { _, _ in sheet.dismissDetails() }
-        .onChange(of: document.canInspectRemoteResources) { _, available in
-            if !available { sheet.dismissDetails() }
-        }
-        .onChange(of: settings.effectiveLanguage) { _, _ in sheet.dismissDetails() }
-        .onDisappear { sheet.dismiss() }
     }
 
+    private var statusMenu: some View {
+        Menu {
+            menuContents
+        } label: {
+            Label {
+                Text(settings.text(.remoteImages))
+            } icon: {
+                permissionIcon
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .controlSize(.small)
+        .fixedSize()
+        .layoutPriority(1)
+        .accessibilityIdentifier("remote-images-status-menu")
+        .accessibilityLabel(settings.text(.remoteImages))
+        .accessibilityValue(status)
+        .help(inheritedFolderPath.map { "\(status)\n\($0)" } ?? status)
+    }
+
+    @ViewBuilder
+    private var menuContents: some View {
+        Button(status) {}
+            .disabled(true)
+        if let path = inheritedFolderPath {
+            Button((path as NSString).lastPathComponent) {}
+                .disabled(true)
+                .help(path)
+        }
+        Divider()
+        if let folder {
+            folderPermissions(folder)
+        } else {
+            documentPermission
+        }
+        Divider()
+        detailsButton
+    }
+
+    private var inheritedFolderPath: String? {
+        allowsImages && document.remoteImageOverride == .inherit ? folder?.rootPath : nil
+    }
+
+    private var documentPermission: some View {
+        Button(settings.text(allowsImages ? .remoteImagesRevoke : .remoteImagesAllow)) {
+            if allowsImages {
+                preservePreviewPosition()
+                document.setRemoteImagesAllowed(false)
+            } else {
+                requestDocumentPermission()
+            }
+        }
+        .accessibilityIdentifier(allowsImages ? "remote-images-revoke" : "remote-images-allow")
+        .help(allowsImages ? settings.text(.remoteImagesAllowedExplanation) : "")
+    }
+
+    private var detailsButton: some View {
+        Button(settings.text(.remoteImagesDetails)) { showDetails() }
+            .accessibilityIdentifier("remote-images-details")
+            .accessibilityLabel(settings.text(.remoteImagesDetailsTitle))
+            .disabled(!document.canInspectRemoteResources)
+    }
+
+    /// Keep the sheet attached to this document's window across changes in
+    /// placement, including when the document opens the sheet from the menu bar.
+    var sheetAnchor: some View {
+        RemoteResourceAnchor(sheet: sheet)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .onReceive(document.$remoteResourceContextToken.dropFirst()) { _ in
+                sheet.dismissDetails()
+            }
+            .onChange(of: document.remoteResourceContextToken) { _, _ in
+                sheet.dismiss()
+            }
+            .onChange(of: folder.map(ObjectIdentifier.init)) { _, _ in sheet.dismiss() }
+            .onChange(of: status) { _, _ in sheet.dismissDetails() }
+            .onChange(of: document.sourceLineRevision) { _, _ in sheet.dismissDetails() }
+            .onChange(of: document.canInspectRemoteResources) { _, available in
+                if !available { sheet.dismissDetails() }
+            }
+            .onChange(of: settings.effectiveLanguage) { _, _ in sheet.dismissDetails() }
+            .onDisappear { sheet.dismiss() }
+    }
+
+    @ViewBuilder
     private func folderPermissions(_ folder: FolderRemoteImages) -> some View {
         let action = folder.action
-        return Menu(settings.text(.remoteImagesPermissions)) {
-            if document.remoteImageOverride != .allow {
-                Button(settings.text(.remoteImagesAllow)) { requestDocumentPermission() }
-                    .accessibilityIdentifier("remote-images-allow")
-            }
-            if allowsImages {
-                Button(settings.text(.remoteImagesBlockDocument)) {
-                    guard contentState.folderRemoteImages === folder else { return }
-                    preservePreviewPosition()
-                    document.setRemoteImageOverride(.block)
-                }
-                .accessibilityIdentifier("remote-images-block-document")
-            }
-            if document.remoteImageOverride != .inherit {
-                Button(settings.text(.remoteImagesUseFolderPermission)) {
-                    guard contentState.folderRemoteImages === folder else { return }
-                    if allowsImages != folder.isAllowed { preservePreviewPosition() }
-                    document.setRemoteImageOverride(.inherit)
-                }
-                .accessibilityIdentifier("remote-images-restore-inheritance")
-            }
-            Divider()
-            Button(settings.text(action.title)) {
-                guard contentState.folderRemoteImages === folder, folder.action == action else { return }
-                switch action {
-                case .revoke:
-                    if document.remoteImageOverride == .inherit, allowsImages { preservePreviewPosition() }
-                    folder.onPermissionChange(false)
-                case .allow:
-                    requestFolderPermission(folder)
-                }
-            }
-            .accessibilityIdentifier(action.identifier)
+        if document.remoteImageOverride != .allow, document.hasRemoteImageEvidence {
+            Button(settings.text(.remoteImagesAllow)) { requestDocumentPermission() }
+                .accessibilityIdentifier("remote-images-allow")
         }
-        .accessibilityIdentifier("remote-images-permissions")
-        .help(folder.rootPath)
-        .fixedSize()
+        if allowsImages {
+            Button(settings.text(.remoteImagesBlockDocument)) {
+                guard contentState.folderRemoteImages === folder else { return }
+                preservePreviewPosition()
+                document.setRemoteImageOverride(.block)
+            }
+            .accessibilityIdentifier("remote-images-block-document")
+        }
+        if document.remoteImageOverride != .inherit {
+            Button(settings.text(.remoteImagesUseFolderPermission)) {
+                guard contentState.folderRemoteImages === folder else { return }
+                if allowsImages != folder.isAllowed { preservePreviewPosition() }
+                document.setRemoteImageOverride(.inherit)
+            }
+            .accessibilityIdentifier("remote-images-restore-inheritance")
+        }
+        Divider()
+        Button(settings.text(action.title)) {
+            guard contentState.folderRemoteImages === folder, folder.action == action else { return }
+            switch action {
+            case .revoke:
+                if document.remoteImageOverride == .inherit, allowsImages { preservePreviewPosition() }
+                folder.onPermissionChange(false)
+            case .allow:
+                requestFolderPermission(folder)
+            }
+        }
+        .accessibilityIdentifier(action.identifier)
     }
 
     private func noticeLabel(_ title: String) -> some View {
-        let icon = RemoteImagePermissionIcon(isAllowed: allowsImages)
-        return Label {
+        Label {
             Text(title)
         } icon: {
-            Image(systemName: icon.symbolName)
-                .symbolRenderingMode(.monochrome)
-                .foregroundStyle(Color(nsColor: icon.tint))
-                .accessibilityHidden(true)
+            permissionIcon
         }
         .font(.callout)
         .fixedSize(horizontal: true, vertical: false)
         .accessibilityLabel(status)
         .accessibilityIdentifier("remote-images-status")
+    }
+
+    private var permissionIcon: some View {
+        let icon = RemoteImagePermissionIcon(isAllowed: allowsImages)
+        return Image(systemName: icon.symbolName)
+            .symbolRenderingMode(.monochrome)
+            .foregroundStyle(Color(nsColor: icon.tint))
+            .accessibilityHidden(true)
+    }
+
+    private func preservePreviewPosition() {
+        // The new safe host consumes the last known anchor without waiting for
+        // the preview page that is about to be retired.
+        if let anchor = contentState.previewAnchor { document.previewJumpAnchor = anchor }
     }
 
     private func requestDocumentPermission() {

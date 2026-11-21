@@ -17,11 +17,42 @@ struct RemoteResourceReport: Equatable, Sendable {
     private static let maxSourceLength = 8_192
     private static let maxOrigins = 128
 
-    // Renderer-owned and sanitized HTML uses lowercase image tags and
-    // double-quoted attributes. Skip complete preceding attributes so title
-    // text cannot look like a source. Code and diagram source are escaped.
-    private static let imageSources = try! NSRegularExpression(
-        pattern: #"<img(?: [a-z][a-z0-9-]*="[^"]*")*? src="([^"]*)""#)
+    var hasRemoteImages: Bool { isPartial || !origins.isEmpty }
+
+    // Scan complete tags rather than matching attribute names inside a title.
+    // Renderer-escaped code and links are not image declarations. The style
+    // alternative keeps CSS in its own grammar instead of treating it as HTML.
+    private static let markup = try! NSRegularExpression(pattern:
+        #"(?is)<!--.*?(?:-->|\z)|<style(?=[\s/>])(?:"[^"]*"|'[^']*'|[^"'<>]++)*+>(.*?)</style\s*>|<([a-z][a-z0-9:-]*)(?=[\s/>])((?:"[^"]*"|'[^']*'|[^"'<>]++)*+)>"#)
+    private static let attributes = try! NSRegularExpression(pattern:
+        #"\s+([^\s/=>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?"#)
+
+    // The renderer emits diagram source as escaped text. Inspect recognizable
+    // image syntax in these placeholders only, not in generic fenced code.
+    private static let diagramSource = try! NSRegularExpression(pattern:
+        #"(?s)<div class="\#(PreviewClass.diagram) (?:\#(PreviewClass.diagramMermaid)|\#(PreviewClass.diagramFlow)|\#(PreviewClass.diagramSequence)) \#(PreviewClass.diagramPending)"[^>]*>([^<]*)</div>"#)
+    private static let diagramStyles = try! NSRegularExpression(pattern:
+        #"(?m)^[\t ]*(?:classDef|style|linkStyle)\b([^\r\n]+)"#)
+
+    private static let svgImageProperties: Set<String> = [
+        "fill", "stroke", "filter", "clip-path", "mask", "cursor", "marker", "marker-start", "marker-mid", "marker-end"
+    ]
+
+    private static let cssTokens: NSRegularExpression = {
+        let escape = #"\\(?:[0-9a-f]{1,6}(?:\r\n|[\t\n\f\r\x20])?|.)"#
+        let doubleQuoted = #"(?:\#(escape)|[^"\\]++)*+"#
+        let singleQuoted = #"(?:\#(escape)|[^'\\]++)*+"#
+        let unquoted = #"(?:\#(escape)|[^\s"'()\\]++)++"#
+        return try! NSRegularExpression(pattern: #"""
+        (?isx)
+        /\*.*?(?:\*/|\z)|@import\b[^;]*|@font-face\s*\{[^}]*\}
+        |"\#(doubleQuoted)"|'\#(singleQuoted)'
+        |(?<![a-z0-9_-])((?:[a-z]|\#(escape)){3})\(\s*(?:"(\#(doubleQuoted))"|'(\#(singleQuoted))'|(\#(unquoted)))\s*\)
+        """#)
+    }()
+    private static let cssEscape = try! NSRegularExpression(pattern:
+        #"(?s)\\(?:([0-9a-fA-F]{1,6})(?:\r\n|[\t\n\f\r ])?|(\r\n|[\n\r\f])|(.))"#)
+
     private static let asciiPadding = CharacterSet(charactersIn: Unicode.Scalar(0)!...Unicode.Scalar(32)!)
     private static let urlWhitespace = CharacterSet(charactersIn: "\t\n\r")
 
@@ -29,39 +60,153 @@ struct RemoteResourceReport: Equatable, Sendable {
         guard body.utf8.count <= maxBodyBytes, !Task.isCancelled else {
             return Self(origins: [], isPartial: true)
         }
-        let html = body as NSString
+        let inspection = Inspection()
+        inspection.scanMarkup(body)
+        inspection.matches(diagramSource, in: body) { match, html in
+            let source = decodeAttribute(html.substring(with: match.range(at: 1)))
+            inspection.scanMarkup(source)
+            inspection.matches(diagramStyles, in: source) { style, diagram in
+                inspection.scanCSS(diagram.substring(with: style.range(at: 1)))
+            }
+        }
+        return Self(origins: inspection.counts.sorted { $0.key < $1.key }.map {
+            Origin(displayName: $0.key, referenceCount: $0.value)
+        }, isPartial: inspection.isPartial)
+    }
+
+    private final class Inspection {
         var counts: [String: Int] = [:]
         var isPartial = false
-        imageSources.enumerateMatches(in: body, options: .reportCompletion,
-                                      range: NSRange(location: 0, length: html.length)) { match, flags, stop in
-            if Task.isCancelled { stop.pointee = true; return }
-            if flags.contains(.internalError) { isPartial = true }
-            guard let match else { return }
-            let source = match.range(at: 1)
-            guard source.length <= maxSourceLength else { isPartial = true; return }
-            let attribute = html.substring(with: source)
-            let decoded = attribute.utf8.contains(UInt8(ascii: "&"))
-                ? HTMLSafety.decodeHTMLAttributeEntities(attribute) : attribute
+
+        func matches(_ expression: NSRegularExpression, in source: String,
+                     visit: (NSTextCheckingResult, NSString) -> Void) {
+            let text = source as NSString
+            expression.enumerateMatches(in: source, options: .reportCompletion,
+                                        range: NSRange(location: 0, length: text.length)) { match, flags, stop in
+                if Task.isCancelled {
+                    stop.pointee = true
+                    isPartial = true
+                    return
+                }
+                if flags.contains(.internalError) { isPartial = true }
+                if let match { visit(match, text) }
+            }
+        }
+
+        func scanMarkup(_ source: String) {
+            matches(markup, in: source) { match, html in
+                if match.range(at: 1).location != NSNotFound {
+                    scanCSS(html.substring(with: match.range(at: 1)))
+                    return
+                }
+                guard match.range(at: 2).location != NSNotFound, match.range(at: 3).length > 0 else { return }
+                let tag = html.substring(with: match.range(at: 2)).lowercased()
+                let attributeText = html.substring(with: match.range(at: 3))
+                scanAttributes(attributeText, on: tag)
+            }
+        }
+
+        private func scanAttributes(_ source: String, on tag: String) {
+            let svgImage = tag == "image" || tag == "feimage"
+            var xlink: String?
+            var seen: Set<String> = []
+            matches(attributes, in: source) { match, text in
+                let key = text.substring(with: match.range(at: 1)).lowercased()
+                guard seen.insert(key).inserted,
+                      let group = (2...4).first(where: { match.range(at: $0).location != NSNotFound }) else { return }
+                let range = match.range(at: group)
+                if (key == "src" && tag == "img") || (key == "poster" && tag == "video")
+                    || (key == "href" && svgImage) {
+                    record(decodeAttribute(text.substring(with: range)))
+                } else if key == "srcset", tag == "img" || tag == "source" {
+                    scanSourceSet(decodeAttribute(text.substring(with: range)))
+                } else if key == "xlink:href", svgImage {
+                    xlink = decodeAttribute(text.substring(with: range))
+                } else if key == "style" || svgImageProperties.contains(key) {
+                    scanCSS(decodeAttribute(text.substring(with: range)))
+                }
+            }
+            if !seen.contains("href"), let xlink { record(xlink) }
+        }
+
+        /// Each candidate starts with a URL token ending at HTML whitespace.
+        /// Commas inside that token belong to the URL (including data URLs).
+        private func scanSourceSet(_ source: String) {
+            var remaining = source.utf8[...]
+            let comma = UInt8(ascii: ",")
+            while !remaining.isEmpty, !Task.isCancelled {
+                remaining = remaining.drop { $0 == comma || isHTMLSpace($0) }
+                let token = remaining.prefix { !isHTMLSpace($0) }
+                let url = token.reversed().drop { $0 == comma }.reversed()
+                if !url.isEmpty { record(String(decoding: url, as: UTF8.self)) }
+                remaining = remaining.dropFirst(token.count)
+                if token.count != url.count { continue }
+                var depth = 0
+                remaining = remaining.drop {
+                    if $0 == UInt8(ascii: "(") { depth += 1 }
+                    if $0 == UInt8(ascii: ")") { depth = max(0, depth - 1) }
+                    return depth > 0 || $0 != comma
+                }
+            }
+        }
+
+        func scanCSS(_ source: String) {
+            matches(cssTokens, in: source) { match, text in
+                let function = match.range(at: 1)
+                guard function.location != NSNotFound, decodeCSSEscapes(text.substring(with: function)).lowercased() == "url",
+                      let group = (2...4).first(where: { match.range(at: $0).location != NSNotFound }) else { return }
+                let url = text.substring(with: match.range(at: group))
+                record(decodeCSSEscapes(url))
+            }
+        }
+
+        private func record(_ source: String) {
             // The URL parser strips ASCII padding and embedded tabs/newlines.
             // HTML nulls are replacement characters, never removable padding.
-            let value = decoded.replacingOccurrences(of: "\0", with: "\u{FFFD}")
+            let value = source.replacingOccurrences(of: "\0", with: "\u{FFFD}")
                 .trimmingCharacters(in: asciiPadding)
                 .components(separatedBy: urlWhitespace).joined()
-            let prefix = value.prefix(8).lowercased()
-            guard prefix.hasPrefix("https:") || prefix.hasPrefix("http:") else { return }
-            guard let origin = origin(of: value, prefix: prefix) else { isPartial = true; return }
-            guard counts[origin] != nil || counts.count < maxOrigins else { isPartial = true; return }
+            let prefix = String(decoding: value.utf8.prefix(8), as: UTF8.self).lowercased().utf8
+            guard prefix.starts(with: "https:".utf8) || prefix.starts(with: "http:".utf8) else { return }
+            guard source.utf16.count <= maxSourceLength, let origin = origin(of: value, prefix: prefix),
+                  counts[origin] != nil || counts.count < maxOrigins else { isPartial = true; return }
             counts[origin, default: 0] += 1
         }
-        return Self(origins: counts.sorted { $0.key < $1.key }.map { Origin(displayName: $0.key, referenceCount: $0.value) },
-                    isPartial: isPartial)
+    }
+
+    private static func isHTMLSpace(_ byte: UInt8) -> Bool {
+        byte == 32 || byte == 9 || byte == 10 || byte == 12 || byte == 13
+    }
+
+    private static func decodeAttribute(_ source: String) -> String {
+        source.utf8.contains(UInt8(ascii: "&")) ? HTMLSafety.decodeHTMLAttributeEntities(source) : source
+    }
+
+    private static func decodeCSSEscapes(_ source: String) -> String {
+        guard source.utf8.contains(UInt8(ascii: "\\")) else { return source }
+        let text = source as NSString
+        var result = ""
+        var start = 0
+        for escape in cssEscape.matches(in: source, range: NSRange(location: 0, length: text.length)) {
+            result += text.substring(with: NSRange(location: start, length: escape.range.location - start))
+            let digits = escape.range(at: 1)
+            let character = escape.range(at: 3)
+            if digits.location != NSNotFound {
+                let value = UInt32(text.substring(with: digits), radix: 16) ?? 0
+                result.unicodeScalars.append(value == 0 ? "\u{FFFD}" : Unicode.Scalar(value) ?? "\u{FFFD}")
+            } else if character.location != NSNotFound {
+                result += text.substring(with: character)
+            }
+            start = NSMaxRange(escape.range)
+        }
+        return result + text.substring(from: start)
     }
 
     /// Accept authorities whose browser interpretation we can determine
     /// without making a request. Unusual spellings yield an incomplete report.
-    private static func origin(of url: String, prefix: String) -> String? {
-        let isHTTPS = prefix.hasPrefix("https://")
-        guard isHTTPS || prefix.hasPrefix("http://") else { return nil }
+    private static func origin(of url: String, prefix: String.UTF8View) -> String? {
+        let isHTTPS = prefix.starts(with: "https://".utf8)
+        guard isHTTPS || prefix.starts(with: "http://".utf8) else { return nil }
         let scheme = isHTTPS ? "https" : "http"
         let remainder = url.utf8.dropFirst(scheme.utf8.count + 3)
         let authority = remainder.prefix {

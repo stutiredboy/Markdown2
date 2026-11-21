@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import MD2Core
 import SwiftUI
 
 @MainActor
@@ -18,6 +19,10 @@ final class DocumentWindowContentState: ObservableObject {
             }
         }
     }
+    /// Last reported location, also used by the app menu when replacing the preview host.
+    var previewAnchor: ViewportAnchor?
+    let remoteResourceSheet = RemoteResourceSheet()
+
     @Published var isFolderPreviewSelected = false
     @Published private(set) var editorFocusRequest: UUID?
     private var sidebarObservation: AnyCancellable?

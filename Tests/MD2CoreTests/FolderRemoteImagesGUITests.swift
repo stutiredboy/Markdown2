@@ -86,10 +86,23 @@ final class FolderRemoteImagesGUITests: XCTestCase {
         try await fixture.waitForRequest("nested")
         let siblingPreview = try app.openFolderNote(sibling, preview: true)
         try app.waitForPreview(sibling, in: siblingPreview)
+        try app.waitForImageStatus(.remoteImagesAllowedByFolder, folder: .remoteImagesAllowedByFolder, in: siblingPreview)
         try await fixture.waitForRequest("sibling")
         XCTAssertFalse(try app.nativeTabs(in: siblingPreview).map(app.title).contains(nested.lastPathComponent))
 
-        try app.pressImagePermission(.blockDocument, from: .document, in: siblingPreview)
+        try app.pressImagePermission(.details, from: .statusBar, in: siblingPreview)
+        let origin = "http://localhost:\(fixture.port) — 1"
+        _ = try app.waitFor("the folder-allowed document's Details lists its image origin") {
+            guard let origins = app.descendant(siblingPreview, matching: { app.identifier($0) == "remote-images-origins" }),
+                  app.value(origins)?.trimmingCharacters(in: .whitespacesAndNewlines) == origin else { return nil }
+            return origins
+        }
+        try app.press(app.element("remote-images-details-close", in: siblingPreview))
+        _ = try app.waitFor("the image details sheet to close") {
+            app.descendant(siblingPreview, matching: { app.identifier($0) == "remote-images-details-close" }) == nil
+                ? siblingPreview : nil
+        }
+        try app.pressImagePermission(.blockDocument, from: .statusBar, in: siblingPreview)
         try app.waitForImageStatus(.remoteImagesBlockedByDocument, folder: .remoteImagesAllowedByFolder,
                                    in: siblingPreview)
         let peerPreview = try app.openFolderNote(peer, preview: true)
@@ -114,7 +127,7 @@ final class FolderRemoteImagesGUITests: XCTestCase {
                                    in: reopenedSibling)
         try await fixture.waitForRequest("sibling-reopened-blocked")
 
-        try app.pressImagePermission(.revokeFolder, from: .sidebar, in: reopenedSibling)
+        try app.pressImagePermission(.revokeFolder, from: .statusBar, in: reopenedSibling)
         try app.waitForImageStatus(.remoteImagesBlocked, folder: .remoteImagesBlocked, in: reopenedSibling)
         try app.replaceEditorText(fixture.markdown("sibling-after-revoke"), in: app.editor(in: reopenedSibling))
         try app.waitForRenderedImageFixture("sibling-after-revoke", in: reopenedSibling)
@@ -288,6 +301,7 @@ private struct Fixture {
 
 private enum ImagePermissionSurface: String {
     case document = "remote-images-permissions"
+    case statusBar = "remote-images-status-menu"
     case sidebar = "folder-remote-images-menu"
 }
 
@@ -296,6 +310,7 @@ private enum ImagePermissionAction: String {
     case revokeFolder = "Remove Folder Permission"
     case blockDocument = "Block in This Document"
     case restoreInheritance = "Use Folder Permission"
+    case details = "Details…"
 
     var identifier: String {
         switch self {
@@ -303,6 +318,7 @@ private enum ImagePermissionAction: String {
         case .revokeFolder: "remote-images-folder-revoke"
         case .blockDocument: "remote-images-block-document"
         case .restoreInheritance: "remote-images-restore-inheritance"
+        case .details: "remote-images-details"
         }
     }
 }
@@ -330,12 +346,19 @@ private extension FolderTestApplication {
 
     func waitForImageStatus(_ key: L10nKey, folder folderKey: L10nKey? = nil, in window: AXUIElement) throws {
         let status = L10n.text(key, language: .english)
+        let allowed = [.remoteImagesAllowed, .remoteImagesAllowedByDocument, .remoteImagesAllowedByFolder].contains(key)
+        let statusIdentifier = allowed ? ImagePermissionSurface.statusBar.rawValue : "remote-images-status"
         let folderStatus = folderKey.map { L10n.text($0, language: .english) }
         let folderExpectation = folderStatus.map { " and the folder control reports \($0)" } ?? ""
         _ = try waitFor("the document reports \(status)\(folderExpectation)") {
-            guard let label = descendant(window, matching: {
-                identifier($0) == "remote-images-status" && labels($0).contains(status)
-            }) else { return nil }
+            let banner = descendant(window) { identifier($0) == "remote-images-notice" }
+            let statusMenu = descendant(window) { identifier($0) == ImagePermissionSurface.statusBar.rawValue }
+            guard (banner == nil) == allowed, (statusMenu != nil) == allowed,
+                  let label = descendant(window, matching: {
+                      guard identifier($0) == statusIdentifier else { return false }
+                      let accessible = labels($0) + [(attribute(kAXHelpAttribute, of: $0) as? String) ?? ""]
+                      return accessible.contains { $0.contains(status) }
+                  }) else { return nil }
             guard let folderStatus else { return label }
             return descendant(window) {
                 identifier($0) == ImagePermissionSurface.sidebar.rawValue

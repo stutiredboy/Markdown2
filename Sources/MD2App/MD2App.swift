@@ -103,6 +103,21 @@ struct FavoriteFoldersMenu: View {
     }
 }
 
+/// Observe the key document independently of the Settings scene's command tree.
+private struct RemoteImagesCommandMenu: View {
+    let settings: AppSettings
+    @ObservedObject var state: AttachmentCommandState
+    let contentState: (DocumentStore) -> DocumentWindowContentState?
+
+    var body: some View {
+        if let document = state.document, let windowState = contentState(document) {
+            RemoteResourceNotice(
+                document: document, settings: settings, contentState: windowState, placement: .applicationMenu
+            )
+        }
+    }
+}
+
 @main
 enum Markdown2Main {
     @MainActor static func main() {
@@ -301,6 +316,11 @@ private struct AppCommands: Commands {
                 .keyboardShortcut("-", modifiers: .command)
             Button(settings.text(.resetZoom), action: settings.resetZoom)
                 .keyboardShortcut("0", modifiers: [.command, .option])
+
+            RemoteImagesCommandMenu(
+                settings: settings, state: appDelegate.attachmentCommandState,
+                contentState: appDelegate.contentState(for:)
+            )
         }
 
         CommandMenu(settings.text(.mode)) {
