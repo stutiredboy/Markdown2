@@ -28,6 +28,10 @@ struct RemoteResourceNotice: View {
     var body: some View {
         HStack(spacing: 10) {
             ViewThatFits(in: .horizontal) {
+                if let folder, allowsImages, document.remoteImageOverride == .inherit {
+                    let name = (folder.rootPath as NSString).lastPathComponent
+                    noticeLabel("\(status) · \(name)").help(folder.rootPath)
+                }
                 noticeLabel(status)
                 noticeLabel(settings.text(.remoteImages))
             }

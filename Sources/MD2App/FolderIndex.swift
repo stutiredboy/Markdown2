@@ -179,11 +179,7 @@ enum FolderIndex {
                 return nil
             }
         }
-        var components = URLComponents()
-        components.scheme = "file"
-        components.host = ""
-        components.path = path == "/" ? path : path + "/"
-        return components.url
+        return bytePreservingFileURL(at: path == "/" ? path : path + "/")
     }
 
     private static func authorizeCanonicalPath(_ path: String, requiresSearchPermission: Bool = false) throws -> Root {

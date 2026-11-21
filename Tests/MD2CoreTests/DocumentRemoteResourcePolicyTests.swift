@@ -253,6 +253,8 @@ struct DocumentRemoteResourcePolicyTests {
 
         store.setRemoteImageOverride(.allow)
         let token = store.remoteResourceContextToken
+        store.setFolderRemoteImages(allowed: true, blockedForFile: true)
+        #expect(store.remoteImageOverride == .allow)
         store.setFolderRemoteImages(allowed: false, blockedForFile: false)
         #expect(store.remoteImageOverride == .allow)
         #expect(store.remoteResourcePolicy == .allowRemoteImages)

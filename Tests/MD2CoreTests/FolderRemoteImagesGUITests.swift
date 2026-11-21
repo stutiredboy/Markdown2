@@ -14,6 +14,7 @@ final class FolderRemoteImagesGUITests: XCTestCase {
         let fixture = try await Fixture()
         defer { fixture.close() }
         let guide = try fixture.note("Workspace/Guide.md", "guide")
+        let background = try fixture.note("Workspace/Background.md", "background")
         let ordinary = try fixture.note("Workspace/Ordinary.md", "ordinary")
         let nested = try fixture.note("Workspace/Notes/Nested.md", "nested")
         let sibling = try fixture.note("Workspace/Sibling.md", "sibling")
@@ -27,9 +28,16 @@ final class FolderRemoteImagesGUITests: XCTestCase {
         let guideWindow = try app.documentWindow(guide, focused: true)
         try app.waitForRenderedImageFixture("guide", in: guideWindow)
         _ = try app.chooseDocumentFolder(containing: guide)
-        fixture.assertQuiet("guide")
+        let backgroundWindow = try app.openFolderNote(background)
+        try app.waitForRenderedImageFixture("background", in: backgroundWindow)
+        _ = try app.selectTab(for: guide, from: backgroundWindow)
+        fixture.assertQuiet("guide", "background")
+
         try app.grantFolderImages(from: .document, in: guideWindow)
         try await fixture.waitForRequest("guide")
+        fixture.assertQuiet("background")
+        _ = try app.selectTab(for: background, from: guideWindow)
+        try await fixture.waitForRequest("background")
 
         try await app.openFileThroughWorkspace(ordinary)
         let standalone = try app.documentWindow(ordinary, focused: true)

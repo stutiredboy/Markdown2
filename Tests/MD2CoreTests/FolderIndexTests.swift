@@ -238,6 +238,26 @@ struct FolderIndexTests {
         #expect(FolderIndex.verifyRemoteImageMember(at: excludedSpelling, in: root, reference: hiddenReference) == nil)
     }
 
+    @Test func remoteImageMembershipPreservesKernelPathBytes() throws {
+        let fixture = try FolderIndexFixture()
+        defer { fixture.remove() }
+        let root = try FolderIndex.authorize(fixture.root)
+        let path = root.url.path + "/Caf\u{e9}.md"
+        let descriptor = Darwin.open(path, O_CREAT | O_EXCL | O_WRONLY, 0o600)
+        try #require(descriptor >= 0)
+        Darwin.close(descriptor)
+
+        var components = URLComponents()
+        components.scheme = "file"
+        components.host = ""
+        components.path = path
+        let url = try #require(components.url)
+        let reference = try DocumentCopyFileReference.open(at: url)
+        let actualPath = try #require(reference.currentPath())
+        let verified = try #require(FolderIndex.verifyRemoteImageMember(at: url, in: root, reference: reference))
+        #expect(verified.path.utf8.elementsEqual(actualPath.utf8))
+    }
+
     @Test func favoriteAuthorizationRejectsMissingDirectoriesAndReplacementAliases() throws {
         let fixture = try FolderIndexFixture()
         defer { fixture.remove() }

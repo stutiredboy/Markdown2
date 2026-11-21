@@ -91,7 +91,7 @@ final class DocumentStore: ObservableObject {
     func setFolderRemoteImages(allowed: Bool, blockedForFile: Bool) {
         guard !isClosed else { return }
         folderAllowsRemoteImages = allowed
-        if blockedForFile, remoteImageOverride != .block { remoteImageOverride = .block }
+        if blockedForFile, remoteImageOverride == .inherit { remoteImageOverride = .block }
         else if !blockedForFile, remoteImageOverride == .block { remoteImageOverride = .inherit }
         updateRemoteImagePolicy()
     }
