@@ -128,6 +128,19 @@ struct AppSettingsPresentationModeTests {
         #expect(settings.modeShortcuts[.split] == .command("3"))
     }
 
+    @Test func folderFocusShortcutPreservesExistingModeBindings() {
+        let settings = makeSettings()
+        let regular = ModeKeyboardShortcut(key: "b", modifiers: [.command, .shift])
+        let fallback = ModeKeyboardShortcut(key: "b", modifiers: [.command, .option, .shift])
+
+        #expect(settings.folderBrowserShortcut == regular)
+        #expect(settings.updateModeShortcut(regular, for: .write) == nil)
+        #expect(settings.modeShortcuts[.write] == regular)
+        #expect(settings.folderBrowserShortcut == fallback)
+        #expect(settings.updateModeShortcut(.command("1"), for: .write) == nil)
+        #expect(settings.folderBrowserShortcut == regular)
+    }
+
     @Test func modeShortcutChangesPersistAcrossInstances() {
         let suiteName = "AppSettingsPresentationModeTests-shortcuts-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

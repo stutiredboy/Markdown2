@@ -189,7 +189,7 @@ struct DocumentRemoteResourcePolicyTests {
 
     @Test(arguments: [false, true])
     func nativeExportKeepsItsCapturedLabelWhenLanguageChangesDuringRendering(printing: Bool) async {
-        let gate = RemoteRenderingGate()
+        let gate = DocumentRenderingTestGate()
         let worker = DocumentRenderWorker(beforeRendering: { await gate.pauseIfArmed() })
         let exporter = DeferredRemoteExporter()
         let printer = DeferredRemotePrinter()
@@ -216,7 +216,7 @@ struct DocumentRemoteResourcePolicyTests {
     }
 
     @Test func oldPDFPreparationCannotStartAfterRevokeOrClearANewerJob() async {
-        let gate = RemoteRenderingGate()
+        let gate = DocumentRenderingTestGate()
         let worker = DocumentRenderWorker(beforeRendering: { await gate.pauseIfArmed() })
         let exporter = DeferredRemoteExporter()
         let store = DocumentStore(pdfDestinationPicker: { _ in URL(fileURLWithPath: "/unused.pdf") },
@@ -240,7 +240,7 @@ struct DocumentRemoteResourcePolicyTests {
         let directory = try fixture()
         defer { try? FileManager.default.removeItem(at: directory) }
         let destination = directory.appendingPathComponent("stale.html")
-        let gate = RemoteRenderingGate()
+        let gate = DocumentRenderingTestGate()
         let worker = DocumentRenderWorker(beforeRendering: { await gate.pauseIfArmed() })
         let store = DocumentStore(htmlDestinationPicker: { _ in destination }, renderWorker: worker)
         await gate.arm()
@@ -254,7 +254,7 @@ struct DocumentRemoteResourcePolicyTests {
     }
 
     @Test func oldPreviewRenderCannotPublishUnderANewerPermissionEpoch() async {
-        let gate = RemoteRenderingGate()
+        let gate = DocumentRenderingTestGate()
         let worker = DocumentRenderWorker(beforeRendering: { await gate.pauseIfArmed() })
         let store = DocumentStore(renderWorker: worker)
         await gate.arm()
@@ -282,7 +282,7 @@ struct DocumentRemoteResourcePolicyTests {
         try Data(original.utf8).write(to: first)
         try Data(replacementText.utf8).write(to: replacement)
 
-        let gate = RemoteRenderingGate()
+        let gate = DocumentRenderingTestGate()
         let worker = DocumentRenderWorker(beforeRendering: { await gate.pauseIfArmed() })
         let store = DocumentStore(renderWorker: worker)
         defer { store.closeDocument(discardRecovery: true) }
@@ -401,7 +401,7 @@ private final class RemoteAlertLanguage {
     var value = AppLanguage.zhHans
 }
 
-private actor RemoteRenderingGate {
+actor DocumentRenderingTestGate {
     private var armed = false
     private var paused: CheckedContinuation<Void, Never>?
     private var started: CheckedContinuation<Void, Never>?

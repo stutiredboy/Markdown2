@@ -1,107 +1,97 @@
 import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
+import os
 import XCTest
 
 @testable import MD2App
 
-/// Runs the actual picker, folder window and document editor in an isolated
-/// app. A missing or unresponsive Accessibility surface fails the enabled lane.
+/// Drives the native picker, sidebar, tab group, and editor in an isolated app.
 final class FolderWorkflowGUITests: XCTestCase {
     @MainActor
     func testFolderPickerTreeQuickOpenAndRefreshPreserveDocumentIdentity() async throws {
-        try XCTSkipUnless(ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
-                          "Set MD2_RUN_GUI_TESTS=1 to run the native folder workflow.")
-        guard AXIsProcessTrusted() else { throw FolderTestError("Folder workflow requires Accessibility trust") }
-
+        try requireGUI()
         let fixture = try FolderFixture()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let app = try await FolderTestApplication.launch(in: fixture.directory, arguments: [fixture.guide.path])
         defer { app.close() }
 
-        let originalWindow = try app.documentWindow(fixture.guide)
-        let editor = try app.waitFor("native Markdown editor in the existing document") {
-            app.descendant(originalWindow) { app.attribute(kAXRoleAttribute, of: $0) as? String == kAXTextAreaRole }
-        }
+        let original = try app.documentWindow(fixture.guide, focused: true)
+        let editor = try app.editor(in: original)
         XCTAssertEqual(app.value(editor), fixture.guideText)
-
-        try app.key(kVK_ANSI_O, flags: [.maskCommand, .maskShift])
-        let picker = try app.waitFor("Open Folder picker") {
-            app.windows.first { app.title($0).hasPrefix("Open Folder") }
-        }
-        // Open Folder starts in the current document's parent. Accept that
-        // actual picker location and verify it independently in the browser.
-        let choose = try app.waitFor("enabled Open button in the folder picker") {
-            app.descendant(picker) {
-                app.title($0) == "Open" && (app.attribute(kAXEnabledAttribute, of: $0) as? Bool) == true
-            }
-        }
-        XCTAssertEqual(AXUIElementPerformAction(choose, kAXPressAction as CFString), .success)
-
-        let browser = try app.waitFor("folder browser for the explicitly chosen directory") {
-            app.windows.first { app.identifier($0) == "folder-browser-window" }
-        }
-        let search = try app.element("folder-quick-open", in: browser)
+        let browser = try app.chooseDocumentFolder(containing: fixture.guide)
+        XCTAssertTrue(CFEqual(original, browser), "Open Folder embeds its tree in the current document")
         let list = try app.element("folder-file-list", in: browser)
-        let path = try app.element("folder-root-path", in: browser)
-        XCTAssertTrue(app.labels(path).contains { $0.hasSuffix("/\(fixture.directory.lastPathComponent)/Test Folder") })
         _ = try app.waitFor("Notes directory in the native file tree") { app.row("Notes", in: list) }
-        let open = try app.element("folder-open-selection", in: browser)
         XCTAssertEqual(app.attribute(kAXRoleAttribute, of: list) as? String, kAXOutlineRole)
         XCTAssertNil(app.row("Details.md", in: list), "the nested file starts under a collapsed directory")
         XCTAssertNil(app.row("Escape.md", in: list))
         XCTAssertNil(app.row("Redirect", in: list))
         XCTAssertNil(app.row(".Hidden.md", in: list))
 
-        try app.key(kVK_DownArrow)
-        try app.key(kVK_Return)
-        _ = try app.waitFor("the child revealed by opening the Notes row") { app.row("Details.md", in: list) }
-        try app.key(kVK_DownArrow)
-        try app.openSelection(using: open)
+        let detailsResult = try app.quickFind("Notes/Details.md", expecting: "Details.md")
+        try app.openSelection(using: detailsResult.open)
         let detailsWindow = try app.documentWindow(fixture.details, focused: true)
-        try app.key(kVK_ANSI_P, flags: [.maskCommand, .maskShift])
-        try app.search("Notes/Details.md", field: search, list: list, expecting: "Details.md")
-        try app.openSelection(using: open)
-        XCTAssertTrue(CFEqual(try app.documentWindow(fixture.details, focused: true), detailsWindow))
+        try app.waitForEditorFocus(in: detailsWindow)
 
-        XCTAssertEqual(AXUIElementPerformAction(originalWindow, kAXRaiseAction as CFString), .success)
-        _ = try app.documentWindow(fixture.guide, focused: true)
+        let sameDetailsResult = try app.quickFind("Notes/Details.md", expecting: "Details.md")
+        try app.openSelection(using: sameDetailsResult.open)
+        XCTAssertTrue(CFEqual(try app.documentWindow(fixture.details, focused: true), detailsWindow))
+        try app.waitForEditorFocus(in: detailsWindow)
+
+        try app.pressFileCommand("Reveal in Folder Browser")
+        try app.waitForTreeFocus()
+        let detailsTree = try app.element("folder-file-list", in: detailsWindow)
+        let detailsSearch = try app.element("folder-quick-open", in: detailsWindow)
+        _ = try app.waitFor("Reveal clears search, expands Notes, and highlights Details in the tree") {
+            guard app.value(detailsSearch) == "", app.row("Notes", in: detailsTree) != nil else { return nil }
+            return app.currentFile("Details.md", in: detailsTree)
+        }
+        try app.waitForSelection(fixture.details, in: detailsTree)
+
+        let guideResult = try app.quickFind("Guide Space.md", expecting: "Guide Space.md")
+        try app.openSelection(using: guideResult.open)
+        XCTAssertTrue(CFEqual(try app.documentWindow(fixture.guide, focused: true), original))
+        try app.waitForEditorFocus(in: original)
+
         let draft = fixture.guideText + "\nUnsaved draft"
         try app.replaceEditorText(draft, in: editor)
-        try app.key(kVK_ANSI_P, flags: [.maskCommand, .maskShift])
-        _ = try app.waitFor("Quick Open gives keyboard focus to the search field") {
-            app.focusedElement.flatMap { app.identifier($0) == "folder-quick-open" ? $0 : nil }
-        }
-        try app.search("Guide Space.md", field: search, list: list, expecting: "Guide Space.md")
-        try app.openSelection(using: open)
-        let reusedWindow = try app.documentWindow(fixture.guide, focused: true)
-        XCTAssertTrue(CFEqual(reusedWindow, originalWindow), "quick open must focus the existing native window")
-        XCTAssertEqual(app.windows.filter { app.isWindow($0, for: fixture.guide) }.count, 1)
+        let guideAgain = try app.quickFind("Guide Space.md", expecting: "Guide Space.md")
+        try app.openSelection(using: guideAgain.open)
+        XCTAssertTrue(CFEqual(try app.documentWindow(fixture.guide, focused: true), original))
+        try app.waitForEditorFocus(in: original)
         XCTAssertEqual(app.value(editor), draft)
         XCTAssertEqual(try String(contentsOf: fixture.guide, encoding: .utf8), fixture.guideText)
         try app.replaceEditorText(fixture.guideText, in: editor)
 
-        try app.key(kVK_ANSI_P, flags: [.maskCommand, .maskShift])
-        try app.search("Pending.md", field: search, list: list, expecting: "Pending.md")
+        let pending = try app.quickFind("Pending.md", expecting: "Pending.md")
         try FileManager.default.removeItem(at: fixture.pending)
         try FileManager.default.createSymbolicLink(at: fixture.pending, withDestinationURL: fixture.external)
-        try app.openSelection(using: open)
-        let status = try app.element("folder-status", in: browser)
-        _ = try app.waitFor("an inline stale-file message after the selected file became a symlink") {
-            app.labels(status).contains { $0.localizedCaseInsensitiveContains("changed on disk") } ? status : nil
+        try app.key(kVK_Return)
+        let status = try app.element("folder-status", in: original)
+        _ = try app.waitFor("the stale file is rejected or removed from the search results") {
+            guard app.row("Pending.md", in: pending.list) == nil ||
+                  app.labels(status).contains(where: { $0.localizedCaseInsensitiveContains("changed on disk") })
+            else { return nil }
+            return status
         }
         XCTAssertFalse(app.windows.contains { app.isWindow($0, for: fixture.external) })
+        XCTAssertTrue(CFEqual(try app.documentWindow(fixture.guide, focused: true), original))
 
         let added = fixture.folder.appendingPathComponent("Added.md")
         try "# Added externally\n".write(to: added, atomically: true, encoding: .utf8)
-        let refresh = try app.element("folder-refresh", in: browser)
-        XCTAssertEqual(AXUIElementPerformAction(refresh, kAXPressAction as CFString), .success)
-        try app.search("Added.md", field: search, list: list, expecting: "Added.md")
-        try app.openSelection(using: open)
-        let addedWindow = try app.documentWindow(added, focused: true)
-        let addedEditor = try app.waitFor("native Markdown editor in the new document") {
-            app.descendant(addedWindow) { app.attribute(kAXRoleAttribute, of: $0) as? String == kAXTextAreaRole }
+        try app.press(app.element("folder-refresh", in: original))
+        let addedSearch = try app.element("folder-quick-open", in: original)
+        let addedList = try app.element("folder-file-list", in: original)
+        try app.key(kVK_ANSI_P, flags: [.maskCommand, .maskShift])
+        try app.type(added.lastPathComponent)
+        _ = try app.waitFor("typing immediately after Quick Open finds Added.md") {
+            guard app.value(addedSearch) == added.lastPathComponent else { return nil }
+            return app.row(added.lastPathComponent, in: addedList)
         }
+        try app.openSelection(using: app.element("folder-open-selection", in: original))
+        let addedWindow = try app.documentWindow(added, focused: true)
+        let addedEditor = try app.editor(in: addedWindow)
         let saved = "# Saved through the ordinary document editor"
         try app.replaceEditorText(saved, in: addedEditor)
         try app.key(kVK_ANSI_S, flags: .maskCommand)
@@ -118,35 +108,257 @@ final class FolderWorkflowGUITests: XCTestCase {
         for number in 0..<2_005 {
             try Data().write(to: bulk.appendingPathComponent("Note \(number).md"))
         }
-        // Establish a real return to the folder after the fixture is complete.
-        // Raising a browser that already owns focus does not trigger a rescan.
-        XCTAssertEqual(AXUIElementPerformAction(addedWindow, kAXRaiseAction as CFString), .success)
-        _ = try app.waitFor("the Added document to be focused while the folder browser is idle") {
-            guard let focused = app.focusedWindow, CFEqual(focused, addedWindow),
-                  (app.attribute(kAXEnabledAttribute, of: refresh) as? Bool) == true else { return nil }
-            return focused
+        _ = try app.waitFor("external changes refresh the bounded list while the editor keeps focus") {
+            guard let currentStatus = app.descendant(addedWindow, matching: { app.identifier($0) == "folder-status" }),
+                  app.labels(currentStatus).contains(where: { $0.contains("Partial list") }),
+                  app.focusedElement.map({ CFEqual($0, addedEditor) }) == true else { return nil }
+            return currentStatus
         }
-        func liveStatus() -> AXUIElement? {
-            app.descendant(browser) { app.identifier($0) == "folder-status" }
+    }
+
+    @MainActor
+    func testKeyboardSkimsTenPreviewsInOneTabGroupAndReturnPins() async throws {
+        try requireGUI()
+        let fixture = try FolderPreviewFixture(numberOfNotes: 10)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let app = try await FolderTestApplication.launch(in: fixture.directory, arguments: [fixture.guide.path])
+        defer { app.close() }
+
+        let original = try app.chooseDocumentFolder(containing: fixture.guide)
+        try app.focusFiles()
+        let initialList = try app.element("folder-file-list", in: original)
+        if app.selectedRow(in: initialList) == nil { try app.key(kVK_DownArrow) }
+        try app.waitForSelection(fixture.guide, in: initialList)
+
+        var active = fixture.guide
+        for note in fixture.notes {
+            let previousWindow = try app.documentWindow(active, focused: true)
+            let previousList = try app.element("folder-file-list", in: previousWindow)
+            try app.key(kVK_DownArrow)
+            try app.waitForSelection(note, in: previousList)
+            XCTAssertTrue(app.focusedWindow.map { CFEqual($0, previousWindow) } == true,
+                          "changing the selection with an arrow key must not open a file")
+
+            try app.key(kVK_Space)
+            let window = try app.documentWindow(note, focused: true)
+            try app.waitForTreeFocus()
+            let list = try app.element("folder-file-list", in: window)
+            _ = try app.waitFor("the tree highlights \(note.lastPathComponent) as the current document") {
+                app.currentFile(note.lastPathComponent, in: list)
+            }
+            try app.waitForPreview(note, in: window)
+            active = note
         }
-        let start = ContinuousClock.now
-        try app.key(kVK_ANSI_P, flags: [.maskCommand, .maskShift])
+
+        let last = try app.documentWindow(active, focused: true)
+        XCTAssertEqual(try app.nativeTabs(in: last).count, 2, "the starter and the one preview share one tab group")
+        XCTAssertEqual(app.onScreenWindowCount, 1)
+        try app.key(kVK_Return)
+        try app.waitForEditorFocus(in: last)
+        try app.waitForPinned(active, in: last)
+
+        let sections = try app.element("folder-sidebar-section", in: last)
+        let outline = try app.waitFor("the Outline sidebar segment") {
+            app.descendant(sections) { app.labels($0).contains("Outline") }
+        }
+        try app.press(outline)
+        _ = try app.waitFor("the Outline replaces the Files tree") {
+            guard app.descendant(last, matching: { app.identifier($0) == "folder-file-list" }) == nil
+            else { return nil }
+            return app.descendant(last) { app.labels($0).contains(active.deletingPathExtension().lastPathComponent) }
+        }
+        try app.press(app.element("document-sidebar-toggle", in: last))
+        _ = try app.waitFor("the sidebar collapses") {
+            app.descendant(last) { app.identifier($0) == "folder-sidebar-section" } == nil ? last : nil
+        }
+
+        try app.focusFiles()
+        let pinnedList = try app.element("folder-file-list", in: last)
+        let previous = fixture.notes[fixture.notes.count - 2]
+        try app.key(kVK_UpArrow)
+        try app.waitForSelection(previous, in: pinnedList)
+        try app.key(kVK_Space)
+        let freshPreview = try app.documentWindow(previous, focused: true)
+        try app.waitForPreview(previous, in: freshPreview)
+        XCTAssertEqual(try app.nativeTabs(in: freshPreview).count, 3)
+        XCTAssertEqual(app.onScreenWindowCount, 1)
+    }
+
+    @MainActor
+    func testClickDoubleClickAndTypingPinWithoutLosingEdits() async throws {
+        try requireGUI()
+        let fixture = try FolderPreviewFixture(numberOfNotes: 3)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let app = try await FolderTestApplication.launch(in: fixture.directory, arguments: [fixture.guide.path])
+        defer { app.close() }
+
+        let original = try app.chooseDocumentFolder(containing: fixture.guide)
+        let first = fixture.notes[0]
+        let second = fixture.notes[1]
+        let third = fixture.notes[2]
+        try app.clickFolderRow(first, in: original)
+        let firstWindow = try app.documentWindow(first, focused: true)
+        try app.waitForTreeFocus()
+        try app.waitForPreview(first, in: firstWindow)
+
+        try app.clickFolderRow(first, in: firstWindow, count: 2)
+        try app.waitForPinned(first, in: firstWindow)
+        try app.clickFolderRow(second, in: firstWindow)
+        let secondWindow = try app.documentWindow(second, focused: true)
+        try app.waitForTreeFocus()
+        try app.waitForPreview(second, in: secondWindow)
+
+        let editor = try app.editor(in: secondWindow)
+        try app.focus(editor)
+        try app.waitForEditorFocus(in: secondWindow)
+        let initial = try XCTUnwrap(app.value(editor))
+        let draft = "# Draft in the preview"
+        try app.key(kVK_ANSI_A, flags: .maskCommand)
+        try app.type(draft)
+        _ = try app.waitFor("native typing updates the preview source editor") { app.value(editor) == draft ? editor : nil }
+        try app.waitForPinned(second, in: secondWindow)
+
+        try app.clickFolderRow(third, in: secondWindow)
+        let thirdWindow = try app.documentWindow(third, focused: true)
+        try app.waitForPreview(third, in: thirdWindow)
+        XCTAssertEqual(try app.nativeTabs(in: thirdWindow).count, 4)
+        try app.clickFolderRow(second, in: thirdWindow)
+        XCTAssertTrue(CFEqual(try app.documentWindow(second, focused: true), secondWindow))
+        XCTAssertEqual(app.value(try app.editor(in: secondWindow)), draft)
+        XCTAssertEqual(try String(contentsOf: second, encoding: .utf8), initial)
+        XCTAssertEqual(app.onScreenWindowCount, 1)
+    }
+
+    @MainActor
+    func testFolderOpenReusesAStandaloneWindowWithUnsavedEdits() async throws {
+        try requireGUI()
+        let fixture = try FolderPreviewFixture(numberOfNotes: 1)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let app = try await FolderTestApplication.launch(in: fixture.directory, arguments: [fixture.guide.path])
+        defer { app.close() }
+
+        _ = try app.chooseDocumentFolder(containing: fixture.guide)
+        let note = fixture.notes[0]
+        try await app.openFileThroughWorkspace(note)
+        let standalone = try app.documentWindow(note, focused: true)
+        _ = try app.waitFor("the ordinary open starts outside the folder group") {
+            app.onScreenWindowCount == 2 ? standalone : nil
+        }
+        let editor = try app.editor(in: standalone)
+        let originalText = try XCTUnwrap(app.value(editor))
+        let draft = "# Unsaved edits from the standalone editor"
+        try app.replaceEditorText(draft, in: editor)
+
+        let found = try app.quickFind(note.lastPathComponent, expecting: note.lastPathComponent)
+        try app.openSelection(using: found.open)
+        let reused = try app.documentWindow(note, focused: true)
+        XCTAssertTrue(CFEqual(reused, standalone), "the existing document window joins the group")
+        try app.waitForPinned(note, in: reused)
+        XCTAssertEqual(try app.nativeTabs(in: reused).count, 2)
+        _ = try app.waitFor("the adopted tab group settles into one on-screen window") {
+            app.onScreenWindowCount == 1 ? reused : nil
+        }
+        XCTAssertEqual(app.value(try app.editor(in: reused)), draft)
+        XCTAssertEqual(try String(contentsOf: note, encoding: .utf8), originalText)
+    }
+
+    @MainActor
+    func testFolderIndexRefreshesForNestedChangesAndNotForFocusChanges() throws {
+        try requireGUI()
+        let fixture = try FolderFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let root = try FolderIndex.authorize(fixture.folder)
+        let scans = OSAllocatedUnfairLock(initialState: 0)
+        let controller = FolderBrowserController(
+            root: root,
+            text: { L10n.text($0, language: .english) },
+            favorites: FavoriteFoldersModel(recorder: FolderTestFavoritesRecorder()),
+            onToggleFavorite: {},
+            scan: { root in
+                scans.withLock { $0 += 1 }
+                return try FolderIndex.scan(root)
+            },
+            onOpen: { _, _, _ in XCTFail("Returning focus must not open a document") }
+        )
+
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 440),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.animationBehavior = .none
+        window.contentView = controller.view
+        window.makeKeyAndOrderFront(nil)
+        controller.start()
+        defer {
+            controller.stop()
+            window.close()
+        }
+
+        let nestedDirectory = root.url.appending(path: "Notes", directoryHint: .isDirectory)
+        let original = nestedDirectory.appending(path: fixture.details.lastPathComponent)
+        try waitForIndex("initial scan") { controller.canReveal(original) }
+        // The watcher may still receive the batch for creating the fixture.
+        RunLoop.current.run(until: Date().addingTimeInterval(1))
+        let initialCount = scans.withLock { $0 }
+        XCTAssertGreaterThanOrEqual(initialCount, 1)
+        for _ in 0..<10 {
+            controller.focusQuickOpen()
+            XCTAssertTrue(controller.hasQuickOpenFocus)
+            controller.focusTree()
+            XCTAssertTrue(controller.hasTreeFocus)
+        }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        XCTAssertEqual(scans.withLock { $0 }, initialCount)
+
+        let renamed = nestedDirectory.appending(path: "Renamed.md")
+        try FileManager.default.moveItem(at: original, to: renamed)
+        try waitForIndex("automatic refresh of the nested rename") {
+            controller.canReveal(renamed) && !controller.canReveal(original)
+        }
+        XCTAssertGreaterThan(scans.withLock { $0 }, initialCount)
+    }
+
+    @MainActor
+    private func waitForIndex(_ reason: String, until predicate: () -> Bool) throws {
+        let deadline = Date().addingTimeInterval(8)
+        while !predicate(), Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        guard predicate() else { throw FolderTestError("Timed out waiting for \(reason)") }
+    }
+
+    private func requireGUI() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+                          "Set MD2_RUN_GUI_TESTS=1 to run the native folder workflow.")
+        guard AXIsProcessTrusted() else { throw FolderTestError("Folder workflow requires Accessibility trust") }
+    }
+}
+
+@MainActor
+private final class FolderTestFavoritesRecorder: FavoriteFoldersRecording {
+    var favoriteFolderPaths: [String] = []
+}
+
+private struct FolderPreviewFixture {
+    let directory: URL
+    let guide: URL
+    let notes: [URL]
+
+    init(numberOfNotes: Int) throws {
+        let fm = FileManager.default
+        directory = fm.temporaryDirectory.appending(path: "MD2-Previews-\(UUID())", directoryHint: .isDirectory)
+        let folder = directory.appending(path: "Preview Workspace", directoryHint: .isDirectory)
+        guide = folder.appending(path: "00 Guide.md")
+        notes = (1...numberOfNotes).map { folder.appending(path: String(format: "%02d Note.md", $0)) }
         do {
-            _ = try app.waitFor("returning to the large folder announces a partial list") {
-                guard app.focusedElement.flatMap(app.identifier) == "folder-quick-open",
-                      let currentStatus = liveStatus(),
-                      app.labels(currentStatus).contains(where: { $0.contains("Partial list") }) else { return nil }
-                return currentStatus
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+            for file in [guide] + notes {
+                try "# \(file.deletingPathExtension().lastPathComponent)\n".write(to: file, atomically: true, encoding: .utf8)
             }
         } catch {
-            let focusedWindow = app.focusedWindow.map(app.title) ?? "none"
-            let refreshEnabled = app.attribute(kAXEnabledAttribute, of: refresh) as? Bool
-            throw FolderTestError(
-                "\(error). Status: \(liveStatus().map(app.labels) ?? []); focused window: \(focusedWindow); "
-                    + "Refresh enabled: \(String(describing: refreshEnabled))"
-            )
+            try? fm.removeItem(at: directory)
+            throw error
         }
-        print("Large folder refreshed to a partial list in \(start.duration(to: .now))")
     }
 }
 
@@ -275,6 +487,66 @@ struct FolderTestApplication {
     var focusedElement: AXUIElement? { elementAttribute(kAXFocusedUIElementAttribute, of: accessibility) }
     var windows: [AXUIElement] { attribute(kAXWindowsAttribute, of: accessibility) as? [AXUIElement] ?? [] }
 
+    var folderWindows: [AXUIElement] {
+        windows.filter { descendant($0) { identifier($0) == "folder-file-list" } != nil }
+    }
+
+    func press(_ element: AXUIElement) throws {
+        // Actions opening or closing a modal surface can finish after AX replies.
+        AXUIElementSetMessagingTimeout(element, 1)
+        let result = AXUIElementPerformAction(element, kAXPressAction as CFString)
+        guard result == .success || result == .cannotComplete else {
+            throw FolderTestError("Could not press \(labels(element)): \(result.rawValue)")
+        }
+    }
+
+    func chooseDocumentFolder(containing guide: URL) throws -> AXUIElement {
+        _ = try documentWindow(guide, focused: true)
+        try key(kVK_ANSI_O, flags: [.maskCommand, .maskShift])
+        let picker = try waitFor("the Open Folder picker") { windows.first { title($0).hasPrefix("Open Folder") } }
+        let choose = try waitFor("the Open Folder picker's enabled Open button") {
+            descendant(picker) { title($0) == "Open" && (attribute(kAXEnabledAttribute, of: $0) as? Bool) == true }
+        }
+        try press(choose)
+        return try waitForFolder(containing: guide)
+    }
+
+    func waitForFolder(containing guide: URL) throws -> AXUIElement {
+        let folder = guide.deletingLastPathComponent()
+        let parent = folder.deletingLastPathComponent().lastPathComponent
+        let expectedSuffix = "/\(parent)/\(folder.lastPathComponent)"
+        return try waitFor("a folder sidebar at \(expectedSuffix) containing \(guide.lastPathComponent)") {
+            [focusedWindow].compactMap { $0 }.first { window in
+                guard let path = descendant(window, matching: { identifier($0) == "folder-root-path" }),
+                      labels(path).contains(where: { $0.hasSuffix(expectedSuffix) }),
+                      let list = descendant(window, matching: { identifier($0) == "folder-file-list" }) else { return false }
+                return row(guide.lastPathComponent, in: list) != nil
+            }
+        }
+    }
+
+    func frame(of element: AXUIElement) throws -> CGRect {
+        func geometry(_ name: String) throws -> AXValue {
+            let value = try XCTUnwrap(attribute(name, of: element))
+            guard CFGetTypeID(value) == AXValueGetTypeID() else {
+                throw FolderTestError("No geometry in \(name) for \(labels(element))")
+            }
+            return value as! AXValue
+        }
+        var origin = CGPoint.zero
+        var size = CGSize.zero
+        XCTAssertTrue(AXValueGetValue(try geometry(kAXPositionAttribute), .cgPoint, &origin))
+        XCTAssertTrue(AXValueGetValue(try geometry(kAXSizeAttribute), .cgSize, &size))
+        return CGRect(origin: origin, size: size)
+    }
+
+    func openFileThroughWorkspace(_ url: URL) async throws {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        let application = try await NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: configuration)
+        XCTAssertEqual(application.processIdentifier, pid)
+    }
+
     func documentWindow(_ url: URL, focused: Bool = false) throws -> AXUIElement {
         try waitFor("\(focused ? "focused " : "")document \(url.lastPathComponent)") {
             let candidates = focused ? [focusedWindow].compactMap { $0 } : windows
@@ -288,6 +560,136 @@ struct FolderTestApplication {
         }
         let name = url.lastPathComponent
         return title(element) == name || title(element) == name + " *"
+    }
+
+    var onScreenWindowCount: Int {
+        let visible = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] ?? []
+        return visible.filter { window in
+            window[kCGWindowOwnerPID as String] as? pid_t == pid &&
+                window[kCGWindowLayer as String] as? Int == 0
+        }.count
+    }
+
+    func editor(in window: AXUIElement) throws -> AXUIElement {
+        try waitFor("native Markdown editor in \(title(window))") {
+            descendant(window) { attribute(kAXRoleAttribute, of: $0) as? String == kAXTextAreaRole }
+        }
+    }
+
+    func waitForEditorFocus(in window: AXUIElement) throws {
+        let editor = try editor(in: window)
+        _ = try waitFor("editor focus in \(title(window))") {
+            focusedElement.flatMap { CFEqual($0, editor) ? $0 : nil }
+        }
+    }
+
+    func waitForTreeFocus() throws {
+        _ = try waitFor("keyboard focus in the active file tree") {
+            guard let focused = focusedElement else { return nil }
+            if identifier(focused) == "folder-file-list" { return focused }
+            return elementAttribute(kAXParentAttribute, of: focused).flatMap {
+                identifier($0) == "folder-file-list" ? focused : nil
+            }
+        }
+    }
+
+    func focusFiles() throws {
+        try key(kVK_ANSI_B, flags: [.maskCommand, .maskShift])
+        try waitForTreeFocus()
+    }
+
+    func quickFind(_ query: String, expecting name: String) throws -> (list: AXUIElement, open: AXUIElement) {
+        if focusedElement.flatMap(identifier) != "folder-quick-open" {
+            try key(kVK_ANSI_P, flags: [.maskCommand, .maskShift])
+        }
+        let search = try waitFor("Quick Open gives keyboard focus to the search field") {
+            focusedElement.flatMap { identifier($0) == "folder-quick-open" ? $0 : nil }
+        }
+        let window = try XCTUnwrap(focusedWindow)
+        let list = try element("folder-file-list", in: window)
+        let open = try element("folder-open-selection", in: window)
+        try self.search(query, field: search, list: list, expecting: name)
+        return (list, open)
+    }
+
+    func pressFileCommand(_ name: String) throws {
+        let command = try waitFor("the enabled File → \(name) command") {
+            guard let menuBar,
+                  let file = children(menuBar).first(where: { title($0) == "File" }),
+                  let menu = children(file).first else { return nil }
+            return children(menu).first {
+                title($0) == name && (attribute(kAXEnabledAttribute, of: $0) as? Bool) == true
+            }
+        }
+        try press(command)
+    }
+
+    func currentFile(_ name: String, in list: AXUIElement) -> AXUIElement? {
+        descendant(list) { identifier($0) == "folder-current-file" && labels($0).contains(name) }
+    }
+
+    func selectedRow(in list: AXUIElement) -> AXUIElement? {
+        (attribute(kAXSelectedRowsAttribute, of: list) as? [AXUIElement])?.first
+    }
+
+    func waitForSelection(_ url: URL, in list: AXUIElement) throws {
+        _ = try waitFor("selection of \(url.lastPathComponent)") {
+            guard let selected = selectedRow(in: list) else { return nil }
+            return row(url.lastPathComponent, in: selected)
+        }
+    }
+
+    private func tabs(in window: AXUIElement) -> [AXUIElement] {
+        guard let group = descendant(window, matching: { attribute(kAXRoleAttribute, of: $0) as? String == kAXTabGroupRole })
+        else { return [] }
+        return attribute(kAXTabsAttribute, of: group) as? [AXUIElement] ?? []
+    }
+
+    func nativeTabs(in window: AXUIElement) throws -> [AXUIElement] {
+        _ = try waitFor("native document tabs in the active tab group") { tabs(in: window).first }
+        return tabs(in: window)
+    }
+
+    func waitForPreview(_ url: URL, in window: AXUIElement) throws {
+        try waitForTab(url, in: window, preview: true)
+    }
+
+    func waitForPinned(_ url: URL, in window: AXUIElement) throws {
+        try waitForTab(url, in: window, preview: false)
+    }
+
+    private func waitForTab(_ url: URL, in window: AXUIElement, preview: Bool) throws {
+        _ = try waitFor("the \(preview ? "preview" : "pinned") tab for \(url.lastPathComponent)") {
+            tabs(in: window).first { tab in
+                guard title(tab).contains(url.lastPathComponent) else { return false }
+                let help = attribute(kAXHelpAttribute, of: tab) as? String ?? ""
+                return help.localizedCaseInsensitiveContains("Preview Tab") == preview
+            }
+        }
+    }
+
+    func clickFolderRow(_ url: URL, in window: AXUIElement, count: Int = 1) throws {
+        let list = try element("folder-file-list", in: window)
+        let row = try waitFor("the clickable file row for \(url.lastPathComponent)") {
+            self.row(url.lastPathComponent, in: list)
+        }
+        let bounds = try frame(of: row)
+        XCTAssertGreaterThan(bounds.width, 0)
+        XCTAssertGreaterThan(bounds.height, 0)
+        let point = CGPoint(x: bounds.midX, y: bounds.midY)
+        _ = try waitFor("the isolated app is frontmost before clicking a file row") {
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return nil }
+            return focusedWindow.flatMap { CFEqual($0, window) ? $0 : nil }
+        }
+        for clickNumber in 1...count {
+            for kind: CGEventType in [.leftMouseDown, .leftMouseUp] {
+                let event = try XCTUnwrap(CGEvent(mouseEventSource: nil, mouseType: kind,
+                                                  mouseCursorPosition: point, mouseButton: .left))
+                event.setIntegerValueField(.mouseEventClickState, value: Int64(clickNumber))
+                event.post(tap: .cghidEventTap)
+            }
+        }
     }
 
     func focus(_ element: AXUIElement) throws {

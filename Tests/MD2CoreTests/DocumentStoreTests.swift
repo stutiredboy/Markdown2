@@ -163,15 +163,21 @@ struct DocumentStoreTests {
         #expect(store.text == "# Title\n\n- [x] Draft\n- [ ] Review")
     }
 
-    @Test func exportKeepsItsSnapshotAndExcludesOtherExportsDuringPreparation() async throws {
+    @Test func exportKeepsItsSnapshotAndExcludesOtherExportsDuringPreparation() async {
         let exporter = FakePDFExporter()
+        let gate = DocumentRenderingTestGate()
+        let worker = DocumentRenderWorker(beforeRendering: { await gate.pauseIfArmed() })
         let destination = FileManager.default.temporaryDirectory.appendingPathComponent("snapshot.pdf")
-        let store = DocumentStore(pdfDestinationPicker: { _ in destination }, pdfExporterFactory: { _, _ in exporter })
-        store.text = "# Export Snapshot\n\n" + String(repeating: "**paragraph** text\n\n", count: 8_000)
+        let store = DocumentStore(pdfDestinationPicker: { _ in destination },
+                                  pdfExporterFactory: { _, _ in exporter }, renderWorker: worker)
+        store.text = "# Export Snapshot"
+        await store.flushPendingRender()
+        await gate.arm()
         let job = Task { await store.exportPDF() }
-        try await Task.sleep(for: .milliseconds(10))
+        await gate.waitUntilStarted()
         store.text = "# New Editor Content"
         await store.exportPDF()
+        await gate.release()
         await job.value
         #expect(exporter.exportCallCount == 1)
         #expect(exporter.outline?.map(\.title) == ["Export Snapshot"])

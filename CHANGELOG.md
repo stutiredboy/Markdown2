@@ -6,6 +6,10 @@
 
 - Star the current folder in the browser and reopen it across launches from File → Favorite Folders. Remove individual favorites or clear the list from the same menu.
 
+### Changed
+
+- Browse files in a collapsible Files and Outline sidebar. Click or press Space to skim in one native preview tab, and double-click, press Return, or edit to keep the file open as a regular tab. Return to the tree with Shift+Cmd+B. Folder indexing now refreshes on filesystem changes or on request.
+
 ## 0.9.0 - 2026-11-19
 
 ### Added

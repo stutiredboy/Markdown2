@@ -1,19 +1,24 @@
 import AppKit
 import Combine
 
-/// Browses one explicitly chosen folder. The index contains names and paths;
-/// files are opened through the app's document window pipeline.
+/// Owns the folder tree and Quick Open state while the sidebar moves between tabs.
 @MainActor
-final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
-    NSOutlineViewDataSource, NSOutlineViewDelegate, NSSearchFieldDelegate {
-    typealias OpenDocument = (FolderIndex.OpenedFile, MarkdownFileDecoder.DecodedFile?) throws -> Void
+final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSSearchFieldDelegate {
+    enum OpenIntent: Int {
+        case preview
+        case pin
+        case pinAndFocusEditor
+    }
+
+    typealias OpenDocument = (FolderIndex.OpenedFile, MarkdownFileDecoder.DecodedFile?, OpenIntent) throws -> Void
 
     let root: FolderIndex.Root
+    let view = NSView()
     private let text: (L10nKey) -> String
     private let favorites: FavoriteFoldersModel
     private let onToggleFavorite: () -> Void
+    private let scan: @Sendable (FolderIndex.Root) throws -> FolderIndex.Snapshot
     private let onOpen: OpenDocument
-    private let onClose: () -> Void
 
     private let search = NSSearchField()
     private let outline = FolderBrowserOutline()
@@ -26,83 +31,135 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
 
     private var scanTask: Task<Void, Never>?
     private var openTask: Task<Void, Never>?
+    private var activeOpen: OpenRequest?
+    private var queuedOpens: [OpenRequest] = []
     private var favoritesObservation: AnyCancellable?
-    private var shouldRefreshOnActivation = false
+    private var watcher: FolderIndexWatcher?
+    private var isStarted = false
+    private var needsRefresh = false
+    private var pendingRefresh: Task<Void, Never>?
     private var snapshot: FolderIndex.Snapshot?
-    private var issue: L10nKey?
+    private var indexIssue: L10nKey?
+    private var openIssue: L10nKey?
     private var query = ""
     private var tree: [Item] = []
     private var searchIndex: [SearchMatch] = []
+    private var indexedPaths: Set<String> = []
     private var visibleItems: [Item] = []
     private var expandedFolders: Set<String> = []
     private var selectedTreeID: String?
+    private var currentFileURL: URL?
+    private var currentFilePath: String?
 
     init(
         root: FolderIndex.Root,
         text: @escaping (L10nKey) -> String,
         favorites: FavoriteFoldersModel,
         onToggleFavorite: @escaping () -> Void,
-        onOpen: @escaping OpenDocument,
-        onClose: @escaping () -> Void
+        scan: @escaping @Sendable (FolderIndex.Root) throws -> FolderIndex.Snapshot = { try FolderIndex.scan($0) },
+        onOpen: @escaping OpenDocument
     ) {
         self.root = root
         self.text = text
         self.favorites = favorites
         self.onToggleFavorite = onToggleFavorite
+        self.scan = scan
         self.onOpen = onOpen
-        self.onClose = onClose
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 570, height: 460),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        super.init(window: window)
-        window.setAccessibilityIdentifier("folder-browser-window")
-        window.contentMinSize = NSSize(width: 390, height: 290)
-        window.isRestorable = false
-        window.isReleasedWhenClosed = false
-        window.tabbingMode = .disallowed
-        window.delegate = self
-        configureContents(in: window)
+        super.init()
+        configureContents()
         updateLocalizedText()
         favoritesObservation = favorites.$entries.dropFirst().sink { [weak self] entries in
             guard let self else { return }
             updateFavoriteButton(isFavorite: entries.contains { $0.url == root.url })
         }
-        window.center()
     }
 
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    func show(quickOpen: Bool = false) {
-        guard let window else { return }
-        if !window.isVisible && scanTask == nil { refresh() }
-        if window.isMiniaturized { window.deminiaturize(nil) }
-        window.makeKeyAndOrderFront(nil)
-        if quickOpen { search.selectText(nil) }
+    func start() {
+        guard !isStarted else { return }
+        isStarted = true
+        // Subscribe before scanning so changes during the initial traversal
+        // invalidate its result as well.
+        watcher = FolderIndexWatcher(root: root) { [weak self] in
+            self?.invalidateIndex()
+        }
+        beginScan()
     }
 
-    func windowWillClose(_ notification: Notification) {
+    func stop() {
+        isStarted = false
+        watcher = nil
+        pendingRefresh?.cancel()
         scanTask?.cancel()
         openTask?.cancel()
+        pendingRefresh = nil
         scanTask = nil
         openTask = nil
-        onClose()
+        activeOpen = nil
+        queuedOpens.removeAll()
+        needsRefresh = false
     }
 
-    func windowDidResignKey(_ notification: Notification) {
-        shouldRefreshOnActivation = true
+    var hasTreeFocus: Bool { view.window?.firstResponder === outline }
+
+    var hasQuickOpenFocus: Bool {
+        guard let responder = view.window?.firstResponder else { return false }
+        return responder === search || responder === search.currentEditor()
     }
 
-    func windowDidBecomeKey(_ notification: Notification) {
-        guard shouldRefreshOnActivation else { return }
-        shouldRefreshOnActivation = false
-        if scanTask == nil && openTask == nil { refresh() }
+    func focusTree() {
+        view.window?.makeFirstResponder(outline)
     }
 
-    private func configureContents(in window: NSWindow) {
+    func focusQuickOpen() {
+        search.selectText(nil)
+    }
+
+    func setCurrentFile(_ url: URL?) {
+        guard url != currentFileURL else { return }
+        currentFileURL = url
+        let path = url.map(browserPath(of:))
+        guard path != currentFilePath else { return }
+        currentFilePath = path
+        outline.enumerateAvailableRowViews { [self] _, row in
+            guard let cell = outline.view(atColumn: 0, row: row, makeIfNecessary: false) as? FolderBrowserCell else {
+                return
+            }
+            cell.setCurrentFile(isCurrentFile(outline.item(atRow: row) as? Item))
+        }
+    }
+
+    func canReveal(_ url: URL) -> Bool { indexedPaths.contains(browserPath(of: url)) }
+
+    func reveal(_ url: URL) {
+        let filePath = browserPath(of: url)
+        guard indexedPaths.contains(filePath) else { return }
+        focusTree()
+        search.stringValue = ""
+        applyQuery("")
+        guard let path = treePath(to: filePath, in: tree), let file = path.last else { return }
+        for folder in path.dropLast() { outline.expandItem(folder) }
+        selectRow(outline.row(forItem: file))
+    }
+
+    private func browserPath(of url: URL) -> String {
+        let path = url.path
+        let rootPath = root.url.path
+        let prefix = rootPath == "/" ? rootPath : rootPath + "/"
+        if path.hasPrefix(prefix) { return path }
+        // A document opened through File > Open can retain an ancestor alias
+        // such as /var. The index uses the kernel's canonical path.
+        return FolderIndex.canonicalPath(of: url) ?? path
+    }
+
+    private func treePath(to path: String, in items: [Item]) -> [Item]? {
+        for item in items {
+            if item.file?.url.path == path { return [item] }
+            if let children = item.children, let suffix = treePath(to: path, in: children) { return [item] + suffix }
+        }
+        return nil
+    }
+
+    private func configureContents() {
         let path = NSTextField(labelWithString: root.url.path)
         path.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         path.textColor = .secondaryLabelColor
@@ -143,16 +200,14 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
         outline.style = .plain
         outline.rowHeight = 24
         outline.indentationPerLevel = 12
-        outline.usesAlternatingRowBackgroundColors = true
         outline.dataSource = self
         outline.delegate = self
-        outline.target = self
-        outline.doubleAction = #selector(openClickedRow)
-        outline.onReturn = { [weak self] in self?.openSelection() }
+        outline.onClick = { [weak self] item, count in self?.clickedItem(item, count: count) }
+        outline.onReturn = { [weak self] in self?.openSelection(intent: .pinAndFocusEditor) }
+        outline.onSpace = { [weak self] in self?.openSelection(intent: .preview) }
         outline.setAccessibilityIdentifier("folder-file-list")
 
         let scroll = NSScrollView()
-        scroll.borderType = .bezelBorder
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.documentView = outline
@@ -162,9 +217,9 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
         status.setAccessibilityIdentifier("folder-status")
         status.setContentCompressionResistancePriority(.required, for: .vertical)
 
-        configure(refreshButton, identifier: "folder-refresh", action: #selector(refresh))
-        configure(cancelButton, identifier: "folder-cancel-scan", action: #selector(cancelScan))
-        configure(openButton, identifier: "folder-open-selection", action: #selector(openSelection))
+        configure(refreshButton, symbol: "arrow.clockwise", identifier: "folder-refresh", action: #selector(refresh))
+        configure(cancelButton, symbol: "xmark", identifier: "folder-cancel-scan", action: #selector(cancelScan))
+        configure(openButton, identifier: "folder-open-selection", action: #selector(openSelectedFile))
 
         progress.style = .spinning
         progress.controlSize = .small
@@ -184,27 +239,26 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
         body.spacing = 8
         body.translatesAutoresizingMaskIntoConstraints = false
 
-        let content = NSView()
-        content.addSubview(body)
-        window.contentView = content
+        view.addSubview(body)
         NSLayoutConstraint.activate([
-            body.topAnchor.constraint(equalTo: content.topAnchor, constant: 14),
-            body.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
-            body.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14),
-            body.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14),
+            body.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
+            body.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -8),
+            body.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
+            body.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
             pathRow.widthAnchor.constraint(equalTo: body.widthAnchor),
             search.widthAnchor.constraint(equalTo: body.widthAnchor),
             scroll.widthAnchor.constraint(equalTo: body.widthAnchor),
             status.widthAnchor.constraint(equalTo: body.widthAnchor),
             actions.widthAnchor.constraint(equalTo: body.widthAnchor)
         ])
-
-        window.initialFirstResponder = search
-        window.autorecalculatesKeyViewLoop = true
     }
 
-    private func configure(_ button: NSButton, identifier: String, action: Selector) {
+    private func configure(_ button: NSButton, symbol: String? = nil, identifier: String, action: Selector) {
         button.bezelStyle = .rounded
+        if let symbol {
+            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            button.imagePosition = .imageOnly
+        }
         button.target = self
         button.action = action
         button.setAccessibilityIdentifier(identifier)
@@ -212,14 +266,16 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
     }
 
     func updateLocalizedText() {
-        let name = root.url.lastPathComponent.isEmpty ? root.url.path : root.url.lastPathComponent
-        window?.title = String(format: text(.folderWindowTitle), name)
         search.placeholderString = text(.folderFilterPlaceholder)
         search.setAccessibilityLabel(text(.folderQuickOpenField))
         outline.setAccessibilityLabel(text(.folderFileList))
-        refreshButton.title = text(.folderRefresh)
-        cancelButton.title = text(.folderCancelScan)
         openButton.title = text(.folderOpenSelection)
+        for (button, key) in [(refreshButton, L10nKey.folderRefresh), (cancelButton, .folderCancelScan),
+                              (openButton, .folderOpenSelection)] {
+            let label = text(key)
+            button.toolTip = label
+            button.setAccessibilityLabel(label)
+        }
         updateFavoriteButton(isFavorite: favorites.contains(root))
         updateState()
     }
@@ -239,22 +295,50 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
     }
 
     @objc private func refresh() {
-        guard scanTask == nil, openTask == nil else { return }
-        issue = nil
+        openIssue = nil
+        beginScan()
+    }
+
+    private func invalidateIndex() {
+        guard isStarted else { return }
+        needsRefresh = true
+        schedulePendingRefresh()
+    }
+
+    private func schedulePendingRefresh() {
+        guard needsRefresh, scanTask == nil, pendingRefresh == nil else { return }
+        pendingRefresh = Task { [weak self] in
+            // Coalesce event batches, especially during directory copies or saves.
+            try? await Task.sleep(for: .milliseconds(250))
+            guard let self, !Task.isCancelled else { return }
+            pendingRefresh = nil
+            beginScan(priority: .utility)
+        }
+    }
+
+    private func beginScan(priority: TaskPriority = .userInitiated) {
+        guard isStarted, scanTask == nil else { return }
+        pendingRefresh?.cancel()
+        pendingRefresh = nil
+        needsRefresh = false
+        indexIssue = nil
         let root = self.root
+        let scan = self.scan
         scanTask = Task { [weak self] in
             do {
-                let snapshot = try await Self.runInBackground { try FolderIndex.scan(root) }
+                let snapshot = try await Self.runInBackground(priority: priority) { try scan(root) }
                 guard let self, !Task.isCancelled else { return }
                 scanTask = nil
                 replaceSnapshot(snapshot)
                 updateState(announce: true)
+                schedulePendingRefresh()
             } catch {
                 guard let self, !Task.isCancelled else { return }
                 scanTask = nil
-                issue = .folderRootUnavailable
+                indexIssue = .folderRootUnavailable
                 replaceSnapshot(nil)
                 updateState(announce: true)
+                schedulePendingRefresh()
             }
         }
         updateState()
@@ -264,14 +348,16 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
         guard let scanTask else { return }
         scanTask.cancel()
         self.scanTask = nil
-        issue = snapshot == nil ? .folderScanCancelled : .folderRefreshCancelled
+        needsRefresh = false
+        indexIssue = snapshot == nil ? .folderScanCancelled : .folderRefreshCancelled
         updateState(announce: true)
     }
 
     private nonisolated static func runInBackground<Value: Sendable>(
+        priority: TaskPriority = .userInitiated,
         _ operation: @escaping @Sendable () throws -> Value
     ) async throws -> Value {
-        let worker = Task.detached(priority: .userInitiated, operation: operation)
+        let worker = Task.detached(priority: priority, operation: operation)
         return try await withTaskCancellationHandler {
             try await worker.value
         } onCancel: {
@@ -285,6 +371,7 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
         self.snapshot = snapshot
         tree = snapshot?.nodes.map(Item.init(node:)) ?? []
         searchIndex = snapshot?.files.map(SearchMatch.init(file:)) ?? []
+        indexedPaths = Set(snapshot?.files.map { $0.url.path } ?? [])
         reloadRows(selecting: selection)
     }
 
@@ -299,11 +386,14 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
 
     private func readQuery() {
         if let editor = search.currentEditor() as? NSTextView, editor.hasMarkedText() { return }
-        let next = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        applyQuery(search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private func applyQuery(_ next: String) {
         guard next != query else { return }
         rememberTreeState()
         query = next
-        if issue == .folderFileUnavailable || issue == .folderFileTooLarge { issue = nil }
+        if openIssue == .folderFileUnavailable || openIssue == .folderFileTooLarge { openIssue = nil }
         reloadRows(selecting: nil)
         updateState()
     }
@@ -317,7 +407,7 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
             moveSelection(by: -1)
         case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)):
             readQuery()
-            openSelection()
+            openSelection(intent: .pinAndFocusEditor)
         case #selector(NSResponder.cancelOperation(_:)):
             guard !search.stringValue.isEmpty else { return false }
             search.stringValue = ""
@@ -333,9 +423,14 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
         guard count > 0 else { return }
         let selected = outline.selectedRow
         let row = selected < 0 ? (offset > 0 ? 0 : count - 1) : min(max(selected + offset, 0), count - 1)
+        selectRow(row)
+        if query.isEmpty { focusTree() }
+    }
+
+    private func selectRow(_ row: Int) {
+        guard row >= 0 else { return }
         outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         outline.scrollRowToVisible(row)
-        if query.isEmpty { window?.makeFirstResponder(outline) }
     }
 
     private func rememberTreeState() {
@@ -377,11 +472,9 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
         let visibleRows = 0..<outline.numberOfRows
         if let selectionID,
            let row = visibleRows.first(where: { (outline.item(atRow: $0) as? Item)?.id == selectionID }) {
-            outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-            outline.scrollRowToVisible(row)
+            selectRow(row)
         } else if !query.isEmpty, !visibleRows.isEmpty {
-            outline.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
-            outline.scrollRowToVisible(0)
+            selectRow(0)
         } else {
             outline.deselectAll(nil)
         }
@@ -400,67 +493,117 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
         return row >= 0 ? outline.item(atRow: row) as? Item : nil
     }
 
-    @objc private func openClickedRow() {
-        let row = outline.clickedRow
-        guard row >= 0, let item = outline.item(atRow: row) as? Item else { return }
-        activate(item)
+    private func clickedItem(_ item: Any, count: Int) {
+        guard let item = item as? Item else { return }
+        activate(item, intent: count == 1 ? .preview : .pin)
     }
 
-    @objc private func openSelection() {
+    @objc private func openSelectedFile() {
+        openSelection(intent: .pinAndFocusEditor)
+    }
+
+    private func openSelection(intent: OpenIntent) {
         guard let item = selectedItem else { return }
-        activate(item)
+        activate(item, intent: intent)
     }
 
-    private func activate(_ item: Item) {
+    private struct OpenRequest {
+        let file: FolderIndex.File
+        var intent: OpenIntent
+
+        mutating func promote(to intent: OpenIntent) {
+            if intent.rawValue > self.intent.rawValue { self.intent = intent }
+        }
+    }
+
+    private func activate(_ item: Item, intent: OpenIntent) {
+        guard isStarted else { return }
         guard let file = item.file else {
+            guard intent != .preview else { return }
             if outline.isItemExpanded(item) { outline.collapseItem(item) }
             else { outline.expandItem(item) }
             return
         }
-        guard openTask == nil else { return }
-        // A previously listed item can open while a refresh is in progress.
-        // Its path and identity are validated independently of the snapshot.
-        scanTask?.cancel()
-        scanTask = nil
-        issue = nil
+        // A new request supersedes an uncommitted preview. Keep explicit pin
+        // requests queued and upgrade a preview already reading the same file.
+        queuedOpens.removeAll { $0.intent == .preview }
+        if activeOpen?.file == file {
+            activeOpen?.promote(to: intent)
+            return
+        }
+        if let index = queuedOpens.firstIndex(where: { $0.file == file }) {
+            queuedOpens[index].promote(to: intent)
+            return
+        }
+        queuedOpens.append(OpenRequest(file: file, intent: intent))
+        if activeOpen?.intent == .preview {
+            openTask?.cancel()
+            openTask = nil
+            activeOpen = nil
+        }
+        beginNextOpen()
+    }
+
+    private func beginNextOpen() {
+        guard openTask == nil, !queuedOpens.isEmpty else { return }
+        let request = queuedOpens.removeFirst()
+        activeOpen = request
+        openIssue = nil
+        let file = request.file
         let root = self.root
         openTask = Task { [weak self] in
+            let result: Result<(FolderIndex.OpenedFile, MarkdownFileDecoder.DecodedFile?), Error>
             do {
-                let (opened, decoded) = try await Self.runInBackground {
+                result = .success(try await Self.runInBackground {
                     let opened = try FolderIndex.open(file, in: root)
                     try Task.checkCancellation()
                     return (opened, MarkdownFileDecoder.decode(opened.data))
-                }
-                guard let self, !Task.isCancelled else { return }
-                openTask = nil
-                updateState()
-                try onOpen(opened, decoded)
+                })
             } catch {
-                guard let self, !Task.isCancelled else { return }
-                openTask = nil
-                switch error as? FolderIndex.Failure {
-                case .rootUnavailable:
-                    issue = .folderRootUnavailable
-                    replaceSnapshot(nil)
-                case .fileTooLarge:
-                    issue = .folderFileTooLarge
-                default:
-                    issue = .folderFileUnavailable
-                }
-                updateState(announce: true)
+                result = .failure(error)
             }
+            guard let self, !Task.isCancelled else { return }
+            finishOpen(result)
         }
         updateState()
+    }
+
+    private func finishOpen(_ result: Result<(FolderIndex.OpenedFile, MarkdownFileDecoder.DecodedFile?), Error>) {
+        guard let request = activeOpen else { return }
+        openTask = nil
+        activeOpen = nil
+        do {
+            let (opened, decoded) = try result.get()
+            try onOpen(opened, decoded, request.intent)
+            updateState()
+        } catch {
+            switch error as? FolderIndex.Failure {
+            case .rootUnavailable:
+                scanTask?.cancel()
+                scanTask = nil
+                indexIssue = .folderRootUnavailable
+                replaceSnapshot(nil)
+                schedulePendingRefresh()
+            case .fileTooLarge:
+                openIssue = .folderFileTooLarge
+            default:
+                openIssue = .folderFileUnavailable
+            }
+            updateState(announce: true)
+        }
+        beginNextOpen()
     }
 
     private func updateState(announce: Bool = false) {
         let scanning = scanTask != nil
         let opening = openTask != nil
         let message: String
-        if let issue {
-            message = text(issue)
+        if let openIssue {
+            message = text(openIssue)
         } else if opening {
             message = text(.folderOpening)
+        } else if let indexIssue {
+            message = text(indexIssue)
         } else if scanning {
             message = text(.folderScanning)
         } else if let snapshot {
@@ -472,14 +615,14 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
             message = ""
         }
         status.stringValue = message
-        refreshButton.isEnabled = !scanning && !opening
-        if !scanning, window?.firstResponder === cancelButton { window?.makeFirstResponder(search) }
+        refreshButton.isEnabled = !scanning
+        if !scanning, view.window?.firstResponder === cancelButton { focusQuickOpen() }
         cancelButton.isHidden = !scanning
         if scanning || opening { progress.startAnimation(nil) }
         else { progress.stopAnimation(nil) }
         updateOpenButton()
 
-        if announce, let window, window.isKeyWindow {
+        if announce, let window = view.window, window.isKeyWindow {
             NSAccessibility.post(element: window, notification: .announcementRequested, userInfo: [
                 .announcement: message, .priority: NSAccessibilityPriorityLevel.medium.rawValue
             ])
@@ -500,7 +643,7 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
     }
 
     private func updateOpenButton() {
-        openButton.isEnabled = openTask == nil && selectedItem?.file != nil
+        openButton.isEnabled = selectedItem?.file != nil
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
@@ -530,7 +673,13 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
             ?? FolderBrowserCell()
         cell.identifier = identifier
         cell.show(name: item.name, file: item.file, showPath: !query.isEmpty)
+        cell.setCurrentFile(isCurrentFile(item))
         return cell
+    }
+
+    private func isCurrentFile(_ item: Item?) -> Bool {
+        guard let currentFilePath else { return false }
+        return item?.file?.url.path == currentFilePath
     }
 
     private static func fold(_ string: String) -> String {
@@ -565,22 +714,42 @@ final class FolderBrowserWindowController: NSWindowController, NSWindowDelegate,
 
         @MainActor init(file: FolderIndex.File) {
             item = Item(file: file)
-            foldedName = FolderBrowserWindowController.fold(file.name)
-            foldedPath = FolderBrowserWindowController.fold(file.relativePath)
+            foldedName = FolderBrowserController.fold(file.name)
+            foldedPath = FolderBrowserController.fold(file.relativePath)
         }
     }
 }
 
 private final class FolderBrowserOutline: NSOutlineView {
+    var onClick: ((Any, Int) -> Void)?
     var onReturn: (() -> Void)?
+    var onSpace: (() -> Void)?
+
+    private static let commandModifiers: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
+
+    override func mouseDown(with event: NSEvent) {
+        let row = row(at: convert(event.locationInWindow, from: nil))
+        let clickedItem = row >= 0 ? item(atRow: row) as? NSObject : nil
+        super.mouseDown(with: event)
+        guard event.modifierFlags.intersection(Self.commandModifiers).isEmpty,
+              let clickedItem, selectedRow >= 0,
+              (item(atRow: selectedRow) as? NSObject) === clickedItem else { return }
+        onClick?(clickedItem, event.clickCount)
+    }
 
     override func keyDown(with event: NSEvent) {
-        if event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
-           event.charactersIgnoringModifiers == "\r" || event.charactersIgnoringModifiers == "\u{3}" {
-            onReturn?()
-        } else {
-            super.keyDown(with: event)
+        if event.modifierFlags.intersection(Self.commandModifiers).isEmpty {
+            switch event.charactersIgnoringModifiers {
+            case "\r", "\u{3}":
+                if !event.isARepeat { onReturn?() }
+                return
+            case " ":
+                if !event.isARepeat { onSpace?() }
+                return
+            default: break
+            }
         }
+        super.keyDown(with: event)
     }
 }
 
@@ -642,5 +811,11 @@ private final class FolderBrowserCell: NSTableCellView {
         pathLabel.setAccessibilityElement(false)
         toolTip = file?.relativePath ?? name
         icon.image = file == nil ? Self.folderIcon : Self.fileIcon
+    }
+
+    func setCurrentFile(_ isCurrent: Bool) {
+        nameLabel.font = .systemFont(ofSize: NSFont.systemFontSize, weight: isCurrent ? .semibold : .regular)
+        icon.contentTintColor = isCurrent ? .controlAccentColor : .secondaryLabelColor
+        nameLabel.setAccessibilityIdentifier(isCurrent ? "folder-current-file" : nil)
     }
 }

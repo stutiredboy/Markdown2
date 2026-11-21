@@ -319,6 +319,18 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    var folderBrowserShortcut: ModeKeyboardShortcut {
+        // Preserve shortcuts customized in earlier releases. There are four
+        // candidates and at most three mode assignments.
+        let modifiers: [ModeShortcutModifiers] = [
+            [.command, .shift], [.command, .option, .shift],
+            [.command, .control, .shift], [.command, .option, .control, .shift]
+        ]
+        let assigned = Set(modeShortcuts.assignments.map(\.shortcut))
+        return modifiers.map { ModeKeyboardShortcut(key: "b", modifiers: $0) }
+            .first { !assigned.contains($0) } ?? ModeKeyboardShortcut(key: "b", modifiers: [.command, .shift])
+    }
+
     var modePickerHelp: String {
         String(
             format: text(.modePickerHelp),
@@ -396,6 +408,7 @@ enum L10nKey: String, CaseIterable, Sendable {
     case new
     case open
     case openFolder, folderQuickOpen, folderAuthorizationFailed, folderSaveUnavailable
+    case folderSidebarFiles, showSidebar, hideSidebar, focusFolderBrowser, revealInFolderBrowser, folderPreviewTabHelp
     case favoriteFolders, favoriteFoldersEmpty, favoriteFoldersManage, favoriteFoldersClear
     case favoriteFolderAddCurrent, favoriteFolderRemoveCurrent, favoriteFolderRemove, favoriteFolderKeep
     case favoriteFolderUnavailable, favoriteFolderMoved, favoriteFolderPermissionDenied, favoriteFolderLink
@@ -420,7 +433,7 @@ enum L10nKey: String, CaseIterable, Sendable {
     case exportDOCX
     case exportEPUB
     case close
-    case folderWindowTitle, folderQuickOpenField, folderFilterPlaceholder, folderFileList
+    case folderQuickOpenField, folderFilterPlaceholder, folderFileList
     case folderRefresh, folderCancelScan, folderOpenSelection, folderScanning, folderOpening
     case folderNoFiles, folderOneFile, folderFileCount, folderOneMatch, folderMatchCount
     case folderScanLimited, folderScanUnreadable, folderScanCancelled, folderRefreshCancelled
@@ -645,6 +658,12 @@ enum L10n {
         .open: "Open...",
         .openFolder: "Open Folder…",
         .folderQuickOpen: "Quick Open…",
+        .folderSidebarFiles: "Files",
+        .showSidebar: "Show Sidebar",
+        .hideSidebar: "Hide Sidebar",
+        .focusFolderBrowser: "Focus Folder Browser",
+        .revealInFolderBrowser: "Reveal in Folder Browser",
+        .folderPreviewTabHelp: "%@, Preview Tab",
         .folderAuthorizationFailed: "Choose a readable folder in its original location.",
         .folderSaveUnavailable: "The original file could not be verified. Your edits are still in this window.",
         .favoriteFolders: "Favorite Folders",
@@ -721,7 +740,6 @@ enum L10n {
         .exportDOCX: "Export as DOCX…",
         .exportEPUB: "Export as EPUB…",
         .close: "Close",
-        .folderWindowTitle: "%@ — Folder",
         .folderQuickOpenField: "Quick Open",
         .folderFilterPlaceholder: "Search filenames or paths",
         .folderFileList: "Folder Files",
@@ -1029,6 +1047,12 @@ enum L10n {
         .open: "打开...",
         .openFolder: "打开文件夹…",
         .folderQuickOpen: "快速打开…",
+        .folderSidebarFiles: "文件",
+        .showSidebar: "显示侧栏",
+        .hideSidebar: "隐藏侧栏",
+        .focusFolderBrowser: "聚焦文件浏览器",
+        .revealInFolderBrowser: "在文件浏览器中显示",
+        .folderPreviewTabHelp: "%@，预览标签页",
         .folderAuthorizationFailed: "请选择位于原始位置且可读取的文件夹。",
         .folderSaveUnavailable: "无法验证原文件。编辑内容仍保留在此窗口中。",
         .favoriteFolders: "收藏的文件夹",
@@ -1105,7 +1129,6 @@ enum L10n {
         .exportDOCX: "导出为 DOCX…",
         .exportEPUB: "导出为 EPUB…",
         .close: "关闭",
-        .folderWindowTitle: "%@ — 文件夹",
         .folderQuickOpenField: "快速打开",
         .folderFilterPlaceholder: "搜索文件名或路径",
         .folderFileList: "文件夹中的文件",

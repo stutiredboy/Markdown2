@@ -33,6 +33,13 @@ features. See the [daily-writing](Docs/Plans/daily-writing/PLAN.md),
 
 ## Next packages
 
+- [x] **P1 — Stop the folder workflow from spawning a window per file.** Files
+  and Quick Open live beside the editor in a Files | Outline sidebar. Click
+  or press Space to skim in one replaceable native preview tab. Double-click,
+  press Return, or edit to pin. The folder index refreshes after filesystem
+  changes or on request, and the existing file verification and draft
+  protection apply to every open. See the [folder workflow](Docs/FolderWorkflow.md).
+
 - [x] **P2 — A lightweight folder workflow.** File → Open Folder shows a
   bounded Markdown tree for one explicitly selected folder. Quick Open filters
   filenames and relative paths, and opening a file reuses any existing document

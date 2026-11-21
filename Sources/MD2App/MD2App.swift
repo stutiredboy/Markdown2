@@ -196,6 +196,16 @@ private struct AppCommands: Commands {
             }
             .keyboardShortcut("p", modifiers: [.command, .shift])
 
+            Button(settings.text(.focusFolderBrowser)) {
+                appDelegate.focusFolderBrowser()
+            }
+            .keyboardShortcut(settings.folderBrowserShortcut.keyEquivalent,
+                              modifiers: settings.folderBrowserShortcut.modifiers.eventModifiers)
+
+            Button(settings.text(.revealInFolderBrowser)) {
+                appDelegate.revealInFolderBrowser()
+            }
+
             FavoriteFoldersMenu(
                 settings: settings,
                 favorites: appDelegate.favoriteFolders,

@@ -314,7 +314,7 @@ final class DocumentStore: ObservableObject {
     /// conversion) is in flight. All export/print operations are mutually
     /// exclusive — each produces a file from the document's current state — so each
     /// guards on this, including the background preparation stage.
-    private var isProducingDerivedArtifact: Bool {
+    var isProducingDerivedArtifact: Bool {
         preparingDerivedArtifact != nil || pdfExporter != nil || documentPrinter != nil || conversion?.operationID != nil
     }
     private var isLoading = false

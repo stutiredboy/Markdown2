@@ -131,6 +131,7 @@ enum OutlineKeyboardNavigation {
 struct ContentView: View {
     @ObservedObject var document: DocumentStore
     @ObservedObject var settings: AppSettings
+    @ObservedObject private var contentState: DocumentWindowContentState
     @State private var mode: EditorMode
     @State private var showsOutline: Bool
     @State private var showsFrontMatterMetadata = false
@@ -169,7 +170,7 @@ struct ContentView: View {
     @State private var editorFindFocusToken = UUID()
     @State private var editorFindNavigation: FindCommand?
     @State private var editorReplaceCommand: FindReplaceCommand?
-    @State private var editorSurfaceFocusToken = UUID()
+    @State private var editorSurfaceFocusToken: UUID?
     @State private var editorMatchTotal = 0
     @State private var editorMatchIndex = 0
     /// Preview-mode find bar state (read mode).
@@ -177,7 +178,8 @@ struct ContentView: View {
     @State private var previewFindQuery = ""
     @State private var previewFindFocusToken = UUID()
     @State private var previewFindNavigation: FindCommand?
-    @State private var previewSurfaceFocusToken = UUID()
+    @State private var previewSurfaceFocusToken: UUID?
+    @State private var initialSurfaceFocusToken = UUID()
     @State private var previewFocusState = PreviewFocusState()
     @State private var formulaSheet = PreviewFormulaSheet()
     @State private var formulaFocus: (revision: Int, line: Int)?
@@ -218,13 +220,15 @@ struct ContentView: View {
         settings: AppSettings,
         onOpen: @escaping () -> Void,
         onOpenMarkdownLink: @escaping (URL) -> Void = { _ in },
-        onOpenCreatedCopy: @escaping (DocumentCopyReceipt) -> Void = { _ in }
+        onOpenCreatedCopy: @escaping (DocumentCopyReceipt) -> Void = { _ in },
+        contentState: DocumentWindowContentState = DocumentWindowContentState()
     ) {
         self.document = document
         self.settings = settings
         self.onOpen = onOpen
         self.onOpenMarkdownLink = onOpenMarkdownLink
         self.onOpenCreatedCopy = onOpenCreatedCopy
+        self.contentState = contentState
         _mode = State(initialValue: settings.presentationMode(isFileBacked: document.fileURL != nil))
         _showsOutline = State(initialValue: settings.showsOutlineByDefault)
     }
@@ -239,23 +243,7 @@ struct ContentView: View {
                 document.setRemoteImagesAllowed(allowed)
             }
             HStack(spacing: 0) {
-                if showsOutline {
-                    OutlineSidebar(
-                        headings: document.rendered.outline,
-                        selectedHeadingID: clickedOutlineHeadingID
-                            ?? document.rendered.outline.heading(atOrAbove: outlineSourceLine)?.id,
-                        settings: settings,
-                        width: DocumentLayoutMetrics.outlineSidebarWidth,
-                        onSelect: { heading in
-                            clickedOutlineHeadingID = heading.id
-                            outlineSourceLine = heading.line
-                            if mode == .read { sourceBeforeRead = nil }
-                            document.jump(to: heading)
-                        }
-                    )
-                    Divider()
-                }
-
+                sidebar
                 editorSurface
             }
 
@@ -340,6 +328,15 @@ struct ContentView: View {
         .onChange(of: document.modeCommand) { _, command in
             handleModeCommand(command)
         }
+        .onChange(of: contentState.editorFocusRequest, initial: true) { _, request in
+            guard request != nil else { return }
+            if mode == .read {
+                previewSurfaceFocusToken = UUID()
+            } else {
+                focusedPane = .editor
+                editorSurfaceFocusToken = UUID()
+            }
+        }
         .onChange(of: document.pendingExternalReload) { _, token in
             guard token != nil else { return }
             captureAnchorForExternalReload()
@@ -353,16 +350,18 @@ struct ContentView: View {
         .toolbar {
             ToolbarItemGroup(placement: .navigation) {
                 Button {
-                    showsOutline.toggle()
+                    if let folderSidebar = contentState.folderSidebar {
+                        folderSidebar.isVisible.toggle()
+                    } else {
+                        showsOutline.toggle()
+                    }
                 } label: {
-                    Label(
-                        showsOutline ? settings.text(.hideOutline) : settings.text(.showOutline),
-                        systemImage: "sidebar.left"
-                    )
+                    Label(sidebarToggleTitle, systemImage: "sidebar.left")
                 }
                 .labelStyle(.titleAndIcon)
-                .accessibilityLabel(showsOutline ? settings.text(.hideOutline) : settings.text(.showOutline))
-                .help(showsOutline ? settings.text(.hideOutline) : settings.text(.showOutline))
+                .accessibilityLabel(sidebarToggleTitle)
+                .accessibilityIdentifier("document-sidebar-toggle")
+                .help(sidebarToggleTitle)
 
                 // Two independent scopes, so this is a menu rather than a single
                 // toggle: one button could only express one of them, and would
@@ -453,6 +452,66 @@ struct ContentView: View {
         }
     }
 
+    @ViewBuilder
+    private var sidebar: some View {
+        if let folderSidebar = contentState.folderSidebar {
+            if folderSidebar.isVisible {
+                VStack(spacing: 0) {
+                    Picker(settings.text(.showSidebar), selection: Binding(
+                        get: { folderSidebar.section },
+                        set: { folderSidebar.section = $0 }
+                    )) {
+                        Text(settings.text(.folderSidebarFiles)).tag(FolderSidebarState.Section.files)
+                        Text(settings.text(.outline)).tag(FolderSidebarState.Section.outline)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .accessibilityIdentifier("folder-sidebar-section")
+                    .padding(.horizontal, 10)
+                    .padding(.top, 8)
+                    .padding(.bottom, 4)
+
+                    if folderSidebar.section == .files {
+                        FolderSidebarHost(sidebar: folderSidebar)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        outlineSidebar(showsTitle: false)
+                    }
+                }
+                .frame(width: DocumentLayoutMetrics.outlineSidebarWidth)
+                .background(.regularMaterial)
+                Divider()
+            }
+        } else if showsOutline {
+            outlineSidebar(showsTitle: true)
+            Divider()
+        }
+    }
+
+    private func outlineSidebar(showsTitle: Bool) -> some View {
+        OutlineSidebar(
+            headings: document.rendered.outline,
+            selectedHeadingID: clickedOutlineHeadingID
+                ?? document.rendered.outline.heading(atOrAbove: outlineSourceLine)?.id,
+            settings: settings,
+            width: DocumentLayoutMetrics.outlineSidebarWidth,
+            showsTitle: showsTitle,
+            onSelect: { heading in
+                clickedOutlineHeadingID = heading.id
+                outlineSourceLine = heading.line
+                if mode == .read { sourceBeforeRead = nil }
+                document.jump(to: heading)
+            }
+        )
+    }
+
+    private var sidebarToggleTitle: String {
+        if let folderSidebar = contentState.folderSidebar {
+            return settings.text(folderSidebar.isVisible ? .hideSidebar : .showSidebar)
+        }
+        return settings.text(showsOutline ? .hideOutline : .showOutline)
+    }
+
     /// A segment ignores `accessibilityLabel` and is announced by its image's
     /// description. A plain symbol would describe itself, in the system language
     /// rather than the app's, so the image carries the mode's name.
@@ -466,7 +525,14 @@ struct ContentView: View {
 
     private func applyDefaultPresentation() {
         mode = settings.presentationMode(isFileBacked: document.fileURL != nil)
-        if mode != .write { previewSurfaceFocusToken = UUID() }
+        if contentState.folderSidebar == nil {
+            if mode != .write { previewSurfaceFocusToken = UUID() }
+        } else if contentState.editorFocusRequest == nil {
+            // Opening the first file may reuse the starter window. Its new
+            // surface must leave the folder tree in command of the keyboard.
+            editorSurfaceFocusToken = nil
+            previewSurfaceFocusToken = nil
+        }
         showsOutline = settings.showsOutlineByDefault
     }
 
@@ -479,7 +545,9 @@ struct ContentView: View {
     }
 
     private var minimumWindowWidth: CGFloat {
-        DocumentLayoutMetrics.minimumWindowWidth(mode: mode, showsOutline: showsOutline)
+        DocumentLayoutMetrics.minimumWindowWidth(
+            mode: mode, showsOutline: contentState.folderSidebar?.isVisible ?? showsOutline
+        )
     }
 
     private func handleModeCommand(_ command: ModeCommand?) {
@@ -784,6 +852,7 @@ struct ContentView: View {
             document.editorJumpAnchor = nil
             document.previewJumpAnchor = anchor
         case .write:
+            editorSurfaceFocusToken = UUID()
             document.previewJumpAnchor = nil
             // A formatting request from Read reveals the retained source
             // selection instead of scrolling back to the preview's viewport.
@@ -1058,7 +1127,8 @@ struct ContentView: View {
                 findNavigation: $editorFindNavigation,
                 findReplacement: $editorFindReplacement,
                 replaceCommand: $editorReplaceCommand,
-                focusToken: editorSurfaceFocusToken,
+                focusToken: editorSurfaceFocusToken
+                    ?? (contentState.folderSidebar == nil ? initialSurfaceFocusToken : nil),
                 lineSelection: $document.editorLineSelection,
                 focusOnProgrammaticScroll: !inSplit,
                 onFindShortcut: { action in
@@ -1149,7 +1219,8 @@ struct ContentView: View {
                     findMayRevealMatches: previewFindVisible,
                     findOptions: document.editorSession.find.options,
                     findNavigation: $previewFindNavigation,
-                    focusToken: previewSurfaceFocusToken,
+                    focusToken: previewSurfaceFocusToken
+                        ?? (contentState.folderSidebar == nil ? initialSurfaceFocusToken : nil),
                     focusState: previewFocusState,
                     onFindShortcut: { action in
                         if inSplit { focusedPane = .preview }
@@ -1289,6 +1360,7 @@ private struct OutlineSidebar: View {
     let selectedHeadingID: String?
     let settings: AppSettings
     let width: CGFloat
+    let showsTitle: Bool
     let onSelect: (Heading) -> Void
     @State private var keyboardSelectedHeadingID: String?
     @State private var selectionSync = OutlineSelectionSyncState()
@@ -1321,12 +1393,14 @@ private struct OutlineSidebar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(settings.text(.outline))
-                .font(.headline)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 14)
-                .padding(.top, 14)
-                .padding(.bottom, 8)
+            if showsTitle {
+                Text(settings.text(.outline))
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 14)
+                    .padding(.bottom, 8)
+            }
 
             if headings.isEmpty {
                 Text(settings.text(.noHeadings))

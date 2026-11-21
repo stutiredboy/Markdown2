@@ -120,6 +120,10 @@ enum FolderIndex {
     private static let directoryFlags = O_RDONLY | O_DIRECTORY | O_CLOEXEC
     private static let markdownExtensions: Set<String> = ["md", "markdown"]
 
+    static func isMarkdownExtension(_ suffix: String) -> Bool {
+        markdownExtensions.contains(suffix.lowercased())
+    }
+
     /// The selected item must be a real directory. Normalize existing ancestor
     /// links (for example /var on macOS) once; future operations require that
     /// same directory at its canonical path, with no inserted symlinks.
@@ -133,9 +137,7 @@ enum FolderIndex {
         // Foundation may normalize /private/var back to /var even after
         // resolving symlinks. Keep the actual kernel pathname for no-follow
         // opens of the entire root path.
-        guard let canonical = realpath(selectedURL.path, nil) else { throw Failure.rootUnavailable }
-        defer { free(canonical) }
-        guard let path = String(validatingCString: canonical) else { throw Failure.rootUnavailable }
+        guard let path = canonicalPath(of: selectedURL) else { throw Failure.rootUnavailable }
         let root: Root
         do {
             root = try authorizeCanonicalPath(path)
@@ -144,6 +146,12 @@ enum FolderIndex {
         }
         guard root.identity == Identity(selected) else { throw Failure.rootUnavailable }
         return root
+    }
+
+    static func canonicalPath(of url: URL) -> String? {
+        guard url.isFileURL, let canonical = realpath(url.path, nil) else { return nil }
+        defer { free(canonical) }
+        return String(validatingCString: canonical)
     }
 
     /// A favorite already has a canonical path. Reauthorize that exact
@@ -370,7 +378,8 @@ enum FolderIndex {
                 examined += 1
                 guard let name, !name.hasPrefix("."), record.d_type != DT_LNK else { continue }
                 let ext = (name as NSString).pathExtension.lowercased()
-                guard record.d_type == DT_DIR || record.d_type == DT_UNKNOWN || markdownExtensions.contains(ext) else {
+                let isMarkdown = isMarkdownExtension(ext)
+                guard record.d_type == DT_DIR || record.d_type == DT_UNKNOWN || isMarkdown else {
                     continue
                 }
 
@@ -382,7 +391,7 @@ enum FolderIndex {
                 guard info.st_dev == root.identity.device, info.st_flags & UInt32(UF_HIDDEN) == 0 else { continue }
                 let isDirectory = info.st_mode & S_IFMT == S_IFDIR
                 guard isDirectory || (info.st_mode & S_IFMT == S_IFREG && info.st_nlink == 1 &&
-                                      markdownExtensions.contains(ext)) else { continue }
+                                      isMarkdown) else { continue }
                 guard !isDirectory || (name != "node_modules" && !isPackageExtension(ext)) else { continue }
 
                 guard let flags = try? finderFlags(name, in: directory) else {
