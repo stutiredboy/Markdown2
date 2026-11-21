@@ -684,15 +684,24 @@ struct FolderTestApplication {
                 }
                 guard let sheet = descendant(picker, matching: { attribute(kAXRoleAttribute, of: $0) as? String == kAXSheetRole })
                 else { return nil }
-                return descendant(sheet) { attribute(kAXRoleAttribute, of: $0) as? String == kAXTextFieldRole }
+                return descendant(sheet) {
+                    attribute(kAXRoleAttribute, of: $0) as? String == kAXTextFieldRole && pickerFieldHasFocus($0)
+                }
             }
             let path = guide.deletingLastPathComponent().path
-            try postKey(UInt16(kVK_ANSI_A), flags: .maskCommand, toWindowServer: true)
-            for character in path {
-                try postKey(0, flags: [], text: String(character), toWindowServer: true)
-            }
-            _ = try waitFor("the picker has received the folder path") { value(location) == path ? location : nil }
+            try pastePickerPath(path, in: location)
             try postKey(UInt16(kVK_Return), flags: [], toWindowServer: true)
+
+            // On macOS 15 the first Return can precede the path suggestions.
+            // Repeat once only if the same path field still has the exact input.
+            let deadline = Date().addingTimeInterval(1.5)
+            while pickerFieldHasFocus(location), value(location) == path, Date() < deadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            }
+            if pickerFieldHasFocus(location), value(location) == path,
+               NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
+                try postKey(UInt16(kVK_Return), flags: [], toWindowServer: true)
+            }
             _ = try waitFor("Go to Folder dismisses its path field") {
                 value(location) == nil ? picker : nil
             }
@@ -702,6 +711,45 @@ struct FolderTestApplication {
         }
         try press(choose)
         return try waitForFolder(containing: guide)
+    }
+
+    private func pickerFieldHasFocus(_ field: AXUIElement) -> Bool {
+        focusedElement.map { CFEqual($0, field) } == true ||
+            (attribute(kAXFocusedAttribute, of: field) as? Bool) == true
+    }
+
+    private func pastePickerPath(_ path: String, in location: AXUIElement) throws {
+        _ = try waitFor("the native Go to Folder field owns keyboard focus") {
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+                  pickerFieldHasFocus(location) else { return nil }
+            return location
+        }
+        let board = NSPasteboard.general
+        let saved = board.pasteboardItems?.map { item in
+            item.types.compactMap { type in item.data(forType: type).map { (type, $0) } }
+        } ?? []
+        var writtenChangeCount = board.clearContents()
+        defer {
+            if board.changeCount == writtenChangeCount {
+                board.clearContents()
+                if !saved.isEmpty {
+                    board.writeObjects(saved.map { entries in
+                        let item = NSPasteboardItem()
+                        for (type, data) in entries { item.setData(data, forType: type) }
+                        return item
+                    })
+                }
+            }
+        }
+        guard board.setString(path, forType: .string) else {
+            throw FolderTestError("Could not put the folder path on the pasteboard")
+        }
+        writtenChangeCount = board.changeCount
+        try postKey(UInt16(kVK_ANSI_A), flags: .maskCommand, toWindowServer: true)
+        try postKey(UInt16(kVK_ANSI_V), flags: .maskCommand, toWindowServer: true)
+        _ = try waitFor("the picker has received the complete folder path") {
+            value(location) == path ? location : nil
+        }
     }
 
     var recentDocumentURLs: [URL] {
