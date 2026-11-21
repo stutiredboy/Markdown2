@@ -585,7 +585,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         _ opened: FolderIndex.OpenedFile, decoded: MarkdownFileDecoder.DecodedFile?,
         intent: FolderBrowserController.OpenIntent
     ) throws {
-        guard let folder else { return }
+        guard !isTerminating, let folder else { return }
         try opened.validate()
         let open = FolderOpen(session: folder, intent: intent, keepTreeFocus: folder.browser.hasTreeFocus)
         try openDocument(DocumentLinkTarget(opened.url), folderFile: opened, folderOpen: open) {
@@ -690,11 +690,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let window = document.window
         let landing = session.landingWindow
         guard let group = session.group ?? window.tabGroup else { return }
-        if let landing {
-            if canPreview { window.setFrame(landing.frame, display: false) }
-            session.host = .tabs(group)
-            observeFolderGroup(session)
-        }
+        if let landing, canPreview { window.setFrame(landing.frame, display: false) }
         let isPreview = open.intent == .preview && (canPreview || document.isPreview)
             && !document.store.isDirty && document.store.fileURL != nil
         let previous = isPreview && session.preview?.isPreview == true ? session.preview : nil
@@ -712,8 +708,14 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if isPreview && !group.isTabBarVisible { window.toggleTabBar(nil) }
         group.selectedWindow = window
         window.makeKeyAndOrderFront(nil)
+        if let landing {
+            // Use the presented group. AppKit can apply the user's automatic
+            // tabbing preference when the first document comes on screen.
+            session.host = .tabs(window.tabGroup ?? group)
+            observeFolderGroup(session)
+            landing.close()
+        }
         updateFolderSidebar(for: window)
-        landing?.close()
 
         if let previous, previous !== document {
             // Pin any preview with work that a close would discard, including
