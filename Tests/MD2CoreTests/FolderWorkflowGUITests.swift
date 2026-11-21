@@ -69,16 +69,13 @@ final class FolderWorkflowGUITests: XCTestCase {
     }
 
     @MainActor
-    func testOpenFolderReplacesAnUntouchedStartupDocumentBeforeOpeningFirstFile() async throws {
+    func testOpenFolderReplacesAnUntouchedDocumentBeforeOpeningFirstFile() async throws {
         try requireGUI()
         let fixture = try FolderPreviewFixture(numberOfNotes: 1)
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
-        let app = try await FolderTestApplication.launch(in: fixture.directory, arguments: [],
-                                                         opensBlankDocumentOnLaunch: true)
+        let app = try await FolderTestApplication.launch(in: fixture.directory, arguments: [])
         defer { app.close() }
-        let starter = try app.waitFor("the untouched startup document") {
-            app.windows.first { app.title($0) == "Untitled.md" }
-        }
+        let starter = try createUntitledDocument(in: app)
         XCTAssertTrue(app.value(try app.editor(in: starter))?.hasPrefix("# Untitled\n") == true)
 
         let landing = try app.chooseFolderByPath(containing: fixture.guide)
@@ -99,12 +96,9 @@ final class FolderWorkflowGUITests: XCTestCase {
         try requireGUI()
         let fixture = try FolderPreviewFixture(numberOfNotes: 1)
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
-        let app = try await FolderTestApplication.launch(in: fixture.directory, arguments: [],
-                                                         opensBlankDocumentOnLaunch: true)
+        let app = try await FolderTestApplication.launch(in: fixture.directory, arguments: [])
         defer { app.close() }
-        let untitled = try app.waitFor("the untitled editor") {
-            app.windows.first { app.title($0) == "Untitled.md" }
-        }
+        let untitled = try createUntitledDocument(in: app)
         let draft = "# Keep the untitled draft"
         let editor = try app.editor(in: untitled)
         try app.replaceEditorText(draft, in: editor)
@@ -125,6 +119,17 @@ final class FolderWorkflowGUITests: XCTestCase {
             app.focusedWindow.flatMap { CFEqual($0, untitled) ? $0 : nil }
         }
         XCTAssertEqual(app.value(editor), draft)
+    }
+
+    @MainActor
+    private func createUntitledDocument(in app: FolderTestApplication) throws -> AXUIElement {
+        // File > New and the default-launch preference both use newDocument().
+        // Issue the command explicitly so the fixture does not depend on the
+        // Launch Services event classifying the launch as default.
+        try app.pressFileCommand("New")
+        return try app.waitFor("the new untitled document") {
+            app.focusedWindow.flatMap { app.title($0) == "Untitled.md" ? $0 : nil }
+        }
     }
 
     @MainActor
@@ -543,8 +548,7 @@ struct FolderTestApplication {
     private let accessibility: AXUIElement
 
     static func launch(
-        in directory: URL, arguments: [String], opensBlankDocumentOnLaunch: Bool = false,
-        presentationMode: EditorMode = .write
+        in directory: URL, arguments: [String], presentationMode: EditorMode = .write
     ) async throws -> Self {
         let priorApplication = NSWorkspace.shared.frontmostApplication
         let identifier = "dev.codex.md2.folder-test.\(UUID().uuidString.lowercased())"
@@ -557,7 +561,7 @@ struct FolderTestApplication {
             "MD2.DefaultMode": presentationMode.rawValue, "MD2.NewDocumentMode": presentationMode.rawValue,
             "MD2.Language": "english", "AppleLanguages": ["en"],
             "MD2.ShowsOutlineByDefault": false, "AppleWindowTabbingMode": "manual",
-            "MD2.RestoresWindowsOnLaunch": false, "MD2.OpensBlankDocumentOnLaunch": opensBlankDocumentOnLaunch
+            "MD2.RestoresWindowsOnLaunch": false, "MD2.OpensBlankDocumentOnLaunch": false
         ], forName: identifier)
         defaults.synchronize()
         do {
