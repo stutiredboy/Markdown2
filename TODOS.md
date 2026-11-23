@@ -97,19 +97,15 @@ features. See the [daily-writing](Docs/Plans/daily-writing/PLAN.md),
 
 ## Follow-up from 0.9.0 verification
 
-- [ ] **Refresh the standalone P1 benchmark.** The runner for the 0.6.0
-  measurements compiles its own list of app sources, which has drifted from
-  the current editor and typography code. Update the runner or document how
-  to reproduce those measurements at the matching revision. The Swift test
-  suite and release workflow still check the render and HTML export
-  main-thread heartbeats.
-- [ ] **Improve recovery after an interrupted hard-linked save.** The draft
-  is persisted before an in-place write so edited text remains recoverable.
-  If the process stops mid-write, the linked paths can temporarily expose
-  partial bytes. Design how to reconcile those paths from the recovery record.
-- [ ] **Reduce layout cost when returning to deep positions in large documents.**
-  TextKit still measures the wrapped document for nonzero scroll clamps. Keep
-  the exact reading position and caret while reducing layout work in that path.
+- [x] **Refresh the standalone P1 benchmark.** The runner uses the SwiftPM
+  release targets and has a smoke test. The [benchmark notes](Docs/Benchmarks/v0.6.0/README.md)
+  give commands for both current runs and the original 0.6.0 comparison.
+- [x] **Improve recovery after an interrupted hard-linked save.** A verified
+  interrupted write can resume in place after confirmation. See
+  [save and recovery behavior](Docs/DocumentLifecycle.md#保存与恢复).
+- [x] **Reduce layout cost when returning to deep positions in large documents.**
+  Source restoration lays out through the destination viewport and uses the
+  exact height for end-of-document clamps and proportional fallback.
 
 ## Explicitly deferred
 
