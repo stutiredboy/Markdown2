@@ -453,6 +453,65 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: recordURL.path))
     }
 
+    func testInterruptedLinkedSaveCanBeDeferredThenCompletedWhenOpeningAnAlias() throws {
+        try requireAccessibilityTrust()
+        Self.writeGuardPreferences([
+            "MD2.RestoresWindowsOnLaunch": true, "MD2.Language": AppLanguage.english.rawValue,
+            "AppleLanguages": ["en"]
+        ])
+        let alias = temporaryRoot.appendingPathComponent("LinkedFixture.md")
+        try FileManager.default.linkItem(at: fixtureURL, to: alias)
+        let inode = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: fixtureURL.path)[.systemFileNumber] as? NSNumber)
+        let text = "# Recovered draft\n\n完整草稿。\n"
+        let target = Data(text.utf8)
+        let partial = Data(target.prefix(21)) // The write stopped partway through a UTF-8 character.
+        let fileID = try XCTUnwrap(DocumentHistoryFileID(url: fixtureURL.resolvingSymlinksInPath()))
+        var snapshot = DocumentRecoverySnapshot(id: UUID(), text: text, fileURL: fixtureURL,
+            identity: DocumentFileIdentity(url: fixtureURL), format: MarkdownFileFormat(),
+            fingerprint: DocumentFileFingerprint.current(at: fixtureURL), isDirty: true, windowFrame: nil)
+        snapshot.linkedSave = DocumentLinkedSaveIntent(fileKey: fileID.storageKey,
+            targetHash: DocumentFileFingerprint.hash(of: target))
+        let recoveryRecord = try seedSnapshot(snapshot)
+        let handle = try FileHandle(forWritingTo: fixtureURL)
+        try handle.truncate(atOffset: 0)
+        try handle.write(contentsOf: partial)
+        try handle.close()
+
+        let first = try launchApp(arguments: [fixtureURL.path])
+        let later = try waitForSheetButton("Later", pid: first.processIdentifier)
+        XCTAssertEqual(try Data(contentsOf: fixtureURL), partial)
+        XCTAssertEqual(try Data(contentsOf: alias), partial)
+        XCTAssertEqual(AXUIElementPerformAction(later, kAXPressAction as CFString), .success)
+        try terminate(first)
+        XCTAssertEqual(try Data(contentsOf: fixtureURL), partial)
+        XCTAssertEqual(try Data(contentsOf: alias), partial)
+        let deferred = try JSONDecoder().decode(DocumentRecoverySnapshot.self, from: Data(contentsOf: recoveryRecord))
+        XCTAssertTrue(deferred.isDirty)
+        XCTAssertEqual(deferred.text, text)
+        XCTAssertNotNil(deferred.linkedSave)
+
+        let otherDraft = DocumentRecoverySnapshot(id: UUID(), text: "An independent edit", fileURL: alias,
+            identity: DocumentFileIdentity(url: alias), format: MarkdownFileFormat(),
+            fingerprint: DocumentFileFingerprint.current(at: alias), isDirty: true, windowFrame: nil)
+        let otherRecord = try seedSnapshot(otherDraft)
+        let otherRecordBytes = try Data(contentsOf: otherRecord)
+        let resumed = try launchApp(arguments: [alias.path])
+        let finish = try waitForSheetButton("Finish Save", pid: resumed.processIdentifier)
+        XCTAssertEqual(AXUIElementPerformAction(finish, kAXPressAction as CFString), .success)
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline, (try? Data(contentsOf: alias)) != target { usleep(100_000) }
+        XCTAssertEqual(try Data(contentsOf: fixtureURL), target)
+        XCTAssertEqual(try Data(contentsOf: alias), target)
+        for url in [fixtureURL!, alias] {
+            XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: url.path)[.systemFileNumber] as? NSNumber, inode)
+        }
+        try terminate(resumed)
+        let completed = try JSONDecoder().decode(DocumentRecoverySnapshot.self, from: Data(contentsOf: recoveryRecord))
+        XCTAssertFalse(completed.isDirty)
+        XCTAssertNil(completed.linkedSave)
+        XCTAssertEqual(try Data(contentsOf: otherRecord), otherRecordBytes)
+    }
+
     func testTwoRecoveryDraftsForOneFileKeepBothTexts() throws {
         try FileManager.default.createDirectory(at: Self.recoveryDirectory, withIntermediateDirectories: true)
         for (index, text) in ["draft A", "draft B"].enumerated() {
@@ -677,6 +736,28 @@ final class SettingsWindowPresentationGUITests: XCTestCase {
     }
 
     // MARK: - Accessibility
+
+    private func waitForSheetButton(_ title: String, pid: pid_t) throws -> AXUIElement {
+        let app = AXUIElementCreateApplication(pid)
+        func hasRole(_ role: String, _ element: AXUIElement) -> Bool {
+            var value: CFTypeRef?
+            return AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &value) == .success
+                && (value as? String) == role
+        }
+
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline {
+            var value: CFTypeRef?
+            AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value)
+            let windows = value as? [AXUIElement] ?? []
+            let sheets = windows.flatMap(Self.children(of:)).filter { hasRole(kAXSheetRole, $0) }
+            if let button = sheets.flatMap(Self.children(of:)).first(where: {
+                hasRole(kAXButtonRole, $0) && Self.title(of: $0) == title
+            }) { return button }
+            usleep(150_000)
+        }
+        throw GuardFailure("the recovery sheet did not expose a '\(title)' button; windows: \(Self.windowTitles(pid: pid))")
+    }
 
     private func requireAccessibilityTrust() throws {
         try XCTSkipUnless(
