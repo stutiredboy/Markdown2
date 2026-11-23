@@ -494,6 +494,7 @@ enum L10nKey: String, CaseIterable, Sendable {
     case externalChangeConflictMessage
     case keepMyVersion
     case reloadFromDisk
+    case linkedSaveInterruptedTitle, linkedSaveInterruptedMessage, finishLinkedSave, linkedSaveLater
     case cancel
     case dontSave
     case alertCouldNotOpen
@@ -833,6 +834,10 @@ enum L10n {
         .externalChangeConflictMessage: "This document has unsaved changes, and its file was modified outside Markdown2. Keeping your version overwrites the file on the next save.",
         .keepMyVersion: "Keep My Version",
         .reloadFromDisk: "Reload from Disk",
+        .linkedSaveInterruptedTitle: "Finish the interrupted save?",
+        .linkedSaveInterruptedMessage: "The file contains only the beginning of your recovered draft. Finishing the save updates this file and all its hard-linked names. You can keep the draft and decide later.",
+        .finishLinkedSave: "Finish Save",
+        .linkedSaveLater: "Later",
         .cancel: "Cancel",
         .dontSave: "Don't Save",
         .alertCouldNotOpen: "Could not open %@.",
@@ -1238,6 +1243,10 @@ enum L10n {
         .externalChangeConflictMessage: "当前文档有未保存的更改，同时文件已在 Markdown2 之外被修改。选择保留后，下次保存将覆盖磁盘上的文件。",
         .keepMyVersion: "保留我的版本",
         .reloadFromDisk: "从磁盘重新载入",
+        .linkedSaveInterruptedTitle: "继续完成中断的保存？",
+        .linkedSaveInterruptedMessage: "磁盘上的文件只包含恢复草稿的开头。继续保存会更新该文件及其所有硬链接。你可以保留草稿，稍后再决定。",
+        .finishLinkedSave: "继续保存",
+        .linkedSaveLater: "稍后",
         .cancel: "取消",
         .dontSave: "不保存",
         .alertCouldNotOpen: "无法打开 %@。",

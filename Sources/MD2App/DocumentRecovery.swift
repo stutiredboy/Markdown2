@@ -111,9 +111,10 @@ struct DocumentRecoverySnapshot: Codable, Sendable {
     var isDirty: Bool
     var windowFrame: String?
     var updatedAt = Date()
+    var linkedSave: DocumentLinkedSaveIntent?
 
     private enum CodingKeys: String, CodingKey {
-        case version, id, text, fileURL, identity, format, fingerprint, isDirty, windowFrame, updatedAt
+        case version, id, text, fileURL, identity, format, fingerprint, isDirty, windowFrame, updatedAt, linkedSave
     }
 
     init(id: UUID, text: String, fileURL: URL?, identity: DocumentFileIdentity?,
@@ -141,6 +142,7 @@ struct DocumentRecoverySnapshot: Codable, Sendable {
         isDirty = try values.decode(Bool.self, forKey: .isDirty)
         windowFrame = try values.decodeIfPresent(String.self, forKey: .windowFrame)
         updatedAt = try values.decode(Date.self, forKey: .updatedAt)
+        linkedSave = try values.decodeIfPresent(DocumentLinkedSaveIntent.self, forKey: .linkedSave)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -155,6 +157,7 @@ struct DocumentRecoverySnapshot: Codable, Sendable {
         try values.encode(isDirty, forKey: .isDirty)
         try values.encodeIfPresent(windowFrame, forKey: .windowFrame)
         try values.encode(updatedAt, forKey: .updatedAt)
+        try values.encodeIfPresent(linkedSave, forKey: .linkedSave)
     }
 }
 

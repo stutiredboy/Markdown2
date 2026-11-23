@@ -909,7 +909,14 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         let snapshots: [DocumentRecoverySnapshot]
         if let requestedURL {
-            let match = pendingRecoverySnapshots.last { snapshot in
+            // A different hard-linked name can address the same interrupted
+            // save. Prove the identity before choosing its recovery record.
+            let linkedFileKey = folderFile == nil && pendingRecoverySnapshots.contains { $0.linkedSave?.fileKey != nil }
+                ? DocumentHistoryFileID(url: requestedURL.resolvingSymlinksInPath())?.storageKey : nil
+            let linkedMatch = linkedFileKey.flatMap { key in
+                pendingRecoverySnapshots.last { $0.isDirty && $0.linkedSave?.fileKey == key }
+            }
+            let match = linkedMatch ?? pendingRecoverySnapshots.last { snapshot in
                 if let folderFile, let identity = snapshot.identity,
                    identity.isFolderFile, !identity.matchesFolderEntry(folderFile.fileReference) {
                     return false
@@ -919,7 +926,13 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 let url = resolved ?? snapshot.fileURL
                 return url?.resolvingSymlinksInPath() == requestedURL.resolvingSymlinksInPath()
             }
-            snapshots = match.map { [$0] } ?? []
+            snapshots = match.map { snapshot in
+                guard let linkedFileKey, snapshot.linkedSave?.fileKey == linkedFileKey else { return [snapshot] }
+                var rebound = snapshot
+                rebound.fileURL = requestedURL
+                rebound.identity = DocumentFileIdentity(url: requestedURL)
+                return [rebound]
+            } ?? []
         } else {
             snapshots = onlyDirty ? pendingRecoverySnapshots.filter(\.isDirty) : pendingRecoverySnapshots
         }
@@ -930,9 +943,23 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         do {
             if requestedURL == nil, !snapshots.isEmpty { try recoveryRepository.beginRestoration() }
             var restoredURLs = Set<URL>()
-            for var snapshot in snapshots {
-                var url = snapshot.fileURL.flatMap { snapshot.identity?.resolve(fallback: $0) } ?? snapshot.fileURL
-                if let candidate = url?.resolvingSymlinksInPath(), !restoredURLs.insert(candidate).inserted {
+            let needsLinkedDeduplication = snapshots.count > 1 && snapshots.contains { $0.linkedSave?.fileKey != nil }
+            let destinations = snapshots.map { snapshot in
+                let url = snapshot.fileURL.flatMap { snapshot.identity?.resolve(fallback: $0) } ?? snapshot.fileURL
+                let key = needsLinkedDeduplication ? url.flatMap {
+                    DocumentHistoryFileID(url: $0.resolvingSymlinksInPath())?.storageKey
+                } : nil
+                return (snapshot, url, key)
+            }
+            let linkedDrafts = destinations.reduce(into: [String: UUID]()) { drafts, destination in
+                let (snapshot, _, key) = destination
+                if let key, snapshot.isDirty, snapshot.linkedSave?.fileKey == key { drafts[key] = snapshot.id }
+            }
+            for (var snapshot, var url, key) in destinations {
+                let sharesLinkedDraft = key.flatMap { linkedDrafts[$0] }.map { $0 != snapshot.id } ?? false
+                let reusesURL = !sharesLinkedDraft
+                    && (url.map { !restoredURLs.insert($0.resolvingSymlinksInPath()).inserted } ?? false)
+                if sharesLinkedDraft || reusesURL {
                     if !snapshot.isDirty {
                         try recoveryRepository.remove(snapshot.id)
                         pendingRecoverySnapshots.removeAll { $0.id == snapshot.id }
@@ -944,6 +971,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     snapshot.fileURL = nil
                     snapshot.identity = nil
                     snapshot.fingerprint = nil
+                    snapshot.linkedSave = nil
                     snapshot.isDirty = true
                     url = nil
                 }
@@ -1558,20 +1586,31 @@ final class DocumentWindow {
         guard !isPresentingConflict, store.hasExternalConflict else { return }
         isPresentingConflict = true
 
+        let repairsInterruptedSave = store.offersLinkedSaveRepair
         let alert = NSAlert()
-        alert.messageText = settings.text(.externalChangeConflictTitle)
-        alert.informativeText = settings.text(.externalChangeConflictMessage)
         alert.alertStyle = .warning
-        alert.addButton(withTitle: settings.text(.keepMyVersion))
-        alert.addButton(withTitle: settings.text(.reloadFromDisk))
+        if repairsInterruptedSave {
+            alert.messageText = settings.text(.linkedSaveInterruptedTitle)
+            alert.informativeText = settings.text(.linkedSaveInterruptedMessage)
+            let later = alert.addButton(withTitle: settings.text(.linkedSaveLater))
+            later.keyEquivalent = "\u{1b}"
+            alert.addButton(withTitle: settings.text(.finishLinkedSave)).hasDestructiveAction = true
+        } else {
+            alert.messageText = settings.text(.externalChangeConflictTitle)
+            alert.informativeText = settings.text(.externalChangeConflictMessage)
+            alert.addButton(withTitle: settings.text(.keepMyVersion))
+            alert.addButton(withTitle: settings.text(.reloadFromDisk))
+        }
 
         window.makeKeyAndOrderFront(nil)
         alert.beginSheetModal(for: window) { [weak self] response in
             guard let self else { return }
             self.isPresentingConflict = false
-            self.store.resolveExternalConflict(
-                reloadingFromDisk: response == .alertSecondButtonReturn
-            )
+            if repairsInterruptedSave {
+                self.store.resolveLinkedSaveRepair(finish: response == .alertSecondButtonReturn)
+            } else {
+                self.store.resolveExternalConflict(reloadingFromDisk: response == .alertSecondButtonReturn)
+            }
         }
     }
 }
