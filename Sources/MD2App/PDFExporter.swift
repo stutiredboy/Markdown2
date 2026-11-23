@@ -64,11 +64,11 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
     private let pageSize: CGSize
     private let margins: PDFPaginator.Margins
 
-    /// Clearance kept below the last line on a page (~one print line at 14px ×
-    /// 1.55). Page bands are capped at the printable height *minus* this cushion
+    /// Clearance kept below the last line on a page (roughly one print line).
+    /// Page bands are capped at the printable height *minus* this cushion
     /// so a band never fills the page to the pixel; otherwise `createPDF` rounding
     /// at a maximal page could shave the bottom line's descenders.
-    static let boundaryCushion: CGFloat = 22
+    static let boundaryCushion: CGFloat = 14
 
     private let webView: WKWebView
     private let documentLoader = WebDocumentLoader()
@@ -647,11 +647,9 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
     }
 
     /// Print-density overrides injected before capture. The preview styles target
-    /// on-screen reading: a centered 860px column with ~58px side padding and a
-    /// 16px/1.68 base font. For print that doubles the page margin and wastes the
-    /// page, so neutralize the content padding/width (the PDF page margin supplies
-    /// the whitespace) and tighten the base font. Headings use `rem`, so scaling
-    /// the root font scales them too.
+    /// on-screen reading with a padded column and a large base font. The PDF's
+    /// own margins supply the whitespace, so use the full column and tighten
+    /// the typography and spacing for mixed Chinese and Latin text.
     ///
     /// Crucially, the preview lets wide blocks scroll horizontally
     /// (`table`/`pre` are `overflow-x: auto`), but a PDF page has no scrollbar —
@@ -679,19 +677,47 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
       var style = document.createElement('style');
       style.id = 'md2-print-overrides';
       style.textContent =
-        'html { font-size: 12px; }' +
-        'body { font-size: 12px; line-height: 1.2; }' +
+        'html { font-size: 10.5px; }' +
+        'body { font-size: 10.5px; line-height: 1.52;' +
+        ' font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;' +
+        ' text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; }' +
         'main { max-width: none !important; width: 100% !important;' +
         ' margin: 0 !important; padding: 0 !important; }' +
+        'h1, h2, h3, h4, h5, h6 { line-height: 1.3; margin: 1.05em 0 0.38em; font-weight: 650; }' +
+        'h1:first-child, h2:first-child, h3:first-child { margin-top: 0; }' +
+        'h1 { font-size: 1.62rem; padding-bottom: 0.2em; }' +
+        'h2 { font-size: 1.32rem; padding-bottom: 0.16em; }' +
+        'h3 { font-size: 1.14rem; }' +
+        'h4 { font-size: 1.04rem; }' +
+        'h5, h6 { font-size: 0.96rem; }' +
+        'p, ul, ol, blockquote, pre, table { margin: 0.52em 0; }' +
+        'ul, ol { padding-left: 1.5em; }' +
+        'li { margin: 0.15em 0; }' +
+        'li > p { margin: 0.2em 0; }' +
+        'li > ul, li > ol { margin: 0.15em 0; }' +
+        'blockquote { padding: 0.32em 0.8em; border-left-width: 3px; }' +
+        '.markdown-alert { margin: 0.55em 0; padding: 0.42em 0.8em; border-left-width: 3px; }' +
+        '.markdown-alert > .markdown-alert-title { margin: 0 0 0.22em; }' +
         'table { display: table !important; table-layout: fixed;' +
-        ' width: 100% !important; overflow-x: visible !important; }' +
+        ' width: 100% !important; overflow-x: visible !important; font-size: 0.92rem; line-height: 1.4; }' +
         'th, td { word-break: break-word; overflow-wrap: anywhere;' +
-        ' white-space: normal; }' +
-        'pre { overflow-x: visible !important; }' +
+        ' white-space: normal; padding: 4px 7px; }' +
+        'pre { overflow-x: visible !important; padding: 8px 11px; border-radius: 5px; line-height: 1.38; }' +
         'pre code { white-space: pre-wrap !important; overflow-wrap: anywhere;' +
-        ' word-break: break-word; }' +
-        'code { overflow-wrap: anywhere; word-break: break-word; }' +
+        ' word-break: break-word; font-size: 0.88rem; line-height: 1.38;' +
+        ' font-family: "SF Mono", Menlo, Consolas, "PingFang SC", monospace; }' +
+        'code { overflow-wrap: anywhere; word-break: break-word; font-size: 0.88em; padding: 0.08em 0.28em; }' +
+        'hr { margin: 1.1em 0; }' +
         'img, canvas, svg:not(.diagram-mermaid svg, .katex svg) { max-width: 100% !important; height: auto; }' +
+        // A sized image's aspect-ratio wrapper reserves its own height. Cap both
+        // boxes so the frame cannot leave a tall blank space beneath the image.
+        'img:not(:where(.diagram img)) { max-height: 420px; object-fit: contain; margin: 0.65em auto; }' +
+        '.image-frame { max-height: 420px; margin: 0.65em auto; }' +
+        'figure.figure, .diagram, .math-display, .numbered-equation { margin: 0.65em 0; }' +
+        '.toc { padding: 8px 12px; margin: 0.65em 0 0.9em; }' +
+        '.toc a { line-height: 1.45; }' +
+        'section.footnotes, section.bibliography { margin-top: 1.4em; padding-top: 0.65em; font-size: 0.88rem; }' +
+        'section.footnotes li, .bibliography-list li { margin: 0.22em 0; }' +
         '.math-display { overflow: visible !important; }' +
         // The preview fades diagrams in via `transition: opacity 120ms`. In the
         // offscreen export web view that transition never advances (WebKit
@@ -709,13 +735,10 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
     /// line boxes contribute the midpoint of their gap as a split candidate — this
     /// keeps page edges clear of glyph antialiasing while staying dense regardless
     /// of line spacing.
-    /// Atomic blocks (code, images, diagrams, math, rules, and tables that fit on
-    /// a page) must not be split, so any candidate landing inside one is dropped.
-    /// Tables taller than a page are split at row edges instead: each row that
-    /// fits on a page is atomic, while the table as a whole is allowed to span
-    /// pages. `PDFPaginator.bands` then ends each page at the largest offset that
-    /// fits, so a line, row, or atomic block is never sliced across a page
-    /// boundary unless it is itself taller than a page.
+    /// Media and short blocks contribute protected spans. Longer tables can
+    /// break between rows and longer code blocks and alerts can break between
+    /// lines. Additional spans keep headings and table headers with the content
+    /// that follows them.
     private static func breakProbeScript(maxAtomicHeight: CGFloat) -> String {
         """
     (function () {
@@ -744,9 +767,13 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
         }
 
         var scrollY = window.scrollY || 0;
-        var height = Math.max(document.documentElement.scrollHeight, body.scrollHeight);
-        var cushion = 4;
-        var maxAtomicHeight = \(Double(maxAtomicHeight));
+        // The root scroll height is at least the viewport height (a full sheet).
+        // Use the body's content height to avoid a blank page on a short export.
+        var height = Math.max(1, body.scrollHeight, Math.ceil(body.getBoundingClientRect().bottom + scrollY));
+        var maxProtectedHeight = \(Double(maxAtomicHeight)) - 4;
+        var shortTableLimit = Math.min(maxProtectedHeight, 180);
+        var shortBlockLimit = Math.min(maxProtectedHeight, 160);
+        var edgeGuardHeight = 36;
 
         function valid(y) { return typeof y === 'number' && isFinite(y); }
         function rectFor(el) {
@@ -754,74 +781,109 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
           if (r.height <= 0 && r.width <= 0) { return null; }
           return { top: r.top + scrollY, bottom: r.bottom + scrollY, height: r.height };
         }
-        function fitsOnPage(r) { return r.height <= maxAtomicHeight - cushion; }
+        function fitsOnPage(r) { return r.height <= maxProtectedHeight; }
 
-        // Blocks that must stay whole — collect their vertical spans. Do not
-        // merge adjacent table rows: their shared edge is a valid page break.
         var spans = [];
-        var rawBreaks = [];
-        function addSpan(r) { spans.push({ top: r.top, bottom: r.bottom }); }
-        function addRawBreak(y) { if (valid(y) && y > 0 && y < height) { rawBreaks.push(y); } }
+        var breakCandidates = [];
+        function addSpan(top, bottom) {
+          if (bottom > top) { spans.push({ top: top, bottom: bottom }); }
+        }
+        function addBreak(y) {
+          if (valid(y) && y > 0 && y < height) { breakCandidates.push(y); }
+        }
+        function addEdges(r) {
+          addBreak(r.top);
+          addBreak(r.bottom);
+        }
 
         var tables = body.querySelectorAll('table');
         for (var t = 0; t < tables.length; t++) {
-          var tr = rectFor(tables[t]);
+          var table = tables[t];
+          var tr = rectFor(table);
           if (!tr) { continue; }
-          addRawBreak(tr.top);
-          addRawBreak(tr.bottom);
-          if (fitsOnPage(tr)) {
-            addSpan(tr);
+          addEdges(tr);
+          if (tr.height <= shortTableLimit) {
+            addSpan(tr.top, tr.bottom);
             continue;
           }
 
-          var rows = tables[t].querySelectorAll('tr');
+          var rows = table.rows;
           for (var ri = 0; ri < rows.length; ri++) {
             var rr = rectFor(rows[ri]);
             if (!rr) { continue; }
-            addRawBreak(rr.top);
-            addRawBreak(rr.bottom);
-            if (fitsOnPage(rr)) { addSpan(rr); }
+            addEdges(rr);
+            if (fitsOnPage(rr)) { addSpan(rr.top, rr.bottom); }
+          }
+          if (table.tHead && rows.length >= 2) {
+            var first = rectFor(rows[0]);
+            var second = rectFor(rows[1]);
+            if (first && second && second.bottom - first.top <= maxProtectedHeight) {
+              addSpan(first.top, second.bottom);
+            }
           }
         }
 
-        var atomicEls = body.querySelectorAll('pre,img,svg,canvas,figure,hr,.math-display,.diagram,.markdown-alert');
-        for (var a = 0; a < atomicEls.length; a++) {
-          var ar = rectFor(atomicEls[a]);
+        var media = body.querySelectorAll('img,svg,canvas,figure,hr,.math-display,.numbered-equation,.diagram');
+        for (var m = 0; m < media.length; m++) {
+          // The containing equation or diagram owns the bounds of its SVG.
+          if (media[m].matches('svg') && media[m].closest('.diagram,.katex')) { continue; }
+          var mr = rectFor(media[m]);
+          if (!mr) { continue; }
+          addEdges(mr);
+          if (fitsOnPage(mr)) { addSpan(mr.top, mr.bottom); }
+        }
+
+        var textBlocks = body.querySelectorAll('pre,.markdown-alert');
+        for (var tb = 0; tb < textBlocks.length; tb++) {
+          var ar = rectFor(textBlocks[tb]);
           if (!ar) { continue; }
-          addRawBreak(ar.top);
-          addRawBreak(ar.bottom);
-          if (fitsOnPage(ar)) { addSpan(ar); }
-        }
-        spans.sort(function (p, q) { return p.top - q.top; });
-        function insideAtomic(y) {
-          for (var i = 0; i < spans.length; i++) {
-            if (spans[i].top - y > cushion) { break; }
-            if (y > spans[i].top + cushion && y < spans[i].bottom - cushion) { return true; }
+          addEdges(ar);
+          if (ar.height <= shortBlockLimit) {
+            addSpan(ar.top, ar.bottom);
+          } else {
+            addSpan(ar.top, Math.min(ar.bottom, ar.top + edgeGuardHeight));
+            addSpan(Math.max(ar.top, ar.bottom - edgeGuardHeight), ar.bottom);
           }
-          return false;
         }
 
-        var breakCandidates = [];
-        function addBreak(y) {
-          if (!valid(y) || y <= 0 || y >= height) { return; }
-          if (insideAtomic(y)) { return; }
-          breakCandidates.push(y);
+        var headings = [];
+        var keepWithNext = [];
+        var headingEls = body.querySelectorAll('h1,h2,h3,h4,h5,h6');
+        for (var h = 0; h < headingEls.length; h++) {
+          var heading = headingEls[h];
+          var hr = rectFor(heading);
+          if (!hr) { continue; }
+          if (heading.id) { headings.push({ id: heading.id, top: hr.top }); }
+          addBreak(hr.top);
+          if (fitsOnPage(hr)) { addSpan(hr.top, hr.bottom); }
+          var next = heading.nextElementSibling;
+          var nr = next && rectFor(next);
+          if (nr && nr.height > 0) {
+            keepWithNext.push({ top: hr.top, bottom: Math.min(nr.bottom, nr.top + 44) });
+          }
         }
-
-        for (var rb = 0; rb < rawBreaks.length; rb++) { addBreak(rawBreaks[rb]); }
 
         // Between text lines: collect line boxes first, then place breaks in the
         // middle of the gap between adjacent lines. Using the exact top/bottom edge
         // of a line is too tight for WebKit PDF capture and can leave a clipped
         // antialiased sliver of the next line on the previous page.
         var lineSpans = [];
+        // Inline formulas contribute one visual box; their internal superscripts,
+        // radicals and hidden MathML are not independent lines or cut points.
+        var inlineMath = body.querySelectorAll('.math-inline .katex');
+        for (var im = 0; im < inlineMath.length; im++) {
+          var mathRect = rectFor(inlineMath[im]);
+          if (!mathRect) { continue; }
+          lineSpans.push(mathRect);
+          if (fitsOnPage(mathRect)) { addSpan(mathRect.top, mathRect.bottom); }
+        }
         var walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT, null);
+        var range = document.createRange();
         var node;
         while ((node = walker.nextNode())) {
           if (!node.nodeValue || !node.nodeValue.trim()) { continue; }
-          var parent = node.parentNode;
-          if (parent && (parent.tagName === 'SCRIPT' || parent.tagName === 'STYLE')) { continue; }
-          var range = document.createRange();
+          var parent = node.parentElement;
+          if (parent && parent.closest('script,style,svg,.math-display,.katex')) { continue; }
           range.selectNodeContents(node);
           var rects = range.getClientRects();
           for (var i = 0; i < rects.length; i++) {
@@ -835,10 +897,13 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
 
         lineSpans.sort(function (p, q) { return p.top - q.top || p.bottom - q.bottom; });
         var lines = [];
+        // Font metric boxes can overlap consecutive CJK lines. Group by their
+        // vertical centers so slightly overlapping glyph boxes stay on separate lines.
         for (var li = 0; li < lineSpans.length; li++) {
           var span = lineSpans[li];
           var current = lines[lines.length - 1];
-          if (current && span.top <= current.bottom + 0.5) {
+          if (current && Math.abs(span.top + span.bottom - current.top - current.bottom) / 2 <=
+                         Math.min(span.bottom - span.top, current.bottom - current.top) * 0.45) {
             current.top = Math.min(current.top, span.top);
             current.bottom = Math.max(current.bottom, span.bottom);
           } else {
@@ -847,40 +912,52 @@ final class PDFExporter: NSObject, WKNavigationDelegate {
         }
         for (var lj = 0; lj < lines.length - 1; lj++) {
           var gap = lines[lj + 1].top - lines[lj].bottom;
-          if (gap > 0.5) {
+          var stride = lines[lj + 1].top - lines[lj].top;
+          if (stride >= 8 && gap >= -2.5) {
             addBreak(lines[lj].bottom + gap / 2);
           }
         }
 
-        // Paragraph / list / heading boundaries are also safe.
-        var blocks = body.querySelectorAll('p,li,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl,section,.markdown-alert');
+        // Heading bottoms are deliberately omitted to keep headings with the
+        // next block; the span also filters any other candidate in that gap.
+        var blocks = body.querySelectorAll('p,li,blockquote,ul,ol,dl,section');
         for (var b = 0; b < blocks.length; b++) {
-          var br = blocks[b].getBoundingClientRect();
-          if (br.height <= 0 && br.width <= 0) { continue; }
-          addBreak(br.top + scrollY);
-          addBreak(br.bottom + scrollY);
+          var br = rectFor(blocks[b]);
+          if (br) { addEdges(br); }
         }
 
+        // If the heading's keep range overlaps a protected block, the whole
+        // block would move with it. Allow a break before the block when the pair
+        // cannot fit, so the heading guard cannot force a cut through the block.
+        spans.sort(function (p, q) { return p.top - q.top; });
+        keepWithNext.sort(function (p, q) { return p.bottom - q.bottom; });
+        var nextSpan = 0;
+        var protectedBottom = 0;
+        spans = spans.concat(keepWithNext.filter(function (keep) {
+          while (nextSpan < spans.length && spans[nextSpan].top < keep.bottom) {
+            protectedBottom = Math.max(protectedBottom, spans[nextSpan++].bottom);
+          }
+          return Math.max(keep.bottom, protectedBottom) - keep.top <= maxProtectedHeight;
+        }));
+
+        // Sweep past span starts once. Only the open interior is protected, so
+        // rows sharing an exact edge still have a valid break at that edge.
+        spans.sort(function (p, q) { return p.top - q.top; });
         breakCandidates.sort(function (x, y) { return x - y; });
         var breaks = [];
+        var si = 0;
+        var coveredUntil = 0;
         for (var bi = 0; bi < breakCandidates.length; bi++) {
           var y = breakCandidates[bi];
+          while (si < spans.length && spans[si].top < y) {
+            coveredUntil = Math.max(coveredUntil, spans[si++].bottom);
+          }
+          if (y < coveredUntil) { continue; }
           if (!breaks.length || y - breaks[breaks.length - 1] > 0.25) {
             breaks.push(y);
           }
         }
 
-        // Heading positions for the PDF outline: record each heading's document-Y
-        // offset keyed by its slug `id` (which matches the document outline). The
-        // Swift side maps each offset to the page band it falls in.
-        var headings = [];
-        var hEls = body.querySelectorAll('h1,h2,h3,h4,h5,h6');
-        for (var hi = 0; hi < hEls.length; hi++) {
-          var hel = hEls[hi];
-          if (!hel.id) { continue; }
-          var hrect = hel.getBoundingClientRect();
-          headings.push({ id: hel.id, top: hrect.top + scrollY });
-        }
         return { height: height, breaks: breaks, headings: headings };
       } catch (e) {
         return { height: 0, breaks: [], headings: [] };

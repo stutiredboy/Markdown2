@@ -87,6 +87,170 @@ final class PDFExportEndToEndVerification: XCTestCase {
     }
 
     @MainActor
+    func testChineseDocumentPaginationSplitsMultiLineParagraphsAndCodeBlocksCleanly() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed export test."
+        )
+
+        let sentence = "这是一段用于验证中文文档连续换行的正文，里面含有 English text 和 `inlineCode`，也包含可以在页面边界检查的标记。"
+        let paragraphs = (1...7).map { "正文第\($0)段。" + String(repeating: sentence, count: 3) }
+        let codeMarkers = (1...30).map { "CODEMARK\($0)END" }
+        let code = codeMarkers.enumerated().map { "let line\($0.offset + 1) = \($0.offset + 1) // \($0.element)" }
+        let rowMarkers = (1...15).map { "ROWMARK\($0)END" }
+        let rows = ["| 编号 | 内容 |", "| --- | --- |"] + rowMarkers.map { "| \($0) | 中文表格内容 |" }
+        let markdown = (["# 中文一级标题"] + paragraphs + [
+            "## 二级章节",
+            "```swift\n" + code.joined(separator: "\n") + "\n```",
+            rows.joined(separator: "\n")
+        ]).joined(separator: "\n\n")
+
+        let document = try exportPaginationFixture(markdown)
+        XCTAssertEqual(outlineLabels(document.outlineRoot), ["中文一级标题", "二级章节"])
+        // This fixture fills two A4 pages and puts the first page break inside
+        // the code block. Moving the entire block to page 2 would waste page 1.
+        XCTAssertEqual(document.pageCount, 2)
+        let texts = (0..<document.pageCount).map { index in
+            (document.page(at: index)?.string ?? "").filter { !$0.isWhitespace }
+        }
+        let first = try XCTUnwrap(texts.first)
+        let last = try XCTUnwrap(texts.last)
+        XCTAssertTrue(first.contains("CODEMARK1END"))
+        XCTAssertTrue(last.contains("CODEMARK30END"))
+        XCTAssertFalse(first.contains("CODEMARK30END"))
+        let allText = texts.joined(separator: "\n")
+        for marker in codeMarkers + rowMarkers {
+            XCTAssertEqual(allText.components(separatedBy: marker).count - 1, 1, marker)
+        }
+    }
+
+    @MainActor
+    func testLongChineseParagraphSplitsAcrossPages() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed export test."
+        )
+
+        let sentence = "中文行框在相邻两行可能接触，导出时应当在真实的行间分页。使用 `code` 和 English text 验证混合字体。"
+        let markers = (1...18).map { "BODYMARK\($0)END" }
+        // One paragraph with soft wrapping only. Block edges alone cannot split
+        // this fixture, and a cutoff at the heading leaves page 1 almost empty.
+        let paragraph = markers.map { $0 + " " + String(repeating: sentence, count: 4) }.joined(separator: " ")
+        let document = try exportPaginationFixture("# 中文段落\n\n" + paragraph)
+        XCTAssertEqual(document.pageCount, 2)
+        let first = (try XCTUnwrap(document.page(at: 0)).string ?? "").filter { !$0.isWhitespace }
+        let second = (try XCTUnwrap(document.page(at: 1)).string ?? "").filter { !$0.isWhitespace }
+        XCTAssertTrue(first.contains("BODYMARK1END"))
+        XCTAssertTrue(second.contains("BODYMARK18END"))
+        let allText = first + "\n" + second
+        for marker in markers {
+            XCTAssertEqual(allText.components(separatedBy: marker).count - 1, 1, marker)
+        }
+    }
+
+    @MainActor
+    func testMediumTableSplitsAtRowsAndKeepsItsHeaderWithTheHeading() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed export test."
+        )
+
+        let profile = ExportProfile(margins: .custom(top: 150, left: 36, bottom: 150, right: 36))
+        let markers = (1...15).map { "TABLEROW\($0)END" }
+        let table = (["| 表头 TABLEHEADER | 内容 |", "| --- | --- |"]
+            + markers.map { "| \($0) | 中文表格内容 |" }).joined(separator: "\n")
+        // Fixed-height preambles avoid CJK font metric differences across macOS
+        // versions. The shorter one leaves room for several rows. The longer
+        // one leaves room for just the heading and header row.
+        let markdown = "## 中文表格\n\n" + table
+        for (fillerHeight, headingPage) in [(300, 0), (455, 1)] {
+            let document = try exportPaginationFixture(markdown, profile: profile) { html in
+                html.replacingOccurrences(
+                    of: "<main>",
+                    with: "<main><p style=\"height: \(fillerHeight)px; margin: 0\">表格前文</p>"
+                )
+            }
+            XCTAssertEqual(document.pageCount, 2)
+            let target = try XCTUnwrap(document.outlineRoot?.child(at: 0)?.destination?.page)
+            XCTAssertEqual(document.index(for: target), headingPage)
+
+            let first = (try XCTUnwrap(document.page(at: 0)).string ?? "").filter { !$0.isWhitespace }
+            let second = (try XCTUnwrap(document.page(at: 1)).string ?? "").filter { !$0.isWhitespace }
+            let headingPageText = headingPage == 0 ? first : second
+            XCTAssertTrue(headingPageText.contains("TABLEHEADER"))
+            XCTAssertTrue(headingPageText.contains("TABLEROW1END"))
+            XCTAssertTrue(second.contains("TABLEROW15END"))
+            XCTAssertFalse(first.contains("TABLEROW15END"))
+            let allText = first + "\n" + second
+            for marker in markers {
+                XCTAssertEqual(allText.components(separatedBy: marker).count - 1, 1, marker)
+            }
+        }
+    }
+
+    @MainActor
+    func testHeadingYieldsToAnImageThatRequiresItsOwnPage() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+            "Set MD2_RUN_GUI_TESTS=1 to run this WebKit-backed export test."
+        )
+
+        // The image fits in the 434pt band by itself. The heading and image
+        // together exceed that band, so the image must move to page 2 intact.
+        let profile = ExportProfile(margins: .custom(top: 197, left: 36, bottom: 197, right: 36))
+        let image = FileManager.default.temporaryDirectory
+            .appendingPathComponent("md2-pagination-tall-\(UUID().uuidString).png")
+        let imageHeight = 420
+        try makeSolidColorPNG(width: 150, height: imageHeight, color: .red).write(to: image)
+        defer { try? FileManager.default.removeItem(at: image) }
+        let document = try exportPaginationFixture(
+            "# An image on the next page\n\n![Tall image](\(image.absoluteString))",
+            profile: profile
+        )
+        XCTAssertEqual(document.pageCount, 2)
+
+        let firstPage = try XCTUnwrap(document.page(at: 0)?.pageRef)
+        let secondPage = try XCTUnwrap(document.page(at: 1)?.pageRef)
+        let first = try XCTUnwrap(rasterize(firstPage, scale: 1))
+        let second = try XCTUnwrap(rasterize(secondPage, scale: 1))
+        XCTAssertEqual(countColorPixels(in: first, r: 1, g: 0, b: 0), 0)
+        let centerX = second.pixelsWide / 2
+        let redRows = (0..<second.pixelsHigh).filter { y in
+            guard let color = second.colorAt(x: centerX, y: y)?.usingColorSpace(.deviceRGB) else { return false }
+            return color.redComponent > 0.8 && color.greenComponent < 0.2 && color.blueComponent < 0.2
+        }.count
+        XCTAssertEqual(Double(redRows), Double(imageHeight), accuracy: 2)
+    }
+
+    @MainActor
+    private func exportPaginationFixture(
+        _ markdown: String,
+        profile: ExportProfile = .default,
+        edit: (String) -> String = { $0 }
+    ) throws -> PDFDocument {
+        _ = NSApplication.shared
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("md2-pagination-pdf-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let rendered = MarkdownRenderer().render(markdown, assetMode: .appScheme)
+        let destination = dir.appendingPathComponent("out.pdf")
+        let exporter = PDFExporter(destinationURL: destination, profile: profile)
+        let done = expectation(description: "paginated PDF export completes")
+        var outcome: Result<Void, Error>?
+        exporter.export(html: edit(rendered.html), outline: rendered.outline, baseURL: nil) {
+            outcome = $0
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 35)
+        try XCTUnwrap(outcome).get()
+        let bytes = try Data(contentsOf: destination)
+        XCTAssertFalse(bytes.isEmpty)
+        return try XCTUnwrap(PDFDocument(data: bytes))
+    }
+
+    @MainActor
     func testRealExportWithoutHeadingsProducesValidPDFWithoutOutline() throws {
         try XCTSkipUnless(
             ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
@@ -122,7 +286,7 @@ final class PDFExportEndToEndVerification: XCTestCase {
 
         let document = PDFDocument(url: destination)
         XCTAssertNotNil(document)
-        XCTAssertGreaterThan(document?.pageCount ?? 0, 0)
+        XCTAssertEqual(document?.pageCount, 1)
         XCTAssertTrue(outlineLabels(document?.outlineRoot).isEmpty)
     }
 
@@ -591,6 +755,10 @@ final class PDFExportEndToEndVerification: XCTestCase {
     private func rasterizeFirstPage(of url: URL, scale: CGFloat) -> NSBitmapImageRep? {
         guard let pdfDoc = CGDataProvider(url: url as CFURL).flatMap(CGPDFDocument.init),
               let page = pdfDoc.page(at: 1) else { return nil }
+        return rasterize(page, scale: scale)
+    }
+
+    private func rasterize(_ page: CGPDFPage, scale: CGFloat) -> NSBitmapImageRep? {
         let box = page.getBoxRect(.mediaBox)
         let w = Int(box.width * scale), h = Int(box.height * scale)
         guard w > 0, h > 0,
