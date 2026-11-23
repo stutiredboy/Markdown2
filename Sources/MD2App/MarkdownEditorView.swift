@@ -1971,7 +1971,7 @@ struct MarkdownEditorView: NSViewRepresentable {
 /// already laid-out viewport proves an interior offset is valid. Near the
 /// bottom, finish layout to get the exact document edge before clamping.
 @MainActor
-private func editorClipTargetY(for offset: CGFloat, in scrollView: NSScrollView) -> CGFloat? {
+func editorClipTargetY(for offset: CGFloat, in scrollView: NSScrollView) -> CGFloat? {
     let viewport = scrollView.contentView.bounds
     guard viewport.height > 0, let documentView = scrollView.documentView else { return nil }
     guard offset.isFinite, offset > 0 else { return 0 }
