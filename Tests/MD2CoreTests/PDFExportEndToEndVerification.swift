@@ -159,11 +159,17 @@ final class PDFExportEndToEndVerification: XCTestCase {
         let markers = (1...15).map { "TABLEROW\($0)END" }
         let table = (["| 表头 TABLEHEADER | 内容 |", "| --- | --- |"]
             + markers.map { "| \($0) | 中文表格内容 |" }).joined(separator: "\n")
-        // The shorter preamble leaves room for several rows. The longer one
-        // leaves room for the heading and table header, but not the first data row.
-        for (paragraphCount, headingPage) in [(14, 0), (21, 1)] {
-            let filler = String(repeating: "中文正文\n\n", count: paragraphCount)
-            let document = try exportPaginationFixture(filler + "## 中文表格\n\n" + table, profile: profile)
+        // Fixed-height preambles avoid CJK font metric differences across macOS
+        // versions. The shorter one leaves room for several rows. The longer
+        // one leaves room for just the heading and header row.
+        let markdown = "## 中文表格\n\n" + table
+        for (fillerHeight, headingPage) in [(300, 0), (455, 1)] {
+            let document = try exportPaginationFixture(markdown, profile: profile) { html in
+                html.replacingOccurrences(
+                    of: "<main>",
+                    with: "<main><p style=\"height: \(fillerHeight)px; margin: 0\">表格前文</p>"
+                )
+            }
             XCTAssertEqual(document.pageCount, 2)
             let target = try XCTUnwrap(document.outlineRoot?.child(at: 0)?.destination?.page)
             XCTAssertEqual(document.index(for: target), headingPage)
@@ -217,7 +223,11 @@ final class PDFExportEndToEndVerification: XCTestCase {
     }
 
     @MainActor
-    private func exportPaginationFixture(_ markdown: String, profile: ExportProfile = .default) throws -> PDFDocument {
+    private func exportPaginationFixture(
+        _ markdown: String,
+        profile: ExportProfile = .default,
+        edit: (String) -> String = { $0 }
+    ) throws -> PDFDocument {
         _ = NSApplication.shared
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("md2-pagination-pdf-\(UUID().uuidString)")
@@ -229,7 +239,7 @@ final class PDFExportEndToEndVerification: XCTestCase {
         let exporter = PDFExporter(destinationURL: destination, profile: profile)
         let done = expectation(description: "paginated PDF export completes")
         var outcome: Result<Void, Error>?
-        exporter.export(html: rendered.html, outline: rendered.outline, baseURL: nil) {
+        exporter.export(html: edit(rendered.html), outline: rendered.outline, baseURL: nil) {
             outcome = $0
             done.fulfill()
         }
