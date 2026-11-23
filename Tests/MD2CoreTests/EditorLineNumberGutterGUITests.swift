@@ -49,6 +49,20 @@ final class EditorLineNumberGutterGUITests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testGutterPaintsWhenOnlyItsInsetIsDirty() throws {
+        try skipUnlessGUITestsEnabled()
+
+        let context = try host(document: wrappedDocument, showsLineNumbers: true, height: 400)
+        defer { context.close() }
+        let full = try XCTUnwrap(context.rasterize())
+        let gutterOnly = try XCTUnwrap(context.rasterize(gutterOnly: true))
+        let fullBands = inkBands(inStripOf: full)
+        XCTAssertFalse(fullBands.isEmpty)
+        XCTAssertEqual(inkBands(inStripOf: gutterOnly), fullBands,
+                       "a strip-only invalidation must repaint the same line numbers")
+    }
+
     // MARK: - One number per logical line
 
     @MainActor
@@ -430,9 +444,10 @@ private final class EditorHost: NSObject {
         textView?.textContainerInset.height ?? 0
     }
 
-    func rasterize() -> NSBitmapImageRep? {
+    func rasterize(gutterOnly: Bool = false) -> NSBitmapImageRep? {
         guard let textView else { return nil }
-        let rect = textView.visibleRect
+        var rect = textView.visibleRect
+        if gutterOnly { rect.size.width = textView.textContainerInset.width }
         let width = Int(rect.width.rounded()), height = Int(rect.height.rounded())
         guard width > 0, height > 0,
               let rep = NSBitmapImageRep(

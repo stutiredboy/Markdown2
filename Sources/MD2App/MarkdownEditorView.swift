@@ -2368,16 +2368,14 @@ final class MarkdownSourceTextView: NSTextView {
 
         for (index, row) in rows.enumerated() {
             guard let line = row else { continue }
-            var rect = fragmentRects[index]
-            rect.origin.x += origin.x
-            rect.origin.y += origin.y
-            guard rect.intersects(dirtyRect) else { continue }
-
+            let rect = fragmentRects[index]
             let label = "\(line)" as NSString
             let size = label.size(withAttributes: attributes)
-            let x = stripWidth - Self.gutterTrailingInset - size.width
-            let y = rect.minY + max(0, (rect.height - size.height) / 2)
-            label.draw(at: NSPoint(x: max(0, x), y: y), withAttributes: attributes)
+            let x = max(0, stripWidth - Self.gutterTrailingInset - size.width)
+            let y = origin.y + rect.minY + max(0, (rect.height - size.height) / 2)
+            let position = NSPoint(x: x, y: y)
+            guard NSRect(origin: position, size: size).intersects(dirtyRect) else { continue }
+            label.draw(at: position, withAttributes: attributes)
         }
     }
 
