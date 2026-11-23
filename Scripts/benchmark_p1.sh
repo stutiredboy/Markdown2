@@ -11,12 +11,8 @@ if [ ! -f "$source_root/Tests/MD2CoreTests/P1BenchmarkTests.swift" ]; then
     exit 1
 fi
 
-mkdir -p "$output_dir"
-output_dir="$(cd "$output_dir" && pwd -P)"
-sample_dir="$(mktemp -d "$output_dir/.samples.XXXXXX")"
-trap 'rm -r "$sample_dir"' EXIT
-
-(
+metadata="$(
+    set -e
     cd "$source_root"
     printf 'configuration=release\nsource_root=%s\n' "$source_root"
     if [ "$(git rev-parse --show-toplevel 2>/dev/null || true)" = "$source_root" ]; then
@@ -36,7 +32,13 @@ trap 'rm -r "$sample_dir"' EXIT
     printf 'architecture=%s\n' "$(uname -m)"
     sysctl hw.model hw.memsize
     shasum -a 256 README.zh-CN.md Examples/Sample.md
-) > "$sample_dir/metadata.txt"
+)"
+
+mkdir -p "$output_dir"
+output_dir="$(cd "$output_dir" && pwd -P)"
+sample_dir="$(mktemp -d "$output_dir/.samples.XXXXXX")"
+trap 'rm -r "$sample_dir"' EXIT
+printf '%s\n' "$metadata" > "$sample_dir/metadata.txt"
 
 MD2_P1_BENCHMARK_OUTPUT="$sample_dir" swift test \
     --package-path "$source_root" --scratch-path "$output_dir/build" --configuration release \
