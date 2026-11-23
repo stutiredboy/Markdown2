@@ -373,8 +373,8 @@ struct MarkdownEditorView: NSViewRepresentable {
     /// Applies a mode-switch viewport anchor: a source-line anchor resolves to
     /// its target line (block start advanced by intra-block progress) and is
     /// placed near the top of the viewport; otherwise the proportional scroll
-    /// fraction is the fallback. Both paths force layout and clamp the offset.
-    private func apply(
+    /// fraction is the fallback when there is no source location.
+    func apply(
         anchor: ViewportAnchor,
         in scrollView: NSScrollView,
         textView: NSTextView,
@@ -419,19 +419,9 @@ struct MarkdownEditorView: NSViewRepresentable {
         guard let documentView = scrollView.documentView else { return false }
         let clamped = min(max(fraction, 0), 1)
         if clamped == 0 { return scroll(toVerticalOffset: 0, in: scrollView) }
-        // Settle layout first so the content height reflects the real wrapped
-        // text rather than a freshly created, not-yet-laid-out text view.
-        if let textView = documentView as? NSTextView,
-           let layoutManager = textView.layoutManager,
-           let textContainer = textView.textContainer {
-            layoutManager.ensureLayout(for: textContainer)
-        }
         let visibleHeight = scrollView.contentView.bounds.height
         guard visibleHeight > 0 else { return false }
         let contentHeight = scrollableContentHeight(for: documentView)
-        if contentHeight <= visibleHeight {
-            return true
-        }
         let maxOffset = max(0, contentHeight - visibleHeight)
         // Route the desired offset through the shared clamp so a document that
         // fits the viewport stays at the top (offset 0) instead of scrolling out
@@ -485,13 +475,17 @@ struct MarkdownEditorView: NSViewRepresentable {
     private func scrollLineToTop(charRange: NSRange, in textView: NSTextView) -> Bool {
         guard let layoutManager = textView.layoutManager,
               let textContainer = textView.textContainer,
-              let scrollView = textView.enclosingScrollView else {
+              let scrollView = textView.enclosingScrollView, let storage = textView.textStorage else {
             textView.scrollRangeToVisible(charRange)
             return true
         }
 
         if charRange.location == 0 { return scroll(toVerticalOffset: 0, in: scrollView) }
-        layoutManager.ensureLayout(for: textContainer)
+        // The character can be beyond the laid-out prefix. Ask for its row,
+        // including the final insertion point, without laying out the tail.
+        layoutManager.ensureLayout(forCharacterRange: NSRange(
+            location: min(charRange.location, storage.length - 1), length: 1
+        ))
         let glyphRange = layoutManager.glyphRange(forCharacterRange: charRange, actualCharacterRange: nil)
         let rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
         // Leave a small top margin (the container inset) so the line is not
@@ -500,14 +494,7 @@ struct MarkdownEditorView: NSViewRepresentable {
     }
 
     private func scroll(toVerticalOffset offset: CGFloat, in scrollView: NSScrollView) -> Bool {
-        let visibleHeight = scrollView.contentView.bounds.height
-        guard visibleHeight > 0, let documentView = scrollView.documentView else { return false }
-        // The top is valid regardless of the document's wrapped height.
-        let targetY: CGFloat = offset <= 0 ? 0 : CGFloat(clampedScrollOffset(
-            targetY: Double(offset),
-            contentHeight: Double(scrollableContentHeight(for: documentView)),
-            viewportHeight: Double(visibleHeight)
-        ))
+        guard let targetY = editorClipTargetY(for: offset, in: scrollView) else { return false }
         scrollView.contentView.scroll(to: NSPoint(x: 0, y: targetY))
         scrollView.reflectScrolledClipView(scrollView.contentView)
         return true
@@ -615,7 +602,6 @@ struct MarkdownEditorView: NSViewRepresentable {
                   textView.window != nil,
                   scrollView.contentSize.width > 0, scrollView.contentSize.height > 0,
                   let layout = textView.layoutManager, let container = textView.textContainer else { return }
-            layout.ensureLayout(for: container)
             let wasProgrammatic = isProgrammaticScroll
             isProgrammaticScroll = true
             textView.setFrameOrigin(.zero)
@@ -1446,12 +1432,12 @@ struct MarkdownEditorView: NSViewRepresentable {
         private var settlingAnchor: ViewportAnchor?
 
         /// Applies a mode-switch anchor, then re-applies it across runloop
-        /// turns until the editor's measured content height stops changing.
+        /// turns until the visible bounds and applied offset stop changing.
         /// A freshly mounted text view is laid out by SwiftUI *after* the
         /// first apply, so a single pass can compute the target from garbage
         /// geometry and leave the editor overscrolled with an empty visible
         /// range; converging on stable geometry keeps the final offset
-        /// clamped against the real content height. Anchor reporting stays
+        /// clamped against the real scrollable range. Anchor reporting stays
         /// suppressed throughout; the settled position is reported once.
         @MainActor func applyAnchorUntilSettled(
             _ anchor: ViewportAnchor,
@@ -1462,15 +1448,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             settlingAnchor = anchor
             isProgrammaticScroll = true
             var attempts = 0
-            var lastContentHeight = CGFloat(-1)
-            let seeksTop: Bool
-            if let position = anchor.editorPosition {
-                seeksTop = position.characterIndex == 0 && position.verticalOffset <= 0
-            } else if let line = anchor.targetSourceLine {
-                seeksTop = line == 1
-            } else {
-                seeksTop = anchor.scrollFraction <= 0
-            }
+            var lastBounds: NSRect?
 
             func step() {
                 guard self.settlingAnchor == anchor, self.session.isHosted(by: self),
@@ -1489,14 +1467,13 @@ struct MarkdownEditorView: NSViewRepresentable {
                 if scrollView.contentView.bounds.height > 0 {
                     appliedNow = apply(anchor, scrollView)
                 }
-                let contentHeight = scrollView.documentView
-                    .map { seeksTop ? $0.bounds.height : scrollableContentHeight(for: $0) } ?? 0
+                let bounds = scrollView.contentView.bounds
                 // Stable only when the scroll applied against unchanged
                 // geometry *and* the viewport actually shows content — an
                 // empty visible rect means the offset points into the void.
                 let showsContent = !(scrollView.documentView?.visibleRect.isEmpty ?? true)
-                let isStable = appliedNow && showsContent && abs(contentHeight - lastContentHeight) < 1
-                lastContentHeight = contentHeight
+                let isStable = appliedNow && showsContent && bounds == lastBounds
+                lastBounds = bounds
 
                 if (isStable && attempts >= 2) || attempts >= 12 {
                     self.settlingAnchor = nil
@@ -1581,7 +1558,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             return line
         }
 
-        @MainActor static func topVisibleLine(in scrollView: NSScrollView, layoutWholeDocument: Bool = true) -> Int? {
+        @MainActor static func topVisibleLine(in scrollView: NSScrollView) -> Int? {
             guard let textView = scrollView.documentView as? NSTextView,
                   let layoutManager = textView.layoutManager,
                   let textContainer = textView.textContainer else { return nil }
@@ -1593,32 +1570,9 @@ struct MarkdownEditorView: NSViewRepresentable {
             let origin = textView.textContainerOrigin
             rect.origin.x -= origin.x
             rect.origin.y -= origin.y
-            if layoutWholeDocument, scrollView.contentView.bounds.minY > 0 {
-                // Styling restores the viewport through a bounds change. Lay
-                // out the resized content before AppKit clamps that offset.
-                layoutManager.ensureLayout(for: textContainer)
-            } else {
-                layoutManager.ensureLayout(forBoundingRect: rect, in: textContainer)
-            }
             let glyphRange = layoutManager.glyphRange(forBoundingRect: rect, in: textContainer)
             let charIndex = layoutManager.characterIndexForGlyph(at: glyphRange.location)
-
-            let string = textView.string as NSString
-            let clampedIndex = min(charIndex, string.length)
-            // Line number = newlines before the index + 1, matching scroll(to:).
-            var line = 1
-            var location = 0
-            while location < clampedIndex {
-                let range = string.range(
-                    of: "\n",
-                    options: [],
-                    range: NSRange(location: location, length: clampedIndex - location)
-                )
-                if range.location == NSNotFound { break }
-                line += 1
-                location = range.location + 1
-            }
-            return line
+            return lineNumber(forCharacterIndex: charIndex, in: textView.string as NSString)
         }
 
         /// Smoothly scrolls the editor so a fractional source `line` sits at the
@@ -1661,25 +1615,14 @@ struct MarkdownEditorView: NSViewRepresentable {
         /// geometry is not measurable yet.
         @MainActor static func clipTargetY(forFractionalLine value: Double, in scrollView: NSScrollView) -> CGFloat? {
             guard let textView = scrollView.documentView as? NSTextView,
-                  let layoutManager = textView.layoutManager,
-                  let textContainer = textView.textContainer else { return nil }
-            let line = max(1, Int(value.rounded(.down)))
+                  let wholeLine = Int(exactly: value.rounded(.down)) else { return nil }
+            let line = max(1, wholeLine)
             let progress = CGFloat(min(max(value - Double(line), 0), 1))
-            layoutManager.ensureLayout(for: textContainer)
             guard let rect = lineBoundingRect(line: line, in: textView) else { return nil }
-            let visibleHeight = scrollView.contentView.bounds.height
-            guard visibleHeight > 0 else { return nil }
-            let documentHeight = scrollableContentHeight(for: textView)
             // The line rect is in container coordinates; placing its top at the
             // clip origin leaves the container inset as the top margin (same rule
             // as `scrollLineToTop`). Advance by the intra-line progress.
-            let containerTargetY = rect.minY + progress * rect.height
-            let clamped = clampedScrollOffset(
-                targetY: Double(containerTargetY),
-                contentHeight: Double(documentHeight),
-                viewportHeight: Double(visibleHeight)
-            )
-            return CGFloat(clamped)
+            return editorClipTargetY(for: rect.minY + progress * rect.height, in: scrollView)
         }
 
         /// The bounding rect (in text-container coordinates) of the glyphs for a
@@ -1692,12 +1635,9 @@ struct MarkdownEditorView: NSViewRepresentable {
             let charRange = characterRange(ofLine: line, in: nsString)
             let glyphRange = layoutManager.glyphRange(forCharacterRange: charRange, actualCharacterRange: nil)
             var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
-            if rect.height <= 0.5, layoutManager.numberOfGlyphs > 0 {
+            if rect.height <= 0.5, nsString.length > 0 {
                 let charIndex = max(0, min(charRange.location, nsString.length - 1))
-                let glyphIndex = min(
-                    layoutManager.glyphIndexForCharacter(at: charIndex),
-                    layoutManager.numberOfGlyphs - 1
-                )
+                let glyphIndex = layoutManager.glyphIndexForCharacter(at: charIndex)
                 rect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
             }
             return rect
@@ -1924,7 +1864,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             defer {
                 isProgrammaticScroll = wasProgrammatic
                 if abs(clipView.bounds.minY - originalOffset) > 0.5,
-                   let line = Self.topVisibleLine(in: scrollView, layoutWholeDocument: false) {
+                   let line = Self.topVisibleLine(in: scrollView) {
                     onAnchorLineChange(line, false)
                 }
             }
@@ -2027,6 +1967,40 @@ struct MarkdownEditorView: NSViewRepresentable {
     }
 }
 
+/// Returns a vertical offset supported by the text's current layout. An
+/// already laid-out viewport proves an interior offset is valid. Near the
+/// bottom, finish layout to get the exact document edge before clamping.
+@MainActor
+private func editorClipTargetY(for offset: CGFloat, in scrollView: NSScrollView) -> CGFloat? {
+    let viewport = scrollView.contentView.bounds
+    guard viewport.height > 0, let documentView = scrollView.documentView else { return nil }
+    guard offset.isFinite, offset > 0 else { return 0 }
+
+    var height: CGFloat
+    if let textView = documentView as? NSTextView,
+       let layout = textView.layoutManager,
+       let container = textView.textContainer {
+        guard viewport.width > 0, container.size.width > 0 else { return nil }
+        let requiredHeight = offset + viewport.height
+        height = laidOutContentHeight(in: textView, layout: layout, container: container)
+        if height < requiredHeight {
+            let visibleText = NSRect(x: 0, y: offset - textView.textContainerOrigin.y,
+                                     width: container.size.width, height: viewport.height)
+            layout.ensureLayout(forBoundingRect: visibleText, in: container)
+            height = laidOutContentHeight(in: textView, layout: layout, container: container)
+        }
+        if height < requiredHeight || documentView.bounds.height < requiredHeight {
+            // The viewport may extend beyond EOF, or the native view may not
+            // have resized yet. Use exact measurement in either case.
+            height = scrollableContentHeight(for: textView)
+        }
+    } else {
+        height = documentView.bounds.height
+    }
+    return CGFloat(clampedScrollOffset(targetY: Double(offset), contentHeight: Double(height),
+                                       viewportHeight: Double(viewport.height)))
+}
+
 @MainActor
 private func scrollableContentHeight(for documentView: NSView) -> CGFloat {
     guard let textView = documentView as? NSTextView,
@@ -2036,12 +2010,14 @@ private func scrollableContentHeight(for documentView: NSView) -> CGFloat {
     }
 
     layoutManager.ensureLayout(for: textContainer)
-    let usedRect = layoutManager.usedRect(for: textContainer)
-    let measuredHeight = ceil(usedRect.maxY + textView.textContainerInset.height * 2)
-    guard measuredHeight.isFinite, measuredHeight > 0 else {
-        return textView.bounds.height
-    }
-    return measuredHeight
+    let height = laidOutContentHeight(in: textView, layout: layoutManager, container: textContainer)
+    return height.isFinite && height > 0 ? height : textView.bounds.height
+}
+
+@MainActor
+private func laidOutContentHeight(in textView: NSTextView, layout: NSLayoutManager,
+                                  container: NSTextContainer) -> CGFloat {
+    ceil(layout.usedRect(for: container).maxY + textView.textContainerInset.height * 2)
 }
 
 final class MarkdownSourceTextView: NSTextView {
@@ -2288,7 +2264,7 @@ final class MarkdownSourceTextView: NSTextView {
     var showsLineNumbers = false {
         didSet {
             guard showsLineNumbers != oldValue else { return }
-            invalidateGutter()
+            invalidateVisibleGutter()
         }
     }
 
@@ -2304,13 +2280,21 @@ final class MarkdownSourceTextView: NSTextView {
     /// changes the gutter outside the styling pass (which already invalidates the
     /// whole view) has to ask for it explicitly.
     func invalidateGutter() {
-        guard showsLineNumbers, textContainerInset.width > 0 else { return }
+        guard showsLineNumbers else { return }
+        invalidateVisibleGutter()
+    }
+
+    private func invalidateVisibleGutter() {
+        let visible = visibleRect
+        guard !visible.isEmpty, textContainerInset.width > 0 else { return }
+        // An inset-only dirty rect has no glyphs. Avoid asking NSTextView
+        // to search the unlaid suffix for glyphs that could intersect it.
         setNeedsDisplay(NSRect(
             x: 0,
-            y: bounds.minY,
+            y: visible.minY,
             width: textContainerInset.width,
-            height: bounds.height
-        ))
+            height: visible.height
+        ), avoidAdditionalLayout: true)
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -2342,11 +2326,10 @@ final class MarkdownSourceTextView: NSTextView {
         // extended across the container's full width (the same origin conversion
         // `topVisibleLine` performs), then clip painting to the strip.
         var probe = dirtyRect
-        probe.origin.x -= origin.x
+        probe.origin.x = 0
         probe.origin.y -= origin.y
         probe.size.width = textContainer.size.width
 
-        layoutManager.ensureLayout(for: textContainer)
         let glyphRange = layoutManager.glyphRange(forBoundingRect: probe, in: textContainer)
 
         var fragmentStarts: [Int] = []
@@ -2364,10 +2347,11 @@ final class MarkdownSourceTextView: NSTextView {
         // TextKit exposes it as the extra line fragment. It is numbered like any
         // other line, so the gutter's last number always equals the line count
         // the status bar, find, and the outline report.
-        if layoutManager.extraLineFragmentTextContainer != nil {
+        if let textStorage, layoutManager.firstUnlaidCharacterIndex() == textStorage.length,
+           layoutManager.extraLineFragmentTextContainer != nil {
             let extra = layoutManager.extraLineFragmentUsedRect
             if probe.intersects(extra) {
-                fragmentStarts.append((string as NSString).length)
+                fragmentStarts.append(textStorage.length)
                 fragmentRects.append(extra)
             }
         }
@@ -2430,14 +2414,16 @@ final class MarkdownSourceTextView: NSTextView {
         guard let layoutManager, let textContainer else { return nil }
         let string = self.string as NSString
         let containerY = y - textContainerOrigin.y
-        layoutManager.ensureLayout(for: textContainer)
+        let probe = NSRect(x: 0, y: containerY, width: textContainer.size.width, height: 1)
+        layoutManager.ensureLayout(forBoundingRect: probe, in: textContainer)
         // A document ending in a line break has an empty last line with no
         // glyphs, laid out as the extra line fragment.
-        if layoutManager.extraLineFragmentTextContainer != nil,
+        if layoutManager.firstUnlaidCharacterIndex() == string.length,
+           layoutManager.extraLineFragmentTextContainer != nil,
            containerY >= layoutManager.extraLineFragmentRect.minY {
             return MarkdownEditorView.Coordinator.sourceLineRange(containing: string.length, in: string)
         }
-        guard layoutManager.numberOfGlyphs > 0 else { return NSRange(location: 0, length: 0) }
+        guard string.length > 0 else { return NSRange(location: 0, length: 0) }
         let glyph = layoutManager.glyphIndex(for: NSPoint(x: 0, y: containerY), in: textContainer)
         let character = layoutManager.characterIndexForGlyph(at: glyph)
         return MarkdownEditorView.Coordinator.sourceLineRange(containing: character, in: string)
