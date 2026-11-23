@@ -366,10 +366,38 @@ final class ContentSecurityPolicyGUITests: XCTestCase, RenderedPageTesting {
     }
 
     @MainActor func testPrintOverridesApplyToThePDFPage() throws {
-        try withPage("# Title\n\nText.", on: .offscreen, edit: RenderedPageEdit.recordingViolations) { webView in
+        let document = """
+        # 中文标题
+
+        正文与 `code` 混排。
+
+        ```
+        sample
+        ```
+
+        | 表头 |
+        | --- |
+        | 内容 |
+
+        ![tall](dot.png){width=120 height=900}
+
+        ![wide](dot.png){width=140}
+        """
+        let image = "data:image/png;base64,\(Self.png.base64EncodedString())"
+        try withPage(document, on: .offscreen, edit: {
+            RenderedPageEdit.recordingViolations($0.replacingOccurrences(of: "src=\"dot.png\"", with: "src=\"\(image)\""))
+        }) { webView in
             XCTAssertEqual(try evaluate("!!document.getElementById('md2-print-overrides').sheet", in: webView) as? Bool, true,
                            "printStyleScript's style has no sheet, so the policy refused it")
-            XCTAssertEqual(try evaluate("getComputedStyle(document.documentElement).fontSize", in: webView) as? String, "12px")
+            XCTAssertEqual(try evaluate("getComputedStyle(document.documentElement).fontSize", in: webView) as? String, "10.5px")
+            XCTAssertEqual(try evaluate("getComputedStyle(document.querySelector('pre')).padding", in: webView) as? String, "8px 11px")
+            XCTAssertEqual(try evaluate("getComputedStyle(document.querySelector('td')).padding", in: webView) as? String, "4px 7px")
+            XCTAssertTrue(spin(5) {
+                (try? self.evaluate("[...document.images].filter(img => img.naturalWidth === 1).length", in: webView)) as? Int == 2
+            }, "the embedded image fixtures did not load")
+            let frameHeight = try XCTUnwrap(try evaluate("document.querySelector('.image-frame').getBoundingClientRect().height", in: webView) as? Double)
+            XCTAssertEqual(frameHeight, 420, accuracy: 0.5, "the reserved image frame must shrink with the image")
+            XCTAssertEqual(try evaluate("getComputedStyle(document.querySelector('img[alt=wide]')).width", in: webView) as? String, "140px")
             try assertNoViolations(in: webView, "offscreen")
         }
     }
