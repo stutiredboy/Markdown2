@@ -183,6 +183,12 @@ final class DocumentStore: ObservableObject {
     private var copyFileReference: DocumentCopyFileReference?
     var copySaveIO = DocumentCopySaveIO()
     private let recoveryRepository: DocumentRecoveryRepository?
+    // The on-disk intent keeps its original destination, baseline and output
+    // format even if a failed save is followed by another draft checkpoint.
+    private var linkedSaveCheckpoint: DocumentRecoverySnapshot?
+    private var linkedSaveRepairHash: Data?
+    var offersLinkedSaveRepair: Bool { linkedSaveRepairHash != nil }
+    var linkedSaveWrite: @MainActor (Data, FileHandle, Int?) throws -> Void = DocumentLinkedSaveFile.write
     private let historyRepository: DocumentHistoryRepository?
     private let keepsLocalHistory: @MainActor () -> Bool
     private var historyFileID: DocumentHistoryFileID?
@@ -509,6 +515,9 @@ final class DocumentStore: ObservableObject {
         // An unresolved external conflict blocks every write; asking again is
         // the only honest response to another ⌘S.
         if hasExternalConflict {
+            if linkedSaveRepairHash != nil, linkedSaveCheckpoint?.text != text {
+                linkedSaveRepairHash = nil
+            }
             externalConflictRequest = ExternalConflictRequest()
             return false
         }
@@ -1307,6 +1316,7 @@ final class DocumentStore: ObservableObject {
                                    fingerprint: DocumentFileFingerprint, identity: DocumentFileIdentity,
                                    reference: DocumentCopyFileReference? = nil,
                                    imageReference: DocumentCopyFileReference? = nil, historyID: DocumentHistoryFileID?) {
+        clearLinkedSaveCheckpoint()
         fileFormat = decoded.format
         copyFileReference = reference
         remoteImageFileReference = reference ?? imageReference
@@ -1429,48 +1439,40 @@ final class DocumentStore: ObservableObject {
         do {
             cancelAutosave()
             let priorHistoryID = writingBackingFile ? historyIdentity(at: url) : nil
-            let needsLinkedSaveRecovery = !requiresVacantDestination && Self.hasMultipleHardLinks(at: url)
-            if needsLinkedSaveRecovery {
-                if writingBackingFile, !isDirty, lastKnownFingerprint?.contentHash == DocumentFileFingerprint.hash(of: writtenData) {
+            let writesSharedInode = !requiresVacantDestination && !folderBacked
+                && (!writingBackingFile || copyFileReference == nil) && Self.hasMultipleHardLinks(at: url)
+            let result: (DocumentCopyFileReference?, DocumentHistoryFileID?, DocumentCopyFileReference?)
+            if writesSharedInode {
+                if writingBackingFile, !isDirty,
+                   lastKnownFingerprint?.contentHash == DocumentFileFingerprint.hash(of: writtenData) {
                     return true
                 }
-                if !persistRecoveryNow() {
-                    if !automatically {
-                        alert = DocumentAlert(message: alertText(.alertCouldNotSave, url.lastPathComponent),
-                                              detail: alertText(.alertRecoveryRequiredForLinkedSave))
-                    }
-                    return false
-                }
+                let savedID = try writeLinkedFile(writtenData, to: url, format: outputFormat,
+                                                  writingBackingFile: writingBackingFile)
+                result = (nil, savedID, nil)
+            } else {
+                result = try Self.writePreservingMetadata(writtenData, to: url,
+                    replacingReference: writingBackingFile ? copyFileReference : nil, copyIO: copySaveIO,
+                    protectsLinkedDestination: folderBacked,
+                    requiresVacantDestination: requiresVacantDestination,
+                    captureHistoryIdentity: historyRepository != nil,
+                    trackImageIdentity: FolderIndex.isMarkdownExtension(url.pathExtension)
+                        && writtenData.count <= FolderIndex.maximumOpenBytes,
+                    verifyNewFile: keepsLocalHistory() && historyRepository?.canRecord(byteCount: writtenData.count) == true)
             }
-            let (newCopyReference, savedHistoryID, imageReference) = try Self.writePreservingMetadata(writtenData, to: url,
-                replacingReference: writingBackingFile ? copyFileReference : nil, copyIO: copySaveIO,
-                protectsLinkedDestination: folderBacked,
-                requiresVacantDestination: requiresVacantDestination,
-                securedLinkedSaveRecovery: needsLinkedSaveRecovery,
-                captureHistoryIdentity: historyRepository != nil,
-                trackImageIdentity: FolderIndex.isMarkdownExtension(url.pathExtension)
-                    && writtenData.count <= FolderIndex.maximumOpenBytes,
-                verifyNewFile: keepsLocalHistory() && historyRepository?.canRecord(byteCount: writtenData.count) == true)
-            copyFileReference = newCopyReference
-            remoteImageFileReference = newCopyReference ?? imageReference
-            lastKnownFingerprint = DocumentFileFingerprint.of(data: writtenData, at: url)
-            fileURL = url
-            fileIdentity = newCopyReference.map {
-                folderBacked ? DocumentFileIdentity(folderReference: $0) : DocumentFileIdentity(copyReference: $0)
-            } ?? DocumentFileIdentity(url: url)
-            fileFormat = outputFormat
-            isDirty = false
-            backingFileMissing = false
-            encodingWarningShown = false
-            encodingConversionRequest = nil
-            hasExternalConflict = false
-            startWatchingFile()
-            onRemoteImageBackingChanged?()
-            persistRecoveryNow()
-            recordHistory(writtenData, reason: .saved, fileID: savedHistoryID, replacing: priorHistoryID)
+            finishSave(writtenData, at: url, format: outputFormat, references: result,
+                       folderBacked: folderBacked, priorHistoryID: priorHistoryID)
             return true
         } catch {
-            if error is UnverifiedSaveDestination {
+            if error is LinkedSaveContentChanged {
+                raiseExternalConflict()
+            } else if error is LinkedSaveRecoveryRequired {
+                if !automatically {
+                    alert = DocumentAlert(message: alertText(.alertCouldNotSave, url.lastPathComponent),
+                                          detail: alertText(.alertRecoveryRequiredForLinkedSave))
+                }
+                return false // The journal write already reported the recovery failure.
+            } else if error is UnverifiedSaveDestination {
                 reportUnverifiedSaveDestination(url)
             } else {
                 alert = DocumentAlert(message: alertText(.alertCouldNotSave, url.lastPathComponent),
@@ -1481,6 +1483,103 @@ final class DocumentStore: ObservableObject {
             persistRecoveryNow()
             return false
         }
+    }
+
+    private func finishSave(_ data: Data, at url: URL, format: MarkdownFileFormat,
+                            references: (DocumentCopyFileReference?, DocumentHistoryFileID?, DocumentCopyFileReference?),
+                            folderBacked: Bool, priorHistoryID: DocumentHistoryFileID?) {
+        let (newCopyReference, savedHistoryID, imageReference) = references
+        clearLinkedSaveCheckpoint()
+        copyFileReference = newCopyReference
+        remoteImageFileReference = newCopyReference ?? imageReference
+        lastKnownFingerprint = DocumentFileFingerprint.of(data: data, at: url)
+        fileURL = url
+        fileIdentity = newCopyReference.map {
+            folderBacked ? DocumentFileIdentity(folderReference: $0) : DocumentFileIdentity(copyReference: $0)
+        } ?? DocumentFileIdentity(url: url)
+        fileFormat = format
+        isDirty = false
+        backingFileMissing = false
+        encodingWarningShown = false
+        encodingConversionRequest = nil
+        hasExternalConflict = false
+        externalConflictRequest = nil
+        startWatchingFile()
+        onRemoteImageBackingChanged?()
+        persistRecoveryNow()
+        recordHistory(data, reason: .saved, fileID: savedHistoryID, replacing: priorHistoryID)
+    }
+
+    private struct LinkedSaveContentChanged: Error {}
+    private struct LinkedSaveRecoveryRequired: Error {}
+
+    private func writeLinkedFile(_ data: Data, to url: URL, format: MarkdownFileFormat,
+                                 writingBackingFile: Bool) throws -> DocumentHistoryFileID? {
+        let file = try DocumentLinkedSaveFile(at: url, writable: true)
+        let original = try file.read()
+        let baseline = DocumentFileFingerprint.of(data: original.data, at: url)
+        if writingBackingFile, let expectedHash = lastKnownFingerprint?.contentHash,
+           baseline.contentHash != expectedHash { throw LinkedSaveContentChanged() }
+
+        var checkpoint = DocumentRecoverySnapshot(id: recoveryID, text: text, fileURL: url,
+            identity: DocumentFileIdentity(url: url), format: format, fingerprint: baseline, isDirty: true,
+            windowFrame: windowFrame)
+        checkpoint.linkedSave = DocumentLinkedSaveIntent(fileKey: file.historyID?.storageKey,
+                                                        targetHash: DocumentFileFingerprint.hash(of: data))
+        // Keep a complete draft before risking any bytes in the shared inode.
+        guard recoveryRepository != nil else { throw LinkedSaveRecoveryRequired() }
+        linkedSaveCheckpoint = checkpoint
+        guard persistRecoveryNow() else {
+            clearLinkedSaveCheckpoint()
+            throw LinkedSaveRecoveryRequired()
+        }
+        do {
+            try file.validate(matching: original, requiresHardLinks: true)
+        } catch {
+            clearLinkedSaveCheckpoint()
+            throw UnverifiedSaveDestination()
+        }
+
+        do {
+            try linkedSaveWrite(data, file.handle, nil)
+            guard try file.read().data == data else { throw UnverifiedSaveDestination() }
+            return file.historyID
+        } catch {
+            if let current = try? file.read() {
+                if current.data == original.data {
+                    clearLinkedSaveCheckpoint()
+                } else if data.starts(with: current.data) {
+                    // Roll back errors while the inode is still ours and the
+                    // bytes are consistent with this write. Keep the journal
+                    // if rollback itself fails or is interrupted.
+                    if (try? file.validate(matching: current)) != nil,
+                       (try? linkedSaveWrite(original.data, file.handle, nil)) != nil,
+                       (try? file.read().data) == original.data {
+                        clearLinkedSaveCheckpoint()
+                    }
+                }
+            }
+            if linkedSaveCheckpoint != nil {
+                // A first save can target an existing linked file. Once that
+                // write starts, the recovery choice belongs to that file.
+                fileURL = url
+                fileIdentity = checkpoint.identity
+                lastKnownFingerprint = baseline
+                isDirty = true
+                hasExternalConflict = true
+                if let observed = try? file.read().data, observed.count < data.count,
+                   data.starts(with: observed), file.historyID != nil {
+                    linkedSaveRepairHash = DocumentFileFingerprint.hash(of: observed)
+                }
+                startWatchingFile()
+            }
+            throw error
+        }
+    }
+
+    private func clearLinkedSaveCheckpoint() {
+        linkedSaveCheckpoint = nil
+        linkedSaveRepairHash = nil
     }
 
     private struct UnverifiedSaveDestination: Error {}
@@ -1497,7 +1596,6 @@ final class DocumentStore: ObservableObject {
                                                 copyIO: DocumentCopySaveIO = .init(),
                                                 protectsLinkedDestination: Bool,
                                                 requiresVacantDestination: Bool,
-                                                securedLinkedSaveRecovery: Bool,
                                                 captureHistoryIdentity: Bool,
                                                 trackImageIdentity: Bool,
                                                 verifyNewFile: Bool) throws
@@ -1575,28 +1673,6 @@ final class DocumentStore: ObservableObject {
             guard let current = try? (bytes.read(upToCount: data.count + 1) ?? Data()),
                   current == data, historyIdentity(matching: bytes.fileDescriptor) == identity else { return (nil, nil, imageReference) }
             return (nil, identity, imageReference)
-        }
-        if replacingReference == nil && !protectsLinkedDestination && hasMultipleHardLinks(at: url) {
-            // Replacing an inode severs its other names. For a hard-linked file,
-            // update that inode after securing a recovery snapshot instead.
-            guard securedLinkedSaveRecovery else { throw UnverifiedSaveDestination() }
-            let original = try Data(contentsOf: url)
-            let handle = try FileHandle(forWritingTo: url)
-            defer { try? handle.close() }
-            var info = stat()
-            guard fstat(handle.fileDescriptor, &info) == 0, DocumentCopyFileIdentity(info) == destinationIdentity,
-                  try inspectDestination() == destinationIdentity else { throw UnverifiedSaveDestination() }
-            do {
-                try handle.truncate(atOffset: 0)
-                try handle.write(contentsOf: data)
-                try handle.synchronize()
-            } catch {
-                try? handle.truncate(atOffset: 0)
-                try? handle.write(contentsOf: original)
-                try? handle.synchronize()
-                throw error
-            }
-            return (nil, historyIdentity(matching: handle.fileDescriptor), nil)
         }
         let replacement = try manager.url(for: .itemReplacementDirectory, in: .userDomainMask,
                                           appropriateFor: url, create: true)
@@ -1780,6 +1856,9 @@ final class DocumentStore: ObservableObject {
         url: URL
     ) {
         guard fileURL == url, lastKnownFingerprint == lastKnown, !isClosed else { return }
+        // The recovery sheet owns the observed prefix. Later stays deferred;
+        // Finish Save rechecks the bytes instead of trusting a watch event.
+        if offersLinkedSaveRepair { return }
         if let copyFileReference, (try? copyFileReference.validate(at: url)) == nil {
             refreshFileLocation()
             return
@@ -1872,6 +1951,7 @@ final class DocumentStore: ObservableObject {
             editorJumpAnchor = anchor
             previewJumpAnchor = anchor
         }
+        clearLinkedSaveCheckpoint()
         fileFormat = decoded.format
         if copyFileReference == nil { fileIdentity = DocumentFileIdentity(url: fileURL) }
         backingFileMissing = false
@@ -1909,7 +1989,8 @@ final class DocumentStore: ObservableObject {
     /// autosave resume.
     func resolveExternalConflict(reloadingFromDisk: Bool) {
         externalConflictRequest = nil
-        guard hasExternalConflict else { return }
+        guard hasExternalConflict, !offersLinkedSaveRepair else { return }
+        clearLinkedSaveCheckpoint()
         hasExternalConflict = false
         if reloadingFromDisk {
             beginExternalReload(discardingEdits: true)
@@ -2051,10 +2132,13 @@ final class DocumentStore: ObservableObject {
         recoveryTask = nil
         guard !isClosed, let recoveryRepository else { return true }
         do {
-            try recoveryRepository.write(DocumentRecoverySnapshot(
-                id: recoveryID, text: isDirty || fileURL == nil ? text : "", fileURL: fileURL, identity: fileIdentity,
-                format: fileFormat, fingerprint: lastKnownFingerprint, isDirty: isDirty,
-                windowFrame: windowFrame))
+            var snapshot = linkedSaveCheckpoint ?? DocumentRecoverySnapshot(
+                id: recoveryID, text: text, fileURL: fileURL, identity: fileIdentity,
+                format: fileFormat, fingerprint: lastKnownFingerprint, isDirty: isDirty, windowFrame: windowFrame)
+            snapshot.text = text
+            snapshot.windowFrame = windowFrame
+            snapshot.updatedAt = Date()
+            try recoveryRepository.write(snapshot)
             recoveryErrorReported = false
             return true
         } catch {
@@ -2071,6 +2155,7 @@ final class DocumentStore: ObservableObject {
         defer { onRemoteImageBackingChanged?() }
         historyFileID = nil
         historyLineage = UUID()
+        clearLinkedSaveCheckpoint()
         recoveryID = snapshot.id
         windowFrame = snapshot.windowFrame
         fileFormat = snapshot.format
@@ -2080,12 +2165,25 @@ final class DocumentStore: ObservableObject {
             restoreFolderDocument(snapshot, url: url, selectedFile: openingFolderFile)
             return
         }
+        if snapshot.fileURL != nil, snapshot.isDirty, snapshot.linkedSave != nil {
+            linkedSaveCheckpoint = snapshot
+        }
         let resolved = snapshot.fileURL.flatMap { snapshot.identity?.resolve(fallback: $0) }
         setDocumentText(snapshot.text, fileURL: resolved ?? snapshot.fileURL, dirty: snapshot.isDirty)
         if let url = snapshot.fileURL {
             if let resolved {
                 fileIdentity = DocumentFileIdentity(url: resolved)
-                let current = DocumentFileFingerprint.current(at: resolved)
+                let current: DocumentFileFingerprint?
+                if let checkpoint = linkedSaveCheckpoint,
+                   let linkedFile = try? DocumentLinkedSaveFile(at: resolved, writable: false),
+                   let disk = try? linkedFile.read() {
+                    let fingerprint = DocumentFileFingerprint.of(data: disk.data, at: resolved)
+                    if recognizeLinkedSave(checkpoint, at: resolved, file: linkedFile, disk: disk.data,
+                                           observedHash: fingerprint.contentHash) { return }
+                    current = fingerprint
+                } else {
+                    current = DocumentFileFingerprint.current(at: resolved)
+                }
                 if !snapshot.isDirty, current != nil {
                     if !load(from: resolved) {
                         isDirty = true
@@ -2093,7 +2191,7 @@ final class DocumentStore: ObservableObject {
                     }
                 } else if current == nil {
                     markBackingFileMissing()
-                } else if snapshot.fingerprint?.contentHash != current?.contentHash {
+                } else if linkedSaveCheckpoint != nil || snapshot.fingerprint?.contentHash != current?.contentHash {
                     raiseExternalConflict() // Keep both versions until the user chooses.
                 } else {
                     historyFileID = historyIdentity(at: resolved)
@@ -2106,6 +2204,72 @@ final class DocumentStore: ObservableObject {
         }
         scheduleAutosaveIfNeeded()
         persistRecoveryNow()
+    }
+
+    private func recognizeLinkedSave(_ snapshot: DocumentRecoverySnapshot, at url: URL, file: DocumentLinkedSaveFile,
+                                     disk: Data, observedHash: Data) -> Bool {
+        guard let intent = snapshot.linkedSave, let key = intent.fileKey,
+              file.historyID?.storageKey == key else { return false }
+        if observedHash == snapshot.fingerprint?.contentHash {
+            // The write never began or was rolled back completely.
+            clearLinkedSaveCheckpoint()
+        }
+        guard let target = snapshot.format.encode(snapshot.text),
+              DocumentFileFingerprint.hash(of: target) == intent.targetHash else { return false }
+        if disk == target {
+            finishSave(target, at: url, format: snapshot.format, references: (nil, file.historyID, nil),
+                       folderBacked: false, priorHistoryID: nil)
+            return true
+        }
+        if linkedSaveCheckpoint != nil, target.starts(with: disk) {
+            linkedSaveRepairHash = observedHash
+        }
+        return false
+    }
+
+    /// Later keeps the draft and leaves the shared file untouched. Save can
+    /// present the choice again without re-enabling autosave.
+    func resolveLinkedSaveRepair(finish: Bool) {
+        externalConflictRequest = nil
+        guard finish, let observedHash = linkedSaveRepairHash,
+              let checkpoint = linkedSaveCheckpoint, let url = fileURL else { return }
+        guard let intent = checkpoint.linkedSave, let key = intent.fileKey,
+              let target = checkpoint.format.encode(text),
+              DocumentFileFingerprint.hash(of: target) == intent.targetHash else {
+            linkedSaveRepairHash = nil
+            raiseExternalConflict()
+            return
+        }
+
+        do {
+            let file = try DocumentLinkedSaveFile(at: url, writable: true)
+            let disk = try file.read()
+            // The consent applies to the observed prefix on this inode.
+            let currentHash = DocumentFileFingerprint.hash(of: disk.data)
+            guard file.historyID?.storageKey == key, disk.data.count < target.count,
+                  currentHash == observedHash, target.starts(with: disk.data) else {
+                linkedSaveRepairHash = nil
+                if recognizeLinkedSave(checkpoint, at: url, file: file, disk: disk.data,
+                                       observedHash: currentHash) { return }
+                raiseExternalConflict()
+                return
+            }
+            do {
+                try file.validate(matching: disk)
+                try linkedSaveWrite(Data(target.dropFirst(disk.data.count)), file.handle, disk.data.count)
+                guard try file.read().data == target else { throw UnverifiedSaveDestination() }
+            } catch {
+                if let retry = try? file.read().data, retry.count < target.count, target.starts(with: retry) {
+                    linkedSaveRepairHash = DocumentFileFingerprint.hash(of: retry)
+                }
+                throw error
+            }
+            finishSave(target, at: url, format: checkpoint.format, references: (nil, file.historyID, nil),
+                       folderBacked: false, priorHistoryID: nil)
+        } catch {
+            alert = DocumentAlert(message: alertText(.alertCouldNotSave, url.lastPathComponent),
+                                  detail: error.localizedDescription)
+        }
     }
 
     private func restoreFolderDocument(_ snapshot: DocumentRecoverySnapshot, url: URL,

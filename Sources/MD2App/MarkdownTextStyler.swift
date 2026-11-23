@@ -195,9 +195,9 @@ final class MarkdownStylingController {
                     NSRange(location: cursor, length: min(8_192, NSMaxRange(range) - cursor)))
                 willApply()
                 let selection = textView.selectedRanges
-                let clip = textView.enclosingScrollView?.contentView
-                let origin = clip == nil ? nil : textView.visibleRect.origin
-                let line = clip == nil ? nil : ViewportAnchor.EditorPosition(of: textView)
+                let scrollView = textView.enclosingScrollView
+                let origin = scrollView.map { _ in textView.visibleRect.origin }
+                let line = scrollView.flatMap { _ in ViewportAnchor.EditorPosition(of: textView) }
                 MarkdownTextStyler.apply(plan, range: chunk, to: textView)
                 // AppKit emits a selection notification even for an identical
                 // assignment. Attribute-only styling must not invalidate a
@@ -205,7 +205,7 @@ final class MarkdownStylingController {
                 if textView.selectedRanges != selection {
                     textView.selectedRanges = selection
                 }
-                if var origin {
+                if let scrollView, textView.enclosingScrollView === scrollView, var origin {
                     // The first asynchronous font reflow can grow a previously
                     // short text view with a negative frame origin. Keep the
                     // document top-aligned, otherwise the gutter/scroll probes
@@ -215,11 +215,16 @@ final class MarkdownStylingController {
                     // offset: the first styling of a new text view changes
                     // every line's height, and the old offset would show other
                     // text than the line a mode switch or a jump put there.
-                    if let y = line?.scrollOffset(in: textView) { origin.y = y }
-                    clip?.scroll(to: origin)
-                    if let scrollView = textView.enclosingScrollView {
-                        scrollView.reflectScrolledClipView(scrollView.contentView)
+                    // Lay out the restored viewport before AppKit clamps to
+                    // the resized view. Measuring the anchor row alone can
+                    // leave too little scrollable height below it.
+                    let y = line?.scrollOffset(in: textView) ?? origin.y
+                    if let targetY = editorClipTargetY(for: y, in: scrollView) {
+                        origin.y = targetY
                     }
+                    let clip = scrollView.contentView
+                    clip.scroll(to: origin)
+                    scrollView.reflectScrolledClipView(clip)
                 }
                 didApply()
                 cursor = NSMaxRange(chunk)

@@ -5,7 +5,7 @@ import os
 /// A physical file on a volume with persistent identity. A path can be reused,
 /// and an inode can be recycled, so neither is sufficient by itself.
 struct DocumentHistoryFileID: Equatable, Sendable {
-    fileprivate let storageKey: String
+    let storageKey: String
     private let device: dev_t
     private let inode: ino_t
     private let birthSecond: Int

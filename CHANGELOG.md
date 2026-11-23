@@ -18,6 +18,10 @@
 
 ### Fixed
 
+- Recover an interrupted save from either hard-linked filename. Review the draft before choosing **Finish Save** to update the linked file.
+
+- Restore the reading position and selection in large source documents while laying out only as much wrapped text as the destination needs. Positions near the end still use the measured document height.
+
 - Show the filename in the title bar when the tab bar is hidden and on the tab when it is shown. The first folder preview uses the single-document title bar, and a second document reveals the tabs.
 
 - Open folders to the file tree and an empty document area when no document is selected. The first file takes over the window without creating an Untitled tab.
