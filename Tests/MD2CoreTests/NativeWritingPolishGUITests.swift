@@ -163,6 +163,9 @@ final class NativeWritingPolishGUITests: XCTestCase {
         try switchMode(to: .read, in: harness)
         try waitForHiddenPreviewQuery(in: harness)
         try switchMode(to: .write, in: harness)
+        // SwiftUI can mount the editor before its viewport anchor has settled.
+        // Wait for the exact restored offset before the next mode captures it.
+        harness.spin(until: { abs(editor.visibleRect.minY - originalOffset) <= 1 })
         XCTAssertEqual(editor.visibleRect.minY, originalOffset, accuracy: 1,
                        "a passive same-width round trip must restore the wrapped editor viewport")
         XCTAssertEqual(editor.selectedRange(), workingSelection)
@@ -277,6 +280,8 @@ final class NativeWritingPolishGUITests: XCTestCase {
     @MainActor
     private func waitForHiddenPreviewQuery(in harness: InteractionTestWindow) throws {
         let web = try XCTUnwrap(activePreview(in: harness))
+        let coordinator = try XCTUnwrap(web.navigationDelegate as? MarkdownPreviewView.Coordinator)
+        XCTAssertNil(coordinator.onOutlineMarginChange, "a document without headings does not measure room for an outline")
         try harness.waitForPage(
             """
             (() => {

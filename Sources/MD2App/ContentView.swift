@@ -331,7 +331,6 @@ struct ContentView: View {
             if mode != .read {
                 formulaSheet.dismiss()
                 formulaFocus = nil
-                previewOutlineMargin = nil
             }
             setEditorFindQuery(lastFindQuery)
             previewFindQuery = lastFindQuery
@@ -343,7 +342,12 @@ struct ContentView: View {
             dismissPreviewFind()
         }
         .onChange(of: settings.typography) { _, typography in
-            if previewOutlineMargin?.snapshot.typography != typography { previewOutlineMargin = nil }
+            if let previewOutlineMargin, previewOutlineMargin.snapshot.typography != typography {
+                self.previewOutlineMargin = nil
+            }
+        }
+        .onChange(of: canShowFloatingOutline) { _, eligible in
+            if !eligible, previewOutlineMargin != nil { previewOutlineMargin = nil }
         }
         .onChange(of: document.findCommand) { _, command in
             handleFindCommand(command)
@@ -536,6 +540,13 @@ struct ContentView: View {
 
     private var selectedOutlineHeadingID: String? {
         clickedOutlineHeadingID ?? document.rendered.outline.heading(atOrAbove: outlineSourceLine)?.id
+    }
+
+    private var canShowFloatingOutline: Bool {
+        FloatingOutlineLayout.isEligible(
+            mode: mode, hasHeadings: !document.rendered.outline.isEmpty,
+            showsLeftOutline: showsLeftOutline, readingWidth: settings.typography.readingWidth
+        )
     }
 
     private func selectOutlineHeading(_ heading: Heading, animated: Bool = false) {
@@ -1310,10 +1321,10 @@ struct ContentView: View {
                     remoteImageBlockedLabel: settings.text(.remoteImageBlocked),
                     genericImageLoadFailedLabel: settings.text(.imageLoadFailed),
                     typography: settings.typography,
-                    onOutlineMarginChange: inSplit ? nil : { width in
+                    onOutlineMarginChange: canShowFloatingOutline ? { width in
                         guard previewOutlineMargin?.snapshot != snapshot || previewOutlineMargin?.width != width else { return }
                         previewOutlineMargin = (snapshot, width)
-                    },
+                    } : nil,
                     onSelectionChange: { selection in
                         previewSelection = selection
                         if inSplit, selection != nil { focusedPane = .preview }
@@ -1321,7 +1332,7 @@ struct ContentView: View {
                 )
                 .id(resourceToken)
                 .overlay(alignment: .topTrailing) {
-                    if !inSplit {
+                    if canShowFloatingOutline {
                         floatingOutline(for: snapshot)
                     }
                 }

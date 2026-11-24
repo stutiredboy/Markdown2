@@ -25,12 +25,17 @@ enum FloatingOutlineLayout {
         typography: TypographySettings,
         measuredMargin: CGFloat?
     ) -> Bool {
-        guard mode == .read, hasHeadings, !showsLeftOutline,
+        guard isEligible(mode: mode, hasHeadings: hasHeadings, showsLeftOutline: showsLeftOutline,
+                         readingWidth: typography.readingWidth),
               let widthInEms = typography.readingWidth.maximumWidthInEms else { return false }
         // The preview's centered <main> is border-box, including its padding.
         let maximumMainWidth = widthInEms * typography.effectiveFontSize
         return (previewWidth - maximumMainWidth) / 2 >= minimumMargin
             && (measuredMargin ?? 0) >= minimumMargin
+    }
+
+    static func isEligible(mode: EditorMode, hasHeadings: Bool, showsLeftOutline: Bool, readingWidth: ReadingWidth) -> Bool {
+        mode == .read && hasHeadings && !showsLeftOutline && readingWidth != .full
     }
 }
 

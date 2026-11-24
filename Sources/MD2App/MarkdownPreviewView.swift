@@ -608,6 +608,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             // height does not move the target, so we don't scroll (avoiding a
             // pointless late jump). We stop on a user scroll or once stable.
             var pinSequence = 0;
+            var animatedPinEpoch = 0;
             function keepPinned(getTargetY, silent, rememberOffset, animate) {
                 // A recent click inside the preview is not evidence that this
                 // programmatic jump was a user scroll. Only gestures that occur
@@ -615,6 +616,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 lastUserScrollIntentAt = 0;
                 suppressUntil = Date.now() + 2600;
                 var sequence = ++pinSequence;
+                // An outline animation takes over any older pin. Any newer
+                // navigation supersedes the animation in turn.
+                var epoch = animate ? ++animatedPinEpoch : animatedPinEpoch;
                 var cancelled = false;
                 function onUser() { cancelled = true; }
                 // Fast-path cancels for common gestures; the scrollY check below
@@ -642,7 +646,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
                     if (!silent) { topAnchor(); }
                 }
                 function step() {
-                    if (cancelled || sequence !== pinSequence) { return; }
+                    if (cancelled || epoch !== animatedPinEpoch || (animate && sequence !== pinSequence)) { return; }
                     if (started && Math.abs(window.scrollY - expectedY) > 2) {
                         // Scroll position changed but we didn't move it: the user
                         // scrolled. Yield and stop re-anchoring.
@@ -1140,9 +1144,14 @@ struct MarkdownPreviewView: NSViewRepresentable {
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.onSelectionChange = onSelectionChange
         context.coordinator.onRemoteImageDetected = onRemoteImageDetected
+        let wasObservingOutlineMargin = context.coordinator.onOutlineMarginChange != nil
         context.coordinator.onOutlineMarginChange = onOutlineMarginChange
+        if wasObservingOutlineMargin && onOutlineMarginChange == nil {
+            context.coordinator.stopObservingOutlineMargin(in: webView)
+        }
         let revisionChanged = context.coordinator.sourceLineRevision != sourceLineRevision
-        if context.coordinator.typography != typography {
+        let typographyChanged = context.coordinator.typography != typography
+        if typographyChanged {
             context.coordinator.typography = typography
             if context.coordinator.isLoaded { context.coordinator.applyTypography(in: webView, preservingAnchor: true) }
         }
@@ -1246,7 +1255,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
             // Text that renders to the same page is still a new revision.
             context.coordinator.labelPage(in: webView)
             context.coordinator.configureFormulaControls(in: webView)
-            if revisionChanged && context.coordinator.isLoaded {
+            if onOutlineMarginChange != nil, !typographyChanged, context.coordinator.isLoaded,
+               revisionChanged || !wasObservingOutlineMargin {
                 context.coordinator.observeOutlineMargin(in: webView)
             }
         }
@@ -1587,8 +1597,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
                         lastWidth = width;
                         window.webkit.messageHandlers.\(MarkdownPreviewView.outlineMarginMessageName).postMessage({token: token, width: width});
                     }
-                    new ResizeObserver(report).observe(main);
-                    new MutationObserver(report).observe(main, {childList: true, characterData: true, subtree: true});
+                    var resizeObserver = new ResizeObserver(report);
+                    var mutationObserver = new MutationObserver(report);
+                    resizeObserver.observe(main);
+                    mutationObserver.observe(main, {childList: true, characterData: true, subtree: true});
                     window.addEventListener('resize', report);
                     document.fonts.addEventListener('loadingdone', report);
                     window.__md2MeasureOutlineMargin = function (nextToken) {
@@ -1596,10 +1608,23 @@ struct MarkdownPreviewView: NSViewRepresentable {
                         lastWidth = null;
                         report();
                     };
+                    window.__md2StopOutlineMargin = function () {
+                        resizeObserver.disconnect();
+                        mutationObserver.disconnect();
+                        window.removeEventListener('resize', report);
+                        document.fonts.removeEventListener('loadingdone', report);
+                        delete window.__md2MeasureOutlineMargin;
+                        delete window.__md2StopOutlineMargin;
+                    };
                 }
                 window.__md2MeasureOutlineMargin('\(token)');
             })();
             """)
+        }
+
+        func stopObservingOutlineMargin(in webView: WKWebView) {
+            outlineMarginToken = nil
+            if isLoaded { webView.evaluateJavaScript("window.__md2StopOutlineMargin?.();") }
         }
         var lastHTML = ""
         /// The last `<main>` content applied (via full load or live swap), used
