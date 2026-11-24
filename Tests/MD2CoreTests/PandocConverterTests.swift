@@ -113,7 +113,19 @@ final class PandocConverterTests: XCTestCase {
             try Data("replace me".utf8).write(to: destination)
 
             try runConversion(
-                markdown: "# Title\n\nHello **world** and a list:\n\n- a\n- b\n",
+                markdown: """
+                    # Title
+
+                    Hello **world** and a list:
+
+                    - a
+                    - b
+
+                    | A | B | C |
+                    |---|---|---|
+                    | 1 | 2 | 3 |
+                    | 4 | 5 | 6 |
+                    """,
                 format: format,
                 resourceDirectory: nil,
                 destination: destination,
@@ -121,10 +133,82 @@ final class PandocConverterTests: XCTestCase {
             ).get()
             let entries = zipEntries(of: destination)
             switch format {
-            case .docx: XCTAssertTrue(entries.contains("word/document.xml"))
+            case .docx:
+                let document = try zipXML("word/document.xml", at: destination)
+                let rows = try document.nodes(forXPath: "//*[local-name()='tbl']/*[local-name()='tr']")
+                XCTAssertEqual(rows.count, 3)
+                for row in rows {
+                    XCTAssertEqual(try row.nodes(forXPath: "./*[local-name()='tc']").count, 3)
+                }
+                try assertGridBorders(in: document, tableCount: 1)
             case .epub: XCTAssertTrue(entries.contains("mimetype") && entries.contains("META-INF/container.xml"))
             }
         }
+    }
+
+    @MainActor
+    func testDocxGridPreservesTablePropertiesAndReplacesExistingBorders() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let padding = String(repeating: "x", count: 70_000)
+        let fixture = """
+            <s:document xmlns:s="\(wordNamespace)"><s:body>
+              <!-- \(padding) -->
+              <s:tbl>
+                <s:tblPr>
+                  <s:tblStyle s:val="TableNormal"/>
+                  <s:tblInd s:w="0" s:type="dxa"/>
+                  <s:tblBorders><s:bottom s:val="single"/></s:tblBorders>
+                  <s:tblCellMar><s:left s:w="108" s:type="dxa"/></s:tblCellMar>
+                </s:tblPr>
+                <s:tblGrid/>
+                <s:tr><s:tc>
+                  <s:tcPr><s:tcBorders><s:bottom s:val="single"/></s:tcBorders></s:tcPr>
+                  <s:tbl><s:tblGrid/><s:tr><s:tc><s:p/></s:tc></s:tr></s:tbl>
+                  <s:p/>
+                </s:tc></s:tr>
+              </s:tbl>
+            </s:body></s:document>
+            """
+        let footnotes = """
+            <footnotes xmlns="\(wordNamespace)">
+              <footnote><tbl><tblPr/><tblGrid/><tr><tc><p/></tc></tr></tbl></footnote>
+            </footnotes>
+            """
+        try writeDocxFixture(in: dir, documentXML: fixture, footnotesXML: footnotes)
+        let pandoc = try writePandocFixture(in: dir, conversion: zipFixtureOutput)
+        let destination = dir.appendingPathComponent("out.docx")
+        try runConversion(markdown: "# Doc", format: .docx, resourceDirectory: nil,
+                          destination: destination, pandoc: pandoc).get()
+
+        let document = try zipXML("word/document.xml", at: destination)
+        try assertGridBorders(in: document, tableCount: 2)
+        let properties = try document.nodes(forXPath: """
+            //*[local-name()='body']/*[local-name()='tbl']/*[local-name()='tblPr']/*
+            """)
+        XCTAssertEqual(properties.compactMap(\.localName), ["tblStyle", "tblInd", "tblBorders", "tblCellMar"])
+        let nestedChildren = try document.nodes(forXPath: "//*[local-name()='tc']/*[local-name()='tbl']/*")
+        XCTAssertEqual(nestedChildren.compactMap(\.localName), ["tblPr", "tblGrid", "tr"])
+        XCTAssertEqual(try document.nodes(forXPath: "//*[local-name()='tcBorders']/*[local-name()='bottom']").count, 1)
+        try assertGridBorders(in: zipXML("word/footnotes.xml", at: destination), tableCount: 1)
+    }
+
+    @MainActor
+    func testInvalidDocxDocumentPartPreservesExistingDestination() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try writeDocxFixture(in: dir, documentXML: "<not-a-document/>")
+        let pandoc = try writePandocFixture(in: dir, conversion: zipFixtureOutput)
+        let destination = dir.appendingPathComponent("out.docx")
+        let sentinel = Data("existing-output-sentinel".utf8)
+        try sentinel.write(to: destination)
+
+        XCTAssertThrowsError(try runConversion(markdown: "# Doc", format: .docx, resourceDirectory: nil,
+            destination: destination, pandoc: pandoc).get())
+        XCTAssertEqual(try Data(contentsOf: destination), sentinel)
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: dir.path).contains {
+            $0.hasPrefix(".md2-converted-")
+        })
     }
 
     @MainActor
@@ -252,6 +336,7 @@ final class PandocConverterTests: XCTestCase {
         let sentinel = Data("existing-output-sentinel".utf8)
         try sentinel.write(to: existing)
         let started = dir.appendingPathComponent("started")
+        try writeDocxFixture(in: dir)
         let pandoc = try writePandocFixture(in: dir, conversion: """
             \(zipFixtureOutput) || exit
             /usr/bin/touch started
@@ -282,6 +367,7 @@ final class PandocConverterTests: XCTestCase {
     func testConcurrentDestinationCreationOrUpdateIsPreserved() throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
+        try writeDocxFixture(in: dir)
         let pandoc = try writePandocFixture(in: dir, conversion: zipFixtureOutput)
         let changed = Data("changed after export started".utf8)
         for previouslyExisted in [true, false] {
@@ -374,7 +460,63 @@ final class PandocConverterTests: XCTestCase {
     }
 
     private var zipFixtureOutput: String {
-        #"/usr/bin/zip -jq "$5" "$1""#
+        #"/bin/cp "$(/usr/bin/dirname "$0")/fixture.docx" "$5""#
+    }
+
+    private var wordNamespace: String {
+        "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    }
+
+    private func writeDocxFixture(in directory: URL, documentXML: String? = nil, footnotesXML: String? = nil) throws {
+        let wordDirectory = directory.appendingPathComponent("word")
+        try FileManager.default.createDirectory(at: wordDirectory, withIntermediateDirectories: false)
+        let xml = documentXML ?? #"<w:document xmlns:w="\#(wordNamespace)"><w:body/></w:document>"#
+        try xml.write(to: wordDirectory.appendingPathComponent("document.xml"), atomically: true, encoding: .utf8)
+        var entries = ["word/document.xml"]
+        if let footnotesXML {
+            try footnotesXML.write(to: wordDirectory.appendingPathComponent("footnotes.xml"),
+                                   atomically: true, encoding: .utf8)
+            entries.append("word/footnotes.xml")
+        }
+        let zip = Process()
+        zip.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        zip.arguments = ["-q", "fixture.docx"] + entries
+        zip.currentDirectoryURL = directory
+        try zip.run()
+        zip.waitUntilExit()
+        XCTAssertEqual(zip.terminationStatus, 0)
+    }
+
+    private func zipXML(_ path: String, at url: URL) throws -> XMLDocument {
+        let unzip = Process()
+        unzip.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        unzip.arguments = ["-p", url.path, path]
+        let output = Pipe()
+        unzip.standardOutput = output
+        try unzip.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        unzip.waitUntilExit()
+        XCTAssertEqual(unzip.terminationStatus, 0)
+        return try XMLDocument(data: data)
+    }
+
+    private func assertGridBorders(in document: XMLDocument, tableCount: Int) throws {
+        let tables = try document.nodes(forXPath: "//*[local-name()='tbl']")
+        XCTAssertEqual(tables.count, tableCount)
+        for table in tables {
+            let grids = try table.nodes(forXPath: "./*[local-name()='tblPr']/*[local-name()='tblBorders']")
+            XCTAssertEqual(grids.count, 1)
+            let grid = try XCTUnwrap(grids.first)
+            let edges = try XCTUnwrap(grid.children as? [XMLElement])
+            XCTAssertEqual(edges.compactMap(\.localName), ["top", "left", "bottom", "right", "insideH", "insideV"])
+            for edge in edges {
+                XCTAssertEqual(edge.uri, wordNamespace)
+                XCTAssertEqual(edge.attribute(forLocalName: "val", uri: wordNamespace)?.stringValue, "single")
+                XCTAssertEqual(edge.attribute(forLocalName: "sz", uri: wordNamespace)?.stringValue, "4")
+                XCTAssertEqual(edge.attribute(forLocalName: "space", uri: wordNamespace)?.stringValue, "0")
+                XCTAssertEqual(edge.attribute(forLocalName: "color", uri: wordNamespace)?.stringValue, "auto")
+            }
+        }
     }
 
     @MainActor

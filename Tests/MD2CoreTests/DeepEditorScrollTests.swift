@@ -72,6 +72,47 @@ struct DeepEditorScrollTests {
         #expect(abs(followY - (lineRect.minY + 0.375 * lineRect.height)) < 1)
     }
 
+    @Test func aProvisionalClipViewCannotConsumeTheRestoredAnchor() async throws {
+        let fixture = try EditorFixture(sectionCount: 40)
+        let provisionalClip = ProvisionalEditorClipView()
+        let host = fixture.host(width: 520, clipView: provisionalClip)
+        let line = MarkdownEditorView.Coordinator.characterRange(
+            ofLine: 123, in: fixture.storage.string as NSString
+        )
+        let anchor = ViewportAnchor(editorPosition: .init(characterIndex: line.location, verticalOffset: 4))
+
+        let appliedBeforeLayout = fixture.apply(anchor, at: host)
+        #expect(!appliedBeforeLayout)
+        #expect(provisionalClip.bounds.minY <= 24)
+
+        var appliedAttempts = 0
+        var settled: ViewportAnchor?
+        host.scrollView.onLayout = { host.coordinator.scheduleAnchorRestore(in: host.scrollView) }
+        host.coordinator.applyAnchorUntilSettled(anchor, in: host.scrollView, onSettled: { settled = $0 }) { anchor, _ in
+            appliedAttempts += 1
+            return fixture.apply(anchor, at: host)
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(appliedAttempts == 0)
+
+        let window = fixture.mount(host)
+        defer {
+            window.contentView = nil
+            host.scrollView.onLayout = nil
+            host.coordinator.cancelAnchorRestore()
+        }
+        for _ in 0..<100 where appliedAttempts == 0 { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(appliedAttempts > 0)
+        #expect(settled == nil, "the mounted clip still rejects the deep offset")
+
+        provisionalClip.canReachAnchor = true
+        host.scrollView.needsLayout = true
+        host.scrollView.layoutSubtreeIfNeeded()
+        for _ in 0..<100 where settled == nil { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(settled == anchor)
+        #expect(abs(provisionalClip.bounds.minY - (fixture.rowTop(at: line.location) + 4)) < 1)
+    }
+
     @Test func bottomClampAndFractionFallbackUseTheExactHeightAfterResizeOrShrink() throws {
         let fixture = try EditorFixture()
         let host = fixture.host(width: 450)
@@ -105,6 +146,17 @@ struct DeepEditorScrollTests {
     }
 }
 
+/// The native clip view can accept a scroll request before the new editor
+/// host's document bounds permit scrolling that far.
+private final class ProvisionalEditorClipView: NSClipView {
+    var canReachAnchor = false
+
+    override func scroll(to newOrigin: NSPoint) {
+        let y = canReachAnchor ? newOrigin.y : min(newOrigin.y, 24)
+        super.scroll(to: NSPoint(x: newOrigin.x, y: y))
+    }
+}
+
 @MainActor
 private final class EditorFixture {
     typealias Host = (scrollView: MarkdownEditorScrollView, coordinator: MarkdownEditorView.Coordinator)
@@ -116,9 +168,9 @@ private final class EditorFixture {
     let storage: NSTextStorage
     let view: MarkdownEditorView
 
-    init() throws {
+    init(sectionCount: Int = 1_100) throws {
         let paragraph = "A bilingual draft with **edits**, 中文自动换行 and meaningful details. "
-        let source = String(repeating: "# Notes\n\n" + String(repeating: paragraph, count: 4) + "\n\n", count: 1_100)
+        let source = String(repeating: "# Notes\n\n" + String(repeating: paragraph, count: 4) + "\n\n", count: sectionCount)
         editor = session.loadTextView(text: source)
         layout = try #require(editor.layoutManager)
         container = try #require(editor.textContainer)
@@ -130,8 +182,9 @@ private final class EditorFixture {
                                   lineSelection: .constant(nil), session: session)
     }
 
-    func host(width: CGFloat) -> Host {
+    func host(width: CGFloat, clipView: NSClipView? = nil) -> Host {
         let scrollView = MarkdownEditorScrollView(frame: NSRect(x: 0, y: 0, width: width, height: 290))
+        if let clipView { scrollView.contentView = clipView }
         let coordinator = view.makeCoordinator()
         session.host(in: scrollView, coordinator: coordinator)
         // Apply distinct glyph metrics for headers and inline emphasis, as a
@@ -150,7 +203,18 @@ private final class EditorFixture {
                    focus: false, initializesCaret: initializesCaret)
     }
 
+    func mount(_ host: Host) -> NSWindow {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: host.scrollView.frame, styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.contentView = host.scrollView
+        return window
+    }
+
     func restore(_ anchor: ViewportAnchor, at host: Host) async throws {
+        let window = mount(host)
+        defer { window.contentView = nil }
+
         var settled = false
         host.coordinator.onAnchorLineChange = { _, drivesPreviewSync in settled = drivesPreviewSync }
         host.coordinator.applyAnchorUntilSettled(anchor, in: host.scrollView) { [self] _, _ in

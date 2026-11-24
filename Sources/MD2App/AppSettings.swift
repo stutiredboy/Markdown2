@@ -410,7 +410,7 @@ enum AppLanguage: String, CaseIterable, Identifiable {
 }
 
 enum L10nKey: String, CaseIterable, Sendable {
-    case typography, editorFont, readingFont, fontSize, readingWidth, zoomIn, zoomOut, resetZoom, zoom
+    case typography, editorFont, readingFont, fontSize, readingWidth, readingWidthHelp, zoomIn, zoomOut, resetZoom, zoom
     case fontSystem, fontSerif, fontMonospaced, readingNarrow, readingComfortable, readingWide, readingFull
     case selectionStats
     case new
@@ -665,6 +665,7 @@ enum L10n {
     private static let english: [L10nKey: String] = [
         .typography: "Typography", .editorFont: "Editor Font", .readingFont: "Reading Font",
         .fontSize: "Base Font Size", .readingWidth: "Reading Width", .zoom: "Zoom",
+        .readingWidthHelp: "Change the width of the preview’s reading column.",
         .zoomIn: "Zoom In", .zoomOut: "Zoom Out", .resetZoom: "Actual Size",
         .fontSystem: "System", .fontSerif: "Serif", .fontMonospaced: "Monospaced",
         .readingNarrow: "Narrow", .readingComfortable: "Comfortable", .readingWide: "Wide", .readingFull: "Full Width",
@@ -1074,6 +1075,7 @@ enum L10n {
     private static let zhHans: [L10nKey: String] = [
         .typography: "缩放与排版", .editorFont: "编辑字体", .readingFont: "阅读字体",
         .fontSize: "基础字号", .readingWidth: "阅读宽度", .zoom: "缩放",
+        .readingWidthHelp: "调整预览正文的宽度。",
         .zoomIn: "放大", .zoomOut: "缩小", .resetZoom: "实际大小",
         .fontSystem: "系统字体", .fontSerif: "衬线字体", .fontMonospaced: "等宽字体",
         .readingNarrow: "窄", .readingComfortable: "适中", .readingWide: "宽", .readingFull: "全宽",

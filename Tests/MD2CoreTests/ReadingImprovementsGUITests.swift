@@ -48,7 +48,9 @@ final class ReadingImprovementsGUITests: XCTestCase {
     }
 
     @MainActor func testReadSelectionAndLiveTypography() throws {
-        let host = ReadingWindow("# 标题\n\n中文 **正文** [链接](https://example.com/path) ![image](missing.png)", mode: .read)
+        let contentState = DocumentWindowContentState()
+        let host = ReadingWindow("# 标题\n\n中文 **正文** [链接](https://example.com/path) ![image](missing.png)",
+                                 mode: .read, showsOutline: false, contentState: contentState)
         defer { host.close() }
         let webView = try host.preview()
         let coordinator = try XCTUnwrap(webView.navigationDelegate as? MarkdownPreviewView.Coordinator)
@@ -80,6 +82,37 @@ final class ReadingImprovementsGUITests: XCTestCase {
         host.spin(until: { selection == nil })
         XCTAssertNil(selection)
         XCTAssertFalse(host.store.rendered.html.contains("md2-typography"))
+
+        // Typography and viewport size can change before the DOM relayout.
+        // Check the post-layout measurement as well as the width setting itself.
+        host.settings.typography = TypographySettings()
+        host.spin(until: { (try? evaluate("getComputedStyle(document.querySelector('main')).maxWidth", in: webView)) as? String == "800px" })
+
+        // Opening the folder outline stops measuring even though CSS and the
+        // current preview page are unchanged. Hiding it reactivates the same page.
+        let sidebar = FolderSidebarState(browserView: NSView(), focusBrowser: {})
+        sidebar.section = .outline
+        contentState.folderSidebar = sidebar
+        let observerType = "typeof window.__md2MeasureOutlineMargin"
+        host.spin(until: { (try? evaluate(observerType, in: webView)) as? String == "undefined" })
+        XCTAssertNil(coordinator.onOutlineMarginChange)
+        XCTAssertEqual(try evaluate(observerType, in: webView) as? String, "undefined")
+        sidebar.isVisible = false
+        host.spin(until: { (try? evaluate(observerType, in: webView)) as? String == "function" })
+        XCTAssertNotNil(coordinator.onOutlineMarginChange)
+        XCTAssertEqual(try evaluate(observerType, in: webView) as? String, "function")
+
+        var margins: [CGFloat] = []
+        coordinator.onOutlineMarginChange = { margins.append($0) }
+        coordinator.observeOutlineMargin(in: webView)
+        host.spin(until: { !margins.isEmpty })
+        let gutter = try XCTUnwrap(margins.first)
+        XCTAssertGreaterThanOrEqual(gutter, 220)
+        // A long unbroken token can reach beyond the border box of <main>.
+        // Rendering it should reserve that space for the document.
+        _ = try evaluate("document.querySelector('main').append(document.createTextNode('W'.repeat(400)));", in: webView)
+        host.spin(until: { margins.count >= 2 })
+        XCTAssertLessThan(try XCTUnwrap(margins.dropFirst().first), 220)
     }
 
     @MainActor func testOutlinePersistsAfterJumpAndFollowsBothSurfaces() throws {
@@ -464,14 +497,16 @@ final class ReadingImprovementsGUITests: XCTestCase {
     let window: NSWindow
     let hosting: NSHostingView<ContentView>
 
-    init(_ text: String, mode: EditorMode = .write) {
+    init(_ text: String, mode: EditorMode = .write, showsOutline: Bool = true,
+         contentState: DocumentWindowContentState = DocumentWindowContentState()) {
         _ = NSApplication.shared
         settings = AppSettings(defaults: UserDefaults(suiteName: suite)!)
         settings.language = .english
         settings.newDocumentMode = mode
+        settings.showsOutlineByDefault = showsOutline
         store.text = text
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1300, height: 700), styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        hosting = NSHostingView(rootView: ContentView(document: store, settings: settings, onOpen: {}))
+        hosting = NSHostingView(rootView: ContentView(document: store, settings: settings, onOpen: {}, contentState: contentState))
         super.init()
         window.isReleasedWhenClosed = false
         window.delegate = self

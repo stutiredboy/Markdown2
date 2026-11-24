@@ -73,6 +73,9 @@ final class MenuLanguageGUITests: XCTestCase {
     func testLanguageChangeRetitlesTheCommandsWithoutARelaunch() throws {
         let pid = try launch()
         let english = try waitForCommandTitles(.english, pid: pid)
+        try waitForReadingWidth(.comfortable, language: .english, pid: pid)
+        try selectReadingWidth(.narrow, language: .english, pid: pid)
+        try selectReadingWidth(.wide, language: .english, pid: pid)
 
         try changeLanguage(toChoice: 2, pid: pid)
 
@@ -85,6 +88,9 @@ final class MenuLanguageGUITests: XCTestCase {
 
         try closeSettings(pid: pid)
         try waitForCommandTitles(.zhHans, pid: pid)
+        try waitForReadingWidth(.wide, language: .zhHans, pid: pid)
+        try selectReadingWidth(.full, language: .zhHans, pid: pid)
+        try selectReadingWidth(.comfortable, language: .zhHans, pid: pid)
         try assertOpenedFileMenuShowsCommands(.zhHans, pid: pid)
     }
 
@@ -100,6 +106,54 @@ final class MenuLanguageGUITests: XCTestCase {
         try changeLanguage(toChoice: 1, pid: pid)
 
         try waitForCommandTitles(.english, pid: pid)
+    }
+
+    private func readingWidthItems(language: AppLanguage, pid: pid_t) throws -> [AXUIElement] {
+        let zoomIn = L10n.text(.zoomIn, language: language)
+        let title = L10n.text(.readingWidth, language: language)
+        let menus = Self.children(of: try menuBar(pid: pid)).flatMap(Self.children(of:))
+        let view = try XCTUnwrap(menus.first { menu in
+            Self.children(of: menu).contains { Self.title(of: $0) == zoomIn }
+        }, "View has no localized Zoom In command")
+        let width = try XCTUnwrap(Self.children(of: view).first { Self.title(of: $0) == title },
+                                  "View has no localized Reading Width submenu")
+        let items = Self.children(of: width).flatMap(Self.children(of:)).filter { !Self.title(of: $0).isEmpty }
+        XCTAssertEqual(items.map(Self.title(of:)), ReadingWidth.allCases.map { L10n.text($0.label, language: language) })
+        return items
+    }
+
+    private func waitForReadingWidth(_ width: ReadingWidth, language: AppLanguage, pid: pid_t) throws {
+        let label = L10n.text(width.label, language: language)
+        let deadline = Date().addingTimeInterval(5)
+        var marked: [String] = []
+        repeat {
+            marked = try readingWidthItems(language: language, pid: pid)
+                .filter { Self.stringValue(kAXMenuItemMarkCharAttribute, of: $0)?.isEmpty == false }
+                .map(Self.title(of:))
+            if marked == [label] { return }
+            usleep(100_000)
+        } while Date() < deadline
+        XCTAssertEqual(marked, [label])
+    }
+
+    private func selectReadingWidth(_ width: ReadingWidth, language: AppLanguage, pid: pid_t) throws {
+        let label = L10n.text(width.label, language: language)
+        let item = try XCTUnwrap(readingWidthItems(language: language, pid: pid).first { Self.title(of: $0) == label })
+        AXUIElementSetMessagingTimeout(item, 2)
+        XCTAssertEqual(AXUIElementPerformAction(item, kAXPressAction as CFString), .success)
+        try waitForReadingWidth(width, language: language, pid: pid)
+
+        let deadline = Date().addingTimeInterval(5)
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: Self.guardBundleIdentifier))
+        var savedWidth: ReadingWidth?
+        repeat {
+            if let data = defaults.data(forKey: "MD2.Typography") {
+                savedWidth = try JSONDecoder().decode(TypographySettings.self, from: data).readingWidth
+                if savedWidth == width { return }
+            }
+            usleep(100_000)
+        } while Date() < deadline
+        XCTAssertEqual(savedWidth, width, "selecting \(label) did not write the shared typography setting")
     }
 
     /// Exercises the File menu in the running app. CI runs once before and
@@ -583,10 +637,10 @@ final class MenuLanguageGUITests: XCTestCase {
         [
             .new, .open, .openRecent, .clearMenu, .save, .exportTo, .close, .print,
             .formatMenu, .paragraphMenu,
-            .zoomIn, .zoomOut, .resetZoom,
+            .zoomIn, .zoomOut, .resetZoom, .readingWidth,
             .mode, .write, .read, .sideBySide, .typewriterScrolling,
             .find, .findReplace, .findNext, .findPrevious
-        ] + MarkdownFormatCommand.items.map(\.title)
+        ] + ReadingWidth.allCases.map(\.label) + MarkdownFormatCommand.items.map(\.title)
     }
 
     private struct MenuEntry: Equatable {

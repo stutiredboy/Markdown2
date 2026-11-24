@@ -39,13 +39,17 @@ enum ReadingWidth: String, Codable, CaseIterable, Identifiable, Sendable {
         case .full: .readingFull
         }
     }
-    var css: String {
+    var maximumWidthInEms: CGFloat? {
         switch self {
-        case .narrow: "40em"
-        case .comfortable: "50em"
-        case .wide: "68.75em"
-        case .full: "none"
+        case .narrow: 40
+        case .comfortable: 50
+        case .wide: 68.75
+        case .full: nil
         }
+    }
+
+    var css: String {
+        maximumWidthInEms.map { String(format: "%gem", Double($0)) } ?? "none"
     }
 }
 

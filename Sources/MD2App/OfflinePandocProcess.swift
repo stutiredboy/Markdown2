@@ -48,19 +48,28 @@ enum OfflinePandocProcess {
     /// A missing/rejected wrapper fails closed, including --version probes.
     static func run(pandoc: URL, arguments: [String], directory: URL?, timeout: TimeInterval,
                     job: PandocConversionJob = PandocConversionJob(),
-                    sandbox: URL = sandboxURL) -> Result<String, Failure> {
+                    sandbox: URL = sandboxURL,
+                    standardOutput: FileHandle? = nil) -> Result<String, Failure> {
         guard FileManager.default.isExecutableFile(atPath: sandbox.path) else { return .failure(.confinementUnavailable) }
         guard !job.isCanceled else { return .failure(.canceled) }
         let process = Process()
         process.executableURL = sandbox
         process.arguments = ["-p", profile, pandoc.path] + arguments
         process.currentDirectoryURL = directory
-        let stdout = Pipe(), stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
         let captureError = Failure.launchFailed("Could not capture converter output.")
-        guard let output = BoundedProcessOutput(stdout.fileHandleForReading) else { return .failure(captureError) }
-        defer { output.stop() }
+        let output: BoundedProcessOutput?
+        if let standardOutput {
+            process.standardOutput = standardOutput
+            output = nil
+        } else {
+            let stdout = Pipe()
+            process.standardOutput = stdout
+            guard let capture = BoundedProcessOutput(stdout.fileHandleForReading) else { return .failure(captureError) }
+            output = capture
+        }
+        defer { output?.stop() }
+        let stderr = Pipe()
+        process.standardError = stderr
         guard let errors = BoundedProcessOutput(stderr.fileHandleForReading) else { return .failure(captureError) }
         defer { errors.stop() }
         let finished = DispatchSemaphore(value: 0)
@@ -79,7 +88,7 @@ enum OfflinePandocProcess {
         if job.isCanceled { return .failure(.canceled) }
         if timedOut { return .failure(.timedOut) }
         guard process.terminationStatus == 0 else { return .failure(.failed(errors.text)) }
-        return .success(output.text)
+        return .success(output?.text ?? "")
     }
 }
 

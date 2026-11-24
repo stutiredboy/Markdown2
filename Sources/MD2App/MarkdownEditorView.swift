@@ -180,7 +180,10 @@ struct MarkdownEditorView: NSViewRepresentable {
         let clipView = scrollView.contentView
         clipView.postsBoundsChangedNotifications = true
         coordinator.observe(scrollView: scrollView)
-        scrollView.onLayout = { [weak coordinator] in coordinator?.scheduleSelectionReveal() }
+        scrollView.onLayout = { [weak coordinator, weak scrollView] in
+            coordinator?.scheduleSelectionReveal()
+            if let scrollView { coordinator?.scheduleAnchorRestore(in: scrollView) }
+        }
         coordinator.requestSelectionReveal(in: textView)
 
         viewportReader?.capture = { [weak scrollView] in
@@ -305,19 +308,24 @@ struct MarkdownEditorView: NSViewRepresentable {
             }
         }
 
+        if jumpAnchor == nil { context.coordinator.cancelAnchorRestore() }
         if let anchor = jumpAnchor {
+            let coordinator = context.coordinator
+            let requestedLine = jumpLine
+            let requestedFraction = jumpFraction
             var initializesCaret = context.coordinator.initializesCaretFromAnchor
             context.coordinator.initializesCaretFromAnchor = false
-            context.coordinator.applyAnchorUntilSettled(anchor, in: scrollView) { anchor, scrollView in
+            coordinator.applyAnchorUntilSettled(anchor, in: scrollView, onSettled: { settled in
+                // An old host or a superseded request cannot clear a newer jump.
+                guard self.jumpAnchor == settled else { return }
+                self.jumpAnchor = nil
+                if self.jumpLine == requestedLine { self.jumpLine = nil }
+                if self.jumpFraction == requestedFraction { self.jumpFraction = nil }
+            }) { anchor, scrollView in
                 let applied = apply(anchor: anchor, in: scrollView, textView: textView,
                                     focus: focusOnProgrammaticScroll, initializesCaret: initializesCaret)
                 if applied { initializesCaret = false }
                 return applied
-            }
-            DispatchQueue.main.async {
-                self.jumpAnchor = nil
-                self.jumpLine = nil
-                self.jumpFraction = nil
             }
         } else if let jumpLine {
             let targetLine = jumpLine
@@ -410,6 +418,7 @@ struct MarkdownEditorView: NSViewRepresentable {
     /// editor re-hosts it.
     static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
         coordinator.cancelHostedRegexWork()
+        coordinator.cancelAnchorRestore()
         coordinator.session.unhost(from: scrollView, coordinator: coordinator)
     }
 
@@ -433,7 +442,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         ))
         scrollView.contentView.scroll(to: NSPoint(x: 0, y: targetY))
         scrollView.reflectScrolledClipView(scrollView.contentView)
-        return true
+        return abs(scrollView.contentView.bounds.minY - targetY) <= 1
     }
 
     private func scroll(to line: Int, in textView: NSTextView, focus: Bool, selectLine: Bool) -> Bool {
@@ -497,7 +506,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         guard let targetY = editorClipTargetY(for: offset, in: scrollView) else { return false }
         scrollView.contentView.scroll(to: NSPoint(x: 0, y: targetY))
         scrollView.reflectScrolledClipView(scrollView.contentView)
-        return true
+        return abs(scrollView.contentView.bounds.minY - targetY) <= 1
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -1427,9 +1436,17 @@ struct MarkdownEditorView: NSViewRepresentable {
             }
         }
 
-        /// The mode-switch anchor currently being settled, used to dedupe
-        /// repeated `updateNSView` passes and cancel a superseded settle loop.
-        private var settlingAnchor: ViewportAnchor?
+        private struct ViewportRestore {
+            var anchor: ViewportAnchor
+            var onSettled: (ViewportAnchor) -> Void
+            var apply: (ViewportAnchor, NSScrollView) -> Bool
+            var lastBounds: NSRect?
+            var attempts = 0
+        }
+
+        private var viewportRestore: ViewportRestore?
+        private var isViewportRestoreScheduled = false
+        private var settlingAnchor: ViewportAnchor? { viewportRestore?.anchor }
 
         /// Applies a mode-switch anchor, then re-applies it across runloop
         /// turns until the visible bounds and applied offset stop changing.
@@ -1442,56 +1459,66 @@ struct MarkdownEditorView: NSViewRepresentable {
         @MainActor func applyAnchorUntilSettled(
             _ anchor: ViewportAnchor,
             in scrollView: NSScrollView,
+            onSettled: @escaping (ViewportAnchor) -> Void = { _ in },
             apply: @escaping (ViewportAnchor, NSScrollView) -> Bool
         ) {
             guard settlingAnchor != anchor else { return }
-            settlingAnchor = anchor
-            isProgrammaticScroll = true
-            var attempts = 0
-            var lastBounds: NSRect?
+            viewportRestore = ViewportRestore(anchor: anchor, onSettled: onSettled, apply: apply)
+            scheduleAnchorRestore(in: scrollView)
+        }
 
-            func step() {
-                guard self.settlingAnchor == anchor, self.session.isHosted(by: self),
-                      scrollView.documentView === self.session.textView else { return }
-                attempts += 1
-
-                // While the freshly mounted scroll view is being sized, a
-                // transient negative clip origin can get baked into the
-                // document view's frame origin, silently shifting all content
-                // out of the scrollable region. Re-base it before scrolling.
-                if let documentView = scrollView.documentView, documentView.frame.origin.y != 0 {
-                    documentView.setFrameOrigin(NSPoint(x: documentView.frame.origin.x, y: 0))
-                }
-
-                var appliedNow = false
-                if scrollView.contentView.bounds.height > 0 {
-                    appliedNow = apply(anchor, scrollView)
-                }
-                let bounds = scrollView.contentView.bounds
-                // Stable only when the scroll applied against unchanged
-                // geometry *and* the viewport actually shows content — an
-                // empty visible rect means the offset points into the void.
-                let showsContent = !(scrollView.documentView?.visibleRect.isEmpty ?? true)
-                let isStable = appliedNow && showsContent && bounds == lastBounds
-                lastBounds = bounds
-
-                if (isStable && attempts >= 2) || attempts >= 12 {
-                    self.settlingAnchor = nil
-                    self.isProgrammaticScroll = false
-                    if let line = Self.topVisibleLine(in: scrollView) {
-                        // The once-per-mode-switch settle: drive the preview so
-                        // the two panes open in alignment in Side by Side.
-                        self.onAnchorLineChange(line, true)
-                    }
-                    if let pending = self.pendingLineSelection {
-                        self.pendingLineSelection = nil
-                        self.selectSourceLine(pending.line, in: pending.textView)
-                    }
-                } else {
-                    DispatchQueue.main.async(execute: step)
-                }
+        @MainActor func scheduleAnchorRestore(in scrollView: NSScrollView) {
+            guard viewportRestore != nil, !isViewportRestoreScheduled else { return }
+            isViewportRestoreScheduled = true
+            DispatchQueue.main.async { [weak self, weak scrollView] in
+                guard let self else { return }
+                self.isViewportRestoreScheduled = false
+                if let scrollView { self.restoreAnchor(in: scrollView) }
             }
-            step()
+        }
+
+        @MainActor func cancelAnchorRestore() {
+            guard viewportRestore != nil else { return }
+            viewportRestore = nil
+            pendingLineSelection = nil
+            isProgrammaticScroll = false
+        }
+
+        @MainActor private func restoreAnchor(in scrollView: NSScrollView) {
+            // AppKit can clamp a valid deep offset while the new host still
+            // has the 1pt bootstrap frame. Keep the request for its layout.
+            guard var restore = viewportRestore, session.isHosted(by: self),
+                  let documentView = scrollView.documentView, documentView === session.textView,
+                  scrollView.window != nil, scrollView.contentView.bounds.height > 1,
+                  scrollView.contentView.bounds.width > 0 else { return }
+            isProgrammaticScroll = true
+            if documentView.frame.origin.y != 0 {
+                documentView.setFrameOrigin(NSPoint(x: documentView.frame.origin.x, y: 0))
+            }
+
+            let applied = restore.apply(restore.anchor, scrollView)
+            let bounds = scrollView.contentView.bounds
+            if applied, !documentView.visibleRect.isEmpty, bounds == restore.lastBounds {
+                viewportRestore = nil
+                isProgrammaticScroll = false
+                restore.onSettled(restore.anchor)
+                if let line = Self.topVisibleLine(in: scrollView) { onAnchorLineChange(line, true) }
+                if let pending = pendingLineSelection {
+                    pendingLineSelection = nil
+                    selectSourceLine(pending.line, in: pending.textView)
+                }
+                return
+            }
+
+            restore.lastBounds = applied ? bounds : nil
+            restore.attempts += 1
+            if restore.attempts >= 12 {
+                // Yield until layout or styling makes more geometry available.
+                restore.attempts = 0
+                isProgrammaticScroll = false
+            }
+            viewportRestore = restore
+            if restore.attempts > 0 { scheduleAnchorRestore(in: scrollView) }
         }
 
         /// Runs `body` (a programmatic scroll) with transient anchor reporting
@@ -1889,7 +1916,9 @@ struct MarkdownEditorView: NSViewRepresentable {
             }, willApply: { [weak self] in
                 self?.isApplyingStyle = true
             }, didApply: { [weak self] in
-                self?.isApplyingStyle = false
+                guard let self else { return }
+                self.isApplyingStyle = false
+                if let scrollView = self.scrollView { self.scheduleAnchorRestore(in: scrollView) }
             })
             waitForRevealStyling()
         }

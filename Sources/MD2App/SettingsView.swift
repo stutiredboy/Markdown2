@@ -85,9 +85,8 @@ struct SettingsView: View {
                 Stepper(value: $settings.typography.fontSize, in: 12...32, step: 1) {
                     Text("\(settings.text(.fontSize)): \(Int(settings.typography.fontSize)) pt")
                 }
-                Picker(settings.text(.readingWidth), selection: $settings.typography.readingWidth) {
-                    ForEach(ReadingWidth.allCases) { width in Text(settings.text(width.label)).tag(width) }
-                }
+                ReadingWidthPicker(settings: settings)
+                    .accessibilityIdentifier("settings-reading-width")
                 HStack {
                     Text("\(settings.text(.zoom)): \(settings.typography.zoomPercent)%")
                     Spacer()
