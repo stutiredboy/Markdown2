@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import signal
 import subprocess
 import tempfile
 import unittest
@@ -41,7 +42,7 @@ class PackageAppTests(unittest.TestCase):
         self.install.mkdir()
         (self.install / "original").write_text("keep installed app")
         wrapper = """#!/usr/bin/env python3
-import json, os, pathlib, shutil, sys
+import json, os, pathlib, shutil, signal, subprocess, sys
 name = pathlib.Path(sys.argv[0]).name
 with open(os.environ['MD2_TEST_COMMAND_LOG'], 'a') as log:
     log.write(json.dumps([name] + sys.argv[1:]) + '\\n')
@@ -49,17 +50,29 @@ if name == 'ditto':
     if os.environ.get('MD2_TEST_FAIL_COPY') == '1':
         sys.exit(1)
     shutil.copytree(sys.argv[1], sys.argv[2], dirs_exist_ok=True)
+if name == 'mv':
+    source, destination = map(pathlib.Path, sys.argv[1:])
+    if os.environ.get('MD2_TEST_FAIL_PUBLISH') == '1' and source.name == 'New.app':
+        sys.exit(1)
+    if os.environ.get('MD2_TEST_FAIL_RESTORE') == '1' and source.name == 'Previous.app':
+        sys.exit(1)
+    subprocess.run(['/bin/mv', source, destination], check=True)
+    if destination.name == 'Previous.app' and (interrupt := os.environ.get('MD2_TEST_INTERRUPT')):
+        os.kill(os.getppid(), getattr(signal, interrupt))
 if name == 'swift' and len(sys.argv) > 1 and pathlib.Path(sys.argv[1]).name == 'SetDefaultMarkdownHandler.swift':
     if os.environ.get('MD2_TEST_FAIL_DEFAULT') == '1':
         print('injected default-handler failure', file=sys.stderr)
         sys.exit(19)
 """
-        for tool in ("swift", "codesign", "ditto", "lsregister"):
+        for tool in ("swift", "codesign", "ditto", "lsregister", "mv"):
             destination = self.bin / tool
             destination.write_text(wrapper)
             destination.chmod(0o755)
 
-    def run_package(self, *arguments, ci=False, fail_copy=False, fail_default=False):
+    def run_package(
+        self, *arguments, ci=False, fail_copy=False, fail_default=False,
+        fail_publish=False, fail_restore=False, interrupt=None,
+    ):
         env = os.environ.copy()
         for key in ("CI", "GITHUB_REF_NAME", "MARKDOWN2_CODESIGN_IDENTITY"):
             env.pop(key, None)
@@ -75,6 +88,12 @@ if name == 'swift' and len(sys.argv) > 1 and pathlib.Path(sys.argv[1]).name == '
             env["MD2_TEST_FAIL_COPY"] = "1"
         if fail_default:
             env["MD2_TEST_FAIL_DEFAULT"] = "1"
+        if fail_publish:
+            env["MD2_TEST_FAIL_PUBLISH"] = "1"
+        if fail_restore:
+            env["MD2_TEST_FAIL_RESTORE"] = "1"
+        if interrupt:
+            env["MD2_TEST_INTERRUPT"] = interrupt.name
         return subprocess.run(
             ["bash", "Scripts/package_app.sh", *arguments], cwd=self.root,
             env=env, text=True, capture_output=True, timeout=30,
@@ -92,6 +111,21 @@ if name == 'swift' and len(sys.argv) > 1 and pathlib.Path(sys.argv[1]).name == '
     def default_commands(self):
         return [row for row in self.commands() if row[0] == "swift" and row[1] != "build"]
 
+    def assert_document_types(self, bundle, markdown_rank):
+        markdown, aliases, plain = bundle["CFBundleDocumentTypes"]
+        extensions = ["md", "markdown", "mdown", "mkd"]
+        self.assertEqual(markdown["CFBundleTypeExtensions"], extensions)
+        self.assertEqual(markdown["LSItemContentTypes"], ["net.daringfireball.markdown", "public.markdown"])
+        self.assertEqual(markdown["LSHandlerRank"], markdown_rank)
+        self.assertEqual(aliases["CFBundleTypeExtensions"], ["mdown", "mkd"])
+        self.assertNotIn("LSItemContentTypes", aliases)
+        self.assertEqual(aliases["LSHandlerRank"], "Alternate")
+        self.assertEqual(plain["LSItemContentTypes"], ["public.plain-text"])
+        self.assertEqual(plain["LSHandlerRank"], "Alternate")
+        imported, = bundle["UTImportedTypeDeclarations"]
+        self.assertEqual(imported["UTTypeIdentifier"], "net.daringfireball.markdown")
+        self.assertEqual(imported["UTTypeTagSpecification"]["public.filename-extension"], extensions)
+
     def test_default_build_preserves_installation_and_file_associations(self):
         result = self.run_package()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -99,6 +133,7 @@ if name == 'swift' and len(sys.argv) > 1 and pathlib.Path(sys.argv[1]).name == '
         self.assertFalse(any(row[0] in ("ditto", "lsregister") for row in self.commands()))
         self.assertEqual(self.default_commands(), [])
         self.assertEqual(self.bundle()["CFBundleIdentifier"], "dev.codex.md2.development")
+        self.assert_document_types(self.bundle(), "Alternate")
 
     def test_release_build_preserves_distributed_identity_and_has_no_install_side_effects(self):
         result = self.run_package("--release", ci=True)
@@ -106,6 +141,7 @@ if name == 'swift' and len(sys.argv) > 1 and pathlib.Path(sys.argv[1]).name == '
         self.assertEqual(self.bundle()["CFBundleIdentifier"], "dev.codex.md2")
         self.assertEqual(self.bundle()["CFBundleShortVersionString"], "1.2.3")
         self.assertEqual(self.bundle()["LSMinimumSystemVersion"], "15.0")
+        self.assert_document_types(self.bundle(), "Owner")
         self.assertTrue((self.install / "original").exists())
         self.assertFalse(any(row[0] in ("ditto", "lsregister") for row in self.commands()))
         self.assertEqual(self.default_commands(), [])
@@ -116,6 +152,7 @@ if name == 'swift' and len(sys.argv) > 1 and pathlib.Path(sys.argv[1]).name == '
         self.assertTrue((self.install / "Contents/Info.plist").exists())
         self.assertTrue(any(row[0] == "ditto" for row in self.commands()))
         self.assertEqual(self.default_commands(), [])
+        self.assertEqual(list(self.root.glob(".md2-install.*")), [])
 
     def test_set_default_requires_explicit_install_before_build(self):
         result = self.run_package("--set-default")
@@ -170,6 +207,31 @@ if name == 'swift' and len(sys.argv) > 1 and pathlib.Path(sys.argv[1]).name == '
         self.assertTrue((self.install / "original").exists())
         self.assertFalse(any(row[0] == "lsregister" for row in self.commands()))
         self.assertEqual(list(self.root.glob(".md2-install.*")), [])
+
+    def test_failed_install_publish_restores_existing_app_and_cleans_staging(self):
+        result = self.run_package("--install", str(self.install), fail_publish=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue((self.install / "original").exists())
+        self.assertFalse(any(row[0] == "lsregister" for row in self.commands()))
+        self.assertEqual(list(self.root.glob(".md2-install.*")), [])
+
+    def test_failed_restore_preserves_the_backup_and_reports_its_path(self):
+        result = self.run_package("--install", str(self.install), fail_publish=True, fail_restore=True)
+        self.assertNotEqual(result.returncode, 0)
+        stages = list(self.root.glob(".md2-install.*"))
+        self.assertEqual(len(stages), 1)
+        previous = stages[0] / "Previous.app"
+        self.assertTrue((previous / "original").exists())
+        self.assertIn(str(previous.resolve()), result.stderr)
+
+    def test_install_signals_restore_existing_app_and_clean_staging(self):
+        for interrupt in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+            with self.subTest(interrupt=interrupt):
+                result = self.run_package("--install", str(self.install), interrupt=interrupt)
+                self.assertEqual(result.returncode, 128 + interrupt, result.stderr)
+                self.assertTrue((self.install / "original").exists())
+                self.assertEqual(list(self.root.glob(".md2-install.*")), [])
+        self.assertFalse(any(row[0] == "lsregister" for row in self.commands()))
 
     def test_install_refuses_symlink_destination(self):
         alias = self.root / "Alias.app"

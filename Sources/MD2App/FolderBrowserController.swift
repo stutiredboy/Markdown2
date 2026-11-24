@@ -20,6 +20,7 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
     private let onToggleFavorite: () -> Void
     private let scan: @Sendable (FolderIndex.Root) throws -> FolderIndex.Snapshot
     private let onIndexInvalidated: () -> Void
+    private let onIndexChanged: () -> Void
     private let onOpen: OpenDocument
 
     private let search = NSSearchField()
@@ -64,6 +65,7 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
         remoteImages: FolderRemoteImages? = nil,
         scan: @escaping @Sendable (FolderIndex.Root) throws -> FolderIndex.Snapshot = { try FolderIndex.scan($0) },
         onIndexInvalidated: @escaping () -> Void = {},
+        onIndexChanged: @escaping () -> Void = {},
         onOpen: @escaping OpenDocument
     ) {
         self.root = root
@@ -73,6 +75,7 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
         self.onToggleFavorite = onToggleFavorite
         self.scan = scan
         self.onIndexInvalidated = onIndexInvalidated
+        self.onIndexChanged = onIndexChanged
         self.onOpen = onOpen
         super.init()
         configureContents()
@@ -449,6 +452,7 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
         searchIndex = snapshot?.files.map(SearchMatch.init(file:)) ?? []
         indexedPaths = Set(snapshot?.files.map { $0.url.path } ?? [])
         reloadRows(selecting: selection)
+        onIndexChanged()
     }
 
     func controlTextDidChange(_ notification: Notification) {

@@ -6,7 +6,7 @@ import SwiftUI
 @MainActor
 final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let settings = AppSettings()
-    let attachmentCommandState = AttachmentCommandState()
+    let windowCommandState = WindowCommandState()
     let pasteCommandState = MarkdownPasteCommandState()
 
     /// Recent-documents list (persists across launches). Noted on every
@@ -32,6 +32,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Re-renders open documents when a setting changes. The menu commands need
     /// no help from here: `AppCommands` observes `settings` itself.
     private var settingsObservation: AnyCancellable?
+    private var documentSubmenuObservation: AnyCancellable?
     private var modeShortcutObservation: AnyCancellable?
     /// Shortcuts that have been registered as mode shortcuts during this run.
     /// Consuming stale entries here keeps an old binding from doing anything
@@ -42,10 +43,18 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         super.init()
         let notifications = NotificationCenter.default
         for name in [NSMenu.didAddItemNotification, NSMenu.didChangeItemNotification] {
-            notifications.addObserver(self, selector: #selector(updateFavoriteFoldersMenuAccessibility),
+            notifications.addObserver(self, selector: #selector(nativeMenuItemDidChange),
                                       name: name, object: nil)
         }
-        attachmentCommandState.observeCurrentDocument { [weak self] in self?.currentDocumentStore }
+        windowCommandState.observe { [weak self] in
+            self?.currentWindowCommandContext ?? .init()
+        }
+        documentSubmenuObservation = windowCommandState.$context
+            .map { $0.document != nil }
+            .removeDuplicates()
+            // Read the committed state in case changing a native item posts another notification.
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.refreshDocumentSubmenus() }
         // Read before Finder can deliver openURLs and create this session's records.
         do { pendingRecoverySnapshots = try recoveryRepository.load() }
         catch { recoveryReadFailed = true }
@@ -69,12 +78,34 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
                 self.folderBrowser?.updateLocalizedText()
                 self.folder?.preview?.updateTabTitle()
+                self.refreshDocumentSubmenus()
             }
         }
     }
 
-    @objc private func updateFavoriteFoldersMenuAccessibility(_ notification: Notification) {
+    @objc private func nativeMenuItemDidChange(_ notification: Notification) {
         FavoriteFoldersMenu.updateNativeAccessibility(notification, settings: settings)
+        guard let mainMenu = NSApp.mainMenu,
+              let menu = notification.object as? NSMenu, menu.supermenu === mainMenu,
+              let index = notification.userInfo?["NSMenuItemIndex"] as? Int,
+              let item = menu.item(at: index) else { return }
+        updateDocumentSubmenu(item)
+    }
+
+    private func refreshDocumentSubmenus() {
+        for item in NSApp.mainMenu?.items ?? [] {
+            item.submenu?.items.forEach(updateDocumentSubmenu)
+        }
+    }
+
+    /// SwiftUI leaves the generated NSMenuItem enabled when `.disabled` applies
+    /// to a Menu. Synchronize the two headers without replacing their submenus.
+    private func updateDocumentSubmenu(_ item: NSMenuItem) {
+        let enabled = windowCommandState.context.document != nil
+        guard item.hasSubmenu, item.isEnabled != enabled,
+              item.title == settings.text(.exportTo) || item.title == settings.text(.tableOperations)
+        else { return }
+        item.isEnabled = enabled
     }
 
     /// The document store backing the frontmost window. Menu commands such as
@@ -88,6 +119,15 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if let match = documentWindows.first(where: { $0.window == mainWindow }) { return match.store }
         }
         return documentWindows.last?.store
+    }
+
+    private var currentWindowCommandContext: WindowCommandState.Context {
+        WindowCommandState.Context(
+            document: currentDocumentStore,
+            canClose: currentClosableWindow != nil,
+            canFocusFolderBrowser: folder?.selectedWindow != nil,
+            canRevealInFolderBrowser: revealableDocumentURL != nil
+        )
     }
 
     func contentState(for store: DocumentStore) -> DocumentWindowContentState? {
@@ -112,6 +152,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        refreshDocumentSubmenus()
         historyRepository.pruneExpired()
         let recentDirectories = Set(recentDocuments.urls.map { $0.deletingLastPathComponent() })
         Task.detached(priority: .background) {
@@ -242,20 +283,22 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Closes the frontmost document or folder landing in response to ⌘W. Routing through
     /// `performClose(_:)` (rather than `close()`) drives the window through
     /// `windowShouldClose(_:)`, so the existing unsaved-changes prompt runs and
-    /// no save/discard logic is duplicated. No-ops safely when no document
-    /// window is focused.
+    /// no save/discard logic is duplicated.
     func closeCurrentDocument() {
-        let target: NSWindow?
+        currentClosableWindow?.performClose(nil)
+    }
+
+    private var currentClosableWindow: NSWindow? {
         if let keyWindow = NSApp.keyWindow {
-            target = keyWindow === folder?.landingWindow
+            return keyWindow === folder?.landingWindow
                 ? keyWindow : documentWindows.first(where: { $0.window === keyWindow })?.window
-        } else if let landing = folder?.landingWindow,
-                  NSApp.mainWindow === landing || documentWindows.isEmpty {
-            target = landing
-        } else {
-            target = documentWindows.first?.window
         }
-        target?.performClose(nil)
+        if let landing = folder?.landingWindow,
+           NSApp.mainWindow === landing || documentWindows.isEmpty {
+            return landing
+        }
+        guard let store = currentDocumentStore else { return nil }
+        return documentWindows.first(where: { $0.store === store })?.window
     }
 
     /// Presents an open panel and loads every selected file.
@@ -317,9 +360,14 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         folder.sidebar.activate(in: window, focusFiles: true)
     }
 
+    private var revealableDocumentURL: URL? {
+        guard let folder, folder.selectedWindow != nil, let url = currentDocumentStore?.fileURL,
+              folder.browser.canReveal(url) else { return nil }
+        return url
+    }
+
     func revealInFolderBrowser() {
-        guard let folder, let url = currentDocumentStore?.fileURL, folder.browser.canReveal(url),
-              let window = folder.selectedWindow else {
+        guard let folder, let window = folder.selectedWindow, let url = revealableDocumentURL else {
             NSSound.beep()
             return
         }
@@ -371,6 +419,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 onToggleFavorite: { [weak self] in self?.toggleCurrentFavoriteFolder() },
                 remoteImages: remoteImages,
                 onIndexInvalidated: { [weak self] in self?.refreshFolderRemoteImages() },
+                onIndexChanged: { [weak self] in self?.windowCommandState.refresh() },
                 onOpen: { [weak self] opened, decoded, intent in
                     try self?.openFolderDocument(opened, decoded: decoded, intent: intent)
                 }
@@ -413,6 +462,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             DispatchQueue.main.async {
                 guard let self, let session, self.folder === session else { return }
                 self.updateFolderPreviewSelection(in: session)
+                self.windowCommandState.refresh()
             }
         }
         session.groupObservation = session.group?.observe(\.windows) { [weak self, weak session] _, _ in
@@ -462,9 +512,11 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         favoriteFolders.currentRoot = nil
         favoriteFolderAddition?.cancel()
         favoriteFolderAddition = nil
+        windowCommandState.refresh()
     }
 
     private func reconcileFolderTabs() {
+        defer { windowCommandState.refresh() }
         guard let folder, var group = folder.group else { return }
         // Merge All Windows can move the folder's entire group into the
         // frontmost independent group. Follow the surviving folder documents.
@@ -1105,8 +1157,11 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             contentState: contentState,
             onFileBacked: { [weak self] url in self?.noteRecentDocument(url) },
             onFileURLChanged: { [weak self, weak window] in
-                guard let window, window.isKeyWindow else { return }
-                self?.updateFolderSidebar(for: window)
+                guard let self else { return }
+                if let window, window.isKeyWindow {
+                    self.updateFolderSidebar(for: window)
+                }
+                self.windowCommandState.refresh()
             }
         )
         documentWindows.append(documentWindow)
@@ -1119,7 +1174,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard let self, let documentWindow, self.folder != nil else { return }
             self.setFolderRemoteImageOverride(choice, for: documentWindow)
         }
-        attachmentCommandState.refresh()
+        windowCommandState.refresh()
         window.delegate = self
         window.contentView = NSHostingView(rootView: contentView)
         window.tabbingMode = .automatic
@@ -1206,7 +1261,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 DispatchQueue.main.async { self.reconcileFolderTabs() }
             }
         }
-        attachmentCommandState.refresh()
+        windowCommandState.refresh()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

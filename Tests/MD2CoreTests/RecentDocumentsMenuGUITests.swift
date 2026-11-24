@@ -814,7 +814,7 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         }
 
         func switchMode(_ key: String, title: String) throws {
-            let command = try menuItem(commandCharacter: key, pid: pid, modifiers: 0)
+            let command = try menuItem(commandCharacter: key, pid: pid, modifiers: Int(AXMenuItemModifiers.control.rawValue))
             XCTAssertEqual(Self.title(of: command), title)
             XCTAssertEqual(AXUIElementPerformAction(command, kAXPressAction as CFString), .success)
         }
@@ -1049,7 +1049,7 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         // Enter Split via the live document's command. The window starts with
         // an untitled store and can adopt that store's presentation preference.
         _ = try windowWithPolicy(allow)
-        let split = try menuItem(commandCharacter: "3", pid: pid, modifiers: 0)
+        let split = try menuItem(commandCharacter: "3", pid: pid, modifiers: Int(AXMenuItemModifiers.control.rawValue))
         XCTAssertEqual(Self.title(of: split), "Side by Side")
         XCTAssertTrue(Self.isEnabled(split))
         XCTAssertEqual(AXUIElementPerformAction(split, kAXPressAction as CFString), .success)

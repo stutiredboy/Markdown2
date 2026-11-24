@@ -34,7 +34,7 @@ final class DocumentTabsGUITests: XCTestCase {
         XCTAssertTrue(CFEqual(selected, initial))
         try app.waitForDocumentChrome(in: selected, title: fixture.first.lastPathComponent, tabs: allTitles)
 
-        try app.key(kVK_ANSI_2, flags: .maskCommand)
+        try app.key(kVK_ANSI_2, flags: [.maskControl, .maskCommand])
         _ = try app.waitFor("the Read mode preview after changing modes inside a tab") {
             app.descendant(selected) { app.attribute(kAXRoleAttribute, of: $0) as? String == "AXWebArea" }
         }

@@ -43,7 +43,8 @@ applies them through `insertText(_:replacementRange:)`, preserving the document
 binding, dirty state, styling, autosave and native undo stack. Menu requests use
 fresh tokens; consumption survives editor re-hosting so a mode switch cannot
 replay an old command. Formatting shortcuts are registered with the mode
-shortcut validator; Cmd+1/2/3 keep their existing defaults.
+shortcut validator. Ctrl+Cmd+1/2/3 are the default mode shortcuts. You can
+customize them in Settings.
 
 While `hasMarkedText()` is true, editing commands and automatic pairing yield to
 the input method. Return used to commit Latin letters from a Chinese IME must

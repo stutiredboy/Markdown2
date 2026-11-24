@@ -42,6 +42,10 @@ final class FolderWorkflowGUITests: XCTestCase {
         try Data([0xef, 0xbb, 0xbf, 0xff]).write(to: malformed)
         let initialLanding = try app.chooseFolderByPath(containing: fixture.guide)
         try assertFolderLanding(initialLanding, guide: fixture.guide, app: app)
+        _ = try app.menuCommand("File", "Close")
+        _ = try app.menuCommand("View", "Focus Folder Browser")
+        _ = try app.menuCommand("File", "Reveal in Folder Browser", enabled: false)
+        _ = try app.menuCommand("File", "Save", enabled: false)
 
         let badResult = try app.quickFind(malformed.lastPathComponent, expecting: malformed.lastPathComponent)
         try app.openSelection(using: badResult.open)
@@ -74,6 +78,8 @@ final class FolderWorkflowGUITests: XCTestCase {
         try app.waitForDocumentChrome(in: preview, title: fixture.guide.lastPathComponent, tabs: [])
         try app.waitForOneWindow(showing: preview)
         XCTAssertNil(app.descendant(preview) { app.identifier($0) == "folder-landing-prompt" })
+        _ = try app.menuCommand("File", "Reveal in Folder Browser")
+        _ = try app.menuCommand("File", "Save")
 
         try app.waitForSelection(fixture.guide, in: app.element("folder-file-list", in: preview))
         let previewEditor = try app.editor(in: preview)
@@ -678,6 +684,16 @@ struct FolderTestApplication {
         }
     }
 
+    func openDocument(_ url: URL) async throws {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.createsNewApplicationInstance = false
+        let receiver = try await NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: configuration)
+        guard receiver.processIdentifier == pid else {
+            throw FolderTestError("Opening the document reached PID \(receiver.processIdentifier), expected \(pid)")
+        }
+    }
+
     var menuBar: AXUIElement? { elementAttribute(kAXMenuBarAttribute, of: accessibility) }
     var focusedWindow: AXUIElement? { elementAttribute(kAXFocusedWindowAttribute, of: accessibility) }
     var focusedElement: AXUIElement? { elementAttribute(kAXFocusedUIElementAttribute, of: accessibility) }
@@ -970,10 +986,25 @@ struct FolderTestApplication {
         try press(command)
     }
 
-    func menuCommand(_ menuName: String, _ name: String) throws -> AXUIElement {
-        try waitFor("the enabled \(menuName) → \(name) command") {
-            enabledMenuCommand(name, menus: [menuName])
+    func menuCommand(_ menuName: String, _ name: String, enabled: Bool = true) throws -> AXUIElement {
+        try waitFor("the \(enabled ? "enabled" : "disabled") \(menuName) → \(name) command") {
+            menuItems(in: [menuName]).first {
+                title($0) == name && (attribute(kAXEnabledAttribute, of: $0) as? Bool) == enabled
+            }
         }
+    }
+
+    func menuItems(in path: [String]) -> [AXUIElement] {
+        guard let menuBar else { return [] }
+        var items = children(menuBar)
+        for name in path {
+            guard let item = items.first(where: { title($0) == name }),
+                  let menu = children(item).first(where: { attribute(kAXRoleAttribute, of: $0) as? String == kAXMenuRole }) else {
+                return []
+            }
+            items = children(menu)
+        }
+        return items
     }
 
     private func enabledMenuCommand(_ name: String, menus: Set<String>) -> AXUIElement? {

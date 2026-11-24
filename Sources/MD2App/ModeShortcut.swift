@@ -155,9 +155,9 @@ struct ModeShortcutConfiguration: Codable, Equatable {
     var sideBySide: ModeKeyboardShortcut
 
     static let `default` = ModeShortcutConfiguration(
-        edit: .command("1"),
-        preview: .command("2"),
-        sideBySide: .command("3")
+        edit: ModeKeyboardShortcut(key: "1", modifiers: [.control, .command]),
+        preview: ModeKeyboardShortcut(key: "2", modifiers: [.control, .command]),
+        sideBySide: ModeKeyboardShortcut(key: "3", modifiers: [.control, .command])
     )
 
     subscript(mode: EditorMode) -> ModeKeyboardShortcut {

@@ -2362,11 +2362,7 @@ final class DocumentStore: ObservableObject {
     }
 
     static var markdownTypes: [UTType] {
-        [
-            UTType(filenameExtension: "md"),
-            UTType(filenameExtension: "markdown"),
-            .plainText
-        ].compactMap { $0 }
+        FolderIndex.markdownExtensions.compactMap { UTType(filenameExtension: $0) } + [.plainText]
     }
 
     private static let starterMarkdown = """

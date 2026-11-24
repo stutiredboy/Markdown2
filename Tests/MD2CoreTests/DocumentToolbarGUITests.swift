@@ -149,7 +149,7 @@ final class DocumentToolbarGUITests: XCTestCase {
 
             let modeItem = try XCTUnwrap(harness.item(labelled: settings.text(.mode)))
             let originalHelp = settings.modePickerHelp
-            for shortcut in ["⌘1", "⌘2", "⌘3"] {
+            for shortcut in ["⌃⌘1", "⌃⌘2", "⌃⌘3"] {
                 XCTAssertTrue(originalHelp.contains(shortcut), "default help is missing \(shortcut)")
             }
             for name in harness.modeNames {
@@ -157,7 +157,7 @@ final class DocumentToolbarGUITests: XCTestCase {
             }
             XCTAssertNil(settings.updateModeShortcut(.command("7"), for: .write))
             XCTAssertTrue(harness.spin(until: {
-                harness.helpTexts(of: modeItem).contains { $0.contains("⌘7") && !$0.contains("⌘1") }
+                harness.helpTexts(of: modeItem).contains { $0.contains("⌘7") && !$0.contains("⌃⌘1") }
             }), "changing the configured shortcut must update the compact Mode picker help")
             settings.resetModeShortcutsToDefaults()
             XCTAssertTrue(harness.spin(until: { harness.helpTexts(of: modeItem).contains(originalHelp) }),

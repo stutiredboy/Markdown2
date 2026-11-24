@@ -22,8 +22,6 @@ enum PreviewLinkRouter {
         case openWithSystem(URL)
     }
 
-    private static let markdownExtensions: Set<String> = ["md", "markdown"]
-
     /// Schemes backing the page shell itself rather than openable content.
     /// Retained for string-loaded test/legacy pages, where a
     /// fragment jump arrives as `about:blank#…`; `applewebdata:` is WebKit's
@@ -63,7 +61,7 @@ enum PreviewLinkRouter {
                target.standardizedFileURL.path == documentPageURL.standardizedFileURL.path {
                 return .allowInPage
             }
-            if markdownExtensions.contains(target.pathExtension.lowercased()) {
+            if FolderIndex.isMarkdownExtension(target.pathExtension) {
                 return .openMarkdownDocument(target)
             }
             return .openWithSystem(target)

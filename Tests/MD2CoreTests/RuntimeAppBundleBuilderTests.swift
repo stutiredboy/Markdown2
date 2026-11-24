@@ -76,6 +76,27 @@ struct RuntimeAppBundleBuilderTests {
         #expect(plist["CFBundleIdentifier"] as? String == "dev.codex.md2.debug")
     }
 
+    @Test func buildDeclaresOnlyMarkdownDocumentTypes() throws {
+        let (appURL, root) = try makeAppBundle()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let plist = try readInfoPlist(at: appURL)
+        let types = try #require(plist["CFBundleDocumentTypes"] as? [[String: Any]])
+        #expect(types.count == 1)
+        let markdown = try #require(types.first)
+        let extensions = ["md", "markdown", "mdown", "mkd"]
+        #expect(markdown["CFBundleTypeExtensions"] as? [String] == extensions)
+        #expect(markdown["LSItemContentTypes"] as? [String] == ["net.daringfireball.markdown", "public.markdown"])
+        #expect(markdown["LSHandlerRank"] as? String == "None")
+
+        let imported = try #require(plist["UTImportedTypeDeclarations"] as? [[String: Any]])
+        #expect(imported.count == 1)
+        let declaration = try #require(imported.first)
+        #expect(declaration["UTTypeIdentifier"] as? String == "net.daringfireball.markdown")
+        let tags = try #require(declaration["UTTypeTagSpecification"] as? [String: Any])
+        #expect(tags["public.filename-extension"] as? [String] == extensions)
+    }
+
     /// The GUI guard launches a real app under a test-only identity so it never
     /// touches the developer's own preferences domain; this is the seam it uses.
     @Test func buildUsesSuppliedBundleIdentifier() throws {

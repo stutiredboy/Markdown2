@@ -16,6 +16,8 @@ PR wrapper 的 `verify-outputs` job 随后消费共享工作流返回的公开 a
 
 打包使用 `Scripts/package_app.sh --release` 保留正式分发的 `dev.codex.md2` 身份。无参数本地构建只生成具有独立设置与恢复目录的开发包，不安装、不修改 Launch Services。安装必须指定 `--install /absolute/Name.app`；默认编辑器变更还需 `--set-default`。CI 拒绝安装参数。Python 打包回归在临时目录执行真实脚本逻辑，替换编译、签名及系统注册工具，验证无副作用默认值和显式操作边界；它不替代真实签名或 Actions 产物验收。
 
+如需采用新的反向域名标识，应随迁移方案一并发布。现有标识决定 `UserDefaults` 域、恢复草稿和本地历史目录。届时需要同步更新安装器的默认处理程序校验、打包验证及相关测试。
+
 ## 同一份产物
 
 构建 job 创建并检查 `Markdown2.dmg`，记录源码提交、嵌入版本和 DMG SHA-256，上传为此运行的不可变 artifact。摘要通过 job/workflow output 单独传递。

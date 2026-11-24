@@ -40,6 +40,21 @@ private struct FolderIndexFixture {
 }
 
 struct FolderIndexTests {
+    @Test func commonMarkdownAliasesCanBeIndexedAndOpened() throws {
+        let fixture = try FolderIndexFixture()
+        defer { fixture.remove() }
+        try fixture.file("draft.MDOWN")
+        try fixture.file("notes.mkd")
+        try fixture.file("text.txt")
+
+        let root = try FolderIndex.authorize(fixture.root)
+        let snapshot = try FolderIndex.scan(root)
+        #expect(snapshot.files.map(\.relativePath) == ["draft.MDOWN", "notes.mkd"])
+        for file in snapshot.files {
+            #expect(try FolderIndex.open(file, in: root).data == Data("# Test\n".utf8))
+        }
+    }
+
     @Test func treeAndQuickOpenShareOnlyEligibleMarkdownFiles() throws {
         let fixture = try FolderIndexFixture()
         defer { fixture.remove() }
