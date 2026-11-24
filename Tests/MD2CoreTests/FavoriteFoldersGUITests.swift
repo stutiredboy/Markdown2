@@ -78,8 +78,8 @@ final class FavoriteFoldersGUITests: XCTestCase {
         _ = try app.favoriteToggle(in: reopened, label: "Favorite Current Folder", selected: false)
 
         try app.toggleFavoriteWithKeyboard(in: reopened)
-        _ = try app.favoriteItem(fixture.folder.lastPathComponent)
         _ = try app.favoriteToggle(in: reopened, label: "Remove Current Folder from Favorites", selected: true)
+        _ = try app.favoriteItem(fixture.folder.lastPathComponent)
     }
 
     @MainActor
@@ -252,11 +252,15 @@ private extension FolderTestApplication {
     }
 
     func toggleFavoriteWithKeyboard(in browser: AXUIElement) throws {
+        // AX can report this app's last focused control even when another app owns the keyboard.
+        try activateForInput()
         XCTAssertEqual(AXUIElementPerformAction(browser, kAXRaiseAction as CFString), .success)
         let search = try element("folder-quick-open", in: browser)
         try focus(search)
         _ = try waitFor("the folder search field to receive keyboard focus") {
-            focusedElement.flatMap { identifier($0) == "folder-quick-open" ? $0 : nil }
+            guard let window = focusedWindow, CFEqual(window, browser),
+                  let field = focusedElement, CFEqual(field, search) else { return nil }
+            return field
         }
         try key(kVK_Tab, flags: .maskShift)
         _ = try waitFor("Shift-Tab from search to focus the favorite star") {
