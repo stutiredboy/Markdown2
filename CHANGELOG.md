@@ -18,6 +18,12 @@
 
 ### Fixed
 
+- Refresh document commands when a document opens, the active window changes, or the last document closes. Find the file browser controls under View and switch modes with Control+Command+1, 2, or 3 by default.
+
+- Register Markdown variants including `.mdown` and `.mkd`. The packaged app offers to open plain text as an alternate editor.
+
+- Clean up installation staging on interruption and restore the previous app if replacement was interrupted before the new copy was in place.
+
 - Recover an interrupted save from either hard-linked filename. Review the draft before choosing **Finish Save** to update the linked file.
 
 - Restore the reading position and selection in large source documents while laying out only as much wrapped text as the destination needs. Positions near the end still use the measured document height.

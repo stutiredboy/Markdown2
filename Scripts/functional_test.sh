@@ -40,5 +40,17 @@ codesign --verify --deep --strict dist/Markdown2.app
 test -x dist/Markdown2.app/Contents/MacOS/Markdown2
 test -f dist/Markdown2.app/Contents/Resources/AppIcon.icns
 test -d dist/Markdown2.app/Contents/Resources/MD2_MD2Core.bundle
-test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' dist/Markdown2.app/Contents/Info.plist)" = 'dev.codex.md2.development'
+python3 - dist/Markdown2.app/Contents/Info.plist <<'PY'
+import plistlib
+import sys
+
+with open(sys.argv[1], "rb") as stream:
+    bundle = plistlib.load(stream)
+assert bundle["CFBundleIdentifier"] == "dev.codex.md2.development"
+markdown, aliases, plain = bundle["CFBundleDocumentTypes"]
+assert markdown["LSItemContentTypes"] == ["net.daringfireball.markdown", "public.markdown"]
+assert aliases["CFBundleTypeExtensions"] == ["mdown", "mkd"] and "LSItemContentTypes" not in aliases
+assert plain["LSItemContentTypes"] == ["public.plain-text"]
+assert all(entry["LSHandlerRank"] == "Alternate" for entry in (markdown, aliases, plain))
+PY
 echo "Local verification passed. Package: dist/Markdown2.app"

@@ -44,11 +44,11 @@
 - **Precise Find and Replace** — `Cmd+F` opens source or preview search with case-sensitive and whole-word options. Turn on **Regular expression** in the source editor to search by pattern and replace with capture groups. Limit source replacements to a captured selection, see the scope and count, and undo Replace All in one step. `Cmd+G` / `Shift+Cmd+G` continue the last search with the bar closed. See [matching and selection rules](Docs/MarkdownEditing.md#find-and-replace).
 - **Line numbers** — optionally show source line numbers in the editor, in the preview, or both. The editor numbers each line in a gutter beside the text (a soft-wrapped line is numbered once); the preview shows the starting source line of each rendered block and of each list item that spans several lines, so a number read while reading is the line to open in the editor. Click a number to select its line: in the editor gutter (Shift-click or drag to select several lines), or in the preview, which selects the line in the editor beside it in Side by Side and opens the editor on it from Preview. Toggle either scope from the toolbar or in Settings; numbers never appear in exported PDF, print, or HTML.
 - **App settings** for language, default open mode (Edit / Side by Side / Preview), default outline visibility, line numbers (editor and preview), and the export profile (page size, orientation, margins, page numbers, headers/footers).
-- **Markdown file type declaration** for `.md` and `.markdown` files when packaged.
+- **Markdown file associations** for `.md`, `.markdown`, `.mdown`, and `.mkd` when packaged. Plain text is available through Finder’s **Open With** menu.
 
 See [Docs/MarkdownSupport.md](Docs/MarkdownSupport.md) for the tested Markdown/Typora support matrix.
 
-The Format and Paragraph menus offer `Cmd+B` for bold, `Cmd+I` for italic, `Cmd+K` for links (using a clipboard URL when available), `Option+Cmd+1–6` for headings, `Cmd+0` for body text, `Option+Cmd+C` for code blocks, and `Option+Cmd+T` for tables. `Cmd+1/2/3` remain mode shortcuts. See [Markdown editing](Docs/MarkdownEditing.md) for behavior and regression tests.
+The Format and Paragraph menus offer `Cmd+B` for bold, `Cmd+I` for italic, `Cmd+K` for links (using a clipboard URL when available), `Option+Cmd+1–6` for headings, `Cmd+0` for body text, `Option+Cmd+C` for code blocks, and `Option+Cmd+T` for tables. The default shortcuts for Edit, Preview, and Side by Side are `Ctrl+Cmd+1/2/3`. See [Markdown editing](Docs/MarkdownEditing.md) for behavior and regression tests.
 
 ## Install
 
@@ -94,6 +94,8 @@ Scripts/package_app.sh --release --install /Applications/Markdown2.app --set-def
 ```
 
 `--set-default` requires `--install`; the destination's parent must exist. The legacy `MARKDOWN2_INSTALL_APP` environment variable no longer triggers installation. CI packages with `--release` and rejects installation arguments. Ad-hoc signing remains supported; these changes do not require a developer account or notarization.
+
+The installer verifies the staged copy before replacing the app and cleans up on exit. If it cannot restore the previous app after a failed replacement, it reports the path to the saved copy. If you find an old `/Applications/.markdown2-install.*` directory, check its `Previous.bundle` first. Once you've verified the installed copy opens and no longer need that backup, use Finder's **Go to Folder** to locate the hidden directory and move it to the Trash.
 
 Run local verification (default tests, isolated performance checks, workflow tests and development-bundle validation):
 

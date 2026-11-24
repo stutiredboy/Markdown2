@@ -140,6 +140,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
             <array>
                 <string>md</string>
                 <string>markdown</string>
+                <string>mdown</string>
+                <string>mkd</string>
             </array>
             <key>CFBundleTypeName</key>
             <string>Markdown Document</string>
@@ -149,10 +151,36 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
             <array>
                 <string>net.daringfireball.markdown</string>
                 <string>public.markdown</string>
-                <string>public.plain-text</string>
             </array>
             <key>LSHandlerRank</key>
             <string>$HANDLER_RANK</string>
+        </dict>
+        <!-- An OS-exported Markdown UTI can omit these extensions. Launch
+             Services uses the explicit extensions in a claim without UTIs. -->
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Markdown Document</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>mdown</string>
+                <string>mkd</string>
+            </array>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Plain Text Document</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.plain-text</string>
+            </array>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
         </dict>
     </array>
     <key>CFBundleExecutable</key>
@@ -197,6 +225,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
                 <array>
                     <string>md</string>
                     <string>markdown</string>
+                    <string>mdown</string>
+                    <string>mkd</string>
                 </array>
                 <key>public.mime-type</key>
                 <string>text/markdown</string>
@@ -219,15 +249,24 @@ codesign --verify --deep --strict "$APP_DIR"
 echo "Built $APP_DIR ($BUNDLE_IDENTIFIER)"
 if [ -z "$INSTALL_APP" ]; then exit 0; fi
 
-# Stage and verify before replacing the explicitly selected installation.
-INSTALL_STAGE="$(mktemp -d "$INSTALL_PARENT/.md2-install.XXXXXX")"
-restore_install_on_failure() {
+# Stage on the destination volume so publishing and restoring use renames.
+INSTALL_STAGE=""
+clean_install_stage() {
+    trap '' HUP INT TERM
+    if [ -z "$INSTALL_STAGE" ]; then return; fi
     if [ -e "$INSTALL_STAGE/Previous.app" ] && [ ! -e "$INSTALL_APP" ]; then
-        mv "$INSTALL_STAGE/Previous.app" "$INSTALL_APP"
+        if ! mv "$INSTALL_STAGE/Previous.app" "$INSTALL_APP"; then
+            echo "Could not restore the previous app. It is available at $INSTALL_STAGE/Previous.app." >&2
+            return 1
+        fi
     fi
     rm -rf "$INSTALL_STAGE"
 }
-trap restore_install_on_failure EXIT
+trap clean_install_stage EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+INSTALL_STAGE="$(mktemp -d "$INSTALL_PARENT/.md2-install.XXXXXX")"
 ditto "$APP_DIR" "$INSTALL_STAGE/New.app"
 codesign --verify --deep --strict "$INSTALL_STAGE/New.app"
 if [ -e "$INSTALL_APP" ]; then mv "$INSTALL_APP" "$INSTALL_STAGE/Previous.app"; fi

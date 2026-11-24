@@ -269,6 +269,8 @@ struct RuntimeAppBundleBuilder {
                     <array>
                         <string>md</string>
                         <string>markdown</string>
+                        <string>mdown</string>
+                        <string>mkd</string>
                     </array>
                     <key>CFBundleTypeName</key>
                     <string>Markdown Document</string>
@@ -278,7 +280,6 @@ struct RuntimeAppBundleBuilder {
                     <array>
                         <string>net.daringfireball.markdown</string>
                         <string>public.markdown</string>
-                        <string>public.plain-text</string>
                     </array>
                     <key>LSHandlerRank</key>
                     <string>None</string>
@@ -326,6 +327,8 @@ struct RuntimeAppBundleBuilder {
                         <array>
                             <string>md</string>
                             <string>markdown</string>
+                            <string>mdown</string>
+                            <string>mkd</string>
                         </array>
                         <key>public.mime-type</key>
                         <string>text/markdown</string>

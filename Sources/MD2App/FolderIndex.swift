@@ -123,7 +123,7 @@ enum FolderIndex {
 
     static let maximumOpenBytes = 32 * 1024 * 1024
     private static let directoryFlags = O_RDONLY | O_DIRECTORY | O_CLOEXEC
-    private static let markdownExtensions: Set<String> = ["md", "markdown"]
+    static let markdownExtensions = ["md", "markdown", "mdown", "mkd"]
 
     static func isMarkdownExtension(_ suffix: String) -> Bool {
         markdownExtensions.contains(suffix.lowercased())

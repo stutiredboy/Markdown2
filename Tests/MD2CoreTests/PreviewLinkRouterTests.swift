@@ -92,16 +92,12 @@ struct PreviewLinkRouterTests {
         )
     }
 
-    @Test func markdownExtensionMatchingIsCaseInsensitive() {
-        let upper = URL(fileURLWithPath: "/tmp/docs/NOTES.MD")
-        let long = URL(fileURLWithPath: "/tmp/docs/readme.markdown")
+    @Test(arguments: ["MD", "markdown", "MDOWN", "mkd"])
+    func markdownExtensionMatchingIsCaseInsensitive(suffix: String) {
+        let target = URL(fileURLWithPath: "/tmp/docs/readme.\(suffix)")
         #expect(
-            PreviewLinkRouter.route(for: upper, documentPageURL: pageURL)
-                == .openMarkdownDocument(upper)
-        )
-        #expect(
-            PreviewLinkRouter.route(for: long, documentPageURL: pageURL)
-                == .openMarkdownDocument(long)
+            PreviewLinkRouter.route(for: target, documentPageURL: pageURL)
+                == .openMarkdownDocument(target)
         )
     }
 
