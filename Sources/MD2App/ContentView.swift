@@ -32,9 +32,9 @@ enum DocumentLayoutMetrics {
 /// the width alone, so switching mode never reflows the labels. The widths are
 /// measured for English, the wider language, with the metadata button showing.
 enum DocumentToolbarDensity: Equatable {
-    /// Every control shows its text.
+    /// Controls with adaptive labels show their text.
     case full
-    /// Line Numbers and the metadata button drop to their icons.
+    /// Sidebar, Line Numbers and the metadata button drop to their icons.
     case reduced
     /// The mode picker drops to icons as well.
     case compact
@@ -153,6 +153,7 @@ struct ContentView: View {
     /// jump and layout reports. A nearby child heading may enter the viewport
     /// anchor band even though the reader has not scrolled it themselves.
     @State private var clickedOutlineHeadingID: String?
+    @State private var previewOutlineMargin: (snapshot: OutlinePreviewSnapshot, width: CGFloat)?
     @State private var editorSelection: String?
     @State private var previewSelection: String?
     @State private var selectionStats: DocumentStats?
@@ -294,6 +295,7 @@ struct ContentView: View {
             splitSyncSource = nil
             outlineSourceLine = 1
             clickedOutlineHeadingID = nil
+            previewOutlineMargin = nil
             editorSelection = nil
             previewSelection = nil
             selectionStats = nil
@@ -313,6 +315,7 @@ struct ContentView: View {
         }
         .onChange(of: suspendsFolderPreview) { _, isSuspended in
             if isSuspended {
+                previewOutlineMargin = nil
                 if mode != .write, let previewAnchor {
                     suspendedFolderPreview = (document.documentIdentity, previewAnchor)
                 }
@@ -328,6 +331,7 @@ struct ContentView: View {
             if mode != .read {
                 formulaSheet.dismiss()
                 formulaFocus = nil
+                previewOutlineMargin = nil
             }
             setEditorFindQuery(lastFindQuery)
             previewFindQuery = lastFindQuery
@@ -337,6 +341,9 @@ struct ContentView: View {
             selectionStats = nil
             dismissEditorFind()
             dismissPreviewFind()
+        }
+        .onChange(of: settings.typography) { _, typography in
+            if previewOutlineMargin?.snapshot.typography != typography { previewOutlineMargin = nil }
         }
         .onChange(of: document.findCommand) { _, command in
             handleFindCommand(command)
@@ -374,7 +381,7 @@ struct ContentView: View {
                 } label: {
                     Label(sidebarToggleTitle, systemImage: "sidebar.left")
                 }
-                .labelStyle(.titleAndIcon)
+                .modifier(CollapsibleToolbarLabel(showsTitle: toolbarDensity.showsSecondaryText, expanded: .titleAndIcon))
                 .accessibilityLabel(sidebarToggleTitle)
                 .accessibilityIdentifier("document-sidebar-toggle")
                 .help(sidebarToggleTitle)
@@ -399,6 +406,20 @@ struct ContentView: View {
                 .modifier(CollapsibleToolbarLabel(showsTitle: toolbarDensity.showsSecondaryText, expanded: .titleAndIcon))
                 .accessibilityLabel(settings.text(.lineNumbers))
                 .help(settings.text(.lineNumbersHelp))
+
+                if mode != .write {
+                    Menu {
+                        ReadingWidthPicker(settings: settings)
+                            .pickerStyle(.inline)
+                            .labelsHidden()
+                    } label: {
+                        Label(settings.text(.readingWidth), systemImage: "arrow.left.and.right")
+                    }
+                    .labelStyle(.iconOnly)
+                    .accessibilityLabel(settings.text(.readingWidth))
+                    .accessibilityIdentifier("document-reading-width")
+                    .help(settings.text(.readingWidthHelp))
+                }
             }
 
             // The toolbar overflows from its trailing end, so the mode picker
@@ -490,7 +511,7 @@ struct ContentView: View {
                     if folderSidebar.section == .files {
                         FolderSidebarHost(sidebar: folderSidebar)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
+                    } else if showsLeftOutline {
                         outlineSidebar(showsTitle: false)
                     }
                 }
@@ -498,26 +519,40 @@ struct ContentView: View {
                 .background(.regularMaterial)
                 Divider()
             }
-        } else if showsOutline {
+        } else if showsLeftOutline {
             outlineSidebar(showsTitle: true)
             Divider()
         }
     }
 
+    private var showsLeftOutline: Bool {
+        let folderSidebar = contentState.folderSidebar
+        return FloatingOutlineLayout.showsLeftOutline(
+            standaloneOutline: showsOutline,
+            folderSection: folderSidebar?.section,
+            folderSidebarVisible: folderSidebar?.isVisible ?? false
+        )
+    }
+
+    private var selectedOutlineHeadingID: String? {
+        clickedOutlineHeadingID ?? document.rendered.outline.heading(atOrAbove: outlineSourceLine)?.id
+    }
+
+    private func selectOutlineHeading(_ heading: Heading, animated: Bool = false) {
+        clickedOutlineHeadingID = heading.id
+        outlineSourceLine = heading.line
+        if mode == .read { sourceBeforeRead = nil }
+        document.jump(to: heading, animated: animated)
+    }
+
     private func outlineSidebar(showsTitle: Bool) -> some View {
         OutlineSidebar(
             headings: document.rendered.outline,
-            selectedHeadingID: clickedOutlineHeadingID
-                ?? document.rendered.outline.heading(atOrAbove: outlineSourceLine)?.id,
+            selectedHeadingID: selectedOutlineHeadingID,
             settings: settings,
             width: DocumentLayoutMetrics.outlineSidebarWidth,
             showsTitle: showsTitle,
-            onSelect: { heading in
-                clickedOutlineHeadingID = heading.id
-                outlineSourceLine = heading.line
-                if mode == .read { sourceBeforeRead = nil }
-                document.jump(to: heading)
-            }
+            onSelect: { selectOutlineHeading($0) }
         )
     }
 
@@ -1190,6 +1225,11 @@ struct ContentView: View {
     @ViewBuilder
     private func previewPane(inSplit: Bool) -> some View {
         let resourceToken = document.remoteResourceContextToken
+        let snapshot = OutlinePreviewSnapshot(
+            resourceToken: resourceToken,
+            sourceRevision: document.renderedSourceLineRevision,
+            typography: settings.typography
+        )
         ZStack(alignment: .top) {
             if suspendsFolderPreview {
                 // Hidden folder tabs keep their permission for explicit output
@@ -1218,6 +1258,7 @@ struct ContentView: View {
                         editPreviewFormula(line: line, revision: revision, window: window)
                     },
                     jumpHeadingID: $document.jumpHeadingID,
+                    animatesHeadingJump: document.animatesPreviewHeadingJump,
                     jumpFraction: $document.jumpFraction,
                     jumpAnchor: $document.previewJumpAnchor,
                     viewportReader: previewViewport,
@@ -1269,12 +1310,21 @@ struct ContentView: View {
                     remoteImageBlockedLabel: settings.text(.remoteImageBlocked),
                     genericImageLoadFailedLabel: settings.text(.imageLoadFailed),
                     typography: settings.typography,
+                    onOutlineMarginChange: inSplit ? nil : { width in
+                        guard previewOutlineMargin?.snapshot != snapshot || previewOutlineMargin?.width != width else { return }
+                        previewOutlineMargin = (snapshot, width)
+                    },
                     onSelectionChange: { selection in
                         previewSelection = selection
                         if inSplit, selection != nil { focusedPane = .preview }
                     }
                 )
                 .id(resourceToken)
+                .overlay(alignment: .topTrailing) {
+                    if !inSplit {
+                        floatingOutline(for: snapshot)
+                    }
+                }
             } else {
                 ProgressView(settings.text(.remoteImagesPreparing))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1297,6 +1347,36 @@ struct ContentView: View {
                 }
                 .transition(findDialogTransition)
                 .zIndex(1)
+            }
+        }
+    }
+
+    private struct OutlinePreviewSnapshot: Equatable {
+        let resourceToken: UUID
+        let sourceRevision: Int
+        let typography: TypographySettings
+    }
+
+    private func floatingOutline(for snapshot: OutlinePreviewSnapshot) -> some View {
+        GeometryReader { geometry in
+            if FloatingOutlineLayout.isVisible(
+                mode: mode,
+                hasHeadings: !document.rendered.outline.isEmpty,
+                showsLeftOutline: showsLeftOutline,
+                previewWidth: geometry.size.width,
+                typography: snapshot.typography,
+                measuredMargin: previewOutlineMargin?.snapshot == snapshot ? previewOutlineMargin?.width : nil
+            ) {
+                FloatingOutline(
+                    headings: document.rendered.outline,
+                    selectedHeadingID: selectedOutlineHeadingID,
+                    settings: settings,
+                    viewportHeight: geometry.size.height,
+                    onSelect: { selectOutlineHeading($0, animated: true) }
+                )
+                .padding(.top, previewFindVisible ? 72 : 24)
+                .padding(.trailing, FloatingOutlineLayout.trailingInset)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             }
         }
     }

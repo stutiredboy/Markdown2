@@ -348,6 +348,15 @@ private struct AppCommands: Commands {
             Button(settings.text(.resetZoom), action: settings.resetZoom)
                 .keyboardShortcut("0", modifiers: [.command, .option])
 
+            Menu(settings.text(.readingWidth)) {
+                ReadingWidthPicker(settings: settings)
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+            }
+            .accessibilityLabel(settings.text(.readingWidth))
+            .accessibilityIdentifier("view-reading-width")
+            .help(settings.text(.readingWidthHelp))
+
             WindowCommands(state: appDelegate.windowCommandState) { context in
                 Button(settings.text(.focusFolderBrowser)) {
                     appDelegate.focusFolderBrowser()

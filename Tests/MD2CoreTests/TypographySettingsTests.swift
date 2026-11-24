@@ -34,6 +34,32 @@ struct TypographySettingsTests {
         #expect(value.normalized.fontSize == 12)
     }
 
+    @Test func readingWidthSelectionsUseDistinctLocalizedLabelsAndPreserveOtherTypography() throws {
+        let name = "ReadingWidthSettingsTests-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        let settings = AppSettings(defaults: defaults)
+        settings.typography.fontSize = 22
+        settings.typography.readingFont = .serif
+        settings.zoomIn()
+
+        for width in ReadingWidth.allCases {
+            settings.typography.readingWidth = width
+            let reopened = AppSettings(defaults: defaults).typography
+            #expect(reopened.readingWidth == width)
+            #expect(reopened.fontSize == 22)
+            #expect(reopened.readingFont == .serif)
+            #expect(reopened.zoomPercent == 110)
+            #expect(settings.typography.previewCSS.contains("max-width: \(width.css)"))
+        }
+
+        for language in [AppLanguage.english, .zhHans] {
+            let labels = ReadingWidth.allCases.map { L10n.text($0.label, language: language) }
+            #expect(Set(labels).count == 4)
+            #expect(L10n.hasTranslation(.readingWidthHelp, language: language))
+        }
+    }
+
     @Test func zoomKeysCannotBeAssignedToModes() {
         for shortcut in [ModeKeyboardShortcut.command("+"), .command("="), .command("-"),
                          ModeKeyboardShortcut(key: "0", modifiers: [.command, .option]),

@@ -4,6 +4,8 @@
 
 ### Added
 
+- Change the reading width from the preview toolbar or the View menu. In Preview, the outline appears in the right margin when there is room and the left outline is hidden.
+
 - Star the current folder in the browser and reopen it across launches from File → Favorite Folders. Remove individual favorites or clear the list from the same menu.
 
 - Allow remote images for verified Markdown files in the current folder and its subfolders. Favorite folders remember their authorization, and individual files can opt out during the session.
@@ -17,6 +19,8 @@
 - Browse files in a collapsible Files and Outline sidebar. Click a file or use Up and Down in the tree to skim in one native preview tab. Double-click, press Return, or edit to keep the file open as a regular tab. Return to the tree with Shift+Cmd+B. Folder indexing now refreshes on filesystem changes or on request.
 
 ### Fixed
+
+- Preserve outer borders and inner row and column lines in tables exported to DOCX.
 
 - Refresh document commands when a document opens, the active window changes, or the last document closes. Find the file browser controls under View and switch modes with Control+Command+1, 2, or 3 by default.
 

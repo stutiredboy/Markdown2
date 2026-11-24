@@ -92,7 +92,8 @@ final class DocumentToolbarGUITests: XCTestCase {
             harness.resize(toWidth: DocumentLayoutMetrics.defaultWindowWidth)
             let settings = harness.settings
 
-            for action in [settings.text(.showOutline), settings.text(.open), settings.text(.save)] {
+            for action in [settings.text(.showOutline), settings.text(.open), settings.text(.save),
+                           settings.text(.readingWidth)] {
                 XCTAssertTrue(
                     harness.spin(until: { harness.isVisible(action) }, timeout: 3),
                     "\(action) must stay in the toolbar at the default width (\(harness.description))"
@@ -139,6 +140,7 @@ final class DocumentToolbarGUITests: XCTestCase {
             let helpByItem = [
                 settings.text(.mode): settings.modePickerHelp,
                 settings.text(.lineNumbers): settings.text(.lineNumbersHelp),
+                settings.text(.readingWidth): settings.text(.readingWidthHelp),
                 settings.text(.showMetadata): settings.text(.showMetadata)
             ]
             for (label, help) in helpByItem {
@@ -175,7 +177,9 @@ final class DocumentToolbarGUITests: XCTestCase {
         harness.resize(toWidth: 850)
         assertModeControlVisible(in: harness)
         let metadata = harness.settings.text(.showMetadata)
+        let readingWidth = harness.settings.text(.readingWidth)
         XCTAssertFalse(harness.isVisible(metadata), "Write mode has no metadata button")
+        XCTAssertFalse(harness.isVisible(readingWidth), "Write mode has no width control")
 
         try harness.clickSegment(1)
         XCTAssertTrue(
@@ -183,17 +187,20 @@ final class DocumentToolbarGUITests: XCTestCase {
             "the Side by Side segment never showed both panes"
         )
         XCTAssertTrue(harness.spin(until: { harness.isVisible(metadata) }))
+        XCTAssertTrue(harness.spin(until: { harness.isVisible(readingWidth) }))
 
         try harness.clickSegment(2)
         XCTAssertTrue(
             harness.spin(until: { !harness.showsEditor && harness.showsPreview }),
             "the Read segment never left the editor"
         )
+        XCTAssertTrue(harness.spin(until: { harness.isVisible(readingWidth) }))
 
         // The Mode menu and the shortcuts go through the store; the picker follows.
         harness.store.requestMode(.write)
         XCTAssertTrue(harness.spin(until: { harness.picker?.selectedSegment == 0 }))
         XCTAssertTrue(harness.spin(until: { harness.showsEditor && !harness.showsPreview }))
+        XCTAssertTrue(harness.spin(until: { !harness.isVisible(readingWidth) }))
     }
 
     /// The metadata button appears with the switch out of Write mode. The picker

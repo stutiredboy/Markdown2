@@ -206,6 +206,7 @@ final class DocumentStore: ObservableObject {
     private var headingNavigationTask: Task<Void, Never>?
     @Published var jumpLine: Int?
     @Published var jumpHeadingID: String?
+    private(set) var animatesPreviewHeadingJump = false
     @Published var jumpFraction: Double?
     /// Mode-switch viewport anchors, one per destination surface so the
     /// outgoing view can never consume the incoming view's target during the
@@ -1070,13 +1071,14 @@ final class DocumentStore: ObservableObject {
                               detail: alertText(.recentDocumentMissingDetail))
     }
 
-    func jump(to heading: Heading) {
+    func jump(to heading: Heading, animated: Bool = false) {
         headingNavigationTask?.cancel()
         headingNavigationTask = nil
         editorJumpAnchor = nil
         previewJumpAnchor = nil
         jumpFraction = nil
         jumpLine = heading.line
+        animatesPreviewHeadingJump = animated
         jumpHeadingID = heading.id
     }
 

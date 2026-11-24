@@ -92,6 +92,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
     var formulaEditing: FormulaEditing? = nil
     var onEditFormula: (_ line: Int, _ revision: Int, _ window: NSWindow) -> Void = { _, _, _ in }
     @Binding var jumpHeadingID: String?
+    var animatesHeadingJump = false
     /// Fraction (0...1) to scroll to after load when no heading anchor applies.
     @Binding var jumpFraction: Double?
     /// Mode-switch viewport anchor to apply after load; takes precedence over
@@ -152,6 +153,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
     var remoteImageBlockedLabel: String = "Remote image blocked — allow images using the document’s Remote Images control."
     var genericImageLoadFailedLabel: String = "Image could not be loaded"
     var typography: TypographySettings = .init()
+    var onOutlineMarginChange: ((CGFloat) -> Void)?
     /// Selected rendered HTML (nil when collapsed); the owner extracts/counts
     /// text off the main actor, so Select All cannot stall the WebKit callback.
     var onSelectionChange: (String?) -> Void = { _ in }
@@ -189,6 +191,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
 
     private static let enterEditMessageName = "enterEdit"
     private static let anchorMessageName = "anchorChange"
+    private static let outlineMarginMessageName = "outlineMarginChange"
     private static let toggleTaskMessageName = "toggleTask"
     private static let revealSourceLineMessageName = "revealSourceLine"
     private static let editFormulaMessageName = "editFormula"
@@ -604,12 +607,14 @@ struct MarkdownPreviewView: NSViewRepresentable {
             // the anchor reflows. Content below the anchor changing the total
             // height does not move the target, so we don't scroll (avoiding a
             // pointless late jump). We stop on a user scroll or once stable.
-            function keepPinned(getTargetY, silent, rememberOffset) {
+            var pinSequence = 0;
+            function keepPinned(getTargetY, silent, rememberOffset, animate) {
                 // A recent click inside the preview is not evidence that this
                 // programmatic jump was a user scroll. Only gestures that occur
                 // after pinning starts may mark its final anchor as user driven.
                 lastUserScrollIntentAt = 0;
                 suppressUntil = Date.now() + 2600;
+                var sequence = ++pinSequence;
                 var cancelled = false;
                 function onUser() { cancelled = true; }
                 // Fast-path cancels for common gestures; the scrollY check below
@@ -623,6 +628,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 var started = false;
                 var stableFrames = 0;
                 var start = Date.now();
+                var initialY = window.scrollY;
+                var duration = animate && !matchMedia('(prefers-reduced-motion: reduce)').matches ? 180 : 0;
                 function done() {
                     cancelled = true;
                     suppressUntil = 0;
@@ -635,7 +642,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
                     if (!silent) { topAnchor(); }
                 }
                 function step() {
-                    if (cancelled) { return; }
+                    if (cancelled || sequence !== pinSequence) { return; }
                     if (started && Math.abs(window.scrollY - expectedY) > 2) {
                         // Scroll position changed but we didn't move it: the user
                         // scrolled. Yield and stop re-anchoring.
@@ -643,13 +650,16 @@ struct MarkdownPreviewView: NSViewRepresentable {
                         return;
                     }
                     var targetY = getTargetY();
-                    if (targetY !== null && (lastTargetY === null || Math.abs(targetY - lastTargetY) > 1)) {
+                    var progress = duration > 0 ? Math.min(1, (Date.now() - start) / duration) : 1;
+                    if (targetY !== null && (progress < 1 || lastTargetY === null || Math.abs(targetY - lastTargetY) > 1)) {
                         // First positioning, or the anchor moved (content above
                         // reflowed): scroll to it.
-                        lastTargetY = targetY;
+                        if (progress === 1) { lastTargetY = targetY; }
                         stableFrames = 0;
                         var maxY = document.documentElement.scrollHeight - window.innerHeight;
-                        window.scrollTo(0, Math.min(Math.max(0, targetY), Math.max(0, maxY)));
+                        var destination = Math.min(Math.max(0, targetY), Math.max(0, maxY));
+                        var y = progress === 1 ? destination : initialY + (destination - initialY) * (1 - Math.pow(1 - progress, 3));
+                        window.scrollTo(0, y);
                         expectedY = window.scrollY;
                         if (rememberOffset) { anchoredScrollY = expectedY; }
                         started = true;
@@ -668,13 +678,13 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 step();
             }
 
-            window.__md2ScrollToHeading = function (id) {
+            window.__md2ScrollToHeading = function (id, animate) {
                 keepPinned(function () {
                     var el = document.getElementById(id);
                     if (!el) { return null; }
                     // Absolute document Y of the element's top.
                     return el.getBoundingClientRect().top + window.scrollY;
-                });
+                }, false, false, animate);
             };
             window.__md2ScrollToFraction = function (f) {
                 var pinned = false;
@@ -1064,6 +1074,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         configuration.userContentController.add(context.coordinator, contentWorld: .defaultClient, name: Self.remoteImageMessageName)
         Self.installInteractionBridge(on: configuration.userContentController, handler: context.coordinator)
         configuration.userContentController.add(context.coordinator, name: Self.anchorMessageName)
+        configuration.userContentController.add(context.coordinator, name: Self.outlineMarginMessageName)
         configuration.userContentController.add(context.coordinator, contentWorld: .defaultClient, name: Self.selectionMessageName)
         configuration.userContentController.addUserScript(WKUserScript(source: Self.selectionScript,
             injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: .defaultClient))
@@ -1129,6 +1140,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.onSelectionChange = onSelectionChange
         context.coordinator.onRemoteImageDetected = onRemoteImageDetected
+        context.coordinator.onOutlineMarginChange = onOutlineMarginChange
+        let revisionChanged = context.coordinator.sourceLineRevision != sourceLineRevision
         if context.coordinator.typography != typography {
             context.coordinator.typography = typography
             if context.coordinator.isLoaded { context.coordinator.applyTypography(in: webView, preservingAnchor: true) }
@@ -1233,6 +1246,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
             // Text that renders to the same page is still a new revision.
             context.coordinator.labelPage(in: webView)
             context.coordinator.configureFormulaControls(in: webView)
+            if revisionChanged && context.coordinator.isLoaded {
+                context.coordinator.observeOutlineMargin(in: webView)
+            }
         }
 
         // Anchor/heading/fraction targets are also applied once the page has
@@ -1245,7 +1261,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             ?? jumpFraction.map(ModeSwitchAnchor.fraction)
         if let scrollRequest, context.coordinator.lastScrollRequest != scrollRequest {
             context.coordinator.lastScrollRequest = scrollRequest
-            context.coordinator.setPendingScroll(scrollRequest, in: webView)
+            context.coordinator.setPendingScroll(scrollRequest, in: webView, animatingHeading: animatesHeadingJump)
             let anchor = jumpAnchor, heading = jumpHeadingID, fraction = jumpFraction
             DispatchQueue.main.async {
                 // Consume after SwiftUI's update, and never erase a newer jump.
@@ -1531,6 +1547,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
         var typography: TypographySettings = .init()
         var onSelectionChange: (String?) -> Void = { _ in }
         var onRemoteImageDetected: (Int) -> Void = { _ in }
+        var onOutlineMarginChange: ((CGFloat) -> Void)?
+        private var outlineMarginToken: String?
 
         func applyTypography(in webView: WKWebView, preservingAnchor: Bool = false) {
             let css = String(data: try! JSONEncoder().encode(typography.previewCSS), encoding: .utf8)!
@@ -1542,6 +1560,44 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 style.textContent = \(css);
                 if (anchor && window.__md2ScrollToViewportAnchor) { window.__md2ScrollToViewportAnchor(anchor); }
                 window.dispatchEvent(new Event('resize'));
+            })();
+            """)
+            observeOutlineMargin(in: webView)
+        }
+
+        /// WebKit applies the reading width asynchronously. Keep the outline
+        /// hidden until layout confirms the empty gutter, including any text or
+        /// math that spills out of the centered column.
+        func observeOutlineMargin(in webView: WKWebView) {
+            guard onOutlineMarginChange != nil else { return }
+            let token = UUID().uuidString
+            outlineMarginToken = token
+            webView.evaluateJavaScript("""
+            (function () {
+                var main = document.querySelector('main');
+                if (!main) { return; }
+                if (!window.__md2MeasureOutlineMargin) {
+                    var token = null;
+                    var lastWidth = null;
+                    function report() {
+                        var rect = main.getBoundingClientRect();
+                        var right = rect.left + window.scrollX + Math.max(rect.width, main.scrollWidth);
+                        var width = Math.floor(document.documentElement.clientWidth - right);
+                        if (width === lastWidth) { return; }
+                        lastWidth = width;
+                        window.webkit.messageHandlers.\(MarkdownPreviewView.outlineMarginMessageName).postMessage({token: token, width: width});
+                    }
+                    new ResizeObserver(report).observe(main);
+                    new MutationObserver(report).observe(main, {childList: true, characterData: true, subtree: true});
+                    window.addEventListener('resize', report);
+                    document.fonts.addEventListener('loadingdone', report);
+                    window.__md2MeasureOutlineMargin = function (nextToken) {
+                        token = nextToken;
+                        lastWidth = null;
+                        report();
+                    };
+                }
+                window.__md2MeasureOutlineMargin('\(token)');
             })();
             """)
         }
@@ -1911,6 +1967,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// Marks the page as loading before WebKit callbacks arrive. This prevents
         /// a same-query search from running against the previous document body.
         func beginLoading() {
+            outlineMarginToken = nil
             findGeneration = UUID()
             findInFlight = false
             if pendingFindQuery == nil { pendingFindQuery = lastFindQuery }
@@ -2123,6 +2180,11 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 // mode-switch target must not snap them back on a later reload.
                 if isUserInitiated { pendingScroll = nil }
                 onAnchorChange(Self.viewportAnchor(fromMessage: body), isUserInitiated)
+            case MarkdownPreviewView.outlineMarginMessageName:
+                guard isLoaded, message.world == .page, let outlineMarginToken,
+                      let body = message.body as? [String: Any], body["token"] as? String == outlineMarginToken,
+                      let width = (body["width"] as? NSNumber)?.doubleValue, width.isFinite else { return }
+                onOutlineMarginChange?(CGFloat(width))
             default:
                 break
             }
@@ -2208,14 +2270,14 @@ struct MarkdownPreviewView: NSViewRepresentable {
 
         /// Records a scroll target and applies it now if the page has finished
         /// loading, otherwise defers it to `didFinish`.
-        func setPendingScroll(_ anchor: ModeSwitchAnchor, in webView: WKWebView) {
+        func setPendingScroll(_ anchor: ModeSwitchAnchor, in webView: WKWebView, animatingHeading: Bool = false) {
             pendingScroll = anchor
             if isLoaded {
                 // Apply now, but KEEP the target: entering Side by Side rebuilds
                 // the preview view, triggering a reload that resets scroll to the
                 // top right after this. Retaining `pendingScroll` lets the
                 // post-reload `didFinish` re-apply it.
-                applyPendingScroll(in: webView, consume: false)
+                applyPendingScroll(in: webView, consume: false, animatingHeading: animatingHeading)
             }
         }
 
@@ -2249,7 +2311,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             configureFormulaControls(in: webView)
         }
 
-        private func applyPendingScroll(in webView: WKWebView, consume: Bool = true) {
+        private func applyPendingScroll(in webView: WKWebView, consume: Bool = true, animatingHeading: Bool = false) {
             guard let anchor = pendingScroll else { return }
             if consume { pendingScroll = nil }
 
@@ -2260,7 +2322,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 )
             case let .heading(id):
                 let escapedID = MarkdownPreviewView.escapeForJS(id)
-                webView.evaluateJavaScript("window.__md2ScrollToHeading('\(escapedID)');")
+                webView.evaluateJavaScript("window.__md2ScrollToHeading('\(escapedID)', \(MarkdownPreviewView.jsBoolean(animatingHeading))); ")
             case let .fraction(value):
                 let clamped = min(max(value, 0), 1)
                 webView.evaluateJavaScript("window.__md2ScrollToFraction(\(clamped));")
