@@ -12,6 +12,8 @@
 
 ### Changed
 
+- Use a new paper-and-ink macOS app icon with an amber 2.
+
 - Open independent documents together in native tabs, separate from the folder browser. Turn off **Prefer Tabs for Documents** in General settings to open them in separate windows.
 
 - Show a banner when remote images are detected and the document policy blocks loading. When allowed, use the green globe in the status bar to check the source of permission, revoke it or inspect image origins. **View → Remote Images** also provides the document controls. The Files sidebar shows the folder permission.
