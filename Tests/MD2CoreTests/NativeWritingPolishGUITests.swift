@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import PDFKit
 import SwiftUI
 import WebKit
@@ -162,12 +163,17 @@ final class NativeWritingPolishGUITests: XCTestCase {
         let originalOffset = editor.visibleRect.minY
         try switchMode(to: .read, in: harness)
         try waitForHiddenPreviewQuery(in: harness)
+        var deliveredAnchors: [String] = []
+        let anchorObservation = harness.store.$editorJumpAnchor.compactMap { $0 }.sink {
+            deliveredAnchors.append(String(describing: $0))
+        }
         try switchMode(to: .write, in: harness)
         // SwiftUI can mount the editor before its viewport anchor has settled.
         // Wait for the exact restored offset before the next mode captures it.
         harness.spin(until: { abs(editor.visibleRect.minY - originalOffset) <= 1 })
+        anchorObservation.cancel()
         XCTAssertEqual(editor.visibleRect.minY, originalOffset, accuracy: 1,
-                       "a passive same-width round trip must restore the wrapped editor viewport")
+                       "a passive same-width round trip must restore the wrapped editor viewport. Delivered: \(deliveredAnchors)")
         XCTAssertEqual(editor.selectedRange(), workingSelection)
 
         for mode in [EditorMode.split, .read, .write] {
