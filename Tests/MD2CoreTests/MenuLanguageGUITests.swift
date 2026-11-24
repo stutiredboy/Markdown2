@@ -253,10 +253,10 @@ final class MenuLanguageGUITests: XCTestCase {
         XCTAssertEqual(AXUIElementSetAttributeValue(source, kAXSelectedTextRangeAttribute as CFString, selectedRange), .success)
 
         try press(.find, in: .zhHans, pid: pid)
-        try waitForWindow(pid: pid) { Self.firstElement(ofRole: "AXTextField", in: $0) != nil }
+        try waitForWindow(pid: pid, description: "the Find bar") { Self.firstElement(ofRole: "AXTextField", in: $0) != nil }
 
         try press(.read, in: .zhHans, pid: pid)
-        try waitForWindow(pid: pid) { Self.firstElement(ofRole: "AXWebArea", in: $0) != nil }
+        try waitForWindow(pid: pid, description: "the Markdown preview") { Self.firstElement(ofRole: "AXWebArea", in: $0) != nil }
 
         // Read formatting first reveals its source target without editing it.
         // The localized command still acts, but only a second invocation in the
@@ -414,7 +414,7 @@ final class MenuLanguageGUITests: XCTestCase {
         try waitForCommandTitles(.zhHans, pid: pid)
         try closeSettings(pid: pid)
         try press(.read, in: .zhHans, pid: pid)
-        try waitForWindow(pid: pid) { Self.firstElement(ofRole: "AXWebArea", in: $0) != nil }
+        try waitForWindow(pid: pid, description: "the Markdown preview") { Self.firstElement(ofRole: "AXWebArea", in: $0) != nil }
         try waitForTypewriterScrolling(checked: true, language: .zhHans, pid: pid)
         try toggleTypewriterScrolling(language: .zhHans, pid: pid)
         try waitForTypewriterScrolling(checked: false, language: .zhHans, pid: pid)
@@ -711,17 +711,27 @@ final class MenuLanguageGUITests: XCTestCase {
     /// once the app has relaunched in Chinese, and "Edit" is one in English.
     private func press(_ key: L10nKey, in language: AppLanguage, pid: pid_t) throws {
         let title = L10n.text(key, language: language)
-        for barItem in Self.children(of: try menuBar(pid: pid)) {
-            for menu in Self.children(of: barItem) {
-                for item in Self.children(of: menu)
-                where Self.title(of: item) == title && Self.commandCharacter(of: item) != nil {
+        let deadline = Date().addingTimeInterval(8)
+        var lastStatus = "not present"
+        repeat {
+            let items = Self.children(of: try menuBar(pid: pid)).dropFirst()
+                .flatMap(Self.children(of:)).flatMap(Self.children(of:))
+            if let item = items.first(where: { Self.title(of: $0) == title && Self.commandCharacter(of: $0) != nil }) {
+                var enabled: CFTypeRef?
+                let status = AXUIElementCopyAttributeValue(item, kAXEnabledAttribute as CFString, &enabled)
+                if status == .success, enabled as? Bool == true {
                     AXUIElementSetMessagingTimeout(item, 2)
-                    AXUIElementPerformAction(item, kAXPressAction as CFString)
+                    let result = AXUIElementPerformAction(item, kAXPressAction as CFString)
+                    guard result == .success else {
+                        throw GuardFailure("pressing the enabled \(title) command failed with AX error \(result.rawValue)")
+                    }
                     return
                 }
+                lastStatus = status == .success ? "disabled" : "AXEnabled error \(status.rawValue)"
             }
-        }
-        throw GuardFailure("no command titled \(title) was found in the menu bar")
+            usleep(100_000)
+        } while Date() < deadline
+        throw GuardFailure("the \(title) command did not become enabled; last state: \(lastStatus)")
     }
 
     private func menuItem(commandCharacter character: String, pid: pid_t) throws -> AXUIElement {

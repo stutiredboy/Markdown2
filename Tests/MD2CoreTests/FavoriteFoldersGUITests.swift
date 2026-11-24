@@ -21,8 +21,9 @@ final class FavoriteFoldersGUITests: XCTestCase {
         let fileCommands = app.children(fileMenu).map(app.title).filter { !$0.isEmpty }
         XCTAssertEqual(Array(fileCommands.prefix(3)), ["New", "Open...", "Open Recent"])
         let openFolder = try XCTUnwrap(fileCommands.firstIndex(of: "Open Folder…"))
-        XCTAssertEqual(Array(fileCommands.dropFirst(openFolder).prefix(5)),
-                       ["Open Folder…", "Quick Open…", "Focus Folder Browser", "Reveal in Folder Browser", "Favorite Folders"])
+        XCTAssertEqual(Array(fileCommands.dropFirst(openFolder).prefix(4)),
+                       ["Open Folder…", "Quick Open…", "Reveal in Folder Browser", "Favorite Folders"])
+        XCTAssertFalse(fileCommands.contains("Focus Folder Browser"))
         app.assertAccessibility(try app.favoriteMenuItem("Favorite Folders"), id: "favorite-folders-menu")
         app.assertAccessibility(try app.favoriteItem("No Favorite Folders", enabled: false),
                                 id: "favorite-folders-empty")

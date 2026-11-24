@@ -2,7 +2,7 @@ import MD2AppSupport
 import SwiftUI
 
 /// File ▸ Open Recent. This view must observe `recents` itself: `AppCommands`
-/// re-evaluates only when a setting changes, so entries passed in from there
+/// observes settings, so entries passed in from there
 /// would go stale, but a command view's own dependency still updates it. Guarded
 /// by RecentDocumentsMenuGUITests.
 private struct RecentDocumentsMenu: View {
@@ -103,14 +103,22 @@ struct FavoriteFoldersMenu: View {
     }
 }
 
+/// The command view observes window changes independently of menu titles and shortcuts.
+private struct WindowCommands<Content: View>: View {
+    @ObservedObject var state: WindowCommandState
+    @ViewBuilder var content: (WindowCommandState.Context) -> Content
+
+    var body: some View { content(state.context) }
+}
+
 /// Observe the key document independently of the Settings scene's command tree.
 private struct RemoteImagesCommandMenu: View {
     let settings: AppSettings
-    @ObservedObject var state: AttachmentCommandState
+    @ObservedObject var state: WindowCommandState
     let contentState: (DocumentStore) -> DocumentWindowContentState?
 
     var body: some View {
-        if let document = state.document, let windowState = contentState(document) {
+        if let document = state.context.document, let windowState = contentState(document) {
             RemoteResourceNotice(
                 document: document, settings: settings, contentState: windowState, placement: .applicationMenu
             )
@@ -211,14 +219,11 @@ private struct AppCommands: Commands {
             }
             .keyboardShortcut("p", modifiers: [.command, .shift])
 
-            Button(settings.text(.focusFolderBrowser)) {
-                appDelegate.focusFolderBrowser()
-            }
-            .keyboardShortcut(settings.folderBrowserShortcut.keyEquivalent,
-                              modifiers: settings.folderBrowserShortcut.modifiers.eventModifiers)
-
-            Button(settings.text(.revealInFolderBrowser)) {
-                appDelegate.revealInFolderBrowser()
+            WindowCommands(state: appDelegate.windowCommandState) { context in
+                Button(settings.text(.revealInFolderBrowser)) {
+                    appDelegate.revealInFolderBrowser()
+                }
+                .disabled(!context.canRevealInFolderBrowser)
             }
 
             FavoriteFoldersMenu(
@@ -232,76 +237,102 @@ private struct AppCommands: Commands {
         }
 
         CommandGroup(replacing: .saveItem) {
-            Button(settings.text(.save)) {
-                appDelegate.currentDocumentStore?.save()
-            }
-            .keyboardShortcut("s")
+            WindowCommands(state: appDelegate.windowCommandState) { context in
+                Group {
+                    Button(settings.text(.save)) {
+                        appDelegate.currentDocumentStore?.save()
+                    }
+                    .keyboardShortcut("s")
 
-            Button(settings.text(.createCopy)) {
-                appDelegate.createCopy()
+                    Button(settings.text(.createCopy)) {
+                        appDelegate.createCopy()
+                    }
+
+                    Button(settings.text(.historyBrowse)) {
+                        appDelegate.browseLocalHistory()
+                    }
+                }
+                .disabled(context.document == nil)
             }
 
-            Button(settings.text(.historyBrowse)) {
-                appDelegate.browseLocalHistory()
-            }
-
-            CollectLocalImagesCommand(title: settings.text(.collectLocalImages), state: appDelegate.attachmentCommandState) {
+            CollectLocalImagesCommand(title: settings.text(.collectLocalImages), state: appDelegate.windowCommandState) {
                 guard let document = appDelegate.currentDocumentStore, !document.isWorkingOnAttachments else { return }
                 Task { await document.collectLocalImages(folder: settings.attachmentFolder) }
             }
 
-            Menu(settings.text(.exportTo)) {
-                Button("PDF") {
-                    Task { await appDelegate.currentDocumentStore?.exportPDF() }
+            WindowCommands(state: appDelegate.windowCommandState) { context in
+                Menu(settings.text(.exportTo)) {
+                    Group {
+                        Button("PDF") {
+                            Task { await appDelegate.currentDocumentStore?.exportPDF() }
+                        }
+                        Button("HTML") {
+                            Task { await appDelegate.currentDocumentStore?.exportHTML() }
+                        }
+                        Button("DOCX") {
+                            appDelegate.currentDocumentStore?.exportDOCX()
+                        }
+                        Button("EPUB") {
+                            appDelegate.currentDocumentStore?.exportEPUB()
+                        }
+                    }
+                    .disabled(context.document == nil)
                 }
-                Button("HTML") {
-                    Task { await appDelegate.currentDocumentStore?.exportHTML() }
-                }
-                Button("DOCX") {
-                    appDelegate.currentDocumentStore?.exportDOCX()
-                }
-                Button("EPUB") {
-                    appDelegate.currentDocumentStore?.exportEPUB()
-                }
+                .disabled(context.document == nil)
             }
 
             Divider()
 
-            Button(settings.text(.close)) {
-                appDelegate.closeCurrentDocument()
+            WindowCommands(state: appDelegate.windowCommandState) { context in
+                Button(settings.text(.close)) {
+                    appDelegate.closeCurrentDocument()
+                }
+                .keyboardShortcut("w")
+                .disabled(!context.canClose)
             }
-            .keyboardShortcut("w")
         }
 
         CommandGroup(replacing: .printItem) {
-            Button(settings.text(.print)) {
-                Task { await appDelegate.currentDocumentStore?.print() }
+            WindowCommands(state: appDelegate.windowCommandState) { context in
+                Button(settings.text(.print)) {
+                    Task { await appDelegate.currentDocumentStore?.print() }
+                }
+                .keyboardShortcut("p")
+                .disabled(context.document == nil)
             }
-            .keyboardShortcut("p")
         }
 
         CommandMenu(settings.text(.formatMenu)) {
-            ForEach(MarkdownFormatCommand.formatItems, id: \.title) { item in
-                Button(settings.text(item.title)) {
-                    appDelegate.currentDocumentStore?.requestFormat(item.action)
+            WindowCommands(state: appDelegate.windowCommandState) { context in
+                ForEach(MarkdownFormatCommand.formatItems, id: \.title) { item in
+                    Button(settings.text(item.title)) {
+                        appDelegate.currentDocumentStore?.requestFormat(item.action)
+                    }
+                    .keyboardShortcut(item.shortcut.keyEquivalent, modifiers: item.shortcut.modifiers.eventModifiers)
+                    .disabled(context.document == nil)
                 }
-                .keyboardShortcut(item.shortcut.keyEquivalent, modifiers: item.shortcut.modifiers.eventModifiers)
-            }
-            Menu(settings.text(.tableOperations)) {
-                ForEach(MarkdownFormatCommand.tableItems, id: \.title) { item in
-                    TableEditingCommand(title: settings.text(item.title), state: appDelegate.attachmentCommandState) {
-                        appDelegate.currentDocumentStore?.requestTableEdit(item.action)
+
+                Menu(settings.text(.tableOperations)) {
+                    ForEach(MarkdownFormatCommand.tableItems, id: \.title) { item in
+                        Button(settings.text(item.title)) {
+                            appDelegate.currentDocumentStore?.requestTableEdit(item.action)
+                        }
+                        .disabled(context.document == nil)
                     }
                 }
+                .disabled(context.document == nil)
             }
         }
 
         CommandMenu(settings.text(.paragraphMenu)) {
-            ForEach(MarkdownFormatCommand.paragraphItems, id: \.title) { item in
-                Button(settings.text(item.title)) {
-                    appDelegate.currentDocumentStore?.requestFormat(item.action)
+            WindowCommands(state: appDelegate.windowCommandState) { context in
+                ForEach(MarkdownFormatCommand.paragraphItems, id: \.title) { item in
+                    Button(settings.text(item.title)) {
+                        appDelegate.currentDocumentStore?.requestFormat(item.action)
+                    }
+                    .keyboardShortcut(item.shortcut.keyEquivalent, modifiers: item.shortcut.modifiers.eventModifiers)
+                    .disabled(context.document == nil)
                 }
-                .keyboardShortcut(item.shortcut.keyEquivalent, modifiers: item.shortcut.modifiers.eventModifiers)
             }
         }
 
@@ -317,30 +348,32 @@ private struct AppCommands: Commands {
             Button(settings.text(.resetZoom), action: settings.resetZoom)
                 .keyboardShortcut("0", modifiers: [.command, .option])
 
+            WindowCommands(state: appDelegate.windowCommandState) { context in
+                Button(settings.text(.focusFolderBrowser)) {
+                    appDelegate.focusFolderBrowser()
+                }
+                .keyboardShortcut(settings.folderBrowserShortcut.keyEquivalent,
+                                  modifiers: settings.folderBrowserShortcut.modifiers.eventModifiers)
+                .disabled(!context.canFocusFolderBrowser)
+            }
+
             RemoteImagesCommandMenu(
-                settings: settings, state: appDelegate.attachmentCommandState,
+                settings: settings, state: appDelegate.windowCommandState,
                 contentState: appDelegate.contentState(for:)
             )
         }
 
         CommandMenu(settings.text(.mode)) {
-            let editShortcut = settings.modeShortcuts[.write]
-            Button(settings.text(.write)) {
-                appDelegate.currentDocumentStore?.requestMode(.write)
+            WindowCommands(state: appDelegate.windowCommandState) { context in
+                ForEach(settings.modeShortcuts.assignments) { assignment in
+                    Button(settings.modeLabel(assignment.mode)) {
+                        appDelegate.currentDocumentStore?.requestMode(assignment.mode)
+                    }
+                    .keyboardShortcut(assignment.shortcut.keyEquivalent,
+                                      modifiers: assignment.shortcut.modifiers.eventModifiers)
+                    .disabled(context.document == nil)
+                }
             }
-            .keyboardShortcut(editShortcut.keyEquivalent, modifiers: editShortcut.modifiers.eventModifiers)
-
-            let previewShortcut = settings.modeShortcuts[.read]
-            Button(settings.text(.read)) {
-                appDelegate.currentDocumentStore?.requestMode(.read)
-            }
-            .keyboardShortcut(previewShortcut.keyEquivalent, modifiers: previewShortcut.modifiers.eventModifiers)
-
-            let splitShortcut = settings.modeShortcuts[.split]
-            Button(settings.text(.sideBySide)) {
-                appDelegate.currentDocumentStore?.requestMode(.split)
-            }
-            .keyboardShortcut(splitShortcut.keyEquivalent, modifiers: splitShortcut.modifiers.eventModifiers)
 
             Divider()
             Toggle(settings.text(.typewriterScrolling), isOn: $settings.usesTypewriterScrolling)
@@ -351,26 +384,30 @@ private struct AppCommands: Commands {
         }
 
         CommandGroup(after: .textEditing) {
-            Divider()
-            Button(settings.text(.find)) {
-                appDelegate.currentDocumentStore?.requestFind(.show)
-            }
-            .keyboardShortcut("f")
+            WindowCommands(state: appDelegate.windowCommandState) { context in
+                Group {
+                    Button(settings.text(.find)) {
+                        appDelegate.currentDocumentStore?.requestFind(.show)
+                    }
+                    .keyboardShortcut("f")
 
-            Button(settings.text(.findReplace)) {
-                appDelegate.currentDocumentStore?.requestFind(.showReplace)
-            }
-            .keyboardShortcut("f", modifiers: [.command, .option])
+                    Button(settings.text(.findReplace)) {
+                        appDelegate.currentDocumentStore?.requestFind(.showReplace)
+                    }
+                    .keyboardShortcut("f", modifiers: [.command, .option])
 
-            Button(settings.text(.findNext)) {
-                appDelegate.currentDocumentStore?.requestFind(.next)
-            }
-            .keyboardShortcut("g")
+                    Button(settings.text(.findNext)) {
+                        appDelegate.currentDocumentStore?.requestFind(.next)
+                    }
+                    .keyboardShortcut("g")
 
-            Button(settings.text(.findPrevious)) {
-                appDelegate.currentDocumentStore?.requestFind(.previous)
+                    Button(settings.text(.findPrevious)) {
+                        appDelegate.currentDocumentStore?.requestFind(.previous)
+                    }
+                    .keyboardShortcut("g", modifiers: [.command, .shift])
+                }
+                .disabled(context.document == nil)
             }
-            .keyboardShortcut("g", modifiers: [.command, .shift])
         }
     }
 }

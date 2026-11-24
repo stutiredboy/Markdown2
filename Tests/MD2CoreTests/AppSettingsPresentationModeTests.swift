@@ -131,12 +131,13 @@ struct AppSettingsPresentationModeTests {
         #expect(settings.defaultMode == .write)
     }
 
-    @Test func modeShortcutsDefaultToCommandNumberKeys() {
+    @Test func modeShortcutsDefaultToControlCommandNumberKeys() {
         let settings = makeSettings()
 
-        #expect(settings.modeShortcuts[.write] == .command("1"))
-        #expect(settings.modeShortcuts[.read] == .command("2"))
-        #expect(settings.modeShortcuts[.split] == .command("3"))
+        #expect(settings.modeShortcuts[.write] == ModeKeyboardShortcut(key: "1", modifiers: [.control, .command]))
+        #expect(settings.modeShortcuts[.read] == ModeKeyboardShortcut(key: "2", modifiers: [.control, .command]))
+        #expect(settings.modeShortcuts[.split] == ModeKeyboardShortcut(key: "3", modifiers: [.control, .command]))
+        #expect(ModeShortcutValidator.isValidConfiguration(settings.modeShortcuts))
     }
 
     @Test func folderFocusShortcutPreservesExistingModeBindings() {
@@ -148,7 +149,7 @@ struct AppSettingsPresentationModeTests {
         #expect(settings.updateModeShortcut(regular, for: .write) == nil)
         #expect(settings.modeShortcuts[.write] == regular)
         #expect(settings.folderBrowserShortcut == fallback)
-        #expect(settings.updateModeShortcut(.command("1"), for: .write) == nil)
+        #expect(settings.updateModeShortcut(ModeShortcutConfiguration.default[.write], for: .write) == nil)
         #expect(settings.folderBrowserShortcut == regular)
     }
 
@@ -158,14 +159,13 @@ struct AppSettingsPresentationModeTests {
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         let first = AppSettings(defaults: defaults)
-        // Option-Command-2 is reserved for Heading 2.
-        let custom = ModeKeyboardShortcut(key: "2", modifiers: [.command, .control])
+        let custom = ModeKeyboardShortcut.command("2")
         #expect(first.updateModeShortcut(custom, for: .read) == nil)
 
         let second = AppSettings(defaults: defaults)
         #expect(second.modeShortcuts[.read] == custom)
-        #expect(second.modeShortcuts[.write] == .command("1"))
-        #expect(second.modeShortcuts[.split] == .command("3"))
+        #expect(second.modeShortcuts[.write] == ModeShortcutConfiguration.default[.write])
+        #expect(second.modeShortcuts[.split] == ModeShortcutConfiguration.default[.split])
     }
 
     @Test func invalidStoredModeShortcutConfigurationFallsBackToDefaults() throws {
@@ -197,10 +197,10 @@ struct AppSettingsPresentationModeTests {
     @Test func duplicateModeShortcutIsRejectedAndPreviousValueRemains() {
         let settings = makeSettings()
 
-        let error = settings.updateModeShortcut(.command("1"), for: .read)
+        let error = settings.updateModeShortcut(settings.modeShortcuts[.write], for: .read)
 
         #expect(error == .duplicate(existingMode: .write))
-        #expect(settings.modeShortcuts[.read] == .command("2"))
+        #expect(settings.modeShortcuts[.read] == ModeShortcutConfiguration.default[.read])
     }
 
     @Test func appCommandModeShortcutIsRejectedAndPreviousValueRemains() {
@@ -209,7 +209,7 @@ struct AppSettingsPresentationModeTests {
         let error = settings.updateModeShortcut(.command("s"), for: .write)
 
         #expect(error == .appCommand(commandName: "Save"))
-        #expect(settings.modeShortcuts[.write] == .command("1"))
+        #expect(settings.modeShortcuts[.write] == ModeShortcutConfiguration.default[.write])
     }
 
     @Test func systemReservedModeShortcutIsRejectedAndPreviousValueRemains() {
@@ -218,6 +218,6 @@ struct AppSettingsPresentationModeTests {
         let error = settings.updateModeShortcut(ModeKeyboardShortcut(key: "space", modifiers: [.command]), for: .read)
 
         #expect(error == .systemReserved(reason: "Spotlight"))
-        #expect(settings.modeShortcuts[.read] == .command("2"))
+        #expect(settings.modeShortcuts[.read] == ModeShortcutConfiguration.default[.read])
     }
 }
