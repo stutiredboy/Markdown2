@@ -699,6 +699,14 @@ struct FolderTestApplication {
     var focusedElement: AXUIElement? { elementAttribute(kAXFocusedUIElementAttribute, of: accessibility) }
     var windows: [AXUIElement] { attribute(kAXWindowsAttribute, of: accessibility) as? [AXUIElement] ?? [] }
 
+    func activateForInput() throws {
+        _ = try waitFor("the isolated app to receive keyboard input") {
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { return accessibility }
+            process.activate()
+            return nil
+        }
+    }
+
     var folderWindows: [AXUIElement] {
         windows.filter { descendant($0) { identifier($0) == "folder-file-list" } != nil }
     }
@@ -732,9 +740,7 @@ struct FolderTestApplication {
         let picker = try waitFor("the Open Folder picker") { windows.first { title($0).hasPrefix("Open Folder") } }
         if navigateToPath {
             // AppKit's remote picker services Go to Folder outside the app PID.
-            _ = try waitFor("the app's native picker becomes frontmost") {
-                NSWorkspace.shared.frontmostApplication?.processIdentifier == pid ? picker : nil
-            }
+            try activateForInput()
             let previousFocus = focusedElement
             try postKey(UInt16(kVK_ANSI_G), flags: [.maskCommand, .maskShift], toWindowServer: true)
             let location = try waitFor("Go to Folder's path field") {
@@ -1159,7 +1165,11 @@ struct FolderTestApplication {
         }
     }
 
-    func key(_ key: Int, flags: CGEventFlags = []) throws { try postKey(UInt16(key), flags: flags) }
+    func key(_ key: Int, flags: CGEventFlags = []) throws {
+        // A background app can accept PID-directed text while ignoring its menu shortcut.
+        try activateForInput()
+        try postKey(UInt16(key), flags: flags)
+    }
 
     func type(_ text: String) throws {
         for character in text { try postKey(0, flags: [], text: String(character)) }
@@ -1168,6 +1178,9 @@ struct FolderTestApplication {
     private func postKey(
         _ key: CGKeyCode, flags: CGEventFlags, text: String? = nil, toWindowServer: Bool = false
     ) throws {
+        if toWindowServer, NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
+            throw FolderTestError("The isolated picker lost foreground keyboard focus")
+        }
         for down in [true, false] {
             let event = try XCTUnwrap(CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: down))
             event.flags = flags

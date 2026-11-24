@@ -452,19 +452,7 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
     }
 
     func testLocalHistoryRestoresSelectedRevisionIntoAnIndependentDocumentTab() throws {
-        func wait<Value>(_ label: String, _ read: () -> Value?) throws -> Value {
-            let deadline = Date().addingTimeInterval(5)
-            repeat {
-                if let value = read() { return value }
-                usleep(50_000)
-            } while Date() < deadline
-            throw GuardFailure("missing \(label)")
-        }
-        func attribute(_ name: String, of element: AXUIElement) -> String? {
-            var value: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
-            return value as? String
-        }
+        let attribute = Self.stringAttribute
         func descendant(of element: AXUIElement, where matches: (AXUIElement) -> Bool) -> AXUIElement? {
             if matches(element) { return element }
             for child in Self.children(of: element) {
@@ -509,39 +497,12 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         let source = try XCTUnwrap(Self.firstElement(ofRole: kAXTextAreaRole as String, in: originalWindow))
         func expectText(_ text: String, in editor: AXUIElement) throws {
             _ = try wait("exact editor text") {
-                attribute(kAXValueAttribute, of: editor).flatMap { $0.utf16.elementsEqual(text.utf16) ? $0 : nil }
+                attribute(kAXValueAttribute, editor).flatMap { $0.utf16.elementsEqual(text.utf16) ? $0 : nil }
             }
-        }
-        func pressMenu(_ menuTitle: String, _ title: String) throws {
-            let app = AXUIElementCreateApplication(pid)
-            func menuBarItem() -> AXUIElement? {
-                var value: CFTypeRef?
-                guard AXUIElementCopyAttributeValue(app, kAXMenuBarAttribute as CFString, &value) == .success,
-                      let bar = Self.element(value) else { return nil }
-                return Self.children(of: bar).first { Self.title(of: $0) == menuTitle }
-            }
-            func menu() -> AXUIElement? { menuBarItem().flatMap { Self.children(of: $0).first } }
-            let entry = try wait("\(menuTitle) menu", menuBarItem)
-            XCTAssertEqual(AXUIElementPerformAction(entry, kAXPressAction as CFString), .success)
-            var selected = false
-            defer {
-                if !selected, let menu = menu() { AXUIElementPerformAction(menu, kAXCancelAction as CFString) }
-            }
-            let item = try wait("enabled \(menuTitle) > \(title)") {
-                menu().flatMap { menu in
-                    Self.children(of: menu).first {
-                        let label = Self.title(of: $0)
-                        return Self.isEnabled($0) && (label == title || label.hasPrefix(title + " "))
-                    }
-                }
-            }
-            let outcome = AXUIElementPerformAction(item, kAXPressAction as CFString)
-            XCTAssertEqual(outcome, .success, title)
-            selected = outcome == .success
         }
         func findHistoryElement(_ id: String) -> AXUIElement? {
             for window in Self.windows(pid: pid) {
-                if let match = descendant(of: window, where: { attribute(kAXIdentifierAttribute, of: $0) == id }) {
+                if let match = descendant(of: window, where: { attribute(kAXIdentifierAttribute, $0) == id }) {
                     return match
                 }
             }
@@ -552,24 +513,22 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         try expectText(historical, in: source)
         board.clearContents()
         XCTAssertTrue(board.setString(latest, forType: .string))
-        NSRunningApplication(processIdentifier: pid)?.activate()
-        XCTAssertEqual(AXUIElementPerformAction(originalWindow, kAXRaiseAction as CFString), .success)
-        XCTAssertEqual(AXUIElementSetAttributeValue(source, kAXFocusedAttribute as CFString, kCFBooleanTrue), .success)
+        try focusEditor(source, in: originalWindow, pid: pid)
         var entireSource = CFRange(location: 0, length: historical.utf16.count)
         let selection = try XCTUnwrap(AXValueCreate(.cfRange, &entireSource))
         XCTAssertEqual(AXUIElementSetAttributeValue(source, kAXSelectedTextRangeAttribute as CFString, selection), .success)
-        try pressMenu("Edit", "Paste as Plain Text")
+        try useMenu("Edit", "Paste as Plain Text", pid: pid)
         try expectText(latest, in: source)
-        try pressMenu("File", "Save")
+        try useMenu("File", "Save", pid: pid)
         _ = try wait("latest bytes on disk") { (try? Data(contentsOf: document)) == latestBytes ? true : nil }
 
-        try pressMenu("File", "Browse Local History…")
+        try useMenu("File", "Browse Local History…", pid: pid)
         func expectExcerpt(_ marker: String) throws {
             _ = try wait("history excerpt containing \(marker)") {
                 guard let excerpt = findHistoryElement("historyRevisionExcerpt") else { return nil as AXUIElement? }
                 return descendant(of: excerpt) { row in
                     [kAXValueAttribute, kAXTitleAttribute, kAXDescriptionAttribute].contains {
-                        attribute($0, of: row)?.contains(marker) == true
+                        attribute($0, row)?.contains(marker) == true
                     }
                 }
             }
@@ -584,7 +543,7 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         let restore = try historyElement("historyRestoreAsCopy")
         XCTAssertEqual(AXUIElementPerformAction(restore, kAXPressAction as CFString), .success)
         let filenameField = try historyElement("historyCopyFilename")
-        let filename = try XCTUnwrap(attribute(kAXValueAttribute, of: filenameField))
+        let filename = try XCTUnwrap(attribute(kAXValueAttribute, filenameField))
         XCTAssertFalse(filename.isEmpty)
         XCTAssertNotEqual(filename, document.lastPathComponent)
         let restored = document.deletingLastPathComponent().appendingPathComponent(filename)
@@ -622,10 +581,10 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         }
         try selectTab(document.lastPathComponent, from: copyWindow, to: originalWindow)
         try expectText(latest, in: source)
-        XCTAssertEqual(AXUIElementSetAttributeValue(source, kAXFocusedAttribute as CFString, kCFBooleanTrue), .success)
-        try pressMenu("Edit", "Undo")
+        try focusEditor(source, in: originalWindow, pid: pid)
+        try useMenu("Edit", "Undo", pid: pid)
         try expectText(historical, in: source)
-        try pressMenu("Edit", "Redo")
+        try useMenu("Edit", "Redo", pid: pid)
         try expectText(latest, in: source)
         try selectTab(filename, from: originalWindow, to: copyWindow)
         try expectText(historical, in: copyEditor)
@@ -705,14 +664,8 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         case statusMenu = "remote-images-status-menu"
     }
 
-    private static func remoteImageAttribute(_ name: String, of element: AXUIElement) -> String? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
-        return value as? String
-    }
-
     private static func remoteImageControl(_ id: String, in root: AXUIElement) -> AXUIElement? {
-        if remoteImageAttribute(kAXIdentifierAttribute, of: root) == id { return root }
+        if stringAttribute(kAXIdentifierAttribute, of: root) == id { return root }
         for child in children(of: root) {
             if let found = remoteImageControl(id, in: child) { return found }
         }
@@ -725,16 +678,16 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         let opener = try XCTUnwrap(Self.remoteImageControl(RemoteImageSurface.statusMenu.rawValue, in: window))
         let status = L10n.text(.remoteImagesAllowed, language: .english)
         XCTAssertTrue([kAXValueAttribute, kAXDescriptionAttribute, kAXHelpAttribute, kAXTitleAttribute].contains {
-            Self.remoteImageAttribute($0, of: opener)?.contains(status) == true
+            Self.stringAttribute($0, of: opener)?.contains(status) == true
         }, "The status menu must announce session permission")
         AXUIElementSetMessagingTimeout(opener, 1)
         let result = AXUIElementPerformAction(opener, kAXPressAction as CFString)
         XCTAssertTrue(result == .success || result == .cannotComplete, "The allowed status menu can be opened by AXPress")
 
         func action(in root: AXUIElement) -> AXUIElement? {
-            if Self.remoteImageAttribute(kAXRoleAttribute, of: root) == kAXMenuItemRole,
+            if Self.stringAttribute(kAXRoleAttribute, of: root) == kAXMenuItemRole,
                Self.isEnabled(root),
-               (Self.remoteImageAttribute(kAXIdentifierAttribute, of: root) == id || Self.title(of: root) == title) {
+               (Self.stringAttribute(kAXIdentifierAttribute, of: root) == id || Self.title(of: root) == title) {
                 return root
             }
             for child in Self.children(of: root) {
@@ -768,7 +721,7 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
                 guard let item = Self.children(of: parent).first(where: { Self.title(of: $0) == title }) else { return nil }
                 if title == path[depth] { return item }
                 guard let menu = Self.children(of: item).first(where: {
-                    Self.remoteImageAttribute(kAXRoleAttribute, of: $0) == kAXMenuRole
+                    Self.stringAttribute(kAXRoleAttribute, of: $0) == kAXMenuRole
                 }) else { return nil }
                 parent = menu
             }
@@ -797,7 +750,7 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             let host = try waitForWindow(pid: pid) { window in
                 guard Self.title(of: window).hasPrefix(document.lastPathComponent),
                       let editor = Self.firstElement(ofRole: kAXTextAreaRole, in: window),
-                      Self.remoteImageAttribute(kAXValueAttribute, of: editor) == expected else { return false }
+                      Self.stringAttribute(kAXValueAttribute, of: editor) == expected else { return false }
                 let banner = Self.remoteImageControl(RemoteImageSurface.banner.rawValue, in: window)
                 let statusMenu = Self.remoteImageControl(RemoteImageSurface.statusMenu.rawValue, in: window)
                 return (banner != nil) == (surface == .banner) && (statusMenu != nil) == (surface == .statusMenu)
@@ -878,7 +831,7 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         let confirm = "remote-images-confirm"
         let statusMenu = RemoteImageSurface.statusMenu.rawValue
         let banner = RemoteImageSurface.banner.rawValue
-        let attribute = Self.remoteImageAttribute
+        let attribute = Self.stringAttribute
         let control = Self.remoteImageControl
         func sheet(in window: AXUIElement) -> AXUIElement? {
             Self.firstElement(ofRole: kAXSheetRole, in: window)
@@ -989,7 +942,7 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         let confirm = "remote-images-confirm"
         let statusMenu = RemoteImageSurface.statusMenu.rawValue
         let banner = RemoteImageSurface.banner.rawValue
-        let attribute = Self.remoteImageAttribute
+        let attribute = Self.stringAttribute
         let element = Self.remoteImageControl
         func sheet(in window: AXUIElement) -> AXUIElement? {
             Self.firstElement(ofRole: kAXSheetRole, in: window)
@@ -1112,64 +1065,54 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         let document = try makeDocument("notes/PasteMenu.md")
         let pid = try launch(recents: [], language: "english", appleLanguages: ["en"])
         try waitForEntries([], pid: pid)
-        func item(_ title: String) throws -> AXUIElement {
-            var barValue: CFTypeRef?
-            let app = AXUIElementCreateApplication(pid)
-            guard AXUIElementCopyAttributeValue(app, kAXMenuBarAttribute as CFString, &barValue) == .success,
-                  let bar = Self.element(barValue) else { throw GuardFailure("paste menu bar unavailable") }
-            for entry in Self.children(of: bar) {
-                for menu in Self.children(of: entry) {
-                    if let result = Self.children(of: menu).first(where: { Self.title(of: $0) == title }) { return result }
-                }
-            }
-            throw GuardFailure("paste menu item missing: \(title)")
+        let pasteTitles = ["Paste as Plain Text", "Paste as Markdown", "Paste as Table"]
+        try useMenu("Edit", pid: pid) { item in
+            for title in pasteTitles { _ = try item(title, false) }
         }
-        func waitEnabled(_ title: String, _ expected: Bool) throws {
-            let deadline = Date().addingTimeInterval(5)
-            repeat {
-                if let target = try? item(title), Self.isEnabled(target) == expected { return }
-                usleep(50_000)
-            } while Date() < deadline
-            XCTAssertEqual(Self.isEnabled(try item(title)), expected, title)
+        try open(document)
+        try waitForEntries([document], pid: pid)
+        try useMenu("Mode", "Edit", pid: pid)
+        let sourceWindow = try waitForWindow(pid: pid) {
+            Self.title(of: $0) == document.lastPathComponent && Self.firstElement(ofRole: kAXTextAreaRole, in: $0) != nil
         }
-        for title in ["Paste as Plain Text", "Paste as Markdown", "Paste as Table"] { try waitEnabled(title, false) }
-        try open(document); try waitForEntries([document], pid: pid)
-        XCTAssertEqual(AXUIElementPerformAction(try item("Edit"), kAXPressAction as CFString), .success)
-        let sourceWindow = try waitForWindow(pid: pid) { Self.firstElement(ofRole: kAXTextAreaRole as String, in: $0) != nil }
-        let source = try XCTUnwrap(Self.firstElement(ofRole: kAXTextAreaRole as String, in: sourceWindow))
-        XCTAssertEqual(AXUIElementSetAttributeValue(source, kAXFocusedAttribute as CFString, kCFBooleanTrue), .success)
-        for title in ["Paste as Plain Text", "Paste as Markdown", "Paste as Table"] { try waitEnabled(title, true) }
-        let plainItem = try item("Paste as Plain Text")
-        XCTAssertEqual(Self.commandCharacter(of: plainItem)?.lowercased(), "v")
-        var modifiers: CFTypeRef?
-        AXUIElementCopyAttributeValue(plainItem, kAXMenuItemCmdModifiersAttribute as CFString, &modifiers)
-        // AX uses Shift=1, Option=2, Control=4, NoCommand=8.
-        XCTAssertEqual((modifiers as? NSNumber)?.intValue, 3)
-        // Actual Find focus must disable the source-only commands.
-        XCTAssertEqual(AXUIElementPerformAction(try menuItem(commandCharacter: "F", pid: pid), kAXPressAction as CFString), .success)
-        try waitEnabled("Paste as Markdown", false); try waitEnabled("Paste as Table", false)
-        try waitEnabled("Paste as Plain Text", true)
-        XCTAssertEqual(AXUIElementPerformAction(try item("Paste as Plain Text"), kAXPressAction as CFString), .success)
-        let fieldDeadline = Date().addingTimeInterval(5)
-        var fieldValue = ""
-        repeat {
-            var focusedValue: CFTypeRef?
-            AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXFocusedUIElementAttribute as CFString, &focusedValue)
-            if let focused = Self.element(focusedValue) {
-                var value: CFTypeRef?
-                AXUIElementCopyAttributeValue(focused, kAXValueAttribute as CFString, &value)
-                fieldValue = value as? String ?? ""
-            }
-            if fieldValue == "PASTE_NATIVE_FIELD" { break }
-            usleep(50_000)
-        } while Date() < fieldDeadline
-        XCTAssertEqual(fieldValue, "PASTE_NATIVE_FIELD", "plain paste belongs to the focused Find field")
+        let source = try XCTUnwrap(Self.firstElement(ofRole: kAXTextAreaRole, in: sourceWindow))
+        try focusEditor(source, in: sourceWindow, pid: pid)
+        try useMenu("Edit", "Find…", pid: pid) { item in
+            for title in pasteTitles.dropFirst() { _ = try item(title, true) }
+            let plain = try item("Paste as Plain Text", true)
+            XCTAssertEqual(Self.commandCharacter(of: plain)?.lowercased(), "v")
+            var modifiers: CFTypeRef?
+            AXUIElementCopyAttributeValue(plain, kAXMenuItemCmdModifiersAttribute as CFString, &modifiers)
+            // AX uses Shift=1, Option=2, Control=4, NoCommand=8.
+            XCTAssertEqual((modifiers as? NSNumber)?.intValue, 3)
+        }
+        let query = try wait("the Find field to gain keyboard focus") {
+            guard let focused = self.focusedAttribute(kAXFocusedUIElementAttribute, pid: pid),
+                  Self.stringAttribute(kAXRoleAttribute, of: focused) == kAXTextFieldRole,
+                  [kAXDescriptionAttribute, kAXPlaceholderValueAttribute].contains(where: {
+                      Self.stringAttribute($0, of: focused) == "Find"
+                  }) else { return nil as AXUIElement? }
+            return focused
+        }
+        try useMenu("Edit", "Paste as Plain Text", pid: pid) { item in
+            _ = try item("Paste as Markdown", false)
+            _ = try item("Paste as Table", false)
+        }
+        _ = try wait("plain paste in the focused Find field") {
+            Self.stringAttribute(kAXValueAttribute, of: query) == "PASTE_NATIVE_FIELD" ? query : nil
+        }
         var sourceValue: CFTypeRef?
         AXUIElementCopyAttributeValue(source, kAXValueAttribute as CFString, &sourceValue)
         XCTAssertFalse((sourceValue as? String ?? "").contains("PASTE_NATIVE_FIELD"))
         XCTAssertEqual(AXUIElementPerformAction(try menuItem(commandCharacter: ",", pid: pid), kAXPressAction as CFString), .success)
-        _ = try waitForWindow(pid: pid) { Self.title(of: $0).contains("Settings") || Self.title(of: $0).contains("设置") }
-        try waitEnabled("Paste as Markdown", false); try waitEnabled("Paste as Table", false)
+        let settingsWindow = try waitForWindow(pid: pid) { Self.title(of: $0).contains("Settings") }
+        _ = try wait("Settings to gain window focus") {
+            self.focusedAttribute(kAXFocusedWindowAttribute, pid: pid).flatMap { CFEqual($0, settingsWindow) ? $0 : nil }
+        }
+        try useMenu("Edit", pid: pid) { item in
+            _ = try item("Paste as Markdown", false)
+            _ = try item("Paste as Table", false)
+        }
     }
 
     func testPasteSourceCommandsUndoFallbackAndReadSplitBoundaries() throws {
@@ -1209,7 +1152,9 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
                     throw GuardFailure("paste fixture window represents \(value), expected \(document.path)")
                 }
             }
-            return try XCTUnwrap(Self.firstElement(ofRole: kAXTextAreaRole as String, in: window))
+            let editor = try XCTUnwrap(Self.firstElement(ofRole: kAXTextAreaRole as String, in: window))
+            try focusEditor(editor, in: window, pid: pid)
+            return editor
         }
         func sourceText(_ source: AXUIElement) throws -> String {
             var value: CFTypeRef?
@@ -1219,34 +1164,17 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             }
             return text
         }
-        func command(_ title: String) throws -> AXUIElement {
-            var barValue: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXMenuBarAttribute as CFString, &barValue) == .success,
-                  let bar = Self.element(barValue) else { throw GuardFailure("paste menu bar unavailable") }
-            for entry in Self.children(of: bar) { for menu in Self.children(of: entry) {
-                if let item = Self.children(of: menu).first(where: { Self.title(of: $0) == title || Self.title(of: $0).hasPrefix(title + " ") }) { return item }
-            } }
-            throw GuardFailure("paste command unavailable: \(title)")
-        }
-        func press(_ title: String) throws {
-            let deadline = Date().addingTimeInterval(5)
-            while !(try Self.isEnabled(command(title))), Date() < deadline { usleep(50_000) }
-            let target = try command(title)
-            print("PasteRoundTrip press \(Self.title(of: target)) enabled=\(Self.isEnabled(target))")
-            XCTAssertTrue(Self.isEnabled(target))
-            XCTAssertEqual(AXUIElementPerformAction(target, kAXPressAction as CFString), .success)
-        }
-        func select(_ source: AXUIElement, range: CFRange? = nil) throws {
-            XCTAssertEqual(AXUIElementSetAttributeValue(source, kAXFocusedAttribute as CFString, kCFBooleanTrue), .success)
+        func select(_ source: AXUIElement) throws {
             let text = try sourceText(source)
-            var selection = range ?? CFRange(location: 0, length: (text as NSString).length)
+            var selection = CFRange(location: 0, length: text.utf16.count)
             let value = try XCTUnwrap(AXValueCreate(.cfRange, &selection))
             XCTAssertEqual(AXUIElementSetAttributeValue(source, kAXSelectedTextRangeAttribute as CFString, value), .success)
         }
         func waitText(_ expected: String, source: AXUIElement) throws {
             let deadline = Date().addingTimeInterval(5)
             while try sourceText(source) != expected, Date() < deadline { usleep(50_000) }
-            XCTAssertEqual(try sourceText(source), expected)
+            let actual = try sourceText(source)
+            guard actual == expected else { throw GuardFailure("expected editor text \(expected.debugDescription), saw \(actual.debugDescription)") }
         }
         func paste(_ title: String, plain: String, html: String? = nil, source: AXUIElement) throws {
             board.clearContents()
@@ -1254,12 +1182,9 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
             if let html { item.setData(Data(html.utf8), forType: .html) }
             board.writeObjects([item])
             try select(source)
-            let deadline = Date().addingTimeInterval(5)
-            while !(try Self.isEnabled(command(title))), Date() < deadline { usleep(50_000) }
-            XCTAssertTrue(try Self.isEnabled(command(title)))
-            XCTAssertEqual(AXUIElementPerformAction(try command(title), kAXPressAction as CFString), .success)
+            try useMenu("Edit", title, pid: pid)
         }
-        try press("Edit")
+        try useMenu("Mode", "Edit", pid: pid)
         var source = try sourceEditor()
         let original = try sourceText(source)
         let disk = try Data(contentsOf: document)
@@ -1269,15 +1194,15 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         }
         try paste("Paste as Plain Text", plain: "https://example.com", source: source)
         try waitText("https://example.com", source: source)
-        try press("Undo")
+        try useMenu("Edit", "Undo", pid: pid)
         try waitText(original, source: source)
-        try press("Redo")
+        try useMenu("Edit", "Redo", pid: pid)
         try waitText("https://example.com", source: source)
         try paste("Paste as Table", plain: "H\tB\n1\t2", source: source)
         let table = "| H | B |\n| --- | --- |\n| 1 | 2 |"
         try waitText(table, source: source)
         XCTAssertTrue(MarkdownRenderer().render(try sourceText(source)).body.contains("<table"))
-        try press("Undo")
+        try useMenu("Edit", "Undo", pid: pid)
         try waitText("https://example.com", source: source)
         try paste("Paste as Markdown", plain: "Bold", html: "<p><strong>Bold</strong></p>", source: source)
         try waitText("**Bold**", source: source)
@@ -1286,28 +1211,31 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
         try waitText(literal, source: source)
         XCTAssertEqual(RenderedPlainText.extract(from: MarkdownRenderer().render(try sourceText(source)).body), "![x](https://example.com)")
         XCTAssertFalse(MarkdownRenderer().render(try sourceText(source)).body.contains("<img"))
-        func containsFallbackNotice(_ element: AXUIElement) -> Bool {
+        func containsNotice(_ text: String, in element: AXUIElement) -> Bool {
             var value: CFTypeRef?
             AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &value)
-            if (value as? String ?? Self.title(of: element)).contains("Formatting was not preserved") { return true }
-            return Self.children(of: element).contains(where: containsFallbackNotice)
+            if (value as? String ?? Self.title(of: element)).contains(text) { return true }
+            return Self.children(of: element).contains { containsNotice(text, in: $0) }
         }
-        let noticeDeadline = Date().addingTimeInterval(5)
-        while !Self.windows(pid: pid).contains(where: containsFallbackNotice), Date() < noticeDeadline { usleep(50_000) }
-        XCTAssertTrue(Self.windows(pid: pid).contains(where: containsFallbackNotice), "whole-input fallback must be disclosed visibly")
+        func waitForNotice(_ key: L10nKey) throws {
+            let text = L10n.text(key, language: .english)
+            _ = try wait("the paste notice: \(text)") { Self.windows(pid: pid).first { containsNotice(text, in: $0) } }
+        }
+        try waitForNotice(.pasteLiteralFallbackNotice)
         // Empty input must not delete a full selection or create an undo step.
         try paste("Paste as Plain Text", plain: "", source: source)
-        usleep(200_000); try waitText(literal, source: source)
-        try press("Undo")
+        try waitForNotice(.pasteUnavailableNotice)
+        try waitText(literal, source: source)
+        try useMenu("Edit", "Undo", pid: pid)
         try waitText("**Bold**", source: source)
         // Read retains source but offers no source-only paste command.
-        try press("Preview")
-        let readDeadline = Date().addingTimeInterval(5)
-        while (try Self.isEnabled(command("Paste as Markdown"))), Date() < readDeadline { usleep(50_000) }
-        XCTAssertFalse(try Self.isEnabled(command("Paste as Markdown")))
-        XCTAssertFalse(try Self.isEnabled(command("Paste as Table")))
+        try useMenu("Mode", "Preview", pid: pid)
+        try useMenu("Edit", pid: pid) { item in
+            _ = try item("Paste as Markdown", false)
+            _ = try item("Paste as Table", false)
+        }
         // Split re-hosts the retained editor and accepts a fresh command.
-        try press("Side by Side")
+        try useMenu("Mode", "Side by Side", pid: pid)
         source = try sourceEditor()
         try paste("Paste as Plain Text", plain: "split source", source: source)
         try waitText("split source", source: source)
@@ -2013,6 +1941,105 @@ final class RecentDocumentsMenuGUITests: XCTestCase {
     }
 
     // MARK: - Driving the app
+
+    private func wait<Value>(_ label: String, _ read: () -> Value?) throws -> Value {
+        let deadline = Date().addingTimeInterval(5)
+        repeat {
+            if let value = read() { return value }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        } while Date() < deadline
+        throw GuardFailure("timed out waiting for \(label)")
+    }
+
+    private static func stringAttribute(_ name: String, of element: AXUIElement) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
+        return value as? String
+    }
+
+    private func activateIfNeeded(pid: pid_t) -> Bool {
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { return true }
+        NSRunningApplication(processIdentifier: pid)?.activate()
+        return false
+    }
+
+    private func focusedAttribute(_ name: String, pid: pid_t) -> AXUIElement? {
+        guard activateIfNeeded(pid: pid) else { return nil }
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid),
+            name as CFString, &value) == .success else { return nil }
+        return Self.element(value)
+    }
+
+    private func focusEditor(_ source: AXUIElement, in window: AXUIElement, pid: pid_t) throws {
+        _ = try wait("the isolated app to become frontmost") { self.activateIfNeeded(pid: pid) ? true : nil }
+        XCTAssertEqual(AXUIElementPerformAction(window, kAXRaiseAction as CFString), .success)
+        XCTAssertEqual(AXUIElementSetAttributeValue(source, kAXFocusedAttribute as CFString, kCFBooleanTrue), .success)
+        _ = try wait("the source editor to gain keyboard focus") {
+            self.focusedAttribute(kAXFocusedUIElementAttribute, pid: pid).flatMap { CFEqual($0, source) ? $0 : nil }
+        }
+    }
+
+    private func menuBarItem(_ title: String, pid: pid_t) -> AXUIElement? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid),
+            kAXMenuBarAttribute as CFString, &value) == .success, let bar = Self.element(value) else { return nil }
+        return Self.children(of: bar).first { Self.title(of: $0) == title }
+    }
+
+    // AppKit validates Undo/Redo when Edit opens. A foreground change cancels
+    // tracking, and SwiftUI can replace the AX items on the next menu open.
+    private func useMenu(
+        _ menuTitle: String, _ selection: String? = nil, pid: pid_t,
+        inspect: ((_ title: String, _ enabled: Bool) throws -> AXUIElement) throws -> Void = { _ in }
+    ) throws {
+        var tracking = false
+        var dispatched = false
+        defer {
+            if tracking, !dispatched, let entry = menuBarItem(menuTitle, pid: pid), let menu = Self.children(of: entry).first {
+                AXUIElementPerformAction(menu, kAXCancelAction as CFString)
+            }
+        }
+
+        func validatedItem(_ title: String, enabled: Bool) -> AXUIElement? {
+            guard let entry = menuBarItem(menuTitle, pid: pid), let menu = Self.children(of: entry).first else { return nil }
+            return Self.children(of: menu).first {
+                let label = Self.title(of: $0)
+                guard label == title || label.hasPrefix(title + " ") else { return false }
+                var value: CFTypeRef?
+                return AXUIElementCopyAttributeValue($0, kAXEnabledAttribute as CFString, &value) == .success
+                    && value as? Bool == enabled
+            }
+        }
+
+        func item(_ title: String, enabled: Bool, inspecting: Bool) throws -> AXUIElement {
+            try wait("\(menuTitle) > \(title) enabled=\(enabled)") {
+                guard self.activateIfNeeded(pid: pid) else {
+                    tracking = false
+                    return nil
+                }
+                if !tracking {
+                    // SwiftUI publishes responder changes after AppKit moves focus.
+                    // An AXPress can start tracking before this update and freeze
+                    // the previous responder's items until the menu closes.
+                    if inspecting, validatedItem(title, enabled: enabled) == nil { return nil }
+                    guard let entry = self.menuBarItem(menuTitle, pid: pid),
+                          AXUIElementPerformAction(entry, kAXPressAction as CFString) == .success else { return nil }
+                    tracking = true
+                }
+                return validatedItem(title, enabled: enabled)
+            }
+        }
+
+        try inspect { try item($0, enabled: $1, inspecting: true) }
+        if let selection {
+            let target = try item(selection, enabled: true, inspecting: false)
+            guard AXUIElementPerformAction(target, kAXPressAction as CFString) == .success else {
+                throw GuardFailure("could not press \(menuTitle) > \(selection)")
+            }
+            dispatched = true
+        }
+    }
 
     private func dismissAlert(pid: pid_t) throws {
         let alert = try waitForWindow(pid: pid) { Self.defaultButton(of: $0) != nil }
