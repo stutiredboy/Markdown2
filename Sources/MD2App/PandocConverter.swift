@@ -83,6 +83,7 @@ final class PandocConverter: DocumentConverting {
     /// Maximum time to allow a single Pandoc invocation before terminating it.
     private nonisolated static let timeout: TimeInterval = 60
     private nonisolated static let archiveInspector = URL(fileURLWithPath: "/usr/bin/unzip")
+    private nonisolated static let archiveWriter = URL(fileURLWithPath: "/usr/bin/zip")
     private let locatePandoc: () -> URL?
 
     /// Completion held for the conversion's asynchronous lifetime, called on the
@@ -178,8 +179,11 @@ final class PandocConverter: DocumentConverting {
             case .failure(let error): return .failure(conversionError(error))
             case .success:
                 guard hasZipHeader(staged) else { return .failure(.conversionFailed("")) }
+                if format == .docx, let error = addDocxTableGrid(to: staged, in: inputDirectory, job: job) {
+                    return .failure(error)
+                }
                 // Inspect the central directory without extracting or inflating
-                // any entries. A partial archive can still start with PK.
+                // any more entries. A partial archive can still start with PK.
                 if case .failure(let error) = OfflinePandocProcess.run(pandoc: archiveInspector,
                     arguments: ["-Zt", staged.path], directory: nil, timeout: 5, job: job) {
                     return .failure(conversionError(error))
@@ -189,6 +193,52 @@ final class PandocConverter: DocumentConverting {
             }
         } catch {
             return .failure(.preparationFailed)
+        }
+    }
+
+    private nonisolated static func addDocxTableGrid(
+        to archive: URL, in inputDirectory: URL, job: PandocConversionJob
+    ) -> ConversionError? {
+        let parts = DocxTableBorders.Part.allCases
+        let entries: Set<Substring>
+        switch OfflinePandocProcess.run(pandoc: archiveInspector,
+            arguments: ["-Z1", archive.path] + parts.map(\.path), directory: nil, timeout: 5, job: job) {
+        case .success(let output): entries = Set(output.split(whereSeparator: \.isNewline))
+        case .failure(let error): return conversionError(error)
+        }
+        guard entries.contains(Substring(DocxTableBorders.Part.document.path)) else { return .conversionFailed("") }
+
+        do {
+            try FileManager.default.createDirectory(at: inputDirectory.appendingPathComponent("word"),
+                                                     withIntermediateDirectories: false)
+            var updatedPaths: [String] = []
+            for part in parts where entries.contains(Substring(part.path)) {
+                let document = inputDirectory.appendingPathComponent(part.path)
+                try Data().write(to: document)
+                let handle = try FileHandle(forWritingTo: document)
+                defer { try? handle.close() }
+                // Inflate only the selected XML into our private directory,
+                // bypassing the size limit for captured diagnostics.
+                if case .failure(let error) = OfflinePandocProcess.run(pandoc: archiveInspector,
+                    arguments: ["-p", archive.path, part.path], directory: nil, timeout: 5,
+                    job: job, standardOutput: handle) {
+                    return conversionError(error)
+                }
+                guard !job.isCanceled else { return .canceled }
+                let xml = try Data(contentsOf: document)
+                guard let updated = try DocxTableBorders.addingGrid(to: xml, part: part) else { continue }
+                try updated.write(to: document, options: .atomic)
+                updatedPaths.append(part.path)
+            }
+            guard !updatedPaths.isEmpty else { return nil }
+            if case .failure(let error) = OfflinePandocProcess.run(pandoc: archiveWriter,
+                arguments: ["-q", "-X", archive.path] + updatedPaths, directory: inputDirectory, timeout: timeout,
+                job: job) {
+                return conversionError(error)
+            }
+            return nil
+        } catch {
+            return .conversionFailed(error.localizedDescription)
         }
     }
 
