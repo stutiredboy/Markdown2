@@ -937,6 +937,11 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 previous.setPreview(false)
             }
         }
+        if session.sidebar.isVisible, session.sidebar.section == .files {
+            // The user opened this document from Files. Carry the visible tree
+            // into the selected tab, including the first one after a landing.
+            document.contentState.sidebarRevealRequest = UUID()
+        }
         if open.intent == .pinAndFocusEditor {
             document.contentState.focusEditor()
         } else if open.keepTreeFocus {
@@ -1141,6 +1146,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             defer: false
         )
         window.onSurfaceFocus = { [weak contentState] pane in contentState?.surfaceDidFocus.send(pane) }
+        contentState.window = window
         window.modeShortcutHandler = { [weak self, weak store] event in
             guard let self, let store else { return false }
             return self.handleModeShortcutEvent(event, for: store)

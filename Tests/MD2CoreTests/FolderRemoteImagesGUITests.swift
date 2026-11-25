@@ -30,6 +30,8 @@ final class FolderRemoteImagesGUITests: XCTestCase {
         let guideWindow = try app.documentWindow(guide, focused: true)
         try app.waitForRenderedImageFixture("guide", in: guideWindow)
         _ = try app.chooseDocumentFolder(containing: guide)
+        XCTAssertGreaterThanOrEqual(try app.frame(of: guideWindow).width, DocumentLayoutMetrics.widthWithSidebar(mode: .split),
+                                    "Open Folder must allocate real window space for Files and both panes")
         try app.waitForImageStatus(.remoteImagesBlocked, folder: .remoteImagesBlocked, in: guideWindow)
         let backgroundWindow = try app.openFolderNote(background)
         try app.waitForRenderedImageFixture("background", in: backgroundWindow)
@@ -175,7 +177,10 @@ final class FolderRemoteImagesGUITests: XCTestCase {
         _ = try app.openFolderNote(guide)
         try await fixture.waitForRequest("favorite-initial")
         let granted = try app.documentWindow(guide, focused: true)
+        try app.waitForEditorFocus(in: granted)
         try app.press(app.element("folder-favorite-toggle", in: granted))
+        XCTAssertGreaterThanOrEqual(try app.frame(of: granted).width, DocumentLayoutMetrics.widthWithSidebar(mode: .split),
+                                    "the pinned tab must retain Files from the folder landing")
         _ = try app.favoriteFolderItem(favoriteName)
 
         app = try await app.relaunch()

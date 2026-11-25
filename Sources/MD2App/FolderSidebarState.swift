@@ -5,6 +5,7 @@ import SwiftUI
 
 @MainActor
 final class DocumentWindowContentState: ObservableObject {
+    weak var window: NSWindow?
     @Published var folderSidebar: FolderSidebarState? {
         didSet {
             sidebarObservation = folderSidebar?.objectWillChange.sink { [weak self] _ in
@@ -72,6 +73,7 @@ final class FolderSidebarState: ObservableObject {
 
     func showFiles(in window: NSWindow, focus: @escaping () -> Void) {
         setActiveWindow(window)
+        onShowFiles?(window)
         if section == .files, isVisible, browserView.window === window, window.isKeyWindow {
             // Menu shortcuts can be followed immediately by typing. Once the
             // browser is mounted, apply focus before the next input event.
@@ -79,7 +81,6 @@ final class FolderSidebarState: ObservableObject {
             focus()
             return
         }
-        onShowFiles?(window)
         if section != .files { section = .files }
         if !isVisible { isVisible = true }
         pendingFocus = focus

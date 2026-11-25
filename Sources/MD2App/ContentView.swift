@@ -283,7 +283,7 @@ struct ContentView: View {
             )
         }
         .background { remoteResourceNotice(at: .banner).sheetAnchor }
-        .frame(minWidth: minimumWindowWidth, minHeight: 540)
+        .frame(minWidth: DocumentLayoutMetrics.minimumWindowWidth(mode: mode), minHeight: 540)
         .onGeometryChange(for: DocumentSidebarCapacity.self) { geometry in
             DocumentSidebarCapacity(width: geometry.size.width)
         } action: { capacity in
@@ -293,7 +293,7 @@ struct ContentView: View {
         .onChange(of: contentState.sidebarRevealRequest, initial: true) { _, request in
             // A newly selected folder tab can receive Quick Open or tree focus
             // before SwiftUI has mounted its first sidebar host.
-            if request != nil, !sidebarFits { compactSidebarMode = mode }
+            if request != nil { revealSidebar() }
         }
         .onGeometryChange(for: DocumentToolbarDensity.self) { geometry in
             DocumentToolbarDensity(windowWidth: geometry.size.width)
@@ -425,7 +425,7 @@ struct ContentView: View {
                     } else {
                         showsOutline = show
                     }
-                    compactSidebarMode = show && !sidebarFits ? mode : nil
+                    if show { revealSidebar() } else { compactSidebarMode = nil }
                 } label: {
                     Label(sidebarToggleTitle, systemImage: "sidebar.left")
                 }
@@ -667,13 +667,21 @@ struct ContentView: View {
         RemoteResourceNotice(document: document, settings: settings, contentState: contentState, placement: placement)
     }
 
-    private var minimumWindowWidth: CGFloat {
-        // Only an explicit sidebar request in a compact split needs a wider
-        // window. Read and Write can always reopen it within the existing frame.
-        if mode == .split, compactSidebarMode == .split {
-            return DocumentLayoutMetrics.widthWithSidebar(mode: .split)
+    private func revealSidebar() {
+        guard mode == .split else {
+            compactSidebarMode = sidebarFits ? nil : mode
+            return
         }
-        return DocumentLayoutMetrics.minimumWindowWidth(mode: mode)
+        let requiredWidth = DocumentLayoutMetrics.widthWithSidebar(mode: .split)
+        guard let window = contentState.window, window.frame.width < requiredWidth else { return }
+        // Reserve real window space before mounting both minimum-width panes
+        // and Files. A SwiftUI layout proposal can exceed the window frame.
+        var frame = window.frame
+        frame.size.width = requiredWidth
+        if let screen = window.screen, frame.maxX > screen.visibleFrame.maxX {
+            frame.origin.x = max(screen.visibleFrame.minX, screen.visibleFrame.maxX - requiredWidth)
+        }
+        window.setFrame(frame, display: true)
     }
 
     private func handleModeCommand(_ command: ModeCommand?) {
