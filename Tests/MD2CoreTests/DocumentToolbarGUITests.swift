@@ -18,7 +18,7 @@ final class DocumentToolbarGUITests: XCTestCase {
     /// Starts at the narrowest width a window can take, so the first layout has
     /// to collapse, and ends there again, so the labels also collapse on a live
     /// resize. Side by Side stops at its own, wider minimum.
-    private static let widthSweep: [CGFloat] = [780, 800, 900, 980, 1100, 1300, 780]
+    private static let widthSweep: [CGFloat] = [720, 780, 800, 900, 980, 1100, 1300, 720]
 
     // MARK: - The mode control stays in the toolbar
 

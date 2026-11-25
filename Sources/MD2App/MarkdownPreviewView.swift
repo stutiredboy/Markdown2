@@ -155,6 +155,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
     var remoteImageUnavailableLabel: String = "Remote image could not be loaded"
     var remoteImageBlockedLabel: String = "Remote image blocked — allow images using the document’s Remote Images control."
     var genericImageLoadFailedLabel: String = "Image could not be loaded"
+    var mermaidViewerLanguage: AppLanguage = .english
     var typography: TypographySettings = .init()
     var onOutlineMarginChange: ((CGFloat) -> Void)?
     /// Selected rendered HTML (nil when collapsed); the owner extracts/counts
@@ -325,7 +326,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             // numbers and of WebKit's current (possibly word-wide) selection.
             function paragraphHit(event) {
                 var target = event.target;
-                if (!target.closest || target.closest('input,button,.md2-line-gutter')) { return null; }
+                if (!target.closest || target.closest('input,button,.md2-line-gutter,.md2-diagram-viewer')) { return null; }
                 var block = target.closest('[data-md2-source-line]');
                 if (!block || !block.closest('main')) { return null; }
                 var hit = { line: Number(block.dataset.md2SourceLine), revision: window.__md2TextRevision };
@@ -360,7 +361,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             }
             document.addEventListener('dblclick', function (event) {
                 if (!event.isTrusted || event.defaultPrevented || event.button !== 0 || !event.metaKey ||
-                    event.target.closest('a,input,button,.md2-line-gutter')) { return; }
+                    event.target.closest('a,input,button,.md2-line-gutter,.md2-diagram-viewer')) { return; }
                 var hit = paragraphHit(event);
                 if (hit) {
                     window.webkit.messageHandlers.\(Self.enterEditMessageName).postMessage(hit);
@@ -1123,6 +1124,12 @@ struct MarkdownPreviewView: NSViewRepresentable {
             in: .defaultClient
         ))
         configuration.userContentController.add(context.coordinator, contentWorld: .defaultClient, name: Self.remoteImageMessageName)
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: PreviewMermaidViewer.script(language: mermaidViewerLanguage),
+            injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: .defaultClient
+        ))
+        configuration.userContentController.add(context.coordinator, contentWorld: .defaultClient,
+                                                name: PreviewMermaidViewer.stateMessage)
         Self.installInteractionBridge(on: configuration.userContentController, handler: context.coordinator)
         configuration.userContentController.add(context.coordinator, name: Self.anchorMessageName)
         configuration.userContentController.add(context.coordinator, name: Self.outlineMarginMessageName)
@@ -1198,6 +1205,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
         context.coordinator.onOutlineMarginChange = onOutlineMarginChange
         if wasObservingOutlineMargin && onOutlineMarginChange == nil {
             context.coordinator.stopObservingOutlineMargin(in: webView)
+        }
+        if context.coordinator.mermaidViewerLanguage != mermaidViewerLanguage {
+            context.coordinator.mermaidViewerLanguage = mermaidViewerLanguage
+            if context.coordinator.isLoaded { context.coordinator.applyMermaidViewerLanguage(in: webView) }
         }
         let revisionChanged = context.coordinator.sourceLineRevision != sourceLineRevision
         let typographyChanged = context.coordinator.typography != typography
@@ -1587,6 +1598,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         let coordinator = Coordinator()
         coordinator.focusState = focusState
         coordinator.typography = typography
+        coordinator.mermaidViewerLanguage = mermaidViewerLanguage
         coordinator.onSelectionChange = onSelectionChange
         coordinator.onEnterEdit = onEnterEdit
         coordinator.onToggleTask = onToggleTask
@@ -1606,6 +1618,15 @@ struct MarkdownPreviewView: NSViewRepresentable {
 
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
         var typography: TypographySettings = .init()
+        var mermaidViewerLanguage: AppLanguage = .english
+
+        func applyMermaidViewerLanguage(in webView: WKWebView) {
+            guard lastBody.contains(PreviewClass.diagramMermaid) else { return }
+            webView.evaluateJavaScript(
+                "window.__md2SetMermaidViewerLabels?.(\(PreviewMermaidViewer.labels(language: mermaidViewerLanguage)))",
+                in: nil, in: .defaultClient, completionHandler: nil
+            )
+        }
         var onSelectionChange: (String?) -> Void = { _ in }
         var onRemoteImageDetected: (Int) -> Void = { _ in }
         var onOutlineMarginChange: ((CGFloat) -> Void)?
@@ -1643,7 +1664,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
                     function report() {
                         var rect = main.getBoundingClientRect();
                         var right = rect.left + window.scrollX + Math.max(rect.width, main.scrollWidth);
-                        var width = Math.floor(document.documentElement.clientWidth - right);
+                        // The actual-size dialog takes the full WebKit viewport,
+                        // including the margin normally available to the native outline.
+                        var width = document.querySelector('.md2-diagram-viewer[open]') ? 0
+                            : Math.floor(document.documentElement.clientWidth - right);
                         if (width === lastWidth) { return; }
                         lastWidth = width;
                         window.webkit.messageHandlers.\(MarkdownPreviewView.outlineMarginMessageName).postMessage({token: token, width: width});
@@ -2219,6 +2243,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
                       let documentURL = documentLoader.documentPageURL, page?.url == documentURL,
                       let revision = message.body as? Int, revision == pageRevision else { return }
                 onRemoteImageDetected(revision)
+            case PreviewMermaidViewer.stateMessage:
+                guard message.world == .defaultClient, let webView = message.webView as? PreviewWebView,
+                      acceptsFindHost(webView), let open = message.body as? Bool else { return }
+                webView.mermaidViewerOpen = open
             case MarkdownPreviewView.selectionMessageName:
                 guard message.world == .defaultClient else { return }
                 onSelectionChange(message.body as? String)
@@ -2382,6 +2410,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             isLoaded = true
             applyTypography(in: webView)
             applyFrontMatterVisibility(in: webView)
+            applyMermaidViewerLanguage(in: webView)
             applyLineNumbersVisibility(in: webView)
             applyPendingScroll(in: webView, consume: true)
             applyPendingFind(in: webView)
@@ -2391,6 +2420,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
             guard resourceContextIsActive else { return }
             (webView as? PreviewWebView)?.invalidateContextMenu()
+            (webView as? PreviewWebView)?.mermaidViewerOpen = false
             // A new document started loading; hold scrolling until it finishes.
             isLoaded = false
             // Label it now: `didFinish` waits for every image, and the boxes work
@@ -2601,6 +2631,16 @@ private final class PreviewWebView: WKWebView {
     /// Esc handler; returns whether the key was consumed (find bar dismissed).
     var onEscape: (() -> Bool)?
 
+    fileprivate var mermaidViewerOpen = false
+
+    private func dismissPreviewControl() -> Bool {
+        if mermaidViewerOpen {
+            evaluateJavaScript("window.__md2CloseMermaidViewer?.()", in: nil, in: .defaultClient, completionHandler: nil)
+            return true
+        }
+        return onEscape?() == true
+    }
+
     private static let escapeKeyCode: UInt16 = 53
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -2608,7 +2648,7 @@ private final class PreviewWebView: WKWebView {
         // Esc travels as a plain key press; claim it only when the owner
         // actually consumed it (dismissed a find bar), so full-screen exit
         // and other system uses keep working.
-        if event.keyCode == Self.escapeKeyCode, onEscape?() == true {
+        if event.keyCode == Self.escapeKeyCode, dismissPreviewControl() {
             return true
         }
         if let action = findAction(for: event) {
@@ -2626,7 +2666,7 @@ private final class PreviewWebView: WKWebView {
         // does not implement `cancelOperation:`, so a super call dies with an
         // unrecognized selector. An unconsumed Esc simply ends here, matching
         // the pre-override behavior.
-        _ = onEscape?()
+        _ = dismissPreviewControl()
     }
 
     @objc(performFindPanelAction:)

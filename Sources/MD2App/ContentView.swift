@@ -15,16 +15,35 @@ enum DocumentLayoutMetrics {
     static let splitPreviewMinWidth: CGFloat = 420
     static let outlineSidebarWidth: CGFloat = 230
     static let splitChromeReserveWidth: CGFloat = 36
-    static let nonSplitMinWidth: CGFloat = 780
+    static let nonSplitMinWidth: CGFloat = 720
+    static let splitMinWidth = splitEditorMinWidth + splitPreviewMinWidth + splitChromeReserveWidth
 
-    static func minimumWindowWidth(mode: EditorMode, showsOutline: Bool) -> CGFloat {
-        if mode == .split {
-            return splitEditorMinWidth
-                + splitPreviewMinWidth
-                + (showsOutline ? outlineSidebarWidth : 0)
-                + splitChromeReserveWidth
+    static func minimumWindowWidth(mode: EditorMode) -> CGFloat {
+        mode == .split ? splitMinWidth : nonSplitMinWidth
+    }
+
+    static func widthWithSidebar(mode: EditorMode) -> CGFloat {
+        minimumWindowWidth(mode: mode) + outlineSidebarWidth
+    }
+}
+
+/// Publish only breakpoint crossings during live resize. Knowing which modes
+/// fit also makes a mode switch at an unchanged window width synchronous.
+enum DocumentSidebarCapacity {
+    case none, singlePane, allModes
+
+    init(width: CGFloat) {
+        if width >= DocumentLayoutMetrics.widthWithSidebar(mode: .split) {
+            self = .allModes
+        } else if width >= DocumentLayoutMetrics.widthWithSidebar(mode: .read) {
+            self = .singlePane
+        } else {
+            self = .none
         }
-        return nonSplitMinWidth
+    }
+
+    func fits(_ mode: EditorMode) -> Bool {
+        self == .allModes || (self == .singlePane && mode != .split)
     }
 }
 
@@ -134,6 +153,8 @@ struct ContentView: View {
     @ObservedObject private var contentState: DocumentWindowContentState
     @State private var mode: EditorMode
     @State private var showsOutline: Bool
+    @State private var compactSidebarMode: EditorMode?
+    @State private var sidebarCapacity = DocumentSidebarCapacity.none
     @State private var showsFrontMatterMetadata = false
     @State private var toolbarDensity = DocumentToolbarDensity(windowWidth: DocumentLayoutMetrics.defaultWindowWidth)
     /// Latest top-visible source line reported by the editor — the cached
@@ -154,7 +175,7 @@ struct ContentView: View {
     /// anchor band even though the reader has not scrolled it themselves.
     @State private var clickedOutlineHeadingID: String?
     @State private var previewOutlineMargin: (snapshot: OutlinePreviewSnapshot, width: CGFloat)?
-    @State private var editorSelection: String?
+    @State private var editorSelection: EditorSelection?
     @State private var previewSelection: String?
     @State private var selectionStats: DocumentStats?
     /// On-demand readers for the *live* outgoing surface, so a switch right
@@ -241,13 +262,18 @@ struct ContentView: View {
         VStack(spacing: 0) {
             DocumentCopyNotice(flow: document.copyFlow, settings: settings, onOpen: onOpenCreatedCopy)
             remoteResourceNotice(at: .banner)
-            HStack(spacing: 0) {
-                sidebar
-                editorSurface
+            // The current sidebar must not set AppKit's window minimum. Measure
+            // the allocated width even while resizing past the collapse threshold.
+            GeometryReader { _ in
+                HStack(spacing: 0) {
+                    sidebar
+                    editorSurface
+                }
             }
 
             Divider()
-            StatusBar(
+            DocumentStatusBar(
+                showsEditorPosition: usesEditorSelection, editorSelection: editorSelection,
                 stats: document.rendered.stats, selectionStats: selectionStats, url: document.fileURL,
                 format: document.fileFormat, settings: settings, convertingFormat: document.convertingFormat,
                 conversionStoppedForSourceChange: document.conversionStoppedForSourceChange,
@@ -257,6 +283,17 @@ struct ContentView: View {
         }
         .background { remoteResourceNotice(at: .banner).sheetAnchor }
         .frame(minWidth: minimumWindowWidth, minHeight: 540)
+        .onGeometryChange(for: DocumentSidebarCapacity.self) { geometry in
+            DocumentSidebarCapacity(width: geometry.size.width)
+        } action: { capacity in
+            sidebarCapacity = capacity
+            if capacity.fits(mode) { compactSidebarMode = nil }
+        }
+        .onChange(of: contentState.sidebarRevealRequest, initial: true) { _, request in
+            // A newly selected folder tab can receive Quick Open or tree focus
+            // before SwiftUI has mounted its first sidebar host.
+            if request != nil, !sidebarFits { compactSidebarMode = mode }
+        }
         .onGeometryChange(for: DocumentToolbarDensity.self) { geometry in
             DocumentToolbarDensity(windowWidth: geometry.size.width)
         } action: { density in
@@ -328,6 +365,7 @@ struct ContentView: View {
             }
         }
         .onChange(of: mode) { _, _ in
+            compactSidebarMode = nil
             if mode != .read {
                 formulaSheet.dismiss()
                 formulaFocus = nil
@@ -377,11 +415,13 @@ struct ContentView: View {
         .toolbar {
             ToolbarItemGroup(placement: .navigation) {
                 Button {
+                    let show = !sidebarVisible
                     if let folderSidebar = contentState.folderSidebar {
-                        folderSidebar.isVisible.toggle()
+                        folderSidebar.isVisible = show
                     } else {
-                        showsOutline.toggle()
+                        showsOutline = show
                     }
+                    compactSidebarMode = show && !sidebarFits ? mode : nil
                 } label: {
                     Label(sidebarToggleTitle, systemImage: "sidebar.left")
                 }
@@ -496,7 +536,7 @@ struct ContentView: View {
     @ViewBuilder
     private var sidebar: some View {
         if let folderSidebar = contentState.folderSidebar {
-            if folderSidebar.isVisible {
+            if sidebarVisible {
                 VStack(spacing: 0) {
                     Picker(settings.text(.showSidebar), selection: Binding(
                         get: { folderSidebar.section },
@@ -529,12 +569,19 @@ struct ContentView: View {
         }
     }
 
+    private var sidebarFits: Bool { sidebarCapacity.fits(mode) }
+
+    private var sidebarVisible: Bool {
+        let requested = contentState.folderSidebar?.isVisible ?? showsOutline
+        return requested && (sidebarFits || compactSidebarMode == mode)
+    }
+
     private var showsLeftOutline: Bool {
         let folderSidebar = contentState.folderSidebar
         return FloatingOutlineLayout.showsLeftOutline(
-            standaloneOutline: showsOutline,
+            standaloneOutline: sidebarVisible,
             folderSection: folderSidebar?.section,
-            folderSidebarVisible: folderSidebar?.isVisible ?? false
+            folderSidebarVisible: sidebarVisible
         )
     }
 
@@ -568,10 +615,10 @@ struct ContentView: View {
     }
 
     private var sidebarToggleTitle: String {
-        if let folderSidebar = contentState.folderSidebar {
-            return settings.text(folderSidebar.isVisible ? .hideSidebar : .showSidebar)
+        if contentState.folderSidebar != nil {
+            return settings.text(sidebarVisible ? .hideSidebar : .showSidebar)
         }
-        return settings.text(showsOutline ? .hideOutline : .showOutline)
+        return settings.text(sidebarVisible ? .hideOutline : .showOutline)
     }
 
     /// A segment ignores `accessibilityLabel` and is announced by its image's
@@ -617,9 +664,12 @@ struct ContentView: View {
     }
 
     private var minimumWindowWidth: CGFloat {
-        DocumentLayoutMetrics.minimumWindowWidth(
-            mode: mode, showsOutline: contentState.folderSidebar?.isVisible ?? showsOutline
-        )
+        // Only an explicit sidebar request in a compact split needs a wider
+        // window. Read and Write can always reopen it within the existing frame.
+        if mode == .split, compactSidebarMode == .split {
+            return DocumentLayoutMetrics.widthWithSidebar(mode: .split)
+        }
+        return DocumentLayoutMetrics.minimumWindowWidth(mode: mode)
     }
 
     private func handleModeCommand(_ command: ModeCommand?) {
@@ -1086,9 +1136,13 @@ struct ContentView: View {
         case renderedHTML(String)
     }
 
+    private var usesEditorSelection: Bool {
+        mode == .write || (mode == .split && focusedPane == .editor)
+    }
+
     private var selectedContent: SelectedContent? {
-        if mode == .write || (mode == .split && focusedPane == .editor) {
-            return editorSelection.map(SelectedContent.markdown)
+        if usesEditorSelection {
+            return editorSelection?.text.map(SelectedContent.markdown)
         }
         return previewSelection.map(SelectedContent.renderedHTML)
     }
@@ -1233,7 +1287,8 @@ struct ContentView: View {
                 typography: settings.typography,
                 onSelectionChange: { selection in
                     editorSelection = selection
-                    if inSplit, selection != nil { focusedPane = .editor }
+                    if inSplit, let view = document.editorSession.textView,
+                       view.window?.firstResponder === view { focusedPane = .editor }
                 }
             )
         }
@@ -1349,6 +1404,7 @@ struct ContentView: View {
                     remoteImageUnavailableLabel: settings.text(.remoteImageUnavailable),
                     remoteImageBlockedLabel: settings.text(.remoteImageBlocked),
                     genericImageLoadFailedLabel: settings.text(.imageLoadFailed),
+                    mermaidViewerLanguage: settings.effectiveLanguage,
                     typography: settings.typography,
                     onOutlineMarginChange: canShowFloatingOutline ? { width in
                         guard previewOutlineMargin?.snapshot != snapshot || previewOutlineMargin?.width != width else { return }
@@ -1704,71 +1760,5 @@ private struct OutlineNativeSelectionFollower: NSViewRepresentable {
             }
             return nil
         }
-    }
-}
-
-private struct StatusBar<RemoteImages: View>: View {
-    let stats: DocumentStats
-    var selectionStats: DocumentStats?
-    let url: URL?
-    let format: MarkdownFileFormat
-    let settings: AppSettings
-    let convertingFormat: DocumentExportFormat?
-    let conversionStoppedForSourceChange: Bool
-    let cancelConversion: () -> Void
-    let remoteImages: RemoteImages
-
-    var body: some View {
-        HStack(spacing: 14) {
-            if let convertingFormat {
-                let progress = String(format: settings.text(.exportConversionProgress), convertingFormat.fileExtension.uppercased())
-                ProgressView()
-                    .controlSize(.small)
-                    .accessibilityHidden(true)
-                Text(progress)
-                Button(settings.text(.cancel), action: cancelConversion)
-                    .controlSize(.small)
-                    .accessibilityIdentifier("cancel-export-conversion")
-                Spacer()
-            } else if conversionStoppedForSourceChange {
-                Text(settings.text(.alertConversionSourceChanged))
-                    .lineLimit(1)
-                    .help(settings.text(.alertConversionSourceChanged))
-                Button(action: cancelConversion) {
-                    Image(systemName: "xmark")
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel(settings.text(.close))
-                Spacer()
-            } else {
-                if let selectionStats {
-                    Text("\(settings.text(.selectionStats)): \(selectionStats.words) / \(stats.words) \(settings.text(.words))")
-                        .accessibilityIdentifier("document-word-count")
-                } else {
-                    Text("\(stats.words) \(settings.text(.words))")
-                        .accessibilityIdentifier("document-word-count")
-                }
-                Text("\(stats.characters) \(settings.text(.chars))")
-                Text("\(stats.lines) \(settings.text(.lines))")
-                Text("\(stats.readingMinutes) \(settings.text(.minRead))")
-                Text("\(settings.typography.zoomPercent)%")
-                Text(format.encodingLabel)
-                Text(format.lineEnding == .mixed ? settings.text(.mixedLineEndings) : format.lineEnding.rawValue)
-
-                Spacer()
-
-                if let url {
-                    Text(url.path)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-            }
-            remoteImages
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 14)
-        .frame(height: 28)
-        .background(.bar)
     }
 }

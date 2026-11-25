@@ -52,14 +52,18 @@ struct PreviewReaderUXTests {
         #expect(MarkdownPreviewView.imageFailureKind(for: "blob:https://example.com/token") == .generic)
     }
 
-    @Test func splitLayoutMinimumWidthAccountsForOutlineAndPaneMinimums() {
+    @Test func halfScreenLayoutCollapsesTheSidebarBeforeReservingBothPaneMinimums() {
+        #expect(DocumentLayoutMetrics.minimumWindowWidth(mode: .write) == 720)
+        #expect(DocumentLayoutMetrics.minimumWindowWidth(mode: .read) == 720)
         #expect(DocumentLayoutMetrics.splitEditorMinWidth == 360)
         #expect(DocumentLayoutMetrics.splitPreviewMinWidth == 420)
-        #expect(DocumentLayoutMetrics.outlineSidebarWidth == 230)
-        #expect(DocumentLayoutMetrics.minimumWindowWidth(mode: .write, showsOutline: true) == 780)
-        #expect(DocumentLayoutMetrics.minimumWindowWidth(mode: .read, showsOutline: true) == 780)
-        #expect(DocumentLayoutMetrics.minimumWindowWidth(mode: .split, showsOutline: false) == 816)
-        #expect(DocumentLayoutMetrics.minimumWindowWidth(mode: .split, showsOutline: true) == 1046)
+        #expect(DocumentLayoutMetrics.minimumWindowWidth(mode: .split) == 816)
+        for mode in EditorMode.allCases {
+            let threshold = DocumentLayoutMetrics.widthWithSidebar(mode: mode)
+            #expect(threshold == DocumentLayoutMetrics.minimumWindowWidth(mode: mode) + 230)
+            #expect(!DocumentSidebarCapacity(width: threshold - 1).fits(mode))
+            #expect(DocumentSidebarCapacity(width: threshold).fits(mode))
+        }
     }
 
     @Test func toolbarCollapsesSecondaryTextBeforeTheModeText() {

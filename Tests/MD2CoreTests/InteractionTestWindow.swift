@@ -128,6 +128,23 @@ final class InteractionTestWindow {
             file: file, line: line)
     }
 
+    func clickPreviewScrollTrack(in web: WKWebView) throws {
+        // Wake the transient system scrollbar on Macs configured to hide it.
+        // The track click must then advance past the current reading position.
+        _ = try js("scrollBy(0, -8); true", web)
+        let location = web.convert(NSPoint(x: web.bounds.maxX - 5, y: web.bounds.height * 0.85), to: nil)
+        for kind: NSEvent.EventType in [.mouseMoved, .leftMouseDown, .leftMouseUp] {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(with: kind, location: location, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: kind == .mouseMoved ? 0 : 1, pressure: kind == .leftMouseDown ? 1 : 0))
+            switch kind {
+            case .mouseMoved: web.mouseMoved(with: event)
+            case .leftMouseDown: web.mouseDown(with: event)
+            default: web.mouseUp(with: event)
+            }
+        }
+    }
+
     func targetRect(_ range: NSRange, in editor: NSTextView) -> NSRect {
         guard let layout = editor.layoutManager, let container = editor.textContainer else { return .zero }
         var rect = layout.boundingRect(forGlyphRange: layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil), in: container)

@@ -4,6 +4,8 @@
 
 ### Added
 
+- Open a wide Mermaid diagram at its actual size in the preview, pan to read its labels, and press Esc to return to the same reading position.
+
 - Command-double-click a passage in Preview or choose **Edit This Paragraph in Source** from its context menu to place the caret in the corresponding source block.
 
 - Change the reading width from the preview toolbar or the View menu. In Preview, the outline appears in the right margin when there is room and the left outline is hidden.
@@ -13,6 +15,10 @@
 - Allow remote images for verified Markdown files in the current folder and its subfolders. Favorite folders remember their authorization, and individual files can opt out during the session.
 
 ### Changed
+
+- Use Write or Read in a 720 pt window. The sidebar makes room for the document, and long inline code wraps to fit the preview.
+
+- The status bar shows word count and reading time in Read, and the cursor position and selection counts in Write. Open **Document Info** for the full path, encoding, and line endings.
 
 - Use a new paper-and-ink macOS app icon with an amber 2.
 

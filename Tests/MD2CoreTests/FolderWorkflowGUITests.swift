@@ -222,7 +222,11 @@ final class FolderWorkflowGUITests: XCTestCase {
         XCTAssertNil(app.row("Redirect", in: list))
         XCTAssertNil(app.row(".Hidden.md", in: list))
 
+        let fullWidth = try app.frame(of: original).width
+        try app.resizeToHalfScreenAndWaitForSidebarCollapse(original)
         let detailsResult = try app.quickFind("Notes/Details.md", expecting: "Details.md")
+        XCTAssertEqual(try app.frame(of: original).width, 720, "Quick Open must reveal the folder without widening Write")
+        try app.resize(original, toWidth: fullWidth)
         try app.openSelection(using: detailsResult.open)
         let detailsWindow = try app.documentWindow(fixture.details, focused: true)
         try app.waitForEditorFocus(in: detailsWindow)
@@ -318,6 +322,7 @@ final class FolderWorkflowGUITests: XCTestCase {
         defer { app.close() }
 
         let original = try app.chooseDocumentFolder(containing: fixture.guide)
+        try app.resizeToHalfScreenAndWaitForSidebarCollapse(original)
         try app.focusFiles()
         let initialList = try app.element("folder-file-list", in: original)
         if app.selectedRow(in: initialList) == nil { try app.key(kVK_DownArrow) }
@@ -328,6 +333,7 @@ final class FolderWorkflowGUITests: XCTestCase {
             try app.key(kVK_DownArrow)
             let window = try app.documentWindow(note, focused: true)
             try app.waitForTreeFocus()
+            XCTAssertEqual(try app.frame(of: window).width, 720, "skimming a new or reused preview must preserve the half-screen frame")
             let list = try app.element("folder-file-list", in: window)
             try app.waitForSelection(note, in: list)
             _ = try app.waitFor("the tree highlights \(note.lastPathComponent) as the current document") {
@@ -902,6 +908,22 @@ struct FolderTestApplication {
         XCTAssertTrue(AXValueGetValue(try geometry(kAXPositionAttribute), .cgPoint, &origin))
         XCTAssertTrue(AXValueGetValue(try geometry(kAXSizeAttribute), .cgSize, &size))
         return CGRect(origin: origin, size: size)
+    }
+
+    func resize(_ window: AXUIElement, toWidth width: CGFloat) throws {
+        var size = CGSize(width: width, height: try frame(of: window).height)
+        let value = try XCTUnwrap(AXValueCreate(.cgSize, &size))
+        XCTAssertEqual(AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, value), .success)
+        _ = try waitFor("the document window reaches \(width) pt") {
+            (try? frame(of: window).width) == width ? window : nil
+        }
+    }
+
+    func resizeToHalfScreenAndWaitForSidebarCollapse(_ window: AXUIElement) throws {
+        try resize(window, toWidth: 720)
+        _ = try waitFor("the folder sidebar collapses at 720 pt") {
+            descendant(window, matching: { identifier($0) == "folder-file-list" }) == nil ? window : nil
+        }
     }
 
     func openFileThroughWorkspace(_ url: URL) async throws {

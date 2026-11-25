@@ -427,6 +427,9 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let sidebar = FolderSidebarState(browserView: browser.view, focusBrowser: { [weak browser] in
                 browser?.focusTree()
             })
+            sidebar.onShowFiles = { [weak self] window in
+                self?.documentWindows.first { $0.window === window }?.contentState.sidebarRevealRequest = UUID()
+            }
             let host: FolderSession.Host
             if starter == nil, canReuseGroup, let group = currentGroup {
                 host = .tabs(group)

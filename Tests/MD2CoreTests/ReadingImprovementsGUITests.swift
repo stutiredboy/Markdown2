@@ -17,7 +17,7 @@ final class ReadingImprovementsGUITests: XCTestCase {
         let coordinator = try XCTUnwrap(Mirror(reflecting: host.store.editorSession).children.first { $0.label == "coordinator" }?.value as? MarkdownEditorView.Coordinator)
         var selection: String?
         let onSelection = coordinator.onSelectionChange
-        coordinator.onSelectionChange = { selection = $0; onSelection($0) }
+        coordinator.onSelectionChange = { selection = $0.text; onSelection($0) }
         let text = editor.string
         let selected = (text as NSString).range(of: "中文 **正文** [链接](https://example.com/path)")
         editor.setSelectedRange(selected)
@@ -36,7 +36,7 @@ final class ReadingImprovementsGUITests: XCTestCase {
         let latinFont = try XCTUnwrap(editor.textStorage?.attribute(.font, at: (text as NSString).range(of: "https").location, effectiveRange: nil) as? NSFont)
         XCTAssertEqual(latinFont.familyName, NSFont.monospacedSystemFont(ofSize: 22, weight: .regular).familyName)
         editor.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
-        coordinator.onSelectionChange = { selection = $0; onSelection($0) }
+        coordinator.onSelectionChange = { selection = $0.text; onSelection($0) }
         coordinator.reportSelection(in: editor)
         host.spin(0.2)
         XCTAssertNil(selection)

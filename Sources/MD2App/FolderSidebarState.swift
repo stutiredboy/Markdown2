@@ -25,6 +25,7 @@ final class DocumentWindowContentState: ObservableObject {
 
     @Published var isFolderPreviewSelected = false
     @Published private(set) var editorFocusRequest: UUID?
+    @Published var sidebarRevealRequest: UUID?
     private var sidebarObservation: AnyCancellable?
     private var remoteImagesObservation: AnyCancellable?
 
@@ -47,6 +48,7 @@ final class FolderSidebarState: ObservableObject {
         didSet { updateBrowserHost() }
     }
 
+    var onShowFiles: ((NSWindow) -> Void)?
     private let browserView: NSView
     private let focusBrowser: () -> Void
     private let hosts = NSMapTable<NSWindow, FolderSidebarHostView>.weakToWeakObjects()
@@ -76,6 +78,7 @@ final class FolderSidebarState: ObservableObject {
             focus()
             return
         }
+        onShowFiles?(window)
         if section != .files { section = .files }
         if !isVisible { isVisible = true }
         pendingFocus = focus
