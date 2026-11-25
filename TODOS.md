@@ -74,7 +74,7 @@ reading its context and correcting it in the source.
   types on the left. Resuming should align the panes once from the active pane
   and restore their usual bidirectional scrolling.
 
-- [ ] **P2 — Compare external changes before resolving a save conflict.**
+- [x] **P2 — Compare external changes before resolving a save conflict.**
   The ordinary conflict dialog offers “Keep My Version”, which resumes autosave,
   and “Reload from Disk”, which discards pending edits. Show the changed
   passages, label the editor and disk versions, and offer to save the editor's
