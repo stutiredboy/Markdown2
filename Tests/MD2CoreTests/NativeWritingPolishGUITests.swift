@@ -20,7 +20,7 @@ final class NativeWritingPolishGUITests: XCTestCase {
             harness.settings.language = language
             harness.store.text = Self.markdown
             harness.host(ContentView(document: harness.store, settings: harness.settings, onOpen: {}),
-                         width: DocumentLayoutMetrics.minimumWindowWidth(mode: .split, showsOutline: false))
+                         width: DocumentLayoutMetrics.minimumWindowWidth(mode: .split))
 
             for mode in [EditorMode.write, .split, .read] {
                 try switchMode(to: mode, in: harness)

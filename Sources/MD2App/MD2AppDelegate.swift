@@ -427,6 +427,9 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let sidebar = FolderSidebarState(browserView: browser.view, focusBrowser: { [weak browser] in
                 browser?.focusTree()
             })
+            sidebar.onShowFiles = { [weak self] window in
+                self?.documentWindows.first { $0.window === window }?.contentState.sidebarRevealRequest = UUID()
+            }
             let host: FolderSession.Host
             if starter == nil, canReuseGroup, let group = currentGroup {
                 host = .tabs(group)
@@ -934,6 +937,11 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 previous.setPreview(false)
             }
         }
+        if session.sidebar.isVisible, session.sidebar.section == .files {
+            // The user opened this document from Files. Carry the visible tree
+            // into the selected tab, including the first one after a landing.
+            document.contentState.sidebarRevealRequest = UUID()
+        }
         if open.intent == .pinAndFocusEditor {
             document.contentState.focusEditor()
         } else if open.keepTreeFocus {
@@ -1137,6 +1145,8 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
+        window.onSurfaceFocus = { [weak contentState] pane in contentState?.surfaceDidFocus.send(pane) }
+        contentState.window = window
         window.modeShortcutHandler = { [weak self, weak store] event in
             guard let self, let store else { return false }
             return self.handleModeShortcutEvent(event, for: store)
@@ -1436,12 +1446,27 @@ private struct FolderOpen {
 }
 
 final class ModeShortcutWindow: NSWindow {
+    var onSurfaceFocus: ((SplitPane) -> Void)?
     var modeShortcutHandler: ((NSEvent) -> Bool)?
     private(set) var hasPresentedDocument = false
     private var groupObservation: NSKeyValueObservation?
     private var tabObservations: [NSKeyValueObservation] = []
     private weak var observedGroup: NSWindowTabGroup?
     private var lastTabCount = 1
+
+    override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
+        let previous = firstResponder
+        let accepted = super.makeFirstResponder(responder)
+        if accepted, let current = firstResponder, previous !== current, let pane = SplitPane.containing(current) {
+            // AppKit can change the responder while SwiftUI mounts a surface.
+            // Publish after layout, and only if this exact responder still owns focus.
+            DispatchQueue.main.async { [weak self, weak current] in
+                guard let self, let current, self.firstResponder === current else { return }
+                self.onSurfaceFocus?(pane)
+            }
+        }
+        return accepted
+    }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if modeShortcutHandler?(event) == true {

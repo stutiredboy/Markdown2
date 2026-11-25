@@ -412,7 +412,7 @@ enum AppLanguage: String, CaseIterable, Identifiable {
 enum L10nKey: String, CaseIterable, Sendable {
     case typography, editorFont, readingFont, fontSize, readingWidth, readingWidthHelp, zoomIn, zoomOut, resetZoom, zoom
     case fontSystem, fontSerif, fontMonospaced, readingNarrow, readingComfortable, readingWide, readingFull
-    case selectionStats
+    case selectionStats, statusPosition, documentInfo, documentPath, documentEncoding, documentLineEndings
     case new
     case open
     case openFolder, folderQuickOpen, folderAuthorizationFailed, folderSaveUnavailable
@@ -441,6 +441,7 @@ enum L10nKey: String, CaseIterable, Sendable {
     case exportDOCX
     case exportEPUB
     case close
+    case viewDiagramAtActualSize
     case folderQuickOpenField, folderFilterPlaceholder, folderFileList, folderLandingPrompt
     case folderRefresh, folderCancelScan, folderOpenSelection, folderScanning, folderOpening
     case folderNoFiles, folderOneFile, folderFileCount, folderOneMatch, folderMatchCount
@@ -670,7 +671,9 @@ enum L10n {
         .zoomIn: "Zoom In", .zoomOut: "Zoom Out", .resetZoom: "Actual Size",
         .fontSystem: "System", .fontSerif: "Serif", .fontMonospaced: "Monospaced",
         .readingNarrow: "Narrow", .readingComfortable: "Comfortable", .readingWide: "Wide", .readingFull: "Full Width",
-        .selectionStats: "Selection",
+        .selectionStats: "Selection", .statusPosition: "Ln %ld, Col %ld",
+        .documentInfo: "Document Info", .documentPath: "File Path", .documentEncoding: "Encoding",
+        .documentLineEndings: "Line Endings",
         .new: "New",
         .open: "Open...",
         .openFolder: "Open Folder…",
@@ -757,6 +760,7 @@ enum L10n {
         .exportDOCX: "Export as DOCX…",
         .exportEPUB: "Export as EPUB…",
         .close: "Close",
+        .viewDiagramAtActualSize: "View Diagram at Actual Size",
         .folderQuickOpenField: "Quick Open",
         .folderFilterPlaceholder: "Search filenames or paths",
         .folderFileList: "Folder Files",
@@ -1081,7 +1085,9 @@ enum L10n {
         .zoomIn: "放大", .zoomOut: "缩小", .resetZoom: "实际大小",
         .fontSystem: "系统字体", .fontSerif: "衬线字体", .fontMonospaced: "等宽字体",
         .readingNarrow: "窄", .readingComfortable: "适中", .readingWide: "宽", .readingFull: "全宽",
-        .selectionStats: "选区",
+        .selectionStats: "选区", .statusPosition: "第 %ld 行，第 %ld 列",
+        .documentInfo: "文档信息", .documentPath: "文件路径", .documentEncoding: "编码",
+        .documentLineEndings: "换行符",
         .new: "新建",
         .open: "打开...",
         .openFolder: "打开文件夹…",
@@ -1168,6 +1174,7 @@ enum L10n {
         .exportDOCX: "导出为 DOCX…",
         .exportEPUB: "导出为 EPUB…",
         .close: "关闭",
+        .viewDiagramAtActualSize: "按原尺寸查看图表",
         .folderQuickOpenField: "快速打开",
         .folderFilterPlaceholder: "搜索文件名或路径",
         .folderFileList: "文件夹中的文件",

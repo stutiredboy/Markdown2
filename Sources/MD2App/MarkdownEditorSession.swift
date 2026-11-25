@@ -28,6 +28,7 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate, @preconcurrency
     let undoManager: UndoManager
     let structuredEditUndo: StructuredEditUndo
     lazy var structuredCommands = StructuredCommandQueue(session: self)
+    var sourceIndex = EditorSourceIndex()
     private(set) var structuredSourceRevision: UInt64 = 0
     private(set) var structuredIntentGeneration: UInt64 = 0
     let find = FindSession()
@@ -339,6 +340,7 @@ final class MarkdownEditorSession: NSObject, NSTextViewDelegate, @preconcurrency
     func textStorage(_ textStorage: NSTextStorage, didProcessEditing editedMask: NSTextStorageEditActions,
                      range editedRange: NSRange, changeInLength delta: Int) {
         guard editedMask.contains(.editedCharacters) else { return }
+        sourceIndex.invalidate(from: editedRange.location)
         structuredSourceRevision &+= 1
         if let textView { structuredCommands.observedCharacterChange(in: textView, range: editedRange, delta: delta) }
     }

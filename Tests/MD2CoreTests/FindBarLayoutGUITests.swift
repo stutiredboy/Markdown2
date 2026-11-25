@@ -229,20 +229,7 @@ final class FindBarLayoutGUITests: XCTestCase {
     @MainActor private func scrollViaTrack(in web: WKWebView, _ h: InteractionTestWindow) throws {
         let foundAt = try XCTUnwrap(try h.js("scrollY", web) as? Double)
         XCTAssertGreaterThan(foundAt, 0, "Find must reach the middle of the document")
-        // Wake the transient system scrollbar on Macs configured to hide it.
-        // The track click must then advance past the original match position.
-        _ = try h.js("scrollBy(0, -8); true", web)
-        let location = web.convert(NSPoint(x: web.bounds.maxX - 5, y: web.bounds.height * 0.85), to: nil)
-        for kind: NSEvent.EventType in [.mouseMoved, .leftMouseDown, .leftMouseUp] {
-            let event = try XCTUnwrap(NSEvent.mouseEvent(with: kind, location: location, modifierFlags: [],
-                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: h.window.windowNumber,
-                context: nil, eventNumber: 0, clickCount: kind == .mouseMoved ? 0 : 1, pressure: kind == .leftMouseDown ? 1 : 0))
-            switch kind {
-            case .mouseMoved: web.mouseMoved(with: event)
-            case .leftMouseDown: web.mouseDown(with: event)
-            default: web.mouseUp(with: event)
-            }
-        }
+        try h.clickPreviewScrollTrack(in: web)
         try h.waitForPage("scrollY > \(foundAt + 10)", in: web,
                           context: "native track click advances scrollbar past \(foundAt)")
         XCTAssertNotNil(h.queryField)

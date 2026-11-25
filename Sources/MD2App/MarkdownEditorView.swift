@@ -141,7 +141,7 @@ struct MarkdownEditorView: NSViewRepresentable {
     var formatCommand: MarkdownFormatCommand? = nil
     var sourceAccessibilityLabel: String? = nil
     var typography: TypographySettings = .init()
-    var onSelectionChange: (String?) -> Void = { _ in }
+    var onSelectionChange: (EditorSelection) -> Void = { _ in }
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = MarkdownEditorScrollView()
@@ -519,24 +519,29 @@ struct MarkdownEditorView: NSViewRepresentable {
         var onEnterPreview: () -> Void = {}
         var onAnchorLineChange: (_ line: Int, _ drivesPreviewSync: Bool) -> Void = { _, _ in }
         var onTextEdit: (_ caretLine: Int) -> Void = { _ in }
-        var onSelectionChange: (String?) -> Void = { _ in }
+        var onSelectionChange: (EditorSelection) -> Void = { _ in }
         private var selectionReportRevision = 0
 
         @MainActor func reportSelection(in textView: NSTextView) {
             guard !textView.hasMarkedText(), !isApplyingStyle else { return }
-            let source = textView.string as NSString
-            let fragments = textView.selectedRanges.compactMap { value -> String? in
-                let range = value.rangeValue
-                guard range.location != NSNotFound, range.length > 0, NSMaxRange(range) <= source.length else { return nil }
-                return source.substring(with: range)
-            }
-            let selection = fragments.isEmpty ? nil : fragments.joined(separator: "\n")
             selectionReportRevision &+= 1
             let revision = selectionReportRevision
             DispatchQueue.main.async { [weak self, weak textView] in
-                guard let self, self.selectionReportRevision == revision,
+                guard let self, self.selectionReportRevision == revision, self.session.isHosted(by: self),
                       let textView, !textView.hasMarkedText() else { return }
-                self.onSelectionChange(selection)
+                let source: NSString = textView.textStorage?.mutableString ?? (textView.string as NSString)
+                let range = textView.selectedRange()
+                guard range.location != NSNotFound, NSMaxRange(range) <= source.length else { return }
+                let fragments = textView.selectedRanges.compactMap { value -> String? in
+                    let range = value.rangeValue
+                    guard range.location != NSNotFound, range.length > 0, NSMaxRange(range) <= source.length else { return nil }
+                    return source.substring(with: range)
+                }
+                let start = self.session.sourceIndex.position(at: range.location, in: source)
+                let end = range.length == 0 ? start : self.session.sourceIndex.position(at: NSMaxRange(range), in: source)
+                self.onSelectionChange(EditorSelection(
+                    text: fragments.isEmpty ? nil : fragments.joined(separator: "\n"), start: start, end: end
+                ))
             }
         }
         var onFindShortcut: (_ action: FindCommand.Action) -> Void = { _ in }
@@ -1959,10 +1964,8 @@ struct MarkdownEditorView: NSViewRepresentable {
             // The caret reflects the post-edit position (textDidChange fires after
             // the change), so its source line is where the user is writing — the
             // line Side by Side should keep visible in the preview.
-            let caretLine = Self.lineNumber(
-                forCharacterIndex: textView.selectedRange().location,
-                in: textView.string as NSString
-            )
+            let source: NSString = textView.textStorage?.mutableString ?? (textView.string as NSString)
+            let caretLine = session.sourceIndex.line(at: textView.selectedRange().location, in: source)
             onTextEdit(caretLine)
             text = textView.string
 

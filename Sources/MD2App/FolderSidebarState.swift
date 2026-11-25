@@ -5,6 +5,7 @@ import SwiftUI
 
 @MainActor
 final class DocumentWindowContentState: ObservableObject {
+    weak var window: NSWindow?
     @Published var folderSidebar: FolderSidebarState? {
         didSet {
             sidebarObservation = folderSidebar?.objectWillChange.sink { [weak self] _ in
@@ -22,9 +23,11 @@ final class DocumentWindowContentState: ObservableObject {
     /// Last reported location, also used by the app menu when replacing the preview host.
     var previewAnchor: ViewportAnchor?
     let remoteResourceSheet = RemoteResourceSheet()
+    let surfaceDidFocus = PassthroughSubject<SplitPane, Never>()
 
     @Published var isFolderPreviewSelected = false
     @Published private(set) var editorFocusRequest: UUID?
+    @Published var sidebarRevealRequest: UUID?
     private var sidebarObservation: AnyCancellable?
     private var remoteImagesObservation: AnyCancellable?
 
@@ -47,6 +50,7 @@ final class FolderSidebarState: ObservableObject {
         didSet { updateBrowserHost() }
     }
 
+    var onShowFiles: ((NSWindow) -> Void)?
     private let browserView: NSView
     private let focusBrowser: () -> Void
     private let hosts = NSMapTable<NSWindow, FolderSidebarHostView>.weakToWeakObjects()
@@ -69,6 +73,7 @@ final class FolderSidebarState: ObservableObject {
 
     func showFiles(in window: NSWindow, focus: @escaping () -> Void) {
         setActiveWindow(window)
+        onShowFiles?(window)
         if section == .files, isVisible, browserView.window === window, window.isKeyWindow {
             // Menu shortcuts can be followed immediately by typing. Once the
             // browser is mounted, apply focus before the next input event.

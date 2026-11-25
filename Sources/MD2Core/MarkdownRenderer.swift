@@ -2961,6 +2961,7 @@ public struct MarkdownRenderer: Sendable {
             font-family: "SF Mono", Menlo, Consolas, monospace;
             font-size: 0.9em;
             padding: 0.12em 0.34em;
+            overflow-wrap: anywhere;
         }
 
         pre {
@@ -2995,13 +2996,6 @@ public struct MarkdownRenderer: Sendable {
                also breaks long unbreakable tokens (paths/URLs). Fenced code
                blocks are unaffected: `pre code` is `white-space: pre`, which
                ignores these properties and keeps its own horizontal scroll. */
-            overflow-wrap: anywhere;
-            word-break: break-word;
-        }
-
-        /* Long inline code in a quote (e.g. `openspec/specs/plugin-load-safety`)
-           wraps rather than forcing the quote to scroll horizontally. */
-        blockquote code {
             overflow-wrap: anywhere;
             word-break: break-word;
         }
