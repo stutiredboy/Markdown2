@@ -274,13 +274,15 @@ struct DocumentExternalChangeTests {
         let store = DocumentStore(fileWatcherFactory: { watcher }, autosaveDelay: 0.01)
         defer { store.closeDocument(discardRecovery: true) }
         store.open(url)
+        try #require(store.fileFormat.encoding == .gbk)
         let editor = "周报🚀"
         store.text = editor
-        try #require(await waitUntil { store.encodingConversionRequest != nil })
+        try #require(try await waitForDocumentState { store.encodingConversionRequest != nil })
+        #expect(try Data(contentsOf: url) == gbk)
         let disk = Data("External text".utf8)
         try disk.write(to: url)
         watcher.fire()
-        try #require(await waitUntil { store.hasExternalConflict })
+        try #require(try await waitForDocumentState { store.hasExternalConflict })
         let comparison = try #require(await store.externalConflictComparison())
         try #require(comparison.editorFormat.encoding == .gbk)
         if duringViewportCapture {
