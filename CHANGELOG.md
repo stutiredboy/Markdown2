@@ -4,6 +4,8 @@
 
 ### Added
 
+- Command-double-click a passage in Preview or choose **Edit This Paragraph in Source** from its context menu to place the caret in the corresponding source block.
+
 - Change the reading width from the preview toolbar or the View menu. In Preview, the outline appears in the right margin when there is room and the left outline is hidden.
 
 - Star the current folder in the browser and reopen it across launches from File → Favorite Folders. Remove individual favorites or clear the list from the same menu.
@@ -21,6 +23,8 @@
 - Browse files in a collapsible Files and Outline sidebar. Click a file or use Up and Down in the tree to skim in one native preview tab. Double-click, press Return, or edit to keep the file open as a regular tab. Return to the tree with Shift+Cmd+B. Folder indexing now refreshes on filesystem changes or on request.
 
 ### Fixed
+
+- Give the preview Find bar its own space in Read and Side by Side. Matches keep the original line breaks, use contrasting text in both appearances and outline the current result.
 
 - Preserve outer borders and inner row and column lines in tables exported to DOCX.
 

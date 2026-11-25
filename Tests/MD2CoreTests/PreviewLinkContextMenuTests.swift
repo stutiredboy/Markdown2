@@ -37,6 +37,31 @@ import Testing
         #expect(opened == [first])
     }
 
+    @Test func paragraphActionRequiresItsOwnMenuAndOnlyDeliversTheCapturedLocationOnce() throws {
+        let adapter = PreviewContextMenuAdapter()
+        adapter.editParagraphTitle = "Edit This Paragraph in Source"
+        var lines: [Int] = []
+        adapter.editParagraph = { lines.append($0.line) }
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let hit = try #require(PreviewParagraphHit(["line": 7, "revision": 9]))
+        let generation = adapter.begin(menu)
+        adapter.bind(menu, generation: generation, link: nil, image: nil, page: nil, paragraph: hit)
+        #expect(lines.isEmpty)
+        #expect(menu.items.map(\.title) == ["Edit This Paragraph in Source"])
+        adapter.end(menu)
+        menu.performActionForItem(at: 0)
+        menu.performActionForItem(at: 0)
+        #expect(lines == [7])
+
+        let next = adapter.begin(menu)
+        #expect(menu.items.isEmpty)
+        adapter.bind(menu, generation: next, link: nil, image: nil, page: nil, paragraph: hit)
+        adapter.invalidate()
+        menu.performActionForItem(at: 0)
+        #expect(lines == [7])
+    }
+
     @Test func originallyDisabledOpenItemsRemainDisabled() {
         let adapter = PreviewContextMenuAdapter()
         let target = MenuActionTarget()

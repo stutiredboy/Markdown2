@@ -1,9 +1,97 @@
 # TODOS
 
-Reassessed on 2026-11-13 against main `51c74a2` after PR #58. Priorities below
-order future work; they do not identify unresolved release-blocking defects.
+The earlier backlog was reviewed on 2026-11-13 against main `51c74a2` after
+PR #58. Priorities below order future work; they do not identify unresolved
+release-blocking defects.
 Each selected item needs a bounded design, an isolated implementation package,
 non-author review and acceptance against its final source.
+
+## Visual and interaction review (2026-11-25)
+
+Reviewed against `eeb15a6`. Window sizes and occlusion were observed in the
+native app. Text contrast, reflow and diagram dimensions were measured in
+WebKit using the app's preview styles. Priority reflects the impact on the
+task. Usage frequency has not been measured.
+
+### First priorities
+
+If the next iteration has room for two items, start with preview Find and
+editing a paragraph from the preview. Together they cover finding a passage,
+reading its context and correcting it in the source.
+
+- [ ] **P1 — Keep preview Find readable and clear of the document.** At a
+  window width of 980 pt, opening Find covered the visible section heading
+  and the first line below it. In dark appearance, ordinary body text had a
+  contrast ratio of 1.87:1 on the current match and 1.18:1 on the other
+  matches. Give the bar its own layout space in Read and Side by Side. Pair
+  text and background colors for each appearance, outline the current match,
+  and remove the horizontal padding that changes line breaks.
+  **Verify** the first-line match in a short file and a mid-document match
+  in a long file both remain visible and the scrollbar stays usable. Check
+  both appearances against [4.5:1 for ordinary text](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html).
+  At 420 CSS px, searching for `任务` in `启动任务，核对任务状态。` repeated 50 times
+  increased paragraph height from 753 to 779 px. All 100 matches should be
+  highlighted with the original line breaks.
+
+- [ ] **P1 — Make half-screen reading and narrow previews usable.** A request
+  for a 720 pt single-pane window stopped at 780 pt. Switching to Side by Side
+  with the outline visible widened the window to 1046 pt. Let Write and Read
+  fit in half of a 1440 pt display and collapse the sidebar when space is tight.
+  Address two content cases in a 420 CSS px preview:
+  - A 64-character hexadecimal hash in inline code widened the page to 589 px.
+    Wrap a long inline token where needed. Verify the copied hash is exact,
+    prose fits the pane, and wide tables and fenced code scroll within their blocks.
+  - The [eight-node Mermaid flowchart](Tests/MD2CoreTests/MermaidOffscreenRenderingTests.swift)
+    shrank from about 1106 to 372 px, leaving a nominal 16 px label at about
+    5.4 px even when body text increased from 16 to 32 px. Offer an actual-size
+    view with panning. Verify that every node can be read and Esc returns to
+    the same place in the document.
+
+- [ ] **P1 — Edit the paragraph selected in the preview.** Cmd-double-click
+  currently switches to Write using the reading position. The gesture omits
+  the clicked location. Preview line numbers already support source navigation,
+  but they are off by default. Route the gesture and an “Edit This Paragraph
+  in Source” context-menu command to the clicked source block. Place the caret
+  at the corresponding text where the mapping is reliable, or at the start of
+  the block otherwise. **Verify** with line numbers hidden and an identical
+  sentence in two paragraphs. Acting on the second occurrence must put the
+  caret in the second paragraph before any text is changed.
+
+### Further interaction improvements
+
+- [ ] **P2 — Show how to keep a folder preview open.** Selecting another file
+  replaces the temporary document. With the tab bar hidden, the italic preview
+  title is unavailable and the sidebar button still says “Open”. When the
+  selection is the current temporary preview, label that button “Keep Document
+  Open ↵” (“保留此文档 ↵”). **Verify** that clicking A then B reuses one preview,
+  while pressing Return, using the button, or editing A keeps it open when B
+  is selected. See the [folder workflow](Docs/FolderWorkflow.md).
+
+- [ ] **P2 — Let a writer hold a reference in place in Side by Side.**
+  Scrolling and typing normally move the other pane. Add a per-window
+  “Pause Synchronized Scrolling” control in Side by Side. **Verify** that a
+  table stays visible on the right while the writer scrolls to a summary and
+  types on the left. Resuming should align the panes once from the active pane
+  and restore their usual bidirectional scrolling.
+
+- [ ] **P2 — Compare external changes before resolving a save conflict.**
+  The ordinary conflict dialog offers “Keep My Version”, which resumes autosave,
+  and “Reload from Disk”, which discards pending edits. Show the changed
+  passages, label the editor and disk versions, and offer to save the editor's
+  changes as a separate copy. **Verify** by editing one paragraph in Markdown2
+  and another on disk. Both differences should be visible, writes to the
+  original should stay paused during comparison, and saving a copy should
+  leave both versions available. See the [document lifecycle](Docs/DocumentLifecycle.md).
+
+- [ ] **P2 — Give the status bar a hierarchy for reading and editing.** Word
+  count, character count, line count, reading time, zoom, encoding, line
+  endings and path currently share the same visual weight. Emphasize word
+  count and reading time in Read, and caret line/column and selection counts
+  in Write. Put encoding, line endings and the full path in a “Document Info”
+  control. **Verify** in a narrow window with a long path and an active
+  selection. The primary values should remain legible, the full path and
+  format should be retrievable, and conversion progress and Cancel should
+  remain directly accessible during conversion.
 
 ## Already delivered
 

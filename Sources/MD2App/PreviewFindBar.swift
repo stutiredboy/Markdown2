@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 
-/// A minimal find-only bar shown over the preview. Drives search through the
+/// A minimal find-only bar shown above the preview. Drives search through the
 /// bound `query`; navigation and dismissal are reported via callbacks. Replace
 /// is intentionally absent because the rendered page is read-only.
 struct PreviewFindBar: View {

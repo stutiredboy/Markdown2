@@ -98,18 +98,18 @@ final class PreciseFindGUITests: XCTestCase {
         harness.store.requestFind(.show)
         try wait(harness, "preview find mounted") { harness.queryField != nil }
         try harness.enterQuery("cafe")
-        try harness.waitForPage("document.querySelectorAll('mark.md2-find').length === 3", in: web, context: "preview folds both composed and decomposed accents")
+        try harness.waitForPage("\(PreviewFindRanges.count) === 3", in: web, context: "preview folds both composed and decomposed accents")
         try button(.findMatchCase, harness).performClick(nil)
-        try harness.waitForPage("document.querySelectorAll('mark.md2-find').length === 2", in: web, context: "case change reindexes preview")
+        try harness.waitForPage("\(PreviewFindRanges.count) === 2", in: web, context: "case change reindexes preview")
         try button(.findWholeWord, harness).performClick(nil)
         try harness.enterQuery("foo")
-        try harness.waitForPage("document.querySelectorAll('mark.md2-find').length === 1", in: web, context: "inline strong edge is not a word boundary")
+        try harness.waitForPage("\(PreviewFindRanges.count) === 1", in: web, context: "inline strong edge is not a word boundary")
         try harness.enterQuery("中文")
-        try harness.waitForPage("document.querySelectorAll('mark.md2-find').length === 1", in: web, context: "Chinese uses continuous Unicode word runs")
+        try harness.waitForPage("\(PreviewFindRanges.count) === 1", in: web, context: "Chinese uses continuous Unicode word runs")
         try harness.enterQuery("👩")
-        try harness.waitForPage("document.querySelectorAll('mark.md2-find').length === 1 && document.querySelector('mark.md2-find').textContent === '👩'", in: web, context: "emoji grapheme cannot split")
+        try harness.waitForPage("\(PreviewFindRanges.count) === 1 && \(PreviewFindRanges.firstText) === '👩'", in: web, context: "emoji grapheme cannot split")
         try harness.enterQuery("foobar")
-        try harness.waitForPage("document.querySelectorAll('mark.md2-find').length === 2 && document.querySelectorAll('mark.md2-find-current').length === 2", in: web, context: "one logical match spans inline nodes")
+        try harness.waitForPage("\(PreviewFindRanges.count) === 2 && \(PreviewFindRanges.currentCount) === 2", in: web, context: "one logical match spans inline nodes")
         let result = try harness.js("window.__md2FindNext(true)", web) as? [String: Int]
         XCTAssertEqual(result?["total"], 1)
         XCTAssertEqual(result?["index"], 1)
@@ -130,13 +130,13 @@ final class PreciseFindGUITests: XCTestCase {
             window.__md2Find('needle', {id:snapshot.id,ranges:[[0,6]]}).stale;
             """, web) as? Bool
         XCTAssertEqual(stale, true)
-        XCTAssertEqual(try harness.js("document.querySelectorAll('mark.md2-find').length", web) as? Int, 0)
+        XCTAssertEqual(try harness.js(PreviewFindRanges.count, web) as? Int, 0)
         _ = try harness.js("document.querySelector('main').textContent = 'a'.repeat(20001); true;", web)
         harness.store.requestFind(.show)
         try wait(harness, "preview field mounted") { harness.queryField != nil }
         try harness.enterQuery("a")
         try wait(harness, "over-budget result is explicit") { harness.store.editorSession.find.previewUnavailable }
-        XCTAssertEqual(try harness.js("document.querySelectorAll('mark.md2-find').length", web) as? Int, 0)
+        XCTAssertEqual(try harness.js(PreviewFindRanges.count, web) as? Int, 0)
         _ = try harness.js("document.querySelector('main').textContent = 'x'.repeat(2000001); true;", web)
         XCTAssertEqual(try harness.js("window.__md2FindSnapshot().unavailable", web) as? Bool, true)
     }

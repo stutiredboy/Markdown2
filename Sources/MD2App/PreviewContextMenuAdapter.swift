@@ -41,6 +41,9 @@ struct PreviewContextMenuInput {
 final class PreviewContextMenuAdapter {
     static let linkIdentifiers: Set<String> = ["WKMenuItemIdentifierOpenLink", "WKMenuItemIdentifierOpenLinkInNewWindow"]
     static let imageIdentifier = "WKMenuItemIdentifierOpenImageInNewWindow"
+    private static let paragraphIdentifier = NSUserInterfaceItemIdentifier("md2.editParagraphInSource")
+    var editParagraphTitle: String?
+    var editParagraph: (PreviewParagraphHit) -> Void = { _ in }
     var open: (URL) -> Void = { _ in }
     var resolveImage: (URL) -> URL? = { _ in nil }
     private weak var currentMenu: NSMenu?
@@ -50,6 +53,9 @@ final class PreviewContextMenuAdapter {
     @discardableResult func begin(_ menu: NSMenu) -> UUID {
         invalidate()
         currentMenu = menu
+        if let prior = menu.items.first(where: { $0.identifier == Self.paragraphIdentifier }) {
+            menu.removeItem(prior)
+        }
         // Never leave an unbound native navigation item active while the
         // isolated-world query is in flight. All other native items are intact.
         for item in items(in: menu) where Self.isOpenItem(item) {
@@ -61,8 +67,21 @@ final class PreviewContextMenuAdapter {
         return generation
     }
 
-    func bind(_ menu: NSMenu, generation expected: UUID, link: URL?, image: URL?, page: URL?) {
+    func bind(_ menu: NSMenu, generation expected: UUID, link: URL?, image: URL?, page: URL?,
+              paragraph: PreviewParagraphHit? = nil) {
         guard currentMenu === menu, generation == expected else { return }
+        if let paragraph, let editParagraphTitle {
+            let action = ContextMenuOpenAction { [weak self] in
+                guard let self, self.generation == expected else { return }
+                self.editParagraph(paragraph)
+            }
+            let item = NSMenuItem(title: editParagraphTitle, action: #selector(ContextMenuOpenAction.openMenuTarget(_:)),
+                                  keyEquivalent: "")
+            item.identifier = Self.paragraphIdentifier
+            item.target = action
+            item.representedObject = action
+            menu.insertItem(item, at: 0)
+        }
         for item in items(in: menu) {
             let identifier = item.identifier?.rawValue ?? ""
             let destination: URL?

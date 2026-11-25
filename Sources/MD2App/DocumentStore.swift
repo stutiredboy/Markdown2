@@ -1082,6 +1082,19 @@ final class DocumentStore: ObservableObject {
         jumpHeadingID = heading.id
     }
 
+    /// Place the insertion point before changing hosts or handing keyboard
+    /// focus to the editor. No later callback may reselect an obsolete range.
+    func placePreviewCaret(_ hit: PreviewParagraphHit, for token: UUID) -> NSTextView? {
+        guard resourceContextIsCurrent(token), hasCurrentResourcePreview,
+              hit.revision == renderedTextMutationRevision, hit.revision == textMutationRevision,
+              hit.line <= rendered.stats.lines,
+              let range = hit.caret(in: text as NSString) else { return nil }
+        let editor = editorSession.loadTextView(text: text)
+        guard !editor.hasMarkedText(), (editor.string as NSString).isEqual(to: text) else { return nil }
+        editor.setSelectedRange(range)
+        return editor
+    }
+
     struct PreviewFormulaTarget {
         fileprivate let identity: UUID
         let revision: Int

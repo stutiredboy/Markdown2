@@ -783,19 +783,13 @@ struct ContentView: View {
 
     private func showPreviewFind() {
         previewFindQuery = lastFindQuery
-        withAnimation(findDialogEntranceAnimation) {
-            previewFindVisible = true
-        }
+        previewFindVisible = true
         previewFindFocusToken = UUID()
     }
 
     private func dismissPreviewFind(refocusPreview: Bool = false) {
         if focusedFindPane == .preview { focusedFindPane = nil }
-        if previewFindVisible {
-            withAnimation(findDialogExitAnimation) {
-                previewFindVisible = false
-            }
-        }
+        previewFindVisible = false
         previewFindNavigation = nil
         if refocusPreview {
             previewSurfaceFocusToken = UUID()
@@ -963,6 +957,22 @@ struct ContentView: View {
             ), to: .write)
         }
         document.editorLineSelection = LineSelectionRequest(line: line)
+    }
+
+    private func editPreviewParagraph(_ hit: PreviewParagraphHit, resourceToken: UUID) {
+        guard mode != .write, let editor = document.placePreviewCaret(hit, for: resourceToken) else { return }
+        document.editorLineSelection = nil
+        document.showsFormattingTargetNotice = false
+        if mode == .read {
+            document.editorSession.revealSelectionOnNextHost = true
+            deliver(anchor: ViewportAnchor(sourceLine: hit.line), to: .write)
+        } else {
+            // Side by Side already hosts the document's editor.
+            focusedPane = .editor
+            focusedFindPane = nil
+            editor.window?.makeFirstResponder(editor)
+            editor.scrollRangeToVisible(editor.selectedRange())
+        }
     }
 
     private var previewFormulaEditing: MarkdownPreviewView.FormulaEditing {
@@ -1231,8 +1241,7 @@ struct ContentView: View {
 
     /// The preview surface (with its find bar). In Side by Side it re-renders in
     /// place as the document changes (`liveUpdate`), drives the editor on scroll,
-    /// and claims focus on interaction; the mode-toggle gesture (Cmd+double
-    /// click) is disabled so it cannot accidentally leave split.
+    /// and keeps both panes mounted when editing a clicked paragraph.
     @ViewBuilder
     private func previewPane(inSplit: Bool) -> some View {
         let resourceToken = document.remoteResourceContextToken
@@ -1241,7 +1250,24 @@ struct ContentView: View {
             sourceRevision: document.renderedSourceLineRevision,
             typography: settings.typography
         )
-        ZStack(alignment: .top) {
+        VStack(spacing: 0) {
+            if previewFindVisible {
+                NativeFindBar(pane: .preview) {
+                    PreviewFindBar(
+                        query: findQueryBinding(for: .preview),
+                        focusToken: previewFindFocusToken,
+                        statusText: previewStatusText,
+                        settings: settings,
+                        onSubmitQuery: { previewFindNavigation = FindCommand(.search) },
+                        onNext: { handlePreviewFindAction(.next) },
+                        onPrevious: { handlePreviewFindAction(.previous) },
+                        onClose: { dismissPreviewFind(refocusPreview: true) },
+                        onFocusChange: { editing in updateFindFieldFocus(.preview, editing: editing) },
+                        findSession: document.editorSession.find
+                    )
+                }
+            }
+
             if suspendsFolderPreview {
                 // Hidden folder tabs keep their permission for explicit output
                 // but only the selected tab starts a network-capable preview.
@@ -1264,6 +1290,9 @@ struct ContentView: View {
                     showsFrontMatter: showsFrontMatterInPreview,
                     showsLineNumbers: settings.showsLineNumbersInPreview,
                     sourceLineRevision: document.renderedSourceLineRevision,
+                    textRevision: document.renderedTextMutationRevision,
+                    editParagraphTitle: settings.text(.editParagraphInSource),
+                    onEditParagraph: { editPreviewParagraph($0, resourceToken: resourceToken) },
                     formulaEditing: inSplit ? nil : previewFormulaEditing,
                     onEditFormula: { line, revision, window in
                         editPreviewFormula(line: line, revision: revision, window: window)
@@ -1340,25 +1369,6 @@ struct ContentView: View {
                 ProgressView(settings.text(.remoteImagesPreparing))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-
-            if previewFindVisible {
-                NativeFindBar(pane: .preview) {
-                    PreviewFindBar(
-                        query: findQueryBinding(for: .preview),
-                        focusToken: previewFindFocusToken,
-                        statusText: previewStatusText,
-                        settings: settings,
-                        onSubmitQuery: { previewFindNavigation = FindCommand(.search) },
-                        onNext: { handlePreviewFindAction(.next) },
-                        onPrevious: { handlePreviewFindAction(.previous) },
-                        onClose: { dismissPreviewFind(refocusPreview: true) },
-                        onFocusChange: { editing in updateFindFieldFocus(.preview, editing: editing) },
-                        findSession: document.editorSession.find
-                    )
-                }
-                .transition(findDialogTransition)
-                .zIndex(1)
-            }
         }
     }
 
@@ -1385,7 +1395,7 @@ struct ContentView: View {
                     viewportHeight: geometry.size.height,
                     onSelect: { selectOutlineHeading($0, animated: true) }
                 )
-                .padding(.top, previewFindVisible ? 72 : 24)
+                .padding(.top, 24)
                 .padding(.trailing, FloatingOutlineLayout.trailingInset)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             }
