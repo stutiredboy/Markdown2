@@ -72,7 +72,8 @@ enum PreviewMermaidViewer {
             function openDiagram(block, svg, button) {
                 if (viewer || !svg.isConnected) return;
                 const size = svg.viewBox.baseVal;
-                const x = window.scrollX, y = window.scrollY;
+                const x = window.scrollX;
+                const blockViewportTop = block.getBoundingClientRect().top;
                 const dialog = document.createElement('dialog');
                 dialog.className = 'md2-diagram-viewer';
                 dialog.setAttribute('aria-label', openLabel);
@@ -123,7 +124,9 @@ enum PreviewMermaidViewer {
                     window.dispatchEvent(new Event('resize'));
                     if (button.isConnected) {
                         button.focus({preventScroll: true});
-                        window.scrollTo(x, y);
+                        // Text preceding the diagram can reflow while the dialog
+                        // is open. Restore the block to its original viewport row.
+                        window.scrollTo(x, window.scrollY + block.getBoundingClientRect().top - blockViewportTop);
                     }
                     window.webkit.messageHandlers.\#(stateMessage).postMessage(false);
                 }, {once: true});

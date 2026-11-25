@@ -24,7 +24,7 @@ final class MermaidActualSizeGUITests: XCTestCase, RenderedPageTesting {
     func testEightNodesAtActualSizeAndEscapeRestoresReader() throws {
         let h = InteractionTestWindow()
         defer { h.close() }
-        let filler = String(repeating: "A paragraph in this section.\n\n", count: 40)
+        let filler = String(repeating: "This paragraph wraps across several lines before the diagram in the narrow reading column.\n\n", count: 40)
         var findDismissals = 0
         let page = MarkdownRenderer().render(filler + Self.diagram + "\n\n" + filler, assetMode: .appScheme)
         let preview = MarkdownPreviewView(html: page.html, bodyHTML: page.body, baseURL: nil,
@@ -89,6 +89,21 @@ final class MermaidActualSizeGUITests: XCTestCase, RenderedPageTesting {
         XCTAssertTrue(web.performKeyEquivalent(with: try key("\u{1b}", code: 53, in: web)))
         XCTAssertEqual(findDismissals, 1, "the next Escape is available to the preview Find bar")
         print("Mermaid at 420 CSS px with 32 px body: inline \(initial[1]), actual \(width), restored scrollY \(initial[0]), all eight nodes visible at natural scale")
+
+        let blockTop = "document.querySelector('.diagram-mermaid').getBoundingClientRect().top"
+        let viewportTop = try XCTUnwrap(try h.js(blockTop, web) as? Double)
+        let documentTop = initial[0] + viewportTop
+        try click(openButton, in: web)
+        try h.waitForPage("\(canvas)?.contains(window.originalDiagram) === true", in: web, context: "diagram reopened")
+        h.window.setContentSize(NSSize(width: 680, height: 440))
+        try h.waitForPage("""
+            innerWidth === 680 && (scrollY + \(blockTop)) < \(documentTop) - innerHeight
+            """, in: web, context: "widening the viewer reflows the preceding prose by more than a viewport")
+        XCTAssertTrue(web.performKeyEquivalent(with: try key("\u{1b}", code: 53, in: web)))
+        try h.waitForPage("!document.querySelector('.md2-diagram-viewer') && document.activeElement === \(openButton)",
+                          in: web, context: "Escape returned to the widened reading column")
+        XCTAssertEqual(try XCTUnwrap(try h.js(blockTop, web) as? Double), viewportTop, accuracy: 1)
+        XCTAssertLessThan(try XCTUnwrap(try h.js("scrollY", web) as? Double), initial[0] - 440)
     }
 
     @MainActor
