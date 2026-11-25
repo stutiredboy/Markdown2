@@ -59,7 +59,7 @@ reading its context and correcting it in the source.
 
 ### Further interaction improvements
 
-- [ ] **P2 — Show how to keep a folder preview open.** Selecting another file
+- [x] **P2 — Show how to keep a folder preview open.** Selecting another file
   replaces the temporary document. With the tab bar hidden, the italic preview
   title is unavailable and the sidebar button still says “Open”. When the
   selection is the current temporary preview, label that button “Keep Document
@@ -67,7 +67,7 @@ reading its context and correcting it in the source.
   while pressing Return, using the button, or editing A keeps it open when B
   is selected. See the [folder workflow](Docs/FolderWorkflow.md).
 
-- [ ] **P2 — Let a writer hold a reference in place in Side by Side.**
+- [x] **P2 — Let a writer hold a reference in place in Side by Side.**
   Scrolling and typing normally move the other pane. Add a per-window
   “Pause Synchronized Scrolling” control in Side by Side. **Verify** that a
   table stays visible on the right while the writer scrolls to a summary and
