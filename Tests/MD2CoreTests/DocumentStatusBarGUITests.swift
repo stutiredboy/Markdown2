@@ -114,14 +114,39 @@ final class DocumentStatusBarGUITests: XCTestCase {
         defer { app.close() }
         let window = try app.documentWindow(source, focused: true)
         let editor = try app.editor(in: window)
-        let web = try app.waitFor("short preview") {
+        let web = try app.waitFor("rendered short preview") {
             app.descendant(window) { app.attribute(kAXRoleAttribute, of: $0) as? String == "AXWebArea"
                 && app.descendant($0, matching: { app.labels($0).contains("Two words") }) != nil }
         }
-        func click(_ element: AXUIElement) throws {
+        let paragraph = try XCTUnwrap(app.descendant(web) {
+            app.attribute(kAXRoleAttribute, of: $0) as? String == kAXStaticTextRole && app.labels($0).contains("Two words")
+        })
+
+        // WebKit's rendered accessibility tree belongs to its content process.
+        // A WindowServer hit may return the native pane hosting AXWebArea.
+        func splitChild(containing element: AXUIElement) -> AXUIElement? {
+            var child = element
+            for _ in 0..<20 {
+                guard let parent = app.elementAttribute(kAXParentAttribute, of: child) else { return nil }
+                if app.attribute(kAXRoleAttribute, of: parent) as? String == kAXSplitGroupRole { return child }
+                child = parent
+            }
+            return nil
+        }
+        func click(in surface: AXUIElement, stage: String, bounds: () throws -> CGRect) throws {
             try app.activateForInput()
-            let rect = try app.frame(of: element)
-            let point = CGPoint(x: rect.midX, y: rect.minY + min(32, rect.height / 2))
+            _ = try app.documentWindow(source, focused: true)
+            let pane = try XCTUnwrap(splitChild(containing: surface), stage)
+            var point = CGPoint.zero
+            _ = try app.waitFor("a visible click target for \(stage)") {
+                guard let rect = try? bounds(), !rect.isEmpty else { return nil }
+                point = CGPoint(x: rect.midX, y: rect.midY)
+                guard (try? app.frame(of: surface))?.contains(point) == true else { return nil }
+                var hit: AXUIElement?
+                guard AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(point.x), Float(point.y), &hit) == .success,
+                      let hit, let hitPane = splitChild(containing: hit), CFEqual(hitPane, pane) else { return nil }
+                return surface
+            }
             for kind: CGEventType in [.leftMouseDown, .leftMouseUp] {
                 let event = try XCTUnwrap(CGEvent(mouseEventSource: nil, mouseType: kind,
                                                   mouseCursorPosition: point, mouseButton: .left))
@@ -130,10 +155,31 @@ final class DocumentStatusBarGUITests: XCTestCase {
             }
         }
 
-        // Establish the fixture without leaving a posted mouse-up pending. The
-        // two real pointer transitions tested below start with this active selection.
-        try app.focus(editor)
-        try app.waitForEditorFocus(in: window)
+        // The full NSTextView frame may extend outside its clip view. Use the
+        // actual glyph bounds and wait for the mouse-delivered caret, so the
+        // initial click has reached AppKit before setting the selection by AX.
+        func clickSource(_ stage: String) throws {
+            var target = CFRange(location: 13, length: 5) // "words" in "# Short\n\nTwo words\n".
+            let range = try XCTUnwrap(AXValueCreate(.cfRange, &target))
+            try click(in: editor, stage: stage) {
+                var value: CFTypeRef?
+                guard AXUIElementCopyParameterizedAttributeValue(editor, kAXBoundsForRangeParameterizedAttribute as CFString,
+                      range, &value) == .success, let value, CFGetTypeID(value) == AXValueGetTypeID() else { return .zero }
+                var rect = CGRect.zero
+                return AXValueGetValue(value as! AXValue, .cgRect, &rect) ? rect : .zero
+            }
+            _ = try app.waitFor("a focused source caret inside 'words' after \(stage)") {
+                guard let focused = app.focusedElement, CFEqual(focused, editor),
+                      let value = app.attribute(kAXSelectedTextRangeAttribute, of: editor),
+                      CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+                var caret = CFRange()
+                guard AXValueGetValue(value as! AXValue, .cfRange, &caret), caret.length == 0,
+                      (target.location...target.location + target.length).contains(caret.location) else { return nil }
+                return editor
+            }
+        }
+
+        try clickSource("initial source selection setup")
         var selection = CFRange(location: 9, length: 3)
         let value = try XCTUnwrap(AXValueCreate(.cfRange, &selection))
         XCTAssertEqual(AXUIElementSetAttributeValue(editor, kAXSelectedTextRangeAttribute as CFString, value), .success)
@@ -141,21 +187,25 @@ final class DocumentStatusBarGUITests: XCTestCase {
             app.attribute(kAXSelectedTextAttribute, of: editor) as? String == "Two" ? editor : nil
         }
         _ = try app.element("document-selection-count", in: window)
-        try click(web)
+        try click(in: web, stage: "preview paragraph") { try app.frame(of: paragraph) }
         _ = try app.element("document-reading-time", in: window)
         XCTAssertNil(app.descendant(window) { app.identifier($0) == "document-caret-position" })
         XCTAssertEqual(app.attribute(kAXSelectedTextAttribute, of: editor) as? String, "Two")
+
         // Inspecting the document is a third focus target. The retained source
         // selection must not reclaim the status or pull focus from its popover.
-        try app.press(app.element("document-info", in: window))
-        _ = try app.waitFor("visible document information") {
+        func infoPath() -> AXUIElement? {
             app.windows.compactMap { app.descendant($0) { app.identifier($0) == "document-info-path" } }.first
         }
+        try app.press(app.element("document-info", in: window))
+        _ = try app.waitFor("visible document information") { infoPath() }
         _ = try app.element("document-reading-time", in: window)
         XCTAssertFalse(app.focusedElement.map { CFEqual($0, editor) } ?? false)
-        try app.key(53) // Escape dismisses the native popover.
-        try click(editor)
-        try app.waitForEditorFocus(in: window)
+        // A click outside dismisses a transient popover. Wait for dismissal
+        // before sending the separate click that must position the source caret.
+        try click(in: web, stage: "dismiss Document Info") { try app.frame(of: paragraph) }
+        _ = try app.waitFor("Document Info to dismiss before returning to source") { infoPath() == nil ? window : nil }
+        try clickSource("the return from the preview")
         _ = try app.element("document-caret-position", in: window)
         XCTAssertNil(app.descendant(window) { app.identifier($0) == "document-reading-time" })
     }

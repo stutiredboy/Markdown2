@@ -897,16 +897,17 @@ struct FolderTestApplication {
 
     func frame(of element: AXUIElement) throws -> CGRect {
         func geometry(_ name: String) throws -> AXValue {
-            let value = try XCTUnwrap(attribute(name, of: element))
-            guard CFGetTypeID(value) == AXValueGetTypeID() else {
+            guard let value = attribute(name, of: element), CFGetTypeID(value) == AXValueGetTypeID() else {
                 throw FolderTestError("No geometry in \(name) for \(labels(element))")
             }
             return value as! AXValue
         }
         var origin = CGPoint.zero
         var size = CGSize.zero
-        XCTAssertTrue(AXValueGetValue(try geometry(kAXPositionAttribute), .cgPoint, &origin))
-        XCTAssertTrue(AXValueGetValue(try geometry(kAXSizeAttribute), .cgSize, &size))
+        guard AXValueGetValue(try geometry(kAXPositionAttribute), .cgPoint, &origin),
+              AXValueGetValue(try geometry(kAXSizeAttribute), .cgSize, &size) else {
+            throw FolderTestError("Could not read geometry for \(labels(element))")
+        }
         return CGRect(origin: origin, size: size)
     }
 
@@ -1124,18 +1125,27 @@ struct FolderTestApplication {
     }
 
     func clickFolderRow(_ url: URL, in window: AXUIElement, count: Int = 1) throws {
-        let list = try element("folder-file-list", in: window)
-        let row = try waitFor("the clickable file row for \(url.lastPathComponent)") {
-            self.row(url.lastPathComponent, in: list)
+        try activateForInput()
+        let system = AXUIElementCreateSystemWide()
+        // A new native tab can move the shared outline down by one row. Check
+        // the current screen target after activation, including its row owner.
+        var lastHit: CGPoint?
+        _ = try waitFor("a stable screen hit on the file row for \(url.lastPathComponent)") {
+            var verified: CGPoint?
+            defer { lastHit = verified }
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+                  let focusedWindow, CFEqual(focusedWindow, window),
+                  let list = descendant(window, matching: { identifier($0) == "folder-file-list" }),
+                  let label = row(url.lastPathComponent, in: list), let target = containingRow(label),
+                  let bounds = try? frame(of: label), !bounds.isEmpty else { return nil }
+            let point = CGPoint(x: bounds.midX, y: bounds.midY)
+            var hit: AXUIElement?
+            guard AXUIElementCopyElementAtPosition(system, Float(point.x), Float(point.y), &hit) == .success,
+                  let hit, let hitRow = containingRow(hit), CFEqual(hitRow, target) else { return nil }
+            verified = point
+            return lastHit == point ? target : nil
         }
-        let bounds = try frame(of: row)
-        XCTAssertGreaterThan(bounds.width, 0)
-        XCTAssertGreaterThan(bounds.height, 0)
-        let point = CGPoint(x: bounds.midX, y: bounds.midY)
-        _ = try waitFor("the isolated app is frontmost before clicking a file row") {
-            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return nil }
-            return focusedWindow.flatMap { CFEqual($0, window) ? $0 : nil }
-        }
+        let point = try XCTUnwrap(lastHit)
         for clickNumber in 1...count {
             for kind: CGEventType in [.leftMouseDown, .leftMouseUp] {
                 let event = try XCTUnwrap(CGEvent(mouseEventSource: nil, mouseType: kind,
@@ -1144,6 +1154,16 @@ struct FolderTestApplication {
                 event.post(tap: .cghidEventTap)
             }
         }
+    }
+
+    private func containingRow(_ element: AXUIElement) -> AXUIElement? {
+        var ancestor: AXUIElement? = element
+        for _ in 0..<12 {
+            guard let current = ancestor else { break }
+            if attribute(kAXRoleAttribute, of: current) as? String == kAXRowRole { return current }
+            ancestor = elementAttribute(kAXParentAttribute, of: current)
+        }
+        return nil
     }
 
     func focus(_ element: AXUIElement) throws {
