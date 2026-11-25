@@ -67,12 +67,31 @@ reading its context and correcting it in the source.
   while pressing Return, using the button, or editing A keeps it open when B
   is selected. See the [folder workflow](Docs/FolderWorkflow.md).
 
-- [x] **P2 — Let a writer hold a reference in place in Side by Side.**
-  Scrolling and typing normally move the other pane. Add a per-window
-  “Pause Synchronized Scrolling” control in Side by Side. **Verify** that a
-  table stays visible on the right while the writer scrolls to a summary and
-  types on the left. Resuming should align the panes once from the active pane
-  and restore their usual bidirectional scrolling.
+- [ ] **P2 — Let a writer hold a reference in place in Side by Side.**
+  Keep the existing per-window pause control. Verify that scrolling to a
+  summary and typing on the left holds the table in place on the right.
+  Resuming from either pane must align the other pane once and restore
+  bidirectional scrolling. A second window must still scroll independently.
+
+  **Close only when all three native regressions also pass.** With sync paused,
+  record the reference's top edge in the preview before editing. After the
+  update settles, the same reference must still be visible and its top edge
+  must be within 2 CSS px of its original viewport position.
+
+  1. **Active Find result.** Find a word twice in the preview, advance to the
+     second match, and leave Find open. Edit the first paragraph in the source
+     so both matches survive. The second occurrence must remain highlighted
+     as current. On `83a1ed2`, Find selected the first occurrence again and
+     the second moved from y=273 to 4238 in a 573 px viewport.
+  2. **A row inside a long table.** Read the row labeled `Record 60`, then
+     insert 20 rows immediately below the header in the source. Locate the
+     original record by its label after all 20 render. On `83a1ed2`, it moved
+     from y=71 to 948 in a 653 px viewport.
+  3. **The second of two large local images.** Scroll partway into the second
+     image, then insert the document's first Mermaid block above both images.
+     After the full preview reload and layout, the same part of the second
+     image must be visible. On `83a1ed2`, its top moved from y=−90 to 878
+     while the first image took its former position.
 
 - [x] **P2 — Compare external changes before resolving a save conflict.**
   The ordinary conflict dialog offers “Keep My Version”, which resumes autosave,
@@ -82,6 +101,18 @@ reading its context and correcting it in the source.
   and another on disk. Both differences should be visible, writes to the
   original should stay paused during comparison, and saving a copy should
   leave both versions available. See the [document lifecycle](Docs/DocumentLifecycle.md).
+
+- [ ] **P1 — Make “Keep My Version” report the true save state.** Open an
+  unmodified file containing `base`. Write `theirs` to it externally and
+  invoke Save before the file watcher delivers the change. Choose **Keep My
+  Version**. On both `eeb15a6` and `83a1ed2`, the document model cleared the
+  conflict and reported a clean document while the editor held `base` and
+  the original file still contained `theirs`.
+
+  **Verify** this sequence in the document window. While the original still
+  contains `theirs`, the window must show that the editor version needs
+  saving. Once it reports the document saved, read the original file and
+  reopen it. Both must show the chosen editor version, `base`.
 
 - [x] **P2 — Give the status bar a hierarchy for reading and editing.** Word
   count, character count, line count, reading time, zoom, encoding, line
