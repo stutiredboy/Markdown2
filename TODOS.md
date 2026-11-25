@@ -19,7 +19,7 @@ If the next iteration has room for two items, start with preview Find and
 editing a paragraph from the preview. Together they cover finding a passage,
 reading its context and correcting it in the source.
 
-- [ ] **P1 — Keep preview Find readable and clear of the document.** At a
+- [x] **P1 — Keep preview Find readable and clear of the document.** At a
   window width of 980 pt, opening Find covered the visible section heading
   and the first line below it. In dark appearance, ordinary body text had a
   contrast ratio of 1.87:1 on the current match and 1.18:1 on the other
@@ -47,7 +47,7 @@ reading its context and correcting it in the source.
     view with panning. Verify that every node can be read and Esc returns to
     the same place in the document.
 
-- [ ] **P1 — Edit the paragraph selected in the preview.** Cmd-double-click
+- [x] **P1 — Edit the paragraph selected in the preview.** Cmd-double-click
   currently switches to Write using the reading position. The gesture omits
   the clicked location. Preview line numbers already support source navigation,
   but they are off by default. Route the gesture and an “Edit This Paragraph
