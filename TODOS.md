@@ -33,7 +33,7 @@ reading its context and correcting it in the source.
   increased paragraph height from 753 to 779 px. All 100 matches should be
   highlighted with the original line breaks.
 
-- [ ] **P1 — Make half-screen reading and narrow previews usable.** A request
+- [x] **P1 — Make half-screen reading and narrow previews usable.** A request
   for a 720 pt single-pane window stopped at 780 pt. Switching to Side by Side
   with the outline visible widened the window to 1046 pt. Let Write and Read
   fit in half of a 1440 pt display and collapse the sidebar when space is tight.
@@ -83,7 +83,7 @@ reading its context and correcting it in the source.
   original should stay paused during comparison, and saving a copy should
   leave both versions available. See the [document lifecycle](Docs/DocumentLifecycle.md).
 
-- [ ] **P2 — Give the status bar a hierarchy for reading and editing.** Word
+- [x] **P2 — Give the status bar a hierarchy for reading and editing.** Word
   count, character count, line count, reading time, zoom, encoding, line
   endings and path currently share the same visual weight. Emphasize word
   count and reading time in Read, and caret line/column and selection counts
