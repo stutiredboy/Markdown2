@@ -92,7 +92,7 @@ struct DocumentHistoryFlowTests {
         #expect(copy.text == "First version")
         #expect(store.hasExternalConflict && store.text == "Unsaved conflict draft")
         #expect(try String(contentsOf: fixture.file, encoding: .utf8) == "In-place external edit")
-        store.resolveExternalConflict(reloadingFromDisk: true)
+        try await resolveDisplayedConflict(in: store, reloadingFromDisk: true)
         store.completeExternalReload(anchor: nil)
 
         let accepted = try DocumentHistoryFlow(store: store)
@@ -105,7 +105,7 @@ struct DocumentHistoryFlowTests {
         #expect(accepted.message == .historySourceChanged)
         #expect(!FileManager.default.fileExists(atPath: fixture.file.deletingLastPathComponent().appendingPathComponent("stale.md").path))
         #expect(!store.save() && store.hasExternalConflict)
-        store.resolveExternalConflict(reloadingFromDisk: true)
+        try await resolveDisplayedConflict(in: store, reloadingFromDisk: true)
         store.completeExternalReload(anchor: nil)
         let replacement = try DocumentHistoryFlow(store: store)
         await replacement.load()

@@ -163,12 +163,16 @@ final class DocumentCopyFlow: ObservableObject {
         return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }
 
+    static func suggestedName(for source: URL, text: (L10nKey) -> String) -> String {
+        let suffix = source.pathExtension.lowercased() == "markdown" ? "markdown" : "md"
+        return source.deletingPathExtension().lastPathComponent + text(.copyNameSuffix) + "." + suffix
+    }
+
     private static func chooseName(for source: URL, text: (L10nKey) -> String) -> String? {
         let prompt = NSAlert()
         prompt.messageText = text(.createCopy)
         prompt.informativeText = String(format: text(.copyPromptDetail), source.deletingLastPathComponent().path)
-        let suffix = source.pathExtension.lowercased() == "markdown" ? "markdown" : "md"
-        let field = NSTextField(string: source.deletingPathExtension().lastPathComponent + text(.copyNameSuffix) + "." + suffix)
+        let field = NSTextField(string: suggestedName(for: source, text: text))
         field.frame = NSRect(x: 0, y: 0, width: 360, height: 24)
         field.setAccessibilityLabel(text(.copyFilename))
         prompt.accessoryView = field
@@ -200,6 +204,7 @@ final class DocumentCopyFlow: ObservableObject {
 struct DocumentCopyNotice: View {
     @ObservedObject var flow: DocumentCopyFlow
     @ObservedObject var settings: AppSettings
+    let hasExternalConflict: Bool
     let onOpen: (DocumentCopyReceipt) -> Void
 
     var body: some View {
@@ -209,6 +214,11 @@ struct DocumentCopyNotice: View {
                     .fixedSize(horizontal: false, vertical: true)
                 if let detail = flow.detail {
                     Text(detail).font(.caption).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if hasExternalConflict, flow.receipt != nil {
+                    Text(settings.text(.conflictCopySavedHint))
+                        .font(.caption)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 HStack {

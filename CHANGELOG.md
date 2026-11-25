@@ -4,6 +4,8 @@
 
 ### Added
 
+- Compare the editor and disk versions side by side when another app changes a document with unsaved edits. Save the editor draft as a separate copy, keep it in the original, or reload the disk version. Autosave waits for your decision.
+
 - Open a wide Mermaid diagram at its actual size in the preview, pan to read its labels, and press Esc to return to the same reading position.
 
 - Command-double-click a passage in Preview or choose **Edit This Paragraph in Source** from its context menu to place the caret in the corresponding source block.

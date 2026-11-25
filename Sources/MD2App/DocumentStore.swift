@@ -398,9 +398,8 @@ final class DocumentStore: ObservableObject {
     /// checked against, so nothing is silently overwritten or needlessly
     /// reloaded.
     private var lastKnownFingerprint: DocumentFileFingerprint?
-    /// A reload choice authorizes discarding only the text the user saw when
-    /// confirming. Edits during asynchronous viewport capture need a new choice.
-    private var pendingReloadDiscardRevision: Int?
+    /// Carries the user's approval through asynchronous viewport capture.
+    private var pendingConflictReload: ExternalConflictComparison?
     /// Coalesces the full-document render that feeds the preview/stats so a burst
     /// of typing renders once when the user pauses instead of synchronously on
     /// every keystroke. Bumped on each schedule so only the latest one fires.
@@ -519,7 +518,15 @@ final class DocumentStore: ObservableObject {
             if linkedSaveRepairHash != nil, linkedSaveCheckpoint?.text != text {
                 linkedSaveRepairHash = nil
             }
-            externalConflictRequest = ExternalConflictRequest()
+            guard pendingConflictReload == nil else { return false }
+            if externalConflictRequest == nil {
+                refreshFileLocation()
+                if backingFileMissing, !offersLinkedSaveRepair {
+                    hasExternalConflict = false
+                    return presentSaveLocationAndWrite()
+                }
+                externalConflictRequest = ExternalConflictRequest()
+            }
             return false
         }
         refreshFileLocation()
@@ -1269,6 +1276,12 @@ final class DocumentStore: ObservableObject {
         copyFileReference = nil
         fileIdentity = nil
         self.fileURL = nil
+        // A detached draft has no disk version to compare or reload. Its
+        // next Save must offer a destination, including after a deferred conflict.
+        hasExternalConflict = false
+        externalConflictRequest = nil
+        pendingExternalReload = nil
+        pendingConflictReload = nil
         remoteImageFileReference = nil
         resetRemoteImageChoices()
         lastKnownFingerprint = nil
@@ -1344,7 +1357,7 @@ final class DocumentStore: ObservableObject {
         hasExternalConflict = false
         externalConflictRequest = nil
         pendingExternalReload = nil
-        pendingReloadDiscardRevision = nil
+        pendingConflictReload = nil
         startWatchingFile()
         onRemoteImageBackingChanged?()
         persistRecoveryNow()
@@ -1853,7 +1866,7 @@ final class DocumentStore: ObservableObject {
     /// stale evaluation instead of acting on it.
     private func evaluateExternalChange() {
         refreshFileLocation()
-        guard let fileURL, let lastKnown = lastKnownFingerprint, !isLoading, !isClosed,
+        guard let fileURL, let lastKnown = lastKnownFingerprint, !isLoading, !isClosed, !hasExternalConflict,
               !(backingFileMissing && fileIdentity?.isFolderFile == true) else { return }
         let url = fileURL
         let reference = copyFileReference
@@ -1871,9 +1884,9 @@ final class DocumentStore: ObservableObject {
         url: URL
     ) {
         guard fileURL == url, lastKnownFingerprint == lastKnown, !isClosed else { return }
-        // The recovery sheet owns the observed prefix. Later stays deferred;
-        // Finish Save rechecks the bytes instead of trusting a watch event.
-        if offersLinkedSaveRepair { return }
+        // A conflict may have started while hashing. Its own comparison or
+        // interrupted-save approval rechecks the disk before accepting a choice.
+        if hasExternalConflict { return }
         if let copyFileReference, (try? copyFileReference.validate(at: url)) == nil {
             refreshFileLocation()
             return
@@ -1902,10 +1915,7 @@ final class DocumentStore: ObservableObject {
     /// Starts the viewport-preserving reload handshake: `ContentView` observes
     /// `pendingExternalReload`, captures the active surface's live anchor, and
     /// calls `completeExternalReload(anchor:)`.
-    private func beginExternalReload(discardingEdits: Bool = false) {
-        if discardingEdits {
-            pendingReloadDiscardRevision = textMutationRevision
-        }
+    private func beginExternalReload() {
         guard pendingExternalReload == nil else { return }
         stopConversion(sourceChanged: true)
         pendingExternalReload = UUID()
@@ -1919,20 +1929,38 @@ final class DocumentStore: ObservableObject {
     func completeExternalReload(anchor: ViewportAnchor?) {
         guard pendingExternalReload != nil else { return }
         pendingExternalReload = nil
-        let discardRevision = pendingReloadDiscardRevision
-        pendingReloadDiscardRevision = nil
+        let compared = pendingConflictReload
+        pendingConflictReload = nil
+        guard !hasExternalConflict || compared != nil else { return }
         refreshFileLocation()
         guard let fileURL else { return }
 
-        let readID = historyIdentity(at: fileURL)
-        let loaded: (Data, DocumentCopyFileReference?)? = if backingFileMissing {
-            nil
-        } else if let copyFileReference {
-            (try? copyFileReference.read(at: fileURL)).map { ($0, copyFileReference) }
-        } else {
-            try? readOrdinaryDocument(at: fileURL)
+        if let compared, !matchesComparedEditor(compared) {
+            raiseExternalConflict()
+            return
         }
-        guard let (data, imageReference) = loaded, let decoded = MarkdownFileDecoder.decode(data) else {
+        let readID = historyIdentity(at: fileURL)
+        let loaded: (Data, DocumentCopyFileReference?)?
+        if backingFileMissing {
+            loaded = nil
+        } else if let compared {
+            // The disk can change again while ContentView captures its viewport.
+            // Validate identity and bytes before touching the editor or its Undo history.
+            let reference = copyFileReference ?? (FolderIndex.isMarkdownExtension(fileURL.pathExtension)
+                ? try? DocumentCopyFileReference.open(at: fileURL) : nil)
+            guard let (version, bytes) = try? ExternalConflictComparison.DiskVersion.read(at: fileURL, reference: reference),
+                  version == compared.disk else {
+                raiseExternalConflict()
+                return
+            }
+            loaded = (bytes, bytes.count <= FolderIndex.maximumOpenBytes ? reference : copyFileReference)
+        } else if let copyFileReference {
+            loaded = (try? copyFileReference.read(at: fileURL)).map { ($0, copyFileReference) }
+        } else {
+            loaded = try? readOrdinaryDocument(at: fileURL)
+        }
+        guard let (data, imageReference) = loaded, let decoded = compared?.decoded ?? MarkdownFileDecoder.decode(data) else {
+            if compared != nil { raiseExternalConflict() }
             alert = DocumentAlert(
                 message: alertText(.alertCouldNotOpen, fileURL.lastPathComponent),
                 detail: alertText(.alertExternalReloadFailedDetail)
@@ -1940,7 +1968,7 @@ final class DocumentStore: ObservableObject {
             return
         }
         let historyID = unchangedHistoryIdentity(readID, at: fileURL)
-        guard !isDirty || discardRevision == textMutationRevision else {
+        guard !isDirty || compared != nil else {
             raiseExternalConflict()
             return
         }
@@ -1998,27 +2026,71 @@ final class DocumentStore: ObservableObject {
         externalConflictRequest = ExternalConflictRequest()
     }
 
-    /// Applies the user's conflict choice. Reloading discards the in-memory
-    /// edits (through the viewport-preserving handshake); keeping acknowledges
-    /// the on-disk state as seen — so the next save overwrites it — and lets
-    /// autosave resume.
-    func resolveExternalConflict(reloadingFromDisk: Bool) {
+    /// Snapshot the editor without modifying its Undo/recovery state. Reading
+    /// and decoding the other version happens off the main actor.
+    func externalConflictComparison() async -> ExternalConflictComparison? {
+        refreshFileLocation()
+        guard hasExternalConflict, !isClosed, !offersLinkedSaveRepair, !backingFileMissing,
+              let request = externalConflictRequest, let url = fileURL else { return nil }
+        let revision = textMutationRevision, documentID = documentIdentity
+        let editorText = text, editorFormat = fileFormat, reference = copyFileReference
+        let task = Task.detached(priority: .userInitiated) { () throws -> ExternalConflictComparison in
+            let (disk, bytes) = try ExternalConflictComparison.DiskVersion.read(at: url, reference: reference)
+            try Task.checkCancellation()
+            return ExternalConflictComparison(request: request, documentID: documentID, editorRevision: revision,
+                editorText: editorText, editorFormat: editorFormat, url: url, disk: disk, decoded: MarkdownFileDecoder.decode(bytes))
+        }
+        let comparison = await withTaskCancellationHandler { try? await task.value } onCancel: { task.cancel() }
+        guard !Task.isCancelled, let comparison, isCurrentConflict(comparison) else { return nil }
+        return comparison
+    }
+
+    private func isCurrentConflict(_ comparison: ExternalConflictComparison) -> Bool {
+        !isClosed && hasExternalConflict && !offersLinkedSaveRepair && !backingFileMissing
+            && externalConflictRequest == comparison.request && matchesComparedEditor(comparison)
+    }
+
+    private func matchesComparedEditor(_ comparison: ExternalConflictComparison) -> Bool {
+        documentIdentity == comparison.documentID && fileURL == comparison.url
+            && textMutationRevision == comparison.editorRevision && fileFormat == comparison.editorFormat
+    }
+
+    /// Esc and saving a copy leave the original suspended. Its next manual
+    /// Save reopens the comparison, or offers relocation if the file is gone.
+    func deferExternalConflict() {
+        guard hasExternalConflict, !offersLinkedSaveRepair, pendingConflictReload == nil else { return }
         externalConflictRequest = nil
-        guard hasExternalConflict, !offersLinkedSaveRepair else { return }
-        clearLinkedSaveCheckpoint()
-        hasExternalConflict = false
+        refreshFileLocation()
+        if backingFileMissing { hasExternalConflict = false }
+    }
+
+    @discardableResult
+    func resolveExternalConflict(_ comparison: ExternalConflictComparison, reloadingFromDisk: Bool) async -> Bool {
+        refreshFileLocation()
+        guard !reloadingFromDisk || comparison.decoded != nil, isCurrentConflict(comparison) else { return false }
+        let url = comparison.url, reference = copyFileReference
+        let task = Task.detached(priority: .userInitiated) {
+            try ExternalConflictComparison.DiskVersion.read(at: url, reference: reference).0
+        }
+        let disk = await withTaskCancellationHandler { try? await task.value } onCancel: { task.cancel() }
+        refreshFileLocation()
+        guard !Task.isCancelled, disk == comparison.disk, isCurrentConflict(comparison),
+              editorSession.textView?.hasMarkedText() != true else { return false }
+
+        externalConflictRequest = nil
         if reloadingFromDisk {
-            beginExternalReload(discardingEdits: true)
+            pendingConflictReload = comparison
+            beginExternalReload()
         } else {
-            refreshFileLocation()
-            if let fileURL, !(backingFileMissing && fileIdentity?.isFolderFile == true),
-               let current = DocumentFileFingerprint.current(at: fileURL, reference: copyFileReference) {
-                lastKnownFingerprint = current
-                if copyFileReference == nil { fileIdentity = DocumentFileIdentity(url: fileURL) }
-            }
+            clearLinkedSaveCheckpoint()
+            lastKnownFingerprint = DocumentFileFingerprint(modificationDate: DocumentFileFingerprint.modificationDate(at: url),
+                                                          contentHash: comparison.disk.contentHash)
+            if copyFileReference == nil { fileIdentity = DocumentFileIdentity(url: url) }
+            hasExternalConflict = false
             scheduleAutosaveIfNeeded()
             persistRecoveryNow()
         }
+        return true
     }
 
     private func cancelAutosave() {

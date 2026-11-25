@@ -92,7 +92,7 @@ struct DocumentMutationBoundaryTests {
         try external.write(to: file)
         #expect(!store.save())
         try #require(store.hasExternalConflict)
-        store.resolveExternalConflict(reloadingFromDisk: true)
+        try await resolveDisplayedConflict(in: store, reloadingFromDisk: true)
         try #require(store.pendingExternalReload != nil)
         if taskClick {
             try #require(store.rendered.body.contains("data-md2-task-line=\"1\""))
@@ -109,7 +109,7 @@ struct DocumentMutationBoundaryTests {
         #expect(store.externalConflictRequest != nil)
         #expect(try Data(contentsOf: file) == external)
         // A fresh consent for this exact state still performs a legitimate reload.
-        store.resolveExternalConflict(reloadingFromDisk: true)
+        try await resolveDisplayedConflict(in: store, reloadingFromDisk: true)
         store.completeExternalReload(anchor: nil)
         #expect(Data(store.text.utf8) == external)
         #expect(!store.isDirty)

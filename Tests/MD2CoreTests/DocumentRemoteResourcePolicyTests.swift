@@ -98,7 +98,7 @@ struct DocumentRemoteResourcePolicyTests {
         store.closeDocument(discardRecovery: true)
     }
 
-    @Test func acceptedExternalReloadResetsGrantWhilePreservingDocumentUIIdentity() throws {
+    @Test func acceptedExternalReloadResetsGrantWhilePreservingDocumentUIIdentity() async throws {
         let directory = try fixture()
         defer { try? FileManager.default.removeItem(at: directory) }
         let url = directory.appendingPathComponent("document.md")
@@ -110,7 +110,7 @@ struct DocumentRemoteResourcePolicyTests {
         store.text = "unsaved"
         try Data("external".utf8).write(to: url)
         #expect(!store.save()) // Detect the conflict without a timing-sensitive watcher wait.
-        store.resolveExternalConflict(reloadingFromDisk: true)
+        try await resolveDisplayedConflict(in: store, reloadingFromDisk: true)
         store.completeExternalReload(anchor: nil)
         #expect(store.text == "external")
         #expect(store.documentIdentity == identity)
