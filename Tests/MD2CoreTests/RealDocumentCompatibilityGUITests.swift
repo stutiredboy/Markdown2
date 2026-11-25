@@ -125,12 +125,18 @@ final class RealDocumentCompatibilityGUITests: XCTestCase, RenderedPageTesting {
         store.open(source)
         defer { _ = store.closeDocument(discardRecovery: false) }
 
-        let host = NSHostingView(rootView: ContentView(document: store, settings: settings, onOpen: {}))
-        let window = NSWindow(contentRect: NSRect(x: -30_000, y: -30_000, width: 1_260, height: 525),
+        // These corpus cases exercise both panes and the native outline. Give
+        // the hosting view the intended width and present it on screen so that
+        // SwiftUI delivers the same layout updates as a document window.
+        let size = NSSize(width: 1_260, height: 560)
+        let host = NSHostingView(rootView: ContentView(document: store, settings: settings, onOpen: {})
+            .frame(width: size.width, height: size.height))
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.animationBehavior = .none
         window.contentView = host
+        window.center()
         window.orderFrontRegardless()
         defer { window.orderOut(nil); window.contentView = nil }
 
@@ -140,7 +146,9 @@ final class RealDocumentCompatibilityGUITests: XCTestCase, RenderedPageTesting {
         XCTAssertEqual(Data(editor.string.utf8), bytes, "\(name): native source was changed on open")
         try checkPage(preview, name: "\(name) preview", headings: headings, checks: pageChecks)
 
-        XCTAssertTrue(spin(10) { self.nativeOutline(in: host)?.numberOfRows == headings.count })
+        XCTAssertEqual(host.bounds.width, size.width, accuracy: 1)
+        XCTAssertTrue(spin(10) { self.nativeOutline(in: host)?.numberOfRows == headings.count },
+                      "\(name): expected \(headings.count) rows in the wide split outline")
         let outline = try XCTUnwrap(nativeOutline(in: host))
         XCTAssertEqual(outline.numberOfRows, headings.count)
         XCTAssertEqual(store.rendered.outline.map(\.title), headings)
