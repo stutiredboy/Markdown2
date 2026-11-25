@@ -184,18 +184,22 @@ final class FindBarLayoutGUITests: XCTestCase {
         let frame = try XCTUnwrap(image?.cgImage(forProposedRect: nil, context: nil, hints: nil))
         let sx = CGFloat(frame.width) / web.bounds.width, sy = CGFloat(frame.height) / web.bounds.height
         let box = CGRect(x: metrics[0] * sx, y: metrics[1] * sy, width: metrics[2] * sx, height: metrics[3] * sy)
-        let pixels = NSBitmapImageRep(cgImage: try XCTUnwrap(frame.cropping(to: box.integral)))
-        var fills = 0
-        for row in 0..<8 {
-            for column in 0..<12 {
-                let color = try XCTUnwrap(pixels.colorAt(x: (2 * column + 1) * pixels.pixelsWide / 24,
-                                                         y: (2 * row + 1) * pixels.pixelsHigh / 16)?.usingColorSpace(.sRGB))
-                if abs(color.redComponent * 255 - metrics[4]) < 10 &&
-                   abs(color.greenComponent * 255 - metrics[5]) < 10 &&
-                   abs(color.blueComponent * 255 - metrics[6]) < 10 { fills += 1 }
+        let crop = try XCTUnwrap(frame.cropping(to: box.integral))
+        // Render into a known sRGB byte layout. AppKit's colorAt may label RGB
+        // bytes as calibrated RGB and convert them a second time on readback.
+        let width = 12, height = 8, bytesPerPixel = 4
+        let colors = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
+        let sample = try XCTUnwrap(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * bytesPerPixel, space: colors, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        sample.interpolationQuality = .none
+        sample.draw(crop, in: CGRect(x: 0, y: 0, width: width, height: height))
+        let bytes = try XCTUnwrap(sample.data).assumingMemoryBound(to: UInt8.self)
+        let matching = (0..<(width * height)).filter { index in
+            (0..<3).allSatisfy { channel in
+                abs(CGFloat(bytes[index * bytesPerPixel + channel]) - metrics[4 + channel]) < 10
             }
         }
-        XCTAssertGreaterThan(fills, 12, "only \(fills) of 96 points paint the match background at \(box) in \(name)")
+        XCTAssertGreaterThan(matching.count, 12, "only \(matching.count) of 96 points paint the match background at \(box) in \(name)")
         if let dir = ProcessInfo.processInfo.environment["MD2_INTERACTION_EVIDENCE_DIR"] {
             let png = try XCTUnwrap(NSBitmapImageRep(cgImage: frame).representation(using: .png, properties: [:]))
             try png.write(to: URL(fileURLWithPath: dir).appendingPathComponent(name + ".png"))
