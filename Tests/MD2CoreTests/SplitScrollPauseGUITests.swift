@@ -21,12 +21,7 @@ final class SplitScrollPauseGUITests: XCTestCase {
         let heldY = try tableY(in: web, host: host)
         XCTAssertEqual(heldY, 42, accuracy: 2)
         try toggle(in: host, paused: false)
-        _ = try host.js("""
-            window.resumeCalls = [];
-            const follow = window.__md2FollowToAnchor;
-            window.__md2FollowToAnchor = line => { window.resumeCalls.push(line); return follow(line); };
-            true;
-            """, web)
+        try observeFollows(in: web, host: host)
 
         // Scroll toward the earlier summary with an AppKit wheel event. Then
         // move the caret there and insert a new paragraph above the table.
@@ -77,7 +72,27 @@ final class SplitScrollPauseGUITests: XCTestCase {
         try showTable(in: web, host: host)
         try waitForSource("Reference value", in: editor, host: host)
         try toggle(in: host, paused: false)
+        // Leave a sliver of the paragraph immediately above the table on
+        // screen, then edit that very paragraph until it wraps across rows.
+        let preceding = "Working notes for paragraph 71."
+        _ = try host.js("""
+            const preceding = Array.from(document.querySelectorAll('main > p')).find(p => p.textContent === '\(preceding)');
+            window.scrollBy(0, preceding.getBoundingClientRect().top + 4);
+            """, web)
         let heldY = try tableY(in: web, host: host)
+        XCTAssertGreaterThan(heldY, 0)
+        XCTAssertLessThan(heldY, 100)
+        let precedingRange = (editor.string as NSString).range(of: preceding)
+        XCTAssertNotEqual(precedingRange.location, NSNotFound)
+        let end = NSRange(location: NSMaxRange(precedingRange), length: 0)
+        let addition = String(repeating: " More detail about the reference.", count: 15)
+        XCTAssertTrue(host.window.makeFirstResponder(editor))
+        editor.setSelectedRange(end)
+        editor.insertText(addition, replacementRange: end)
+        try host.waitForPage("!preceding.isConnected && document.querySelector('main').textContent.includes('\(addition)')",
+                             in: web, context: "the partially visible paragraph was replaced")
+        XCTAssertEqual(try tableY(in: web, host: host), heldY, accuracy: 2,
+                       "the table stays put even when the preceding visible paragraph changes height")
         _ = try host.js("window.beforeDiagram = true", web)
 
         let summary = (editor.string as NSString).range(of: "Draft summary.")
@@ -93,6 +108,64 @@ final class SplitScrollPauseGUITests: XCTestCase {
                              in: web, context: "the replacement page should restore the reference")
         host.spin(for: 0.4)
         XCTAssertEqual(try tableY(in: web, host: host), heldY, accuracy: 2)
+    }
+
+    @MainActor func testEditingAndResumingBeforeAnAllowedImageFinishesLoading() throws {
+        let server = try HeldPreviewImageServer()
+        defer { server.stop() }
+        let host = InteractionTestWindow()
+        defer { host.close() }
+        host.spin(until: { server.port != nil })
+        let port = try XCTUnwrap(server.port)
+        host.store.setRemoteImagesAllowed(true)
+        let web = try mount(in: host, settings: host.settings, imageURL: "http://127.0.0.1:\(port)/held.png")
+        let editor = try XCTUnwrap(host.store.editorSession.textView)
+        let coordinator = try XCTUnwrap(web.navigationDelegate as? MarkdownPreviewView.Coordinator)
+        host.spin(until: { server.hasRequest })
+        XCTAssertTrue(server.hasRequest)
+        XCTAssertTrue(web.isLoading)
+        XCTAssertFalse(coordinator.isLoaded)
+        try toggle(in: host, paused: false)
+        try showTable(in: web, host: host)
+        let heldY = try tableY(in: web, host: host)
+        _ = try host.js("window.initialImage = document.querySelector('img'); true", web)
+
+        let summary = (editor.string as NSString).range(of: "Draft summary.")
+        XCTAssertNotEqual(summary.location, NSNotFound)
+        let caret = NSRange(location: NSMaxRange(summary), length: 0)
+        XCTAssertTrue(host.window.makeFirstResponder(editor))
+        editor.setSelectedRange(caret)
+        editor.scrollRangeToVisible(caret)
+        editor.insertText("\n\nPending image summary.", replacementRange: caret)
+        try host.waitForPage("""
+            document.querySelector('main')?.textContent.includes('Pending image summary.')
+                && window.initialImage === document.querySelector('img') && !initialImage.complete
+            """, in: web, context: "the pending image survives an ordinary edit", requireLoaded: false)
+        XCTAssertEqual(try tableY(in: web, host: host), heldY, accuracy: 1)
+
+        // Adding the first diagram needs a fresh document. Its DOM and scroll
+        // helpers are ready to use even while the same image is still pending.
+        editor.insertText("\n\n```mermaid\ngraph LR; A-->B;\n```", replacementRange: editor.selectedRange())
+        try host.waitForPage("""
+            !window.initialImage && !!document.querySelector('.diagram')
+                && document.querySelector('img')?.complete === false
+                && Math.abs(document.querySelector('table').getBoundingClientRect().top - \(heldY)) <= 2
+            """, in: web, context: "the replacement page restores the table before image load", requireLoaded: false)
+        XCTAssertTrue(web.isLoading)
+        XCTAssertFalse(coordinator.isLoaded)
+        try observeFollows(in: web, host: host)
+        try toggle(in: host, paused: true)
+        try host.waitForPage("""
+            resumeCalls.length === 1 && document.querySelector('table').getBoundingClientRect().top > innerHeight
+                && document.querySelector('img')?.complete === false
+            """, in: web, context: "resume aligns with the editor while the image is loading", requireLoaded: false)
+        let alignedY = try XCTUnwrap(try host.js("scrollY", web) as? Double)
+
+        server.release()
+        try host.waitForPage("document.querySelector('img')?.naturalWidth === 1", in: web,
+                             context: "the previously held image completed")
+        XCTAssertEqual(try host.js("resumeCalls.length", web) as? Int, 1)
+        XCTAssertEqual(try XCTUnwrap(try host.js("scrollY", web) as? Double), alignedY, accuracy: 2)
     }
 
     @MainActor func testResumingFromPreviewAndKeepingPauseLocalToOneWindow() throws {
@@ -128,7 +201,7 @@ final class SplitScrollPauseGUITests: XCTestCase {
                        "the preview was the latest scroll source even with the insertion point in the editor")
     }
 
-    @MainActor private func mount(in host: InteractionTestWindow, settings: AppSettings) throws -> WKWebView {
+    @MainActor private func mount(in host: InteractionTestWindow, settings: AppSettings, imageURL: String? = nil) throws -> WKWebView {
         settings.language = .english
         settings.newDocumentMode = .split
         let paragraphs = (1...110).map { index in
@@ -139,6 +212,7 @@ final class SplitScrollPauseGUITests: XCTestCase {
             }
         }
         host.store.text = paragraphs.joined(separator: "\n\n")
+            + (imageURL.map { "\n\n![Image still loading](\($0))" } ?? "")
         // Mount the fixture after its first render. Otherwise a blank page
         // can still be restoring its initial scroll during our first gesture.
         host.spin(until: { host.store.rendered.body.contains("Reference value") })
@@ -148,7 +222,7 @@ final class SplitScrollPauseGUITests: XCTestCase {
         host.spin(until: { !host.descendants(WKWebView.self).isEmpty })
         let web = try XCTUnwrap(host.descendants(WKWebView.self).first)
         try host.waitForPage("!!document.querySelector('table') && typeof window.__md2CaptureAnchor === 'function'",
-                             in: web, context: "fixture table in split preview")
+                             in: web, context: "fixture table in split preview", requireLoaded: imageURL == nil)
         host.spin(for: 0.35)
         return web
     }
@@ -177,6 +251,15 @@ final class SplitScrollPauseGUITests: XCTestCase {
         _ = try XCTUnwrap(item(in: host, paused: !paused), "the native control must change state")
     }
 
+    @MainActor private func observeFollows(in web: WKWebView, host: InteractionTestWindow) throws {
+        _ = try host.js("""
+            window.resumeCalls = [];
+            const follow = window.__md2FollowToAnchor;
+            window.__md2FollowToAnchor = line => { window.resumeCalls.push(line); return follow(line); };
+            true;
+            """, web)
+    }
+
     @MainActor private func tableY(in web: WKWebView, host: InteractionTestWindow) throws -> Double {
         try XCTUnwrap(try host.js("document.querySelector('table').getBoundingClientRect().top", web) as? Double)
     }
@@ -187,7 +270,7 @@ final class SplitScrollPauseGUITests: XCTestCase {
             window.scrollBy(0, document.querySelector('table').getBoundingClientRect().top - 42);
             """, web)
         try host.waitForPage("Math.abs(document.querySelector('table').getBoundingClientRect().top - 42) < 2",
-                             in: web, context: "the reader placed the table near the top of the preview")
+                             in: web, context: "the reader placed the table near the top of the preview", requireLoaded: false)
     }
 
     @MainActor private func waitForSource(_ text: String, in editor: NSTextView, host: InteractionTestWindow) throws {
