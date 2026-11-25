@@ -81,6 +81,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
     /// The document's source-line revision that `html` was rendered from, which
     /// the page hands back with each checkbox click (see `labelPage`).
     var sourceLineRevision: Int = 0
+    var textRevision = 0
+    var editParagraphTitle: String? = nil
+    var onEditParagraph: (PreviewParagraphHit) -> Void = { _ in }
     struct FormulaEditing: Equatable {
         let revision: Int
         let editableLines: Set<Int>
@@ -318,13 +321,64 @@ struct MarkdownPreviewView: NSViewRepresentable {
         // trusted main-frame context data, synchronously, in this isolated world.
         // Native willOpenMenu consumes it; the data never authorizes navigation.
         (function () {
+            // Resolve the block under the pointer, independently of visible gutter
+            // numbers and of WebKit's current (possibly word-wide) selection.
+            function paragraphHit(event) {
+                var target = event.target;
+                if (!target.closest || target.closest('input,button,.md2-line-gutter')) { return null; }
+                var block = target.closest('[data-md2-source-line]');
+                if (!block || !block.closest('main')) { return null; }
+                var hit = { line: Number(block.dataset.md2SourceLine), revision: window.__md2TextRevision };
+                if (block.tagName !== 'P') { return hit; }
+                var caret = document.caretRangeFromPoint(event.clientX, event.clientY);
+                if (!caret || caret.startContainer.nodeType !== Node.TEXT_NODE ||
+                    !block.contains(caret.startContainer)) { return hit; }
+
+                // Plain paragraphs have one BR per source break. Find wrappers
+                // split text nodes without changing their UTF-16 coordinate space.
+                var lines = [''], row = null, column = null, length = 0, nodes = 0;
+                var walker = document.createTreeWalker(block, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+                while (walker.nextNode()) {
+                    var node = walker.currentNode;
+                    if (++nodes > 8192) { return hit; }
+                    if (node.nodeType === Node.TEXT_NODE) {
+                        length += node.length;
+                        if (length > 16384) { return hit; }
+                        if (node === caret.startContainer) {
+                            row = lines.length - 1;
+                            column = lines[row].length + caret.startOffset;
+                        }
+                        lines[lines.length - 1] += node.data;
+                    } else if (node.tagName === 'BR') {
+                        lines.push('');
+                    } else if (!node.matches('mark.md2-find')) { return hit; }
+                }
+                if (lines.at(-1) === '') { lines.pop(); }
+                var end = Number(block.dataset.md2SourceEndLine || hit.line);
+                if (row !== null && lines.length === end - hit.line + 1) {
+                    Object.assign(hit, {plainLines: lines, row: row, column: column});
+                }
+                return hit;
+            }
+            document.addEventListener('dblclick', function (event) {
+                if (!event.isTrusted || event.defaultPrevented || event.button !== 0 || !event.metaKey ||
+                    event.target.closest('a,input,button,.md2-line-gutter')) { return; }
+                var hit = paragraphHit(event);
+                if (hit) {
+                    window.webkit.messageHandlers.\(Self.enterEditMessageName).postMessage(hit);
+                } else if (event.target.closest('main') || event.target.matches('body,html')) {
+                    // Generated document sections without a source block retain
+                    // the existing Read-to-Write viewport shortcut.
+                    window.webkit.messageHandlers.\(Self.enterEditMessageName).postMessage({background: true, revision: window.__md2TextRevision});
+                }
+            });
             var context = null;
             window.__md2TakeContextMenu = function () {
                 var captured = context; context = null;
                 if (!captured || !captured.target.isConnected
                     || document.elementFromPoint(captured.x, captured.y) !== captured.target) { return null; }
                 return { page: captured.page, link: captured.link, image: captured.image,
-                         x: captured.x, y: captured.y };
+                         paragraph: captured.paragraph, x: captured.x, y: captured.y };
             };
             document.addEventListener('contextmenu', function (event) {
                 if (!event.isTrusted) { return; }
@@ -339,17 +393,12 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 }
                 context = {
                     target: target, x: event.clientX, y: event.clientY,
-                    page: location.href,
+                    page: location.href, paragraph: paragraphHit(event),
                     link: absolute(link && (link.getAttribute('href') || link.getAttributeNS('http://www.w3.org/1999/xlink', 'href'))),
                     image: absolute(image && (image.currentSrc || image.getAttribute('src')))
                 };
             }, true);
         })();
-        document.addEventListener('dblclick', function(event) {
-            if (event.isTrusted && event.metaKey) {
-                window.webkit.messageHandlers.\(Self.enterEditMessageName).postMessage(null);
-            }
-        });
         // Task checkboxes toggle optimistically, and native rewrites the source
         // line (the re-render that follows is the authoritative state). The line only
         // means something in the source this page was rendered from, so the
@@ -1093,6 +1142,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
             guard let coordinator else { return }
             coordinator.dispatch(PreviewLinkRouter.route(for: url, documentPageURL: coordinator.documentLoader.documentPageURL))
         }
+        webView.contextMenuAdapter.editParagraph = { [weak coordinator = context.coordinator] hit in
+            coordinator?.editParagraph(hit)
+        }
         webView.contextMenuAdapter.resolveImage = { [weak coordinator = context.coordinator] url in
             coordinator?.documentLoader.originalImageURL(for: url)
         }
@@ -1156,6 +1208,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
             if context.coordinator.isLoaded { context.coordinator.applyTypography(in: webView, preservingAnchor: true) }
         }
         context.coordinator.onEnterEdit = onEnterEdit
+        context.coordinator.onEditParagraph = onEditParagraph
+        context.coordinator.textRevision = textRevision
         context.coordinator.onToggleTask = onToggleTask
         context.coordinator.onRevealSourceLine = onRevealSourceLine
         context.coordinator.onEditFormula = onEditFormula
@@ -1177,6 +1231,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 context.coordinator.onFindShortcut(action)
             }
             previewWebView.onEscape = onEscape
+            previewWebView.contextMenuAdapter.editParagraphTitle = editParagraphTitle
         }
 
         let coordinator = context.coordinator
@@ -1646,6 +1701,15 @@ struct MarkdownPreviewView: NSViewRepresentable {
             (webView as? PreviewWebView)?.invalidateContextMenu()
         }
         var onEnterEdit: () -> Void = {}
+        var onEditParagraph: (PreviewParagraphHit) -> Void = { _ in }
+        var textRevision = 0
+        private var pageTextRevision: Int?
+
+        func editParagraph(_ hit: PreviewParagraphHit) {
+            guard resourceContextIsActive, !hasContentInFlight, hit.revision == pageTextRevision,
+                  hit.revision == textRevision else { return }
+            onEditParagraph(hit)
+        }
         var onToggleTask: (
             _ line: Int, _ checked: Bool, _ revision: Int, _ restoreBoxes: @escaping () -> Void
         ) -> Void = { _, _, _, _ in }
@@ -1853,11 +1917,13 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// leads it: a page labelled behind what it shows only gets a click
         /// refused, but one labelled ahead would pass a stale click as current.
         func labelPage(in webView: WKWebView) {
-            guard !hasContentInFlight, pageRevision != sourceLineRevision else { return }
+            guard !hasContentInFlight, pageRevision != sourceLineRevision || pageTextRevision != textRevision else { return }
             pageRevision = sourceLineRevision
+            pageTextRevision = textRevision
             webView.evaluateJavaScript(
                 """
                 window.\(MarkdownPreviewView.sourceLineRevisionVariable) = \(sourceLineRevision);
+                window.__md2TextRevision = \(textRevision);
                 if (window.__md2ReportRemoteImage) { window.__md2ReportRemoteImage(true); }
                 true;
                 """,
@@ -2161,8 +2227,14 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 guard message.world == .defaultClient else { return }
                 onSelectionChange(message.body as? String)
             case MarkdownPreviewView.enterEditMessageName:
-                guard message.world == .defaultClient else { return }
-                onEnterEdit()
+                guard message.world == .defaultClient, let webView = message.webView, acceptsFindHost(webView),
+                      let data = message.body as? [String: Any] else { return }
+                if let hit = PreviewParagraphHit(data) {
+                    editParagraph(hit)
+                } else if !hasContentInFlight, data["background"] as? Bool == true,
+                          let revision = data["revision"] as? Int, revision == pageTextRevision, revision == textRevision {
+                    onEnterEdit()
+                }
             case MarkdownPreviewView.openLinkMessageName:
                 guard message.world == .defaultClient,
                       let href = message.body as? String,
@@ -2519,7 +2591,7 @@ private final class PreviewWebView: WKWebView {
             self.contextMenuAdapter.bind(menu, generation: generation,
                                          link: (data["link"] as? String).flatMap(URL.init(string:)),
                                          image: (data["image"] as? String).flatMap(URL.init(string:)),
-                                         page: page)
+                                         page: page, paragraph: PreviewParagraphHit(data["paragraph"]))
         }
     }
 

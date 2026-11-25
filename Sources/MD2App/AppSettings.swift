@@ -460,6 +460,7 @@ enum L10nKey: String, CaseIterable, Sendable {
     case sideBySide
     case writeOrRead
     case modePickerHelp
+    case editParagraphInSource
     case formulaEditButton, formulaEditorTitle, formulaEditorInstructions, formulaEditorInput, formulaApply
     case formulaRevealButton, formulaSourceTitle, formulaSourceDetail, formulaOpenSource
     case formulaEditUnavailable, formulaEditUnavailableDetail, formulaCheckingDraft, formulaReplacementRequiresSource
@@ -791,6 +792,7 @@ enum L10n {
         .sideBySide: "Side by Side",
         .writeOrRead: "Edit or preview",
         .modePickerHelp: "Edit (%@), Side by Side (%@), Preview (%@). Change shortcuts in Settings.",
+        .editParagraphInSource: "Edit This Paragraph in Source",
         .formulaEditButton: "Edit Formula…",
         .formulaEditorTitle: "Edit Formula",
         .formulaEditorInstructions: "Enter one nonempty line of TeX without the surrounding $$ delimiters. Press Command-Return to apply.",
@@ -1201,6 +1203,7 @@ enum L10n {
         .sideBySide: "双栏",
         .writeOrRead: "编辑或预览",
         .modePickerHelp: "编辑（%@）、双栏（%@）、预览（%@）。可在设置中修改快捷键。",
+        .editParagraphInSource: "在源码中编辑此段",
         .formulaEditButton: "编辑公式…",
         .formulaEditorTitle: "编辑公式",
         .formulaEditorInstructions: "输入一行非空的 TeX，无需输入两端的 $$ 定界符。按 Command-Return 应用。",

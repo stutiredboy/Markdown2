@@ -22,7 +22,18 @@ enum PreviewTextSearch {
         window.__md2FindActive = false;
         (function () {
             var style = document.createElement('style');
-            style.textContent = 'mark.md2-find{background:#ffe066;color:inherit;border-radius:2px;}mark.md2-find-current{background:#ff9f1c;}';
+            style.textContent = `
+                mark.md2-find {
+                    color: light-dark(#342700, #fff5cf);
+                    background: light-dark(#ffe066, #655117);
+                    padding: 0;
+                }
+                mark.md2-find-current {
+                    color: #241800;
+                    background: light-dark(#ffac42, #ffbd5c);
+                    outline: 2px solid light-dark(#854300, #fff5cf);
+                }
+            `;
             document.head.appendChild(style);
         })();
         function clearFind() {

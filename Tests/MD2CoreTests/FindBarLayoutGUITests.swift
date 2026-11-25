@@ -110,6 +110,120 @@ final class FindBarLayoutGUITests: XCTestCase {
         }
     }
 
+    @MainActor func testPreviewFindLeavesTheHeadingMatchAndScrollbarAccessibleAt980Points() throws {
+        let filler = String(repeating: "Filler paragraph.\n\n", count: 65)
+        for mode in [EditorMode.read, .split] {
+            for isLong in [false, true] {
+                let h = InteractionTestWindow()
+                defer { h.close() }
+                h.settings.newDocumentMode = mode
+                h.store.text = isLong
+                    ? filler + "# Middle section\n\nNeedle in this section.\n\n" + filler
+                    : "# Needle in the heading\n\nFirst line below it."
+                h.host(ContentView(document: h.store, settings: h.settings, onOpen: {}), width: 980)
+                let web = try XCTUnwrap(h.descendants(WKWebView.self).first)
+                try h.waitForPage("document.querySelector('h1')?.nextElementSibling?.tagName === 'P'",
+                                  in: web, context: "fixture loaded")
+                let show = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: h.window.windowNumber,
+                    context: nil, characters: "f", charactersIgnoringModifiers: "f", isARepeat: false, keyCode: 3))
+                XCTAssertTrue(web.performKeyEquivalent(with: show))
+                h.spin(until: { h.queryField != nil })
+                try h.enterQuery("Needle")
+                let visible = """
+                    (() => {
+                        const heading = document.querySelector('main h1');
+                        const current = document.querySelector('mark.md2-find-current');
+                        return !!current && [heading, heading.nextElementSibling, current].every(element => {
+                            const r = element.getBoundingClientRect();
+                            return r.height > 0 && r.top >= 0 && r.bottom <= innerHeight;
+                        });
+                    })()
+                    """
+                try h.waitForPage(visible, in: web, context: "visible heading, first line and hit in \(mode), long=\(isLong)")
+                var responder: NSResponder? = h.queryField
+                while let current = responder, !(current is NativeFindPaneOwner) { responder = current.nextResponder }
+                XCTAssertEqual((responder as? NativeFindPaneOwner)?.findPane, .preview)
+                let bar = try XCTUnwrap((responder as? NSViewController)?.view)
+                let viewport = web.convert(web.bounds, to: nil)
+                let findBounds = bar.convert(bar.bounds, to: nil)
+                XCTAssertGreaterThan(findBounds.height, 20)
+                XCTAssertGreaterThanOrEqual(findBounds.minY, viewport.maxY - 0.5,
+                    "Find covers the WebKit viewport in \(mode): \(findBounds) vs \(viewport)")
+                let root = try XCTUnwrap(h.window.contentView)
+                for y in [viewport.minY + 2, viewport.midY, viewport.maxY - 2] {
+                    let edge = NSPoint(x: viewport.maxX - 2, y: y)
+                    let hit = try XCTUnwrap(root.hitTest(root.convert(edge, from: nil)))
+                    XCTAssertTrue(hit === web || hit.isDescendant(of: web),
+                                  "preview scrollbar lane hits \(hit) instead of WebKit in \(mode)")
+                }
+                try verifyPaintedMatch(in: web, h, name: "preview-find-\(mode.rawValue)-\(isLong ? "middle" : "first-line")")
+                if isLong { try scrollViaTrack(in: web, h) }
+            }
+        }
+    }
+
+    /// AppKit can cache an earlier frame of WebKit's remote layer even after a
+    /// DOM geometry read. Inspect the painted match in WebKit's own snapshot.
+    @MainActor private func verifyPaintedMatch(in web: WKWebView, _ h: InteractionTestWindow, name: String) throws {
+        let metrics = try XCTUnwrap(try h.js("""
+            (() => {
+                const m = document.querySelector('mark.md2-find-current'), r = m.getBoundingClientRect();
+                const rgb = getComputedStyle(m).backgroundColor.match(/[0-9.]+/g).map(Number);
+                return [r.left, r.top, r.width, r.height, ...rgb];
+            })()
+            """, web) as? [CGFloat])
+        XCTAssertEqual(metrics.count, 7)
+        guard metrics.count == 7 else { return }
+        let config = WKSnapshotConfiguration()
+        config.afterScreenUpdates = true
+        let done = expectation(description: "WebKit paints the located match")
+        var image: NSImage?
+        web.takeSnapshot(with: config) { value, _ in image = value; done.fulfill() }
+        wait(for: [done], timeout: 8)
+        let frame = try XCTUnwrap(image?.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        let sx = CGFloat(frame.width) / web.bounds.width, sy = CGFloat(frame.height) / web.bounds.height
+        let box = CGRect(x: metrics[0] * sx, y: metrics[1] * sy, width: metrics[2] * sx, height: metrics[3] * sy)
+        let pixels = NSBitmapImageRep(cgImage: try XCTUnwrap(frame.cropping(to: box.integral)))
+        var fills = 0
+        for row in 0..<8 {
+            for column in 0..<12 {
+                let color = try XCTUnwrap(pixels.colorAt(x: (2 * column + 1) * pixels.pixelsWide / 24,
+                                                         y: (2 * row + 1) * pixels.pixelsHigh / 16)?.usingColorSpace(.sRGB))
+                if abs(color.redComponent * 255 - metrics[4]) < 10 &&
+                   abs(color.greenComponent * 255 - metrics[5]) < 10 &&
+                   abs(color.blueComponent * 255 - metrics[6]) < 10 { fills += 1 }
+            }
+        }
+        XCTAssertGreaterThan(fills, 12, "only \(fills) of 96 points paint the match background at \(box) in \(name)")
+        if let dir = ProcessInfo.processInfo.environment["MD2_INTERACTION_EVIDENCE_DIR"] {
+            let png = try XCTUnwrap(NSBitmapImageRep(cgImage: frame).representation(using: .png, properties: [:]))
+            try png.write(to: URL(fileURLWithPath: dir).appendingPathComponent(name + ".png"))
+        }
+    }
+
+    @MainActor private func scrollViaTrack(in web: WKWebView, _ h: InteractionTestWindow) throws {
+        let foundAt = try XCTUnwrap(try h.js("scrollY", web) as? Double)
+        XCTAssertGreaterThan(foundAt, 0, "Find must reach the middle of the document")
+        // Wake the transient system scrollbar on Macs configured to hide it.
+        // The track click must then advance past the original match position.
+        _ = try h.js("scrollBy(0, -8); true", web)
+        let location = web.convert(NSPoint(x: web.bounds.maxX - 5, y: web.bounds.height * 0.85), to: nil)
+        for kind: NSEvent.EventType in [.mouseMoved, .leftMouseDown, .leftMouseUp] {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(with: kind, location: location, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: h.window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: kind == .mouseMoved ? 0 : 1, pressure: kind == .leftMouseDown ? 1 : 0))
+            switch kind {
+            case .mouseMoved: web.mouseMoved(with: event)
+            case .leftMouseDown: web.mouseDown(with: event)
+            default: web.mouseUp(with: event)
+            }
+        }
+        try h.waitForPage("scrollY > \(foundAt + 10)", in: web,
+                          context: "native track click advances scrollbar past \(foundAt)")
+        XCTAssertNotNil(h.queryField)
+    }
+
     @MainActor
     private func editorFindControls(in harness: InteractionTestWindow) throws -> [NSView] {
         let query = try XCTUnwrap(harness.queryField)

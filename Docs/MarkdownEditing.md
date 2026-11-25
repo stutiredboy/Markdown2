@@ -51,6 +51,17 @@ the input method. Return used to commit Latin letters from a Chinese IME must
 not also continue a list. Shift+Return's originating event is retained because
 AppKit may dispatch it as `insertNewline:` rather than `insertLineBreak:`.
 
+## Edit a paragraph from Preview
+
+Command-double-click the text you want to correct, or right-click it and choose
+**Edit This Paragraph in Source**. Read opens the source editor. Side by Side
+focuses the existing editor pane. You can use either action with preview line
+numbers hidden and while Find highlights the text.
+
+For a plain paragraph that matches its source, the caret lands at the clicked
+text. For formatted or generated text whose character position is ambiguous,
+it lands at the start of the corresponding source block.
+
 ## Edit a formula from Preview
 
 In Preview, choose **Edit Formula…** beside a top-level display formula such as

@@ -1792,7 +1792,11 @@ struct MarkdownEditorView: NSViewRepresentable {
                 location = next
                 current += 1
             }
-            return NSRange(location: location, length: (lineBreakEnd(from: location, in: string) ?? string.length) - location)
+            return sourceLineRange(startingAt: location, in: string)
+        }
+
+        static func sourceLineRange(startingAt location: Int, in string: NSString) -> NSRange {
+            NSRange(location: location, length: (lineBreakEnd(from: location, in: string) ?? string.length) - location)
         }
 
         /// The source line containing the character at `index`, numbered as

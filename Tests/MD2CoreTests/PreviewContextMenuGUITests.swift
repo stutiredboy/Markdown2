@@ -214,6 +214,74 @@ final class PreviewContextMenuGUITests: XCTestCase, RenderedPageTesting {
         XCTAssertEqual(opened, [original])
     }
 
+    @MainActor func testEditingTheSecondHighlightedParagraphUsesTheClickedCaretWithTheGutterHidden() throws {
+        let sentence = "今天的任务是核对任务状态。"
+        let source = "# 标题 🧭\n\n" + sentence + "\n\n## 两段之间\n\n" + sentence
+        let query = "核对任务"
+        let expected = (source as NSString).range(of: query, options: .backwards).location + 1
+        for mode in [EditorMode.read, .split] {
+            for useMenu in [false, true] {
+                let h = InteractionTestWindow()
+                defer { h.close() }
+                h.settings.newDocumentMode = mode
+                h.settings.showsLineNumbersInPreview = false
+                h.settings.language = mode == .read ? .english : .zhHans
+                h.store.text = source
+                h.host(ContentView(document: h.store, settings: h.settings, onOpen: {}), width: 980)
+                let web = try XCTUnwrap(h.descendants(WKWebView.self).first)
+                try h.waitForPage("document.querySelectorAll('main p').length === 2", in: web,
+                                  context: "two identical paragraphs in \(mode)")
+                let find = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: h.window.windowNumber, context: nil,
+                    characters: "f", charactersIgnoringModifiers: "f", isARepeat: false, keyCode: 3))
+                XCTAssertTrue(web.performKeyEquivalent(with: find))
+                h.spin(until: { h.queryField != nil })
+                try h.enterQuery(query)
+                try h.waitForPage("""
+                    document.querySelectorAll('main p mark.md2-find').length === 2 &&
+                    !document.querySelector('.md2-line-gutter span')
+                    """, in: web, context: "both hits highlighted with line numbers hidden")
+
+                // Click a specific insertion boundary inside the second Find mark.
+                // The expected UTF-16 offset above comes from the original source.
+                let target = """
+                    (() => { const node = document.querySelectorAll('main p mark.md2-find')[1].firstChild;
+                        const range = document.createRange(); range.setStart(node, 1);
+                        range.collapse(true); return range; })()
+                    """
+                if useMenu {
+                    let title = mode == .read ? "Edit This Paragraph in Source" : "在源码中编辑此段"
+                    try useNativeMenu(on: target, in: web, action: .editParagraph(title), copyIdentifiers: [])
+                } else {
+                    let location = try windowPoint(on: target, in: web)
+                    for clicks in 1...2 {
+                        for kind: NSEvent.EventType in [.leftMouseDown, .leftMouseUp] {
+                            let event = try XCTUnwrap(NSEvent.mouseEvent(with: kind, location: location,
+                                modifierFlags: .command, timestamp: ProcessInfo.processInfo.systemUptime,
+                                windowNumber: h.window.windowNumber, context: nil, eventNumber: 0,
+                                clickCount: clicks, pressure: kind == .leftMouseDown ? 1 : 0))
+                            if kind == .leftMouseDown { web.mouseDown(with: event) }
+                            else { web.mouseUp(with: event) }
+                        }
+                    }
+                }
+
+                let caret = NSRange(location: expected, length: 0)
+                h.spin(until: {
+                    guard let editor = h.store.editorSession.textView else { return false }
+                    return h.window.firstResponder === editor && editor.selectedRange() == caret
+                })
+                let editor = try XCTUnwrap(h.store.editorSession.textView)
+                XCTAssertTrue(h.window.firstResponder === editor)
+                XCTAssertEqual(editor.selectedRange(), caret, "mode=\(mode), menu=\(useMenu)")
+                XCTAssertEqual(h.store.text, source)
+                XCTAssertEqual(editor.string, source)
+                XCTAssertFalse(h.store.undoManager.canUndo)
+                XCTAssertEqual(h.descendants(WKWebView.self).isEmpty, mode == .read)
+            }
+        }
+    }
+
     @MainActor private func recordInput(in webView: WKWebView) throws {
         _ = try evaluate("""
             window.__contextMenuEvents = [];
@@ -259,7 +327,7 @@ final class PreviewContextMenuGUITests: XCTestCase, RenderedPageTesting {
         XCTAssertTrue(spin(8) { session.finished }, "the native menu did not finish: \(session.diagnostics)",
                       file: file, line: line)
         XCTAssertTrue(session.began, "WebKit never displayed its native menu", file: file, line: line)
-        XCTAssertTrue(session.performed, "the native Open item never became usable: \(session.diagnostics)",
+        XCTAssertTrue(session.performed, "the requested native action never became usable: \(session.diagnostics)",
                       file: file, line: line)
         XCTAssertEqual(session.preservedCopyIdentifiers, copyIdentifiers,
                        "the normal native Copy items lost their actions: \(session.diagnostics)", file: file, line: line)
@@ -269,14 +337,18 @@ final class PreviewContextMenuGUITests: XCTestCase, RenderedPageTesting {
         }
     }
 
-    @MainActor private func sendContextClick(on element: String, in webView: WKWebView,
-                                            controlClick: Bool = false) throws {
-        let window = try XCTUnwrap(webView.window)
+    @MainActor private func windowPoint(on element: String, in webView: WKWebView) throws -> NSPoint {
         let point = try XCTUnwrap(try evaluate("""
             (() => { const r = (\(element)).getBoundingClientRect();
                 return [r.left + r.width / 2, r.top + r.height / 2]; })()
             """, in: webView) as? [Double])
-        let location = webView.convert(NSPoint(x: point[0], y: point[1]), to: nil)
+        return webView.convert(NSPoint(x: point[0], y: point[1]), to: nil)
+    }
+
+    @MainActor private func sendContextClick(on element: String, in webView: WKWebView,
+                                            controlClick: Bool = false) throws {
+        let window = try XCTUnwrap(webView.window)
+        let location = try windowPoint(on: element, in: webView)
         func event(_ type: NSEvent.EventType) throws -> NSEvent {
             try XCTUnwrap(NSEvent.mouseEvent(with: type, location: location, modifierFlags: controlClick ? .control : [],
                 timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
@@ -295,7 +367,7 @@ final class PreviewContextMenuGUITests: XCTestCase, RenderedPageTesting {
 /// NSObject callbacks avoid crossing Swift concurrency boundaries while AppKit
 /// runs its nested menu loop. A timer in both modes also bounds a broken menu.
 @MainActor private final class NativeMenuSession: NSObject {
-    enum Action { case openLink, openImage, cancel, rejectOpen }
+    enum Action: Equatable { case openLink, openImage, cancel, rejectOpen, editParagraph(String) }
     private let action: Action
     private let copyIdentifiers: Set<String>
     private var menu: NSMenu?
@@ -349,7 +421,7 @@ final class PreviewContextMenuGUITests: XCTestCase, RenderedPageTesting {
     @objc private func tick() {
         guard let menu, !finished else { return }
         diagnostics = menu.items.map {
-            "\($0.identifier?.rawValue ?? "nil") enabled=\($0.isEnabled) action=\($0.action.map(NSStringFromSelector) ?? "nil")"
+            "\($0.title) \($0.identifier?.rawValue ?? "nil") enabled=\($0.isEnabled) action=\($0.action.map(NSStringFromSelector) ?? "nil")"
         }.joined(separator: "; ")
         // Copy remains a separate assertion even when Open never binds. Inspect
         // the actual native items on every tick, including the timeout tick.
@@ -361,6 +433,14 @@ final class PreviewContextMenuGUITests: XCTestCase, RenderedPageTesting {
         })
         guard Date() < deadline else { menu.cancelTracking(); return }
         guard !performed else { return }
+        if case .editParagraph(let title) = action {
+            guard let item = menu.items.first(where: { $0.title == title }),
+                  item.isEnabled, item.action != nil, item.target != nil else { return }
+            performed = true
+            menu.performActionForItem(at: menu.index(of: item))
+            menu.cancelTracking()
+            return
+        }
         let identifiers: Set<String> = action == .openImage ? ["WKMenuItemIdentifierOpenImageInNewWindow"] :
             ["WKMenuItemIdentifierOpenLink", "WKMenuItemIdentifierOpenLinkInNewWindow"]
         let openItems = menu.items.filter { identifiers.contains($0.identifier?.rawValue ?? "") }
