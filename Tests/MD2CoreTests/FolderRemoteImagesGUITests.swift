@@ -72,6 +72,7 @@ final class FolderRemoteImagesGUITests: XCTestCase {
         // folder group into this group; the outside file must stay blocked.
         try await app.openFileThroughWorkspace(outside)
         _ = try app.documentWindow(outside, focused: true)
+        try app.resize(outsideWindow, toWidth: 980)
         try app.pressMenuCommand("Window", "Merge All Windows")
         let merged = try app.waitFor("the folder group includes the outside document after merging windows") {
             guard let window = app.focusedWindow else { return nil }
@@ -80,6 +81,21 @@ final class FolderRemoteImagesGUITests: XCTestCase {
         }
         let outsideTab = try app.selectTab(for: outside, from: merged)
         XCTAssertTrue(CFEqual(outsideTab, outsideWindow))
+        // The foreground window owns the merged frame. Merging is not a request
+        // to widen it for Files. Reveal Files to inspect its permission control.
+        XCTAssertEqual(try app.frame(of: outsideTab).width, 980, accuracy: 1)
+        let reveal = try app.waitFor("the merged folder tab offers Show Sidebar") {
+            app.descendant(outsideTab) {
+                app.identifier($0) == "document-sidebar-toggle" &&
+                    app.labels($0).contains(L10n.text(.showSidebar, language: .english))
+            }
+        }
+        XCTAssertNil(app.descendant(outsideTab) { app.identifier($0) == "folder-file-list" })
+        try app.waitForImageStatus(.remoteImagesBlocked, in: outsideTab)
+        fixture.assertQuiet("outside")
+        try app.press(reveal)
+        _ = try app.element("folder-file-list", in: outsideTab)
+        XCTAssertGreaterThanOrEqual(try app.frame(of: outsideTab).width, DocumentLayoutMetrics.widthWithSidebar(mode: .split))
         try app.waitForImageStatus(.remoteImagesBlocked, folder: .remoteImagesAllowedByFolder, in: outsideTab)
         fixture.assertQuiet("outside")
 
