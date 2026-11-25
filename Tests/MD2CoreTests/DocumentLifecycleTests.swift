@@ -53,20 +53,23 @@ struct DocumentLifecycleTests {
     }
 }
 
+/// Allow the document's scheduled work to run even if a busy test runner
+/// delays the first main-actor turn past the nominal polling interval.
+@MainActor
+func waitForDocumentState(_ condition: () throws -> Bool) async throws -> Bool {
+    for _ in 0..<150 {
+        if try condition() { return true }
+        try await Task.sleep(for: .milliseconds(20))
+    }
+    return try condition()
+}
+
 @MainActor
 struct DocumentRecoveryTests {
     private func fixture() throws -> (URL, DocumentRecoveryRepository) {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("md2-recovery-\(UUID())")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return (dir, DocumentRecoveryRepository(directory: dir.appendingPathComponent("recovery")))
-    }
-
-    private func eventually(_ condition: () throws -> Bool) async throws -> Bool {
-        for _ in 0..<150 {
-            if try condition() { return true }
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        return try condition()
     }
 
     @Test func continuousTypingSavesBeforeIdleTimeout() async throws {
@@ -119,7 +122,7 @@ struct DocumentRecoveryTests {
         store.open(url)
         #expect(store.fileFormat.encoding == .gbk)
         store.text += "🚀"
-        #expect(try await eventually { store.encodingConversionRequest != nil })
+        #expect(try await waitForDocumentState { store.encodingConversionRequest != nil })
         #expect(try Data(contentsOf: url) == original)
         store.resolveEncodingConversion(convertToUTF8: false)
         #expect(store.isDirty)
@@ -291,7 +294,7 @@ struct DocumentRecoveryTests {
         store.open(url)
         try FileManager.default.removeItem(at: url)
         store.text = "keep me"
-        #expect(try await eventually { store.backingFileMissing })
+        #expect(try await waitForDocumentState { store.backingFileMissing })
         #expect(!FileManager.default.fileExists(atPath: url.path))
         #expect(!store.save()) // Cancelling the explicit destination panel is safe.
         #expect(store.isDirty)
