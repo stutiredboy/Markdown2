@@ -22,6 +22,7 @@ final class DocumentWindowContentState: ObservableObject {
     /// Last reported location, also used by the app menu when replacing the preview host.
     var previewAnchor: ViewportAnchor?
     let remoteResourceSheet = RemoteResourceSheet()
+    let surfaceDidFocus = PassthroughSubject<SplitPane, Never>()
 
     @Published var isFolderPreviewSelected = false
     @Published private(set) var editorFocusRequest: UUID?

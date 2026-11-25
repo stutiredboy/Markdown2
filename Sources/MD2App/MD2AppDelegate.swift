@@ -1140,6 +1140,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
+        window.onSurfaceFocus = { [weak contentState] pane in contentState?.surfaceDidFocus.send(pane) }
         window.modeShortcutHandler = { [weak self, weak store] event in
             guard let self, let store else { return false }
             return self.handleModeShortcutEvent(event, for: store)
@@ -1439,12 +1440,27 @@ private struct FolderOpen {
 }
 
 final class ModeShortcutWindow: NSWindow {
+    var onSurfaceFocus: ((SplitPane) -> Void)?
     var modeShortcutHandler: ((NSEvent) -> Bool)?
     private(set) var hasPresentedDocument = false
     private var groupObservation: NSKeyValueObservation?
     private var tabObservations: [NSKeyValueObservation] = []
     private weak var observedGroup: NSWindowTabGroup?
     private var lastTabCount = 1
+
+    override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
+        let previous = firstResponder
+        let accepted = super.makeFirstResponder(responder)
+        if accepted, let current = firstResponder, previous !== current, let pane = SplitPane.containing(current) {
+            // AppKit can change the responder while SwiftUI mounts a surface.
+            // Publish after layout, and only if this exact responder still owns focus.
+            DispatchQueue.main.async { [weak self, weak current] in
+                guard let self, let current, self.firstResponder === current else { return }
+                self.onSurfaceFocus?(pane)
+            }
+        }
+        return accepted
+    }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if modeShortcutHandler?(event) == true {

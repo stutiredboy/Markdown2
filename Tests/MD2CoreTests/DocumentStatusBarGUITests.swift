@@ -103,6 +103,63 @@ final class DocumentStatusBarGUITests: XCTestCase {
         _ = try visible("document-caret-position", text: "Ln 3, Col 7 – Ln 4, Col 7", in: host)
     }
 
+    @MainActor func testClickingShortSplitPanesChangesStatusWithoutScrolling() async throws {
+        let files = FileManager.default
+        let root = files.temporaryDirectory.appendingPathComponent("StatusFocus-\(UUID())")
+        try files.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? files.removeItem(at: root) }
+        let source = root.appendingPathComponent("Short.md")
+        try "# Short\n\nTwo words\n".write(to: source, atomically: true, encoding: .utf8)
+        let app = try await FolderTestApplication.launch(in: root, arguments: [source.path], presentationMode: .split)
+        defer { app.close() }
+        let window = try app.documentWindow(source, focused: true)
+        let editor = try app.editor(in: window)
+        let web = try app.waitFor("short preview") {
+            app.descendant(window) { app.attribute(kAXRoleAttribute, of: $0) as? String == "AXWebArea"
+                && app.descendant($0, matching: { app.labels($0).contains("Two words") }) != nil }
+        }
+        func click(_ element: AXUIElement) throws {
+            try app.activateForInput()
+            let rect = try app.frame(of: element)
+            let point = CGPoint(x: rect.midX, y: rect.minY + min(32, rect.height / 2))
+            for kind: CGEventType in [.leftMouseDown, .leftMouseUp] {
+                let event = try XCTUnwrap(CGEvent(mouseEventSource: nil, mouseType: kind,
+                                                  mouseCursorPosition: point, mouseButton: .left))
+                event.setIntegerValueField(.mouseEventClickState, value: 1)
+                event.post(tap: .cghidEventTap)
+            }
+        }
+
+        // Establish the fixture without leaving a posted mouse-up pending. The
+        // two real pointer transitions tested below start with this active selection.
+        try app.focus(editor)
+        try app.waitForEditorFocus(in: window)
+        var selection = CFRange(location: 9, length: 3)
+        let value = try XCTUnwrap(AXValueCreate(.cfRange, &selection))
+        XCTAssertEqual(AXUIElementSetAttributeValue(editor, kAXSelectedTextRangeAttribute as CFString, value), .success)
+        _ = try app.waitFor("the native source selection before the preview click") {
+            app.attribute(kAXSelectedTextAttribute, of: editor) as? String == "Two" ? editor : nil
+        }
+        _ = try app.element("document-selection-count", in: window)
+        try click(web)
+        _ = try app.element("document-reading-time", in: window)
+        XCTAssertNil(app.descendant(window) { app.identifier($0) == "document-caret-position" })
+        XCTAssertEqual(app.attribute(kAXSelectedTextAttribute, of: editor) as? String, "Two")
+        // Inspecting the document is a third focus target. The retained source
+        // selection must not reclaim the status or pull focus from its popover.
+        try app.press(app.element("document-info", in: window))
+        _ = try app.waitFor("visible document information") {
+            app.windows.compactMap { app.descendant($0) { app.identifier($0) == "document-info-path" } }.first
+        }
+        _ = try app.element("document-reading-time", in: window)
+        XCTAssertFalse(app.focusedElement.map { CFEqual($0, editor) } ?? false)
+        try app.key(53) // Escape dismisses the native popover.
+        try click(editor)
+        try app.waitForEditorFocus(in: window)
+        _ = try app.element("document-caret-position", in: window)
+        XCTAssertNil(app.descendant(window) { app.identifier($0) == "document-reading-time" })
+    }
+
     @MainActor private func visible(_ id: String, text: String, in host: InteractionTestWindow) throws -> NSRect {
         let element = try find(id, text: text, in: host)
         let frame = try frame(element)

@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import MD2Core
 import SwiftUI
+import WebKit
 
 enum FrontMatterMetadataVisibility {
     static func hasDisplayableFrontMatter(in markdown: String) -> Bool {
@@ -386,6 +387,9 @@ struct ContentView: View {
         }
         .onChange(of: canShowFloatingOutline) { _, eligible in
             if !eligible, previewOutlineMargin != nil { previewOutlineMargin = nil }
+        }
+        .onReceive(contentState.surfaceDidFocus) { pane in
+            if mode == .split { focusedPane = pane }
         }
         .onChange(of: document.findCommand) { _, command in
             handleFindCommand(command)
@@ -1412,7 +1416,10 @@ struct ContentView: View {
                     } : nil,
                     onSelectionChange: { selection in
                         previewSelection = selection
-                        if inSplit, selection != nil { focusedPane = .preview }
+                        if inSplit, selection != nil,
+                           SplitPane.containing(document.editorSession.textView?.window?.firstResponder) == .preview {
+                            focusedPane = .preview
+                        }
                     }
                 )
                 .id(resourceToken)
@@ -1543,6 +1550,16 @@ struct ContentView: View {
 enum SplitPane {
     case editor
     case preview
+
+    @MainActor static func containing(_ responder: NSResponder?) -> Self? {
+        var view = responder as? NSView
+        while let current = view {
+            if current is MarkdownSourceTextView { return .editor }
+            if let web = current as? WKWebView, web.navigationDelegate is MarkdownPreviewView.Coordinator { return .preview }
+            view = current.superview
+        }
+        return nil
+    }
 }
 
 private struct OutlineSidebar: View {
