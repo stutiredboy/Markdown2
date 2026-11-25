@@ -39,6 +39,10 @@ enum FolderIndex {
         var id: String { url.absoluteString }
         var name: String { leaf.name }
 
+        func matches(_ identity: DocumentCopyFileIdentity) -> Bool {
+            leaf.identity.device == identity.device && leaf.identity.inode == identity.inode
+        }
+
         fileprivate let root: Root
         fileprivate let ancestors: [Component]
         fileprivate let leaf: Component

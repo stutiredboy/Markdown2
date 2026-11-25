@@ -220,6 +220,9 @@ struct ContentView: View {
     /// While set, the follower's settle-time anchor reports are ignored so the
     /// two panes cannot oscillate against each other.
     @State private var splitSyncSource: SplitPane?
+    @State private var isScrollSyncPaused = false
+    /// Invalidates delayed entry alignment and outstanding resume captures.
+    @State private var scrollSyncSession = UUID()
     /// Re-armed every time a pane drives the sync; the matching delayed reset is
     /// the only one that clears `splitSyncSource`.
     @State private var splitSyncToken = UUID()
@@ -332,6 +335,7 @@ struct ContentView: View {
             editorAnchorLine = 1
             previewAnchor = nil
             splitSyncSource = nil
+            scrollSyncSession = UUID()
             outlineSourceLine = 1
             clickedOutlineHeadingID = nil
             previewOutlineMargin = nil
@@ -468,6 +472,17 @@ struct ContentView: View {
                     .accessibilityLabel(settings.text(.readingWidth))
                     .accessibilityIdentifier("document-reading-width")
                     .help(settings.text(.readingWidthHelp))
+                }
+
+                if mode == .split {
+                    let title = settings.text(isScrollSyncPaused ? .resumeSynchronizedScrolling : .pauseSynchronizedScrolling)
+                    Button(action: toggleScrollSynchronization) {
+                        Label(title, systemImage: isScrollSyncPaused ? "play.circle.fill" : "pause.circle")
+                    }
+                    .labelStyle(.iconOnly)
+                    .accessibilityLabel(title)
+                    .accessibilityIdentifier("document-scroll-sync-toggle")
+                    .help(title)
                 }
             }
 
@@ -939,22 +954,18 @@ struct ContentView: View {
         // start the latest render without blocking the mode transition.
         Task { await document.flushPendingRender() }
 
-        switch mode {
-        case .write, .split:
-            // The editor pane's anchor is readable synchronously; in Side by
-            // Side both panes are aligned, so the editor is the reliable source.
-            deliver(anchor: editorAnchorForPreview(), to: newMode)
-        case .read:
-            // Read → *: ask the live page first; its capture answers fast or
-            // times out to the cached debounced anchor.
+        if mode == .read || (mode == .split && isScrollSyncPaused && newMode == .read) {
+            // A paused preview may be reading a different section. Keep that
+            // section when expanding it to Read, just as when leaving Read.
+            let outgoing = mode
             guard !isCapturingPreviewAnchor else { return }
             isCapturingPreviewAnchor = true
             let identity = document.documentIdentity
             previewViewport.currentPosition { fresh in
                 isCapturingPreviewAnchor = false
-                guard mode == .read, document.documentIdentity == identity else { return }
+                guard mode == outgoing, document.documentIdentity == identity else { return }
                 let anchor: ViewportAnchor
-                if let sourceBeforeRead, sourceBeforeRead.revision == document.sourceLineRevision,
+                if outgoing == .read, let sourceBeforeRead, sourceBeforeRead.revision == document.sourceLineRevision,
                    fresh?.movedFromAnchor != true {
                     anchor = sourceBeforeRead.anchor
                 } else {
@@ -962,6 +973,8 @@ struct ContentView: View {
                 }
                 deliver(anchor: anchor, to: newMode)
             }
+        } else {
+            deliver(anchor: editorAnchorForPreview(), to: newMode)
         }
     }
 
@@ -995,6 +1008,7 @@ struct ContentView: View {
         }
         // A mode change starts a clean sync slate.
         splitSyncSource = nil
+        scrollSyncSession = UUID()
         if document.editorSession.find.usesRegex { dismissEditorFind() }
         mode = newMode
         if newMode == .split {
@@ -1101,9 +1115,11 @@ struct ContentView: View {
     /// mode-switch settle loop and survives async math/diagram reflow. Retried so
     /// the realignment lands whether the preview finishes loading early or late.
     private func realignPreviewToEditorAfterEntry() {
+        let session = scrollSyncSession
         for delay in [0.5, 1.2] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                guard mode == .split, splitSyncSource == nil else { return }
+                guard mode == .split, !isScrollSyncPaused, scrollSyncSession == session,
+                      splitSyncSource == nil else { return }
                 document.previewJumpAnchor = editorAnchorForPreview()
             }
         }
@@ -1355,6 +1371,7 @@ struct ContentView: View {
                         document.notePreviewRemoteImage(for: resourceToken, renderedAt: revision)
                     },
                     liveUpdate: inSplit,
+                    holdsReadingPosition: inSplit && isScrollSyncPaused,
                     showsFrontMatter: showsFrontMatterInPreview,
                     showsLineNumbers: settings.showsLineNumbersInPreview,
                     sourceLineRevision: document.renderedSourceLineRevision,
@@ -1380,6 +1397,7 @@ struct ContentView: View {
                         if !inSplit, mode == .read, isUserInitiated { sourceBeforeRead = nil }
                         if inSplit, isUserInitiated { syncPreviewToEditor(anchor: anchor) }
                     },
+                    onPausedInteraction: { if inSplit && isScrollSyncPaused { focusedPane = .preview } },
                     onEnterEdit: { if !inSplit { requestMode(.write) } },
                     onEscape: { handlePreviewEscape() },
                     onToggleTask: { line, checked, revision, restoreBoxes in
@@ -1476,18 +1494,45 @@ struct ContentView: View {
 
     // MARK: Side by Side scroll synchronization
 
+    private func toggleScrollSynchronization() {
+        guard mode == .split else { return }
+        isScrollSyncPaused.toggle()
+        let session = UUID()
+        scrollSyncSession = session
+        splitSyncToken = UUID()
+        splitSyncSource = nil
+        suppressPreviewDrivenEditorSyncUntil = .distantPast
+        previewViewport.setScrollSyncPaused(isScrollSyncPaused, activePane: focusedPane)
+        guard !isScrollSyncPaused else { return }
+
+        switch focusedPane {
+        case .editor:
+            syncEditorToPreview(line: editorAnchorLine, whenReady: true)
+        case .preview:
+            // A recent wheel event may not have delivered its debounced anchor.
+            // A newer gesture or toggle supersedes this one-time alignment.
+            let token = splitSyncToken
+            previewViewport.currentAnchor(whenReady: true) { fresh in
+                guard scrollSyncSession == session, splitSyncToken == token,
+                      focusedPane == .preview, let anchor = fresh ?? previewAnchor else { return }
+                syncPreviewToEditor(anchor: anchor)
+            }
+        }
+    }
+
     /// Editor scrolled: drive the preview to the matching source position with a
     /// lightweight, continuous follow (no mode-switch pinning), so the preview
     /// tracks the drag smoothly instead of snapping between block tops. Ignored
     /// while the editor is itself following the preview, so the two cannot
     /// oscillate. The editor reports a fractional top line so sub-line scrolling
     /// is reflected continuously.
-    private func syncEditorToPreview(line: Int) {
+    private func syncEditorToPreview(line: Int, whenReady: Bool = false) {
         guard mode == .split, splitSyncSource != .preview else { return }
-        markSyncSource(.editor)
         focusedPane = .editor
+        guard !isScrollSyncPaused else { return }
+        markSyncSource(.editor)
         let fractionalLine = editorViewport.currentTopFractionalLine() ?? Double(line)
-        previewViewport.scrollToFollowLine(fractionalLine)
+        previewViewport.scrollToFollowLine(fractionalLine, whenReady: whenReady)
     }
 
     /// Preview scrolled: drive the editor to the matching source position with a
@@ -1500,8 +1545,11 @@ struct ContentView: View {
                 now: Date(),
                 suppressUntil: suppressPreviewDrivenEditorSyncUntil
               ) else { return }
-        markSyncSource(.preview)
+        // In a paused window the WebKit gesture reports ownership immediately.
+        // A delayed anchor may arrive after the writer has returned to the editor.
+        guard !isScrollSyncPaused else { return }
         focusedPane = .preview
+        markSyncSource(.preview)
         editorViewport.scrollToFollowLine(fractionalSourceLine(from: anchor))
     }
 
@@ -1517,6 +1565,7 @@ struct ContentView: View {
     private func markEditorEditInSplit(caretLine: Int) {
         guard mode == .split else { return }
         focusedPane = .editor
+        guard !isScrollSyncPaused else { return }
         suppressPreviewDrivenEditorSyncUntil = SplitEditSyncGate.suppressionDeadline(afterEditAt: Date())
         markSyncSource(.editor, cooldown: SplitEditSyncGate.editSuppressionWindow)
         previewViewport.setPendingEditFollow(caretLine)

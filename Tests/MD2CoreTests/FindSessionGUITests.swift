@@ -158,7 +158,7 @@ final class FindSessionGUITests: XCTestCase {
     func testHiddenFindSurvivesAnActuallyDelayedPageLoad() throws {
         let harness = InteractionTestWindow()
         defer { harness.close() }
-        let server = try HeldFindImageServer()
+        let server = try HeldPreviewImageServer()
         defer { server.stop() }
         try waitForNative(harness, "loopback load barrier is listening") { server.port != nil }
         let port = try XCTUnwrap(server.port)
@@ -329,7 +329,7 @@ final class FindSessionGUITests: XCTestCase {
 
 /// Test-only load barrier. The test releases it after delivering the commands,
 /// so its timing is independent of CPU/WebKit speed on a CI runner.
-private final class HeldFindImageServer: @unchecked Sendable {
+final class HeldPreviewImageServer: @unchecked Sendable {
     private let listener: NWListener
     private let lock = NSLock()
     private var boundPort: UInt16?

@@ -11,36 +11,42 @@ final class PreviewViewportReader {
     struct Position {
         let anchor: ViewportAnchor
         let movedFromAnchor: Bool
+        var heldReference: [String: Any]? = nil
     }
 
-    fileprivate var capture: ((_ completion: @escaping (Position?) -> Void) -> Void)?
+    fileprivate var capture: ((_ whenReady: Bool, _ completion: @escaping (Position?) -> Void) -> Void)?
     /// Scrolls the live preview directly to a (possibly fractional) source line
     /// for continuous Side by Side follow — lighter than a mode-switch anchor and
     /// without the pinning settle loop, so the preview tracks the editor smoothly.
-    fileprivate var follow: ((Double) -> Void)?
+    fileprivate var follow: ((Double, Bool) -> Void)?
     /// Records the caret's source line so the next live-content swap keeps its
     /// rendered output in view, nudging the preview only when that line is
     /// off-screen so an edit in the middle of the viewport never yanks the preview.
     fileprivate var setEditFollow: ((Int?) -> Void)?
+    fileprivate var changeScrollSync: ((Bool, SplitPane) -> Void)?
 
     /// Asks the live web view for its current anchor. Completes with `nil`
     /// when the preview is not mounted or does not answer within the capture
     /// timeout (e.g. the page is still executing heavy engine scripts).
-    func currentAnchor(completion: @escaping (ViewportAnchor?) -> Void) {
-        currentPosition { completion($0?.anchor) }
+    func currentAnchor(whenReady: Bool = false, completion: @escaping (ViewportAnchor?) -> Void) {
+        currentPosition(whenReady: whenReady) { completion($0?.anchor) }
     }
 
-    func currentPosition(completion: @escaping (Position?) -> Void) {
+    func currentPosition(whenReady: Bool = false, completion: @escaping (Position?) -> Void) {
         guard let capture else {
             completion(nil)
             return
         }
-        capture(completion)
+        capture(whenReady, completion)
     }
 
     /// Drives the preview to follow the editor to `line` (continuous sync).
-    func scrollToFollowLine(_ line: Double) {
-        follow?(line)
+    func scrollToFollowLine(_ line: Double, whenReady: Bool = false) {
+        follow?(line, whenReady)
+    }
+
+    func setScrollSyncPaused(_ paused: Bool, activePane: SplitPane) {
+        changeScrollSync?(paused, activePane)
     }
 
     /// Marks the caret's source `line` (or `nil` to clear) so the next live
@@ -70,6 +76,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
     /// via `__md2ApplyContent` — preserving scroll position and avoiding the
     /// full-page reload flash — instead of reloading the web view.
     var liveUpdate: Bool = false
+    var holdsReadingPosition = false
     /// Whether the preview should show a rendered leading YAML front-matter block.
     /// The shared renderer still emits it; this is a preview-only visibility state.
     var showsFrontMatter: Bool = true
@@ -106,6 +113,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
     /// Reports the viewport-context anchor at the top of the viewport
     /// (debounced) on scroll, so a mode switch can fall back to it.
     var onAnchorChange: (_ anchor: ViewportAnchor, _ isUserInitiated: Bool) -> Void = { _, _ in }
+    var onPausedInteraction: () -> Void = {}
     /// Called on a Cmd+double-click, requesting a switch to edit mode.
     var onEnterEdit: () -> Void = {}
     /// Called when the user presses Esc in the preview page. Returns whether
@@ -195,6 +203,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
 
     private static let enterEditMessageName = "enterEdit"
     private static let anchorMessageName = "anchorChange"
+    private static let viewportReadyMessageName = "viewportReady"
     private static let outlineMarginMessageName = "outlineMarginChange"
     private static let toggleTaskMessageName = "toggleTask"
     private static let revealSourceLineMessageName = "revealSourceLine"
@@ -542,6 +551,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
         var lastUserScrollIntentAt = 0;
         function markUserScrollIntent() {
             lastUserScrollIntentAt = Date.now();
+            if (window.__md2ScrollSyncPaused) {
+                window.webkit.messageHandlers.\(Self.anchorMessageName).postMessage({ interaction: true });
+            }
         }
         window.addEventListener('wheel', markUserScrollIntent, { passive: true });
         window.addEventListener('touchmove', markUserScrollIntent, { passive: true });
@@ -639,11 +651,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 if (window.__md2FindActive) { return; }
                 window.webkit.messageHandlers.\(Self.anchorMessageName).postMessage(captureAnchor());
             }
-            var pending = false;
+            var pending = null;
             window.addEventListener('scroll', function () {
                 if (pending) { return; }
-                pending = true;
-                setTimeout(function () { pending = false; topAnchor(); }, 80);
+                pending = setTimeout(function () { pending = null; topAnchor(); }, 80);
             }, { passive: true });
             window.addEventListener('load', topAnchor);
 
@@ -658,6 +669,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             var pinSequence = 0;
             var animatedPinEpoch = 0;
             function keepPinned(getTargetY, silent, rememberOffset, animate) {
+                releaseReference();
                 // A recent click inside the preview is not evidence that this
                 // programmatic jump was a user scroll. Only gestures that occur
                 // after pinning starts may mark its final anchor as user driven.
@@ -816,6 +828,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             // suppression keeps the resulting scroll from echoing back as a user
             // anchor while the editor is the active driver.
             window.__md2FollowToAnchor = function (line) {
+                releaseReference();
                 var targetY = sourceLineTargetY(line);
                 if (targetY === null) { return; }
                 var maxY = document.documentElement.scrollHeight - window.innerHeight;
@@ -831,6 +844,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             // with its preceding context still visible. Suppressed briefly so this
             // scroll does not echo back as a user anchor while the editor drives.
             window.__md2FollowEditLine = function (line) {
+                releaseReference();
                 var targetY = sourceLineTargetY(line);
                 if (targetY === null) { return; }
                 var viewportH = window.innerHeight;
@@ -1093,6 +1107,115 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 };
             };
 
+            // Hold the actual rendered block at its current pixel offset. Source
+            // line numbers change when a writer inserts lines above the reference.
+            function visibleReferences() {
+                var blocks = [];
+                var main = document.querySelector('main');
+                if (!main) { return blocks; }
+                for (var node of main.children) {
+                    if (isGutterLayer(node)) { continue; }
+                    var rect = node.getBoundingClientRect();
+                    if (rect.height <= 0 || rect.bottom <= 0) { continue; }
+                    if (rect.top >= window.innerHeight) { break; }
+                    blocks.push({node: node, top: rect.top});
+                }
+                return blocks;
+            }
+
+            var referenceObserver;
+            function releaseReference() {
+                if (referenceObserver) { referenceObserver.disconnect(); referenceObserver = null; }
+            }
+            window.__md2ChangeScrollSync = function (paused) {
+                window.__md2ScrollSyncPaused = paused;
+                clearTimeout(pending);
+                pending = null;
+                lastUserScrollIntentAt = 0;
+                // A pending mode-entry pin belongs to the previous sync state.
+                animatedPinEpoch++;
+                suppressUntil = 0;
+                releaseReference();
+            };
+            ['wheel', 'touchmove', 'mousedown', 'keydown'].forEach(function (type) {
+                window.addEventListener(type, releaseReference, { passive: true, capture: true });
+            });
+            function pinReference(blocks, y) {
+                releaseReference();
+                // An edit to the partially visible paragraph above a table
+                // replaces that paragraph. Keep the next surviving block.
+                var block = blocks.find(item => item.node && item.node.isConnected);
+                if (!block) { window.scrollTo(window.scrollX, y); return; }
+                var node = block.node, top = block.top;
+                var expectedY = window.scrollY;
+                function restore() {
+                    if (!node.isConnected || Math.abs(window.scrollY - expectedY) > 1) {
+                        releaseReference();
+                        return;
+                    }
+                    var delta = node.getBoundingClientRect().top - top;
+                    if (Math.abs(delta) > 0.5) { window.scrollBy(0, delta); }
+                    expectedY = window.scrollY;
+                }
+                restore();
+                // Earlier diagrams and images can finish long after the body
+                // swap. A user gesture or explicit navigation releases the pin.
+                referenceObserver = new ResizeObserver(restore);
+                referenceObserver.observe(document.querySelector('main'));
+            }
+
+            // A new diagram engine requires a new page. Find the same block
+            // in the new DOM, preferring the nearest source line for duplicates.
+            function referenceKey(node) {
+                return node.tagName + ':' + node.textContent.slice(0, 256);
+            }
+            window.__md2CaptureReference = function () {
+                var blocks = visibleReferences().map(function (block) {
+                    return { key: referenceKey(block.node), top: block.top,
+                        line: Number(block.node.dataset.md2SourceLine) || 0 };
+                });
+                return { y: window.scrollY, blocks: blocks };
+            };
+            window.__md2RestoreReference = function (place) {
+                // Index just the captured blocks. Walk the new body once,
+                // irrespective of how many of the visible paragraphs changed.
+                var byKey = new Map();
+                for (var block of place.blocks) {
+                    if (!byKey.has(block.key)) { byKey.set(block.key, []); }
+                    byKey.get(block.key).push(block);
+                }
+                for (var node of document.querySelector('main').children) {
+                    var matches = byKey.get(referenceKey(node));
+                    if (!matches) { continue; }
+                    var line = Number(node.dataset.md2SourceLine) || 0;
+                    for (var block of matches) {
+                        var delta = Math.abs(line - block.line);
+                        if (!block.node || delta < block.distance) {
+                            block.node = node;
+                            block.distance = delta;
+                        }
+                    }
+                }
+                pinReference(place.blocks, place.y);
+            };
+
+            window.__md2UpdateLivePreview = function (body, options, hold, caretLine) {
+                // Capture, reconcile and restore in a single WebKit turn, so
+                // input between two asynchronous calls cannot be overwritten.
+                var blocks = hold && visibleReferences();
+                var y = window.scrollY;
+                var anchor = !hold && !caretLine && captureAnchor();
+                window.__md2ApplyContent(body, options);
+                if (hold) {
+                    pinReference(blocks, y);
+                } else if (caretLine) {
+                    window.__md2FollowEditLine(caretLine);
+                } else {
+                    anchor.headingId = anchor.id;
+                    window.__md2ScrollToViewportAnchor(anchor, true);
+                }
+            };
+
             \(PreviewTextSearch.script)
 
             // --- Broken image diagnostics (preview only) ------------------
@@ -1136,6 +1259,11 @@ struct MarkdownPreviewView: NSViewRepresentable {
         configuration.userContentController.add(context.coordinator, contentWorld: .defaultClient, name: Self.selectionMessageName)
         configuration.userContentController.addUserScript(WKUserScript(source: Self.selectionScript,
             injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: .defaultClient))
+        configuration.userContentController.add(context.coordinator, contentWorld: .defaultClient,
+                                                name: Self.viewportReadyMessageName)
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: "window.webkit.messageHandlers.\(Self.viewportReadyMessageName).postMessage(null);",
+            injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: .defaultClient))
 
         let webView = PreviewWebView(frame: .zero, configuration: configuration)
         context.coordinator.attachFindHost(webView)
@@ -1165,12 +1293,15 @@ struct MarkdownPreviewView: NSViewRepresentable {
             guard let webView, let coordinator else { return }
             coordinator.invalidateResourceContext(in: webView)
         }
-        registerViewportCapture(in: webView, coordinator: coordinator)
-        viewportReader?.follow = { [weak webView, weak coordinator] line in
-            guard let webView, let coordinator, coordinator.isLoaded else { return }
-            webView.evaluateJavaScript(
-                String(format: "window.__md2FollowToAnchor ? window.__md2FollowToAnchor(%.3f) : null;", line)
-            )
+        registerViewportReader(in: webView, coordinator: context.coordinator)
+
+        return webView
+    }
+
+    private func registerViewportReader(in webView: WKWebView, coordinator: Coordinator) {
+        viewportReader?.follow = { [weak webView, weak coordinator] line, whenReady in
+            guard let webView, let coordinator, coordinator.resourceContextIsActive else { return }
+            coordinator.followEditor(to: line, whenReady: whenReady, in: webView)
         }
         viewportReader?.setEditFollow = { [weak coordinator] line in
             guard let coordinator else { return }
@@ -1179,17 +1310,22 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 ? .distantPast
                 : Date().addingTimeInterval(Coordinator.editFollowWindow)
         }
-
-        return webView
-    }
-
-    private func registerViewportCapture(in webView: WKWebView, coordinator: Coordinator) {
-        viewportReader?.capture = { [weak webView, weak coordinator] completion in
+        viewportReader?.changeScrollSync = { [weak webView, weak coordinator] paused, activePane in
+            guard let webView, let coordinator else { return }
+            coordinator.holdsReadingPosition = paused
+            coordinator.resetScrollOwnership(keepLoadingReference: !paused && activePane == .preview)
+            webView.evaluateJavaScript("window.__md2ChangeScrollSync?.(\(MarkdownPreviewView.jsBoolean(paused)));")
+        }
+        viewportReader?.capture = { [weak webView, weak coordinator] whenReady, completion in
             guard let webView, let coordinator, coordinator.resourceContextIsActive else {
                 completion(nil)
                 return
             }
-            coordinator.capturePosition(in: webView, completion: completion)
+            if whenReady && (!coordinator.viewportIsReady || coordinator.hasContentInFlight) {
+                coordinator.pendingResumeCapture = completion
+            } else {
+                coordinator.capturePosition(in: webView, completion: completion)
+            }
         }
     }
 
@@ -1208,13 +1344,15 @@ struct MarkdownPreviewView: NSViewRepresentable {
         }
         if context.coordinator.mermaidViewerLanguage != mermaidViewerLanguage {
             context.coordinator.mermaidViewerLanguage = mermaidViewerLanguage
-            if context.coordinator.isLoaded { context.coordinator.applyMermaidViewerLanguage(in: webView) }
+            if context.coordinator.viewportIsReady { context.coordinator.applyMermaidViewerLanguage(in: webView) }
         }
+        context.coordinator.liveUpdate = liveUpdate
+        context.coordinator.holdsReadingPosition = holdsReadingPosition
         let revisionChanged = context.coordinator.sourceLineRevision != sourceLineRevision
         let typographyChanged = context.coordinator.typography != typography
         if typographyChanged {
             context.coordinator.typography = typography
-            if context.coordinator.isLoaded { context.coordinator.applyTypography(in: webView, preservingAnchor: true) }
+            if context.coordinator.viewportIsReady { context.coordinator.applyTypography(in: webView, preservingAnchor: true) }
         }
         context.coordinator.onEnterEdit = onEnterEdit
         context.coordinator.onEditParagraph = onEditParagraph
@@ -1227,6 +1365,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         context.coordinator.onMissingLocalLink = onMissingLocalLink
         context.coordinator.onOpenWithSystem = onOpenWithSystem
         context.coordinator.onAnchorChange = onAnchorChange
+        context.coordinator.onPausedInteraction = onPausedInteraction
         context.coordinator.onFindShortcut = onFindShortcut
         context.coordinator.onFindResult = onFindResult
         context.coordinator.onFindUnavailable = onFindUnavailable
@@ -1243,21 +1382,6 @@ struct MarkdownPreviewView: NSViewRepresentable {
             previewWebView.contextMenuAdapter.editParagraphTitle = editParagraphTitle
         }
 
-        let coordinator = context.coordinator
-        viewportReader?.follow = { [weak webView, weak coordinator] line in
-            guard let webView, let coordinator, coordinator.isLoaded else { return }
-            webView.evaluateJavaScript(
-                String(format: "window.__md2FollowToAnchor ? window.__md2FollowToAnchor(%.3f) : null;", line)
-            )
-        }
-        viewportReader?.setEditFollow = { [weak coordinator] line in
-            guard let coordinator else { return }
-            coordinator.editFollowLine = line
-            coordinator.editFollowDeadline = line == nil
-                ? .distantPast
-                : Date().addingTimeInterval(Coordinator.editFollowWindow)
-        }
-
         let htmlChanged = context.coordinator.lastHTML != html
         let baseURLChanged = context.coordinator.lastBaseURL != baseURL
         let resourceContextChanged = context.coordinator.remoteResourcePolicy != remoteResourcePolicy
@@ -1269,7 +1393,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             context.coordinator.resourceContextIsActive = true
         }
         guard context.coordinator.resourceContextIsActive else { return }
-        registerViewportCapture(in: webView, coordinator: coordinator)
+        registerViewportReader(in: webView, coordinator: context.coordinator)
         context.coordinator.applyFrontMatterVisibility(in: webView)
         context.coordinator.applyLineNumbersVisibility(in: webView)
         if htmlChanged || baseURLChanged || resourceContextChanged {
@@ -1279,7 +1403,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             // the initial load, a base-URL/document change, or a new diagram
             // engine that must be loaded — goes through a full load.
             let isLoadedContentUpdate = liveUpdate
-                && context.coordinator.isLoaded
+                && context.coordinator.viewportIsReady
                 && !baseURLChanged
                 && !resourceContextChanged
                 && !context.coordinator.lastHTML.isEmpty
@@ -1307,12 +1431,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 // their first execution can still block JavaScript. A
                 // viewport anchor's fallback heading gives the same early, coarse
                 // position; the block/source-line target then refines it.
-                load(
-                    html,
-                    baseURL: baseURL,
+                context.coordinator.loadLatest(
                     fragment: jumpAnchor?.fallbackHeadingID ?? jumpHeadingID,
-                    in: webView,
-                    coordinator: context.coordinator
+                    preservingReference: isLoadedContentUpdate && holdsReadingPosition,
+                    in: webView
                 )
             }
         } else {
@@ -1609,13 +1731,6 @@ struct MarkdownPreviewView: NSViewRepresentable {
         return coordinator
     }
 
-    /// Preview and PDF export share the same memory page and resource boundary.
-    private func load(_ html: String, baseURL: URL?, fragment: String?, in webView: WKWebView, coordinator: Coordinator) {
-        (webView as? PreviewWebView)?.invalidateContextMenu()
-        coordinator.documentLoader.load(html, baseURL: baseURL, fragment: fragment,
-            remoteResourcePolicy: remoteResourcePolicy, in: webView)
-    }
-
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
         var typography: TypographySettings = .init()
         var mermaidViewerLanguage: AppLanguage = .english
@@ -1716,6 +1831,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 focusState?.preserveFocus(from: webView)
             }
             resourceContextIsActive = false
+            heldReloadCapture = nil
+            pendingHeldReference = nil
+            pendingEditorFollow = nil
+            pendingResumeCapture = nil
             beginLoading()
             documentLoader.invalidate(in: webView)
             (webView as? PreviewWebView)?.invalidateContextMenu()
@@ -1745,6 +1864,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         var onMissingLocalLink: (_ url: URL) -> Void = { _ in }
         var onOpenWithSystem: (_ url: URL) -> Void = { _ in }
         var onAnchorChange: (_ anchor: ViewportAnchor, _ isUserInitiated: Bool) -> Void = { _, _ in }
+        var onPausedInteraction: () -> Void = {}
         var onFindShortcut: (_ action: FindCommand.Action) -> Void = { _ in }
         var onFindResult: (_ total: Int, _ index: Int) -> Void = { _, _ in }
         let documentLoader = WebDocumentLoader()
@@ -1756,7 +1876,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         private var pageRevision: Int?
         /// True from handing content over until it is in the page, while the
         /// page keeps the label of what it still shows.
-        private var hasContentInFlight = false
+        private(set) var hasContentInFlight = false
         /// True from `beginLoading` until the page of that load commits. A page
         /// that finishes before then is one that load is about to replace.
         private var isAwaitingCommit = false
@@ -1793,12 +1913,20 @@ struct MarkdownPreviewView: NSViewRepresentable {
         var lastFindNavigationToken: UUID?
 
         private(set) var isLoaded = false
+        /// Split rendering and navigation can use the committed document as
+        /// soon as its viewport helpers exist, even with images still loading.
+        var liveUpdate = false
+        private(set) var viewportIsReady = false
         /// The mode-switch scroll target. Retained across an immediate apply so a
         /// reload that fires right after entering Side by Side (the preview view
         /// is rebuilt, resetting scroll to the top) re-applies it on `didFinish`
         /// instead of leaving the preview stuck at the top. Consumed by the
         /// post-load apply and cleared once the user scrolls.
         private var pendingScroll: ModeSwitchAnchor?
+        private var pendingHeldReference: [String: Any]?
+        private var heldReloadCapture: UUID?
+        private var pendingEditorFollow: Double?
+        fileprivate var pendingResumeCapture: ((PreviewViewportReader.Position?) -> Void)?
         var lastScrollRequest: ModeSwitchAnchor?
         private var pendingFindQuery: String?
         private var pendingFindNavigation: [FindCommand.Action] = []
@@ -1818,6 +1946,40 @@ struct MarkdownPreviewView: NSViewRepresentable {
         private var liveUpdateWorkItem: DispatchWorkItem?
         private var liveUpdateGeneration = 0
         private static let liveUpdateDebounce: TimeInterval = 0.09
+        func resetScrollOwnership(keepLoadingReference: Bool) {
+            editFollowLine = nil
+            editFollowDeadline = .distantPast
+            pendingScroll = nil
+            pendingEditorFollow = nil
+            pendingResumeCapture = nil
+            if !keepLoadingReference { pendingHeldReference = nil }
+        }
+
+        func followEditor(to line: Double, whenReady: Bool, in webView: WKWebView) {
+            pendingResumeCapture = nil
+            if !viewportIsReady || (hasContentInFlight && (whenReady || pendingEditorFollow != nil)) {
+                // Continuous scrolling normally waits for the next gesture. A
+                // resume is a single request and must survive the engine load.
+                if whenReady || pendingEditorFollow != nil { pendingEditorFollow = line }
+                return
+            }
+            pendingEditorFollow = nil
+            webView.evaluateJavaScript(
+                String(format: "window.__md2FollowToAnchor ? window.__md2FollowToAnchor(%.3f) : null;", line)
+            )
+        }
+
+        private func completeResumeIfReady(in webView: WKWebView) {
+            guard viewportIsReady, !hasContentInFlight else { return }
+            if let pendingEditorFollow {
+                followEditor(to: pendingEditorFollow, whenReady: true, in: webView)
+            } else if let capture = pendingResumeCapture {
+                pendingResumeCapture = nil
+                capturePosition(in: webView, completion: capture)
+            }
+        }
+
+        var holdsReadingPosition = false
         /// The caret's source line to keep in view while editing, and the instant
         /// after which it lapses. While the window is live EVERY live swap follows
         /// this line and the capture + `keepPinned` re-affirm is disabled — so no
@@ -1878,39 +2040,13 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 self.documentLoader.installImages(self.pendingLiveImages)
                 self.pendingLiveImages = [:]
 
-                // An edit is in flight: keep the caret's rendered line in view
-                // (only if it scrolled off-screen) rather than re-affirming the
-                // preview's previous position. While the edit window is live this
-                // is the SOLE authority on the preview's position — the capture +
-                // `keepPinned` re-affirm below is skipped, so no stray swap in an
-                // edit burst (e.g. a multi-key delete) can pin a drifted position,
-                // and the editor is never driven.
-                if let followLine = self.editFollowLine, Date() < self.editFollowDeadline {
-                    let script = "window.__md2ApplyContent(\(Self.jsStringLiteral(body)), \(options));"
-                        + "window.__md2FollowEditLine ? window.__md2FollowEditLine(\(followLine)) : null;"
-                        + "true;"
-                    // This update keys the page's nodes, so later ones need no
-                    // loaded body (the page ignores one sent after that anyway).
-                    self.loadedBody = nil
-                    webView.evaluateJavaScript(script) { [weak self, weak webView] _, error in
-                        guard let self, let webView else { return }
-                        self.finishLiveContent(generation: generation, error: error, in: webView)
-                    }
-                    return
-                }
-                self.editFollowLine = nil
-
-                webView.evaluateJavaScript(
-                    "window.__md2CaptureAnchor ? window.__md2CaptureAnchor() : null;"
-                ) { [weak self, weak webView] result, _ in
-                    guard let self, let webView, generation == self.liveUpdateGeneration else { return }
-                    let anchor = (result as? [String: Any]).map(Self.viewportAnchor(fromMessage:))
-                    let script = Self.liveContentScript(bodyHTML: body, options: options, anchor: anchor)
-                    self.loadedBody = nil
-                    webView.evaluateJavaScript(script) { [weak self, weak webView] _, error in
-                        guard let self, let webView else { return }
-                        self.finishLiveContent(generation: generation, error: error, in: webView)
-                    }
+                let caretLine = Date() < self.editFollowDeadline ? self.editFollowLine : nil
+                let hold = MarkdownPreviewView.jsBoolean(self.holdsReadingPosition)
+                let script = "window.__md2UpdateLivePreview(\(Self.jsStringLiteral(body)), \(options), \(hold), \(caretLine ?? 0)); true;"
+                self.loadedBody = nil
+                webView.evaluateJavaScript(script) { [weak self, weak webView] _, error in
+                    guard let self, let webView else { return }
+                    self.finishLiveContent(generation: generation, error: error, in: webView)
                 }
             }
             liveUpdateWorkItem = work
@@ -1926,6 +2062,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 // changed the body without changing its source revision.
                 pageRevision = nil
                 labelPage(in: webView)
+                completeResumeIfReady(in: webView)
             }
             if let query = lastFindQuery, !query.isEmpty {
                 runFindWhenReady(query, in: webView)
@@ -1994,17 +2131,6 @@ struct MarkdownPreviewView: NSViewRepresentable {
             webView?.evaluateJavaScript(MarkdownPreviewView.restoreTaskBoxesScript, in: nil, in: .defaultClient)
         }
 
-        private static func liveContentScript(bodyHTML: String, options: String, anchor: ViewportAnchor?) -> String {
-            var script = "window.__md2ApplyContent(\(jsStringLiteral(bodyHTML)), \(options));"
-            if let anchor {
-                // `true` = silent: re-affirm the preview's own position as async
-                // math/diagrams reflow, but do NOT report an anchor — an edit
-                // must never drive the editor pane (it would jump to the bottom).
-                script += "window.__md2ScrollToViewportAnchor(\(viewportAnchorJS(anchor)), true);"
-            }
-            return script + "true;"
-        }
-
         /// Encodes a string as a JavaScript string literal (quotes included) so
         /// arbitrary rendered HTML can be passed safely to `evaluateJavaScript`.
         private static func jsStringLiteral(_ string: String) -> String {
@@ -2025,7 +2151,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// Asks the live page for a fresh viewport anchor, completing with
         /// `nil` after a short timeout so a switch is never blocked by a page
         /// that is still loading or running heavy engine scripts.
-        func capturePosition(in webView: WKWebView, completion: @escaping (PreviewViewportReader.Position?) -> Void) {
+        func capturePosition(in webView: WKWebView, includeReference: Bool = false, completion: @escaping (PreviewViewportReader.Position?) -> Void) {
             // A newer capture supersedes any still-pending one.
             pendingCaptureID += 1
             let captureID = pendingCaptureID
@@ -2039,13 +2165,15 @@ struct MarkdownPreviewView: NSViewRepresentable {
             captureTimeoutWorkItem = timeout
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.captureTimeout, execute: timeout)
 
-            webView.evaluateJavaScript(
-                "window.__md2CaptureAnchor ? window.__md2CaptureAnchor() : null;"
-            ) { [weak self] result, _ in
+            let capture = includeReference
+                ? "({ ...window.__md2CaptureAnchor(), heldReference: window.__md2CaptureReference() })"
+                : "window.__md2CaptureAnchor?.()"
+            webView.evaluateJavaScript(capture) { [weak self] result, _ in
                 let position = (result as? [String: Any]).map {
                     PreviewViewportReader.Position(
                         anchor: Self.viewportAnchor(fromMessage: $0),
-                        movedFromAnchor: $0["movedFromAnchor"] as? Bool == true
+                        movedFromAnchor: $0["movedFromAnchor"] as? Bool == true,
+                        heldReference: $0["heldReference"] as? [String: Any]
                     )
                 }
                 self?.finishCapture(captureID, with: position)
@@ -2083,6 +2211,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             findInFlight = false
             if pendingFindQuery == nil { pendingFindQuery = lastFindQuery }
             isLoaded = false
+            viewportIsReady = false
             isAwaitingCommit = true
             hasContentInFlight = true
             formulaPage = nil
@@ -2090,6 +2219,29 @@ struct MarkdownPreviewView: NSViewRepresentable {
             liveUpdateWorkItem?.cancel()
             pendingLiveBody = nil
             pendingLiveImages = [:]
+        }
+
+        /// Capture the old page before a new diagram engine replaces its DOM.
+        /// Edits arriving during capture coalesce into the latest full load.
+        func loadLatest(fragment: String?, preservingReference: Bool, in webView: WKWebView) {
+            guard heldReloadCapture == nil else { return }
+            (webView as? PreviewWebView)?.invalidateContextMenu()
+            if preservingReference {
+                let token = UUID()
+                heldReloadCapture = token
+                capturePosition(in: webView, includeReference: true) { [weak self, weak webView] position in
+                    guard let self, let webView, self.resourceContextIsActive,
+                          self.heldReloadCapture == token else { return }
+                    self.heldReloadCapture = nil
+                    if self.holdsReadingPosition || self.pendingEditorFollow == nil {
+                        self.pendingHeldReference = position?.heldReference
+                    }
+                    self.loadLatest(fragment: fragment, preservingReference: false, in: webView)
+                }
+            } else {
+                documentLoader.load(lastHTML, baseURL: lastBaseURL, fragment: fragment,
+                                    remoteResourcePolicy: remoteResourcePolicy, in: webView)
+            }
         }
 
         /// A full reload caused by an edit can emit one load-position anchor
@@ -2212,7 +2364,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         }
 
         func applyFrontMatterVisibility(in webView: WKWebView) {
-            guard isLoaded else { return }
+            guard viewportIsReady else { return }
             webView.evaluateJavaScript(
                 "window.__md2SetFrontMatterVisible ? window.__md2SetFrontMatterVisible(\(MarkdownPreviewView.jsBoolean(showsFrontMatter))) : null;"
             )
@@ -2222,10 +2374,18 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// re-renders the document — the layer is already built, and the numbers
         /// are generated content, so showing them is a class change.
         func applyLineNumbersVisibility(in webView: WKWebView) {
-            guard isLoaded else { return }
+            guard viewportIsReady else { return }
             webView.evaluateJavaScript(
                 "window.__md2SetLineNumbersVisible ? window.__md2SetLineNumbersVisible(\(MarkdownPreviewView.jsBoolean(showsLineNumbers))) : null;"
             )
+        }
+
+        private func messageIsFromCurrentPage(_ message: WKScriptMessage) -> Bool {
+            guard let documentURL = documentLoader.documentPageURL,
+                  let frameURL = message.frameInfo.request.url else { return false }
+            var page = URLComponents(url: frameURL.absoluteURL, resolvingAgainstBaseURL: false)
+            page?.fragment = nil
+            return page?.url == documentURL
         }
 
         func userContentController(
@@ -2234,13 +2394,15 @@ struct MarkdownPreviewView: NSViewRepresentable {
         ) {
             guard resourceContextIsActive, message.frameInfo.isMainFrame else { return }
             switch message.name {
+            case MarkdownPreviewView.viewportReadyMessageName:
+                guard liveUpdate, !isAwaitingCommit, documentLoader.currentNavigation != nil,
+                      message.world == .defaultClient, messageIsFromCurrentPage(message),
+                      let webView = message.webView, acceptsFindHost(webView) else { return }
+                prepareViewportIfNeeded(in: webView)
             case MarkdownPreviewView.remoteImageMessageName:
-                let frameURL = message.frameInfo.request.url?.absoluteURL
-                var page = frameURL.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }
-                page?.fragment = nil
                 guard message.world == .defaultClient, !hasContentInFlight,
                       let webView = message.webView, acceptsFindHost(webView),
-                      let documentURL = documentLoader.documentPageURL, page?.url == documentURL,
+                      messageIsFromCurrentPage(message),
                       let revision = message.body as? Int, revision == pageRevision else { return }
                 onRemoteImageDetected(revision)
             case PreviewMermaidViewer.stateMessage:
@@ -2292,14 +2454,22 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 onEditFormula(line, page.config.revision, window)
             case MarkdownPreviewView.anchorMessageName:
                 guard let body = message.body as? [String: Any] else { return }
-                if ignoreNextAnchorMessage {
-                    ignoreNextAnchorMessage = false
+                if body["interaction"] as? Bool == true {
+                    if holdsReadingPosition { onPausedInteraction() }
                     return
                 }
                 let isUserInitiated = (body["user"] as? NSNumber)?.boolValue ?? false
+                if ignoreNextAnchorMessage {
+                    ignoreNextAnchorMessage = false
+                    if !isUserInitiated { return }
+                }
                 // Once the user scrolls the preview themselves, a retained
                 // mode-switch target must not snap them back on a later reload.
-                if isUserInitiated { pendingScroll = nil }
+                if isUserInitiated {
+                    pendingScroll = nil
+                    pendingEditorFollow = nil
+                    pendingHeldReference = nil
+                }
                 onAnchorChange(Self.viewportAnchor(fromMessage: body), isUserInitiated)
             case MarkdownPreviewView.outlineMarginMessageName:
                 guard isLoaded, message.world == .page, let outlineMarginToken,
@@ -2389,11 +2559,12 @@ struct MarkdownPreviewView: NSViewRepresentable {
 
         // MARK: Deferred scrolling
 
-        /// Records a scroll target and applies it now if the page has finished
-        /// loading, otherwise defers it to `didFinish`.
+        /// Applies the scroll target when the current page's viewport is ready.
         func setPendingScroll(_ anchor: ModeSwitchAnchor, in webView: WKWebView, animatingHeading: Bool = false) {
             pendingScroll = anchor
-            if isLoaded {
+            pendingEditorFollow = nil
+            pendingResumeCapture = nil
+            if viewportIsReady {
                 // Apply now, but KEEP the target: entering Side by Side rebuilds
                 // the preview view, triggering a reload that resets scroll to the
                 // top right after this. Retaining `pendingScroll` lets the
@@ -2408,25 +2579,39 @@ struct MarkdownPreviewView: NSViewRepresentable {
             guard resourceContextIsActive, !isAwaitingCommit,
                   documentLoader.currentNavigation == nil || navigation === documentLoader.currentNavigation else { return }
             isLoaded = true
+            prepareViewportIfNeeded(in: webView)
+            applyPendingFind(in: webView)
+            restoreFormulaFocus(in: webView)
+        }
+
+        private func prepareViewportIfNeeded(in webView: WKWebView) {
+            guard !viewportIsReady else { return }
+            viewportIsReady = true
             applyTypography(in: webView)
             applyFrontMatterVisibility(in: webView)
             applyMermaidViewerLanguage(in: webView)
             applyLineNumbersVisibility(in: webView)
+            if holdsReadingPosition { webView.evaluateJavaScript("window.__md2ChangeScrollSync?.(true);") }
+            if pendingScroll == nil, pendingEditorFollow == nil, let pendingHeldReference {
+                webView.callAsyncJavaScript("window.__md2RestoreReference(place);",
+                                            arguments: ["place": pendingHeldReference], in: nil, in: .page,
+                                            completionHandler: nil)
+            }
+            pendingHeldReference = nil
             applyPendingScroll(in: webView, consume: true)
-            applyPendingFind(in: webView)
-            restoreFormulaFocus(in: webView)
+            completeResumeIfReady(in: webView)
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
             guard resourceContextIsActive else { return }
             (webView as? PreviewWebView)?.invalidateContextMenu()
             (webView as? PreviewWebView)?.mermaidViewerOpen = false
-            // A new document started loading; hold scrolling until it finishes.
-            isLoaded = false
             // Label it now: `didFinish` waits for every image, and the boxes work
             // from the end of parsing. A page some newer load will replace stays
             // unlabelled, so its clicks are refused.
             guard navigation === documentLoader.currentNavigation else { return }
+            isLoaded = false
+            viewportIsReady = false
             isAwaitingCommit = false
             hasContentInFlight = false
             pageRevision = nil

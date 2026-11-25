@@ -1258,6 +1258,12 @@ final class DocumentStore: ObservableObject {
         }
     }
 
+    func matchesFolderFile(_ file: FolderIndex.File) -> Bool {
+        guard !isClosed, !backingFileMissing, let copyFileReference else { return false }
+        // The open descriptor keeps this inode alive, even after a replacement at its path.
+        return file.matches(copyFileReference.identity)
+    }
+
     func matchesFolderFile(at url: URL) -> Bool {
         guard fileIdentity?.isFolderFile == true, let copyFileReference else { return false }
         return (try? copyFileReference.validate(at: url)) != nil

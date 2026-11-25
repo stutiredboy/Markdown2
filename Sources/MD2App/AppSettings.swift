@@ -443,7 +443,7 @@ enum L10nKey: String, CaseIterable, Sendable {
     case close
     case viewDiagramAtActualSize
     case folderQuickOpenField, folderFilterPlaceholder, folderFileList, folderLandingPrompt
-    case folderRefresh, folderCancelScan, folderOpenSelection, folderScanning, folderOpening
+    case folderRefresh, folderCancelScan, folderOpenSelection, folderKeepDocumentOpen, folderScanning, folderOpening
     case folderNoFiles, folderOneFile, folderFileCount, folderOneMatch, folderMatchCount
     case folderScanLimited, folderScanUnreadable, folderScanCancelled, folderRefreshCancelled
     case folderRootUnavailable, folderFileUnavailable, folderFileTooLarge
@@ -459,6 +459,8 @@ enum L10nKey: String, CaseIterable, Sendable {
     case markdownSource
     case read
     case sideBySide
+    case pauseSynchronizedScrolling
+    case resumeSynchronizedScrolling
     case writeOrRead
     case modePickerHelp
     case editParagraphInSource
@@ -772,6 +774,7 @@ enum L10n {
         .folderRefresh: "Refresh",
         .folderCancelScan: "Stop Scan",
         .folderOpenSelection: "Open",
+        .folderKeepDocumentOpen: "Keep Document Open ↵",
         .folderScanning: "Scanning folder…",
         .folderOpening: "Opening file…",
         .folderNoFiles: "No Markdown files found.",
@@ -798,6 +801,8 @@ enum L10n {
         .markdownSource: "Markdown Source",
         .read: "Preview",
         .sideBySide: "Side by Side",
+        .pauseSynchronizedScrolling: "Pause Synchronized Scrolling",
+        .resumeSynchronizedScrolling: "Resume Synchronized Scrolling",
         .writeOrRead: "Edit or preview",
         .modePickerHelp: "Edit (%@), Side by Side (%@), Preview (%@). Change shortcuts in Settings.",
         .editParagraphInSource: "Edit This Paragraph in Source",
@@ -1206,6 +1211,7 @@ enum L10n {
         .folderRefresh: "刷新",
         .folderCancelScan: "停止扫描",
         .folderOpenSelection: "打开",
+        .folderKeepDocumentOpen: "保留此文档 ↵",
         .folderScanning: "正在扫描文件夹…",
         .folderOpening: "正在打开文件…",
         .folderNoFiles: "未找到 Markdown 文件。",
@@ -1232,6 +1238,8 @@ enum L10n {
         .markdownSource: "Markdown 源码",
         .read: "预览",
         .sideBySide: "双栏",
+        .pauseSynchronizedScrolling: "暂停同步滚动",
+        .resumeSynchronizedScrolling: "恢复同步滚动",
         .writeOrRead: "编辑或预览",
         .modePickerHelp: "编辑（%@）、双栏（%@）、预览（%@）。可在设置中修改快捷键。",
         .editParagraphInSource: "在源码中编辑此段",

@@ -103,8 +103,10 @@ final class FolderWorkflowGUITests: XCTestCase {
             XCTAssertEqual(app.attribute(kAXSelectedTextAttribute, of: editor) as? String ?? "", "")
         }
 
+        _ = try app.sidebarAction("Keep Document Open ↵", in: preview)
         try app.key(kVK_Return)
         try app.waitForEditorFocus(in: preview)
+        _ = try app.sidebarAction("Open", in: preview)
         try app.waitForDocumentChrome(in: preview, title: fixture.notes[0].lastPathComponent, tabs: [])
         try app.focusFiles()
         try app.key(kVK_DownArrow)
@@ -120,6 +122,55 @@ final class FolderWorkflowGUITests: XCTestCase {
         XCTAssertTrue(CFEqual(remaining, preview))
         try app.waitForDocumentChrome(in: remaining, title: fixture.notes[0].lastPathComponent, tabs: [])
         try app.waitForOneWindow(showing: remaining)
+    }
+
+    @MainActor
+    func testTwoFilePreviewButtonKeepsDocumentWithTabBarHidden() async throws {
+        try requireGUI()
+        let fixture = try FolderPreviewFixture(numberOfNotes: 1)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let app = try await FolderTestApplication.launch(in: fixture.directory, arguments: [])
+        defer { app.close() }
+
+        let a = fixture.guide
+        let b = fixture.notes[0]
+        let landing = try app.chooseFolderByPath(containing: a)
+        try app.clickFolderRow(a, in: landing)
+        let window = try app.documentWindow(a, focused: true)
+        try app.waitForDocumentChrome(in: window, title: a.lastPathComponent, tabs: [])
+        let keep = try app.sidebarAction("Keep Document Open ↵", in: window)
+        let buttonFrame = try app.frame(of: keep)
+        let reference = NSButton(title: "Keep Document Open ↵", target: nil, action: nil)
+        reference.sizeToFit()
+        let titleRect = try XCTUnwrap(reference.cell).titleRect(forBounds: reference.bounds)
+        // The AX frame omits some bezel padding. The entire title must fit.
+        XCTAssertGreaterThanOrEqual(buttonFrame.width, titleRect.maxX)
+        XCTAssertTrue(try app.frame(of: window).contains(buttonFrame))
+
+        try app.clickFolderRow(b, in: window)
+        XCTAssertTrue(CFEqual(try app.documentWindow(b, focused: true), window))
+        try app.waitForDocumentChrome(in: window, title: b.lastPathComponent, tabs: [])
+        _ = try app.quickFind(a.lastPathComponent, expecting: a.lastPathComponent)
+        _ = try app.sidebarAction("Open", in: window)
+        try app.clickFolderRow(a, in: window)
+        XCTAssertTrue(CFEqual(try app.documentWindow(a, focused: true), window))
+        _ = try app.sidebarAction("Keep Document Open ↵", in: window)
+        try app.pressFileCommand("Reveal in Folder Browser")
+        try app.waitForTreeFocus()
+
+        try app.changeLanguage(to: .zhHans)
+        try app.press(app.sidebarAction("保留此文档 ↵", in: window))
+        try app.waitForEditorFocus(in: window)
+        _ = try app.sidebarAction("打开", in: window)
+        try app.clickFolderRow(b, in: window)
+        let next = try app.documentWindow(b, focused: true)
+        XCTAssertFalse(CFEqual(next, window))
+        try app.waitForDocumentChrome(in: next, title: b.lastPathComponent,
+                                      tabs: [a.lastPathComponent, b.lastPathComponent])
+        _ = try app.sidebarAction("保留此文档 ↵", in: next)
+        try app.clickFolderRow(a, in: next)
+        XCTAssertTrue(CFEqual(try app.documentWindow(a, focused: true), window))
+        _ = try app.sidebarAction("打开", in: window)
     }
 
     @MainActor
@@ -399,6 +450,7 @@ final class FolderWorkflowGUITests: XCTestCase {
         let secondWindow = try app.documentWindow(second, focused: true)
         try app.waitForTreeFocus()
         try app.waitForPreview(second, in: secondWindow)
+        _ = try app.sidebarAction("Keep Document Open ↵", in: secondWindow)
 
         let editor = try app.editor(in: secondWindow)
         try app.focus(editor)
@@ -409,6 +461,7 @@ final class FolderWorkflowGUITests: XCTestCase {
         try app.type(draft)
         _ = try app.waitFor("native typing updates the preview source editor") { app.value(editor) == draft ? editor : nil }
         try app.waitForPinned(second, in: secondWindow)
+        _ = try app.sidebarAction("Open", in: secondWindow)
 
         try app.clickFolderRow(third, in: secondWindow)
         let thirdWindow = try app.documentWindow(third, focused: true)
@@ -1251,6 +1304,16 @@ struct FolderTestApplication {
 
     func element(_ id: String, in parent: AXUIElement) throws -> AXUIElement {
         try waitFor(id) { descendant(parent) { identifier($0) == id } }
+    }
+
+    func sidebarAction(_ name: String, in window: AXUIElement) throws -> AXUIElement {
+        try waitFor("the enabled sidebar button labelled \(name)") {
+            descendant(window) {
+                identifier($0) == "folder-open-selection" && labels($0).contains(name)
+                    && attribute(kAXHelpAttribute, of: $0) as? String == name
+                    && attribute(kAXEnabledAttribute, of: $0) as? Bool == true
+            }
+        }
     }
 
     func row(_ label: String, in list: AXUIElement) -> AXUIElement? {

@@ -420,6 +420,10 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 remoteImages: remoteImages,
                 onIndexInvalidated: { [weak self] in self?.refreshFolderRemoteImages() },
                 onIndexChanged: { [weak self] in self?.windowCommandState.refresh() },
+                isTemporaryPreview: { [weak self] file in
+                    guard let preview = self?.folder?.preview, preview.isPreview else { return false }
+                    return preview.store.matchesFolderFile(file)
+                },
                 onOpen: { [weak self] opened, decoded, intent in
                     try self?.openFolderDocument(opened, decoded: decoded, intent: intent)
                 }
@@ -602,6 +606,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func updateFolderPreviewSelection(in session: FolderSession) {
+        session.browser.updateOpenButton()
         guard let group = session.group else { return }
         let selected = group.selectedWindow
         for document in documentWindows where document.contentState.folderSidebar === session.sidebar {
@@ -1174,6 +1179,7 @@ final class MD2AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.windowCommandState.refresh()
             }
         )
+        documentWindow.onPreviewChanged = { [weak self] in self?.folder?.browser.updateOpenButton() }
         documentWindows.append(documentWindow)
         store.onRemoteImageBackingChanged = { [weak self, weak documentWindow] in
             guard let self, let documentWindow,
@@ -1551,6 +1557,7 @@ final class DocumentWindow {
     let store: DocumentStore
     let contentState: DocumentWindowContentState
     private(set) var isPreview = false
+    var onPreviewChanged: (() -> Void)?
     private let settings: AppSettings
     private var cancellable: AnyCancellable?
     private var dirtyCancellable: AnyCancellable?
@@ -1623,6 +1630,7 @@ final class DocumentWindow {
         guard preview != isPreview else { return }
         isPreview = preview
         updateTabTitle()
+        onPreviewChanged?()
     }
 
     func updateTabTitle() {

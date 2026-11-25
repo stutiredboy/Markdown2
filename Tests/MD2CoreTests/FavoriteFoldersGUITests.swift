@@ -268,7 +268,9 @@ private extension FolderTestApplication {
         }
         try key(kVK_Space)
     }
+}
 
+extension FolderTestApplication {
     func changeLanguage(to language: AppLanguage) throws {
         let settings = try waitFor("Settings command") {
             guard let menuBar else { return nil }
@@ -304,7 +306,9 @@ private extension FolderTestApplication {
             windows.contains(where: { CFEqual($0, window) }) ? nil : fileMenu
         }
     }
+}
 
+private extension FolderTestApplication {
     func unavailableFavoriteAlert(pathEnding: String, reason: String) throws -> AXUIElement {
         try waitFor("favorite folder alert for \(reason)") {
             windows.first { window in
