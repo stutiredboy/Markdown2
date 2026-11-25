@@ -2,6 +2,13 @@ import Foundation
 import Testing
 @testable import MD2App
 
+/// Exercise the same comparison and revision-bound consent as the window.
+@MainActor
+func resolveDisplayedConflict(in store: DocumentStore, reloadingFromDisk: Bool) async throws {
+    let comparison = try #require(await store.externalConflictComparison())
+    try #require(await store.resolveExternalConflict(comparison, reloadingFromDisk: reloadingFromDisk))
+}
+
 /// Test double: the store's injectable watcher, driven manually.
 @MainActor
 private final class FakeFileWatcher: DocumentFileWatching {
@@ -165,7 +172,7 @@ struct DocumentExternalChangeTests {
         #expect(!store.save())
         #expect(try String(contentsOf: url, encoding: .utf8) == "# Doc\n\nExternal edit.\n")
 
-        store.resolveExternalConflict(reloadingFromDisk: false)
+        try await resolveDisplayedConflict(in: store, reloadingFromDisk: false)
         #expect(!store.hasExternalConflict)
         #expect(store.save())
         #expect(try String(contentsOf: url, encoding: .utf8) == "# Doc\n\nMy unsaved edit.")
@@ -183,7 +190,7 @@ struct DocumentExternalChangeTests {
         let conflicted = await waitUntil { store.hasExternalConflict }
         #expect(conflicted)
 
-        store.resolveExternalConflict(reloadingFromDisk: true)
+        try await resolveDisplayedConflict(in: store, reloadingFromDisk: true)
         let requested = await waitUntil { store.pendingExternalReload != nil }
         #expect(requested)
         store.completeExternalReload(anchor: nil)
@@ -191,6 +198,177 @@ struct DocumentExternalChangeTests {
         #expect(store.text == "# Doc\n\nExternal edit.\n")
         #expect(!store.isDirty)
         #expect(!store.hasExternalConflict)
+    }
+
+    @Test func comparisonAndCopyKeepOriginalPausedUntilAnExplicitChoice() async throws {
+        let url = try makeTempDocument("")
+        let directory = url.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let format = MarkdownFileFormat(encoding: .utf16LE, hasBOM: true, lineEnding: .crlf)
+        let base = "第一段\r\n\r\n第二段\r\n"
+        let editor = base.replacingOccurrences(of: "第一段", with: "编辑器修改第一段")
+        let disk = base.replacingOccurrences(of: "第二段", with: "磁盘修改第二段")
+        try #require(format.encode(base)).write(to: url)
+        let watcher = FakeFileWatcher()
+        let recovery = DocumentRecoveryRepository(directory: directory.appendingPathComponent("Recovery"))
+        let store = DocumentStore(fileWatcherFactory: { watcher }, recoveryRepository: recovery,
+                                  autosaveDelay: 0.01, maximumAutosaveDelay: 0.03)
+        defer { store.closeDocument(discardRecovery: true) }
+        store.open(url)
+        store.text = editor
+        let diskBytes = try #require(format.encode(disk))
+        try diskBytes.write(to: url)
+        #expect(!store.save())
+        let comparison = try #require(await store.externalConflictComparison())
+        #expect(comparison.editorText == editor)
+        #expect(comparison.diskText == disk)
+        #expect(comparison.editorFormat == format && comparison.diskFormat == format)
+        let receipt = try #require(await store.copyFlow.create(from: store, text: { L10n.text($0, language: .english) },
+                                                               chooseName: { _ in "Manuscript Copy.md" }))
+        #expect(try Data(contentsOf: receipt.destinationURL) == format.encode(editor))
+        #expect(store.prepareForTermination())
+        #expect(try recovery.load().first?.text == editor)
+        store.deferExternalConflict()
+        // Simulate a later watcher notification. It must not reopen a dismissed sheet.
+        watcher.fire()
+        await settle(0.12)
+        #expect(store.externalConflictRequest == nil)
+        #expect(store.hasExternalConflict && store.isDirty)
+        #expect(try Data(contentsOf: url) == diskBytes)
+        #expect(!store.save())
+        #expect(store.externalConflictRequest != comparison.request)
+        #expect(await !store.resolveExternalConflict(comparison, reloadingFromDisk: false))
+        try await resolveDisplayedConflict(in: store, reloadingFromDisk: false)
+        #expect(await waitUntil { !store.isDirty })
+        #expect(try Data(contentsOf: url) == format.encode(editor))
+    }
+
+    @Test(arguments: [true, false])
+    func decisionRejectsNewerDiskOrEditorRevision(reload: Bool) async throws {
+        let url = try makeTempDocument("Base")
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = makeStore(FakeFileWatcher())
+        defer { store.closeDocument(discardRecovery: true) }
+        store.open(url)
+        store.text = "Editor draft"
+        try Data("Disk version 1".utf8).write(to: url)
+        #expect(!store.save())
+        let original = try #require(await store.externalConflictComparison())
+        try Data("Disk version 2".utf8).write(to: url)
+        #expect(await !store.resolveExternalConflict(original, reloadingFromDisk: reload))
+        let refreshed = try #require(await store.externalConflictComparison())
+        #expect(refreshed.diskText == "Disk version 2")
+        store.text = "More editor edits"
+        #expect(await !store.resolveExternalConflict(refreshed, reloadingFromDisk: reload))
+        #expect(store.hasExternalConflict && store.isDirty && store.pendingExternalReload == nil)
+        #expect(try Data(contentsOf: url) == Data("Disk version 2".utf8))
+    }
+
+    @Test(arguments: [true, false])
+    func encodingConversionInvalidatesComparedEditorFormat(duringViewportCapture: Bool) async throws {
+        let url = try makeTempDocument("")
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let gbk = Data([0xd6, 0xdc, 0xb1, 0xa8]) // 周报
+        try gbk.write(to: url)
+        let watcher = FakeFileWatcher()
+        let store = DocumentStore(fileWatcherFactory: { watcher }, autosaveDelay: 0.01)
+        defer { store.closeDocument(discardRecovery: true) }
+        store.open(url)
+        let editor = "周报🚀"
+        store.text = editor
+        try #require(await waitUntil { store.encodingConversionRequest != nil })
+        let disk = Data("External text".utf8)
+        try disk.write(to: url)
+        watcher.fire()
+        try #require(await waitUntil { store.hasExternalConflict })
+        let comparison = try #require(await store.externalConflictComparison())
+        try #require(comparison.editorFormat.encoding == .gbk)
+        if duringViewportCapture {
+            try #require(await store.resolveExternalConflict(comparison, reloadingFromDisk: true))
+        }
+
+        // The outstanding encoding sheet can complete without changing a single code unit.
+        store.resolveEncodingConversion(convertToUTF8: true)
+        if duringViewportCapture {
+            store.completeExternalReload(anchor: nil)
+        } else {
+            #expect(await !store.resolveExternalConflict(comparison, reloadingFromDisk: false))
+        }
+        #expect(store.hasExternalConflict && store.isDirty && store.text == editor)
+        #expect(store.fileFormat.encoding == .utf8)
+        #expect(try Data(contentsOf: url) == disk)
+        let refreshed = try #require(await store.externalConflictComparison())
+        #expect(refreshed.editorFormat.encoding == .utf8 && refreshed.editorText == editor)
+    }
+
+    @Test(arguments: [true, false])
+    func reloadRejectsDiskChangeDuringViewportCapture(replacedWithIdenticalBytes: Bool) async throws {
+        let url = try makeTempDocument("Base")
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = makeStore(FakeFileWatcher())
+        defer { store.closeDocument(discardRecovery: true) }
+        store.open(url)
+        store.text = "Editor draft"
+        try Data("Disk version 1".utf8).write(to: url)
+        #expect(!store.save())
+        try await resolveDisplayedConflict(in: store, reloadingFromDisk: true)
+        try #require(store.pendingExternalReload != nil && store.hasExternalConflict)
+        #expect(!store.save())
+        let latest = Data((replacedWithIdenticalBytes ? "Disk version 1" : "Disk version 2").utf8)
+        try latest.write(to: url, options: replacedWithIdenticalBytes ? .atomic : [])
+        store.completeExternalReload(anchor: nil)
+        #expect(store.text == "Editor draft" && store.isDirty)
+        #expect(store.hasExternalConflict && store.externalConflictRequest != nil)
+        #expect(try Data(contentsOf: url) == latest)
+    }
+
+    @Test(arguments: [true, false])
+    func aDisappearedConflictFileCanBeSavedElsewhere(deletedBeforeDeferral: Bool) async throws {
+        let url = try makeTempDocument("Base")
+        let directory = url.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let newURL = directory.appendingPathComponent("Recovered.md")
+        let store = DocumentStore(saveLocationPicker: { _ in newURL }, fileWatcherFactory: { FakeFileWatcher() })
+        defer { store.closeDocument(discardRecovery: true) }
+        store.open(url)
+        store.text = "Editor draft"
+        try Data("Disk".utf8).write(to: url)
+        #expect(!store.save())
+        let comparison = try #require(await store.externalConflictComparison())
+        if deletedBeforeDeferral {
+            try FileManager.default.removeItem(at: url)
+            #expect(await !store.resolveExternalConflict(comparison, reloadingFromDisk: false))
+            #expect(await store.externalConflictComparison() == nil)
+            store.deferExternalConflict()
+        } else {
+            store.deferExternalConflict()
+            try FileManager.default.removeItem(at: url)
+        }
+        #expect(store.save())
+        #expect(try Data(contentsOf: newURL) == Data("Editor draft".utf8))
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+    }
+
+    @Test func malformedDiskBytesCanBePreservedWithACopyOrExplicitlyReplaced() async throws {
+        let url = try makeTempDocument("Base")
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = makeStore(FakeFileWatcher())
+        defer { store.closeDocument(discardRecovery: true) }
+        store.open(url)
+        store.text = "Editor draft"
+        let invalid = Data([0xff, 0xfe, 0xff]) // An incomplete UTF-16 code unit after a BOM.
+        try invalid.write(to: url)
+        #expect(!store.save())
+        let comparison = try #require(await store.externalConflictComparison())
+        #expect(comparison.diskText == nil && comparison.diskFormat == nil)
+        #expect(await !store.resolveExternalConflict(comparison, reloadingFromDisk: true))
+        let receipt = try #require(await store.copyFlow.create(from: store, text: { L10n.text($0, language: .english) },
+                                                               chooseName: { _ in "Copy.md" }))
+        #expect(try Data(contentsOf: receipt.destinationURL) == Data("Editor draft".utf8))
+        #expect(try Data(contentsOf: url) == invalid)
+        #expect(await store.resolveExternalConflict(comparison, reloadingFromDisk: false))
+        #expect(store.save())
+        #expect(try Data(contentsOf: url) == Data("Editor draft".utf8))
     }
 
     @Test func writeAbortsOnUnseenExternalChange() async throws {

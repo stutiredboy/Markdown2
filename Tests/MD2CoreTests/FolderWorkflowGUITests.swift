@@ -606,7 +606,7 @@ struct FolderTestApplication {
     static func launch(
         in directory: URL, arguments: [String], presentationMode: EditorMode = .write,
         favoriteFolderPaths: [String] = [], systemTabbingMode: String = "manual",
-        preferTabsForDocuments: Bool? = nil
+        preferTabsForDocuments: Bool? = nil, language: AppLanguage = .english
     ) async throws -> Self {
         let priorApplication = NSWorkspace.shared.frontmostApplication
         let identifier = "dev.codex.md2.folder-test.\(UUID().uuidString.lowercased())"
@@ -617,7 +617,7 @@ struct FolderTestApplication {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: identifier))
         defaults.setPersistentDomain([
             "MD2.DefaultMode": presentationMode.rawValue, "MD2.NewDocumentMode": presentationMode.rawValue,
-            "MD2.Language": "english", "AppleLanguages": ["en"],
+            "MD2.Language": language.rawValue, "AppleLanguages": language.appleLanguagesOverride ?? [],
             "MD2.ShowsOutlineByDefault": false, "AppleWindowTabbingMode": systemTabbingMode,
             "MD2.RestoresWindowsOnLaunch": false, "MD2.OpensBlankDocumentOnLaunch": false
         ], forName: identifier)

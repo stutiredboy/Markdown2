@@ -64,6 +64,31 @@ struct FolderDocumentLifecycleTests {
         #expect(try Data(contentsOf: moved) == fixture.original)
     }
 
+    @Test func detachingAConflictedFolderDraftLeavesItSaveableAfterPathReuse() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let destination = fixture.directory.appending(path: "Recovered.md")
+        let store = fixture.makeStore(saveLocation: destination)
+        defer { store.closeDocument(discardRecovery: false) }
+        try fixture.open(in: store)
+        store.text = "# My draft"
+        try Data("# Other edit".utf8).write(to: fixture.file)
+        #expect(!store.save())
+        let compared = try #require(await store.externalConflictComparison())
+
+        let replacement = Data("# New occupant".utf8)
+        try replacement.write(to: fixture.file, options: .atomic)
+        let selected = try fixture.selection()
+        store.refreshFileLocation()
+        try #require(store.backingFileMissing)
+        store.detachUnavailableFolderDraft(replacedBy: selected.url, verifiedReference: selected.fileReference)
+        #expect(store.fileURL == nil && !store.hasExternalConflict && store.externalConflictRequest == nil)
+        #expect(await !store.resolveExternalConflict(compared, reloadingFromDisk: true))
+        #expect(store.save())
+        #expect(try Data(contentsOf: destination) == Data("# My draft".utf8))
+        #expect(try Data(contentsOf: fixture.file) == replacement)
+    }
+
     @Test func openFolderDocumentUsesTheRealPathAfterItsParentMoves() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

@@ -1658,39 +1658,30 @@ final class DocumentWindow {
         }
     }
 
-    /// Sheet on the affected window: keep the in-memory version (default; the
-    /// next save overwrites the disk) or reload from disk (discarding edits).
-    /// One sheet at a time — re-raised requests while it is up are answered by
-    /// the same pending choice.
     private func presentConflictPromptIfNeeded() {
-        guard !isPresentingConflict, store.hasExternalConflict else { return }
+        guard !isPresentingConflict, store.hasExternalConflict, store.externalConflictRequest != nil else { return }
         isPresentingConflict = true
+        window.makeKeyAndOrderFront(nil)
 
-        let repairsInterruptedSave = store.offersLinkedSaveRepair
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        if repairsInterruptedSave {
-            alert.messageText = settings.text(.linkedSaveInterruptedTitle)
-            alert.informativeText = settings.text(.linkedSaveInterruptedMessage)
-            let later = alert.addButton(withTitle: settings.text(.linkedSaveLater))
-            later.keyEquivalent = "\u{1b}"
-            alert.addButton(withTitle: settings.text(.finishLinkedSave)).hasDestructiveAction = true
-        } else {
-            alert.messageText = settings.text(.externalChangeConflictTitle)
-            alert.informativeText = settings.text(.externalChangeConflictMessage)
-            alert.addButton(withTitle: settings.text(.keepMyVersion))
-            alert.addButton(withTitle: settings.text(.reloadFromDisk))
+        guard store.offersLinkedSaveRepair else {
+            ExternalConflictSheet.present(in: window, store: store, settings: settings) { [weak self] in
+                self?.isPresentingConflict = false
+                self?.presentConflictPromptIfNeeded()
+            }
+            return
         }
 
-        window.makeKeyAndOrderFront(nil)
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = settings.text(.linkedSaveInterruptedTitle)
+        alert.informativeText = settings.text(.linkedSaveInterruptedMessage)
+        let later = alert.addButton(withTitle: settings.text(.linkedSaveLater))
+        later.keyEquivalent = "\u{1b}"
+        alert.addButton(withTitle: settings.text(.finishLinkedSave)).hasDestructiveAction = true
         alert.beginSheetModal(for: window) { [weak self] response in
             guard let self else { return }
             self.isPresentingConflict = false
-            if repairsInterruptedSave {
-                self.store.resolveLinkedSaveRepair(finish: response == .alertSecondButtonReturn)
-            } else {
-                self.store.resolveExternalConflict(reloadingFromDisk: response == .alertSecondButtonReturn)
-            }
+            self.store.resolveLinkedSaveRepair(finish: response == .alertSecondButtonReturn)
         }
     }
 }

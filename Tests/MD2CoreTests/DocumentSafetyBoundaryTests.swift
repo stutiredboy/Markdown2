@@ -58,7 +58,7 @@ struct DocumentSafetyBoundaryTests {
         #expect(disk == external)
 
         // A fresh explicit choice after composition still reloads normally.
-        store.resolveExternalConflict(reloadingFromDisk: true)
+        try await resolveDisplayedConflict(in: store, reloadingFromDisk: true)
         store.completeExternalReload(anchor: nil)
         #expect(store.text == external)
         #expect(editor.string == external)

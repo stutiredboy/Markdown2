@@ -288,7 +288,7 @@ struct DocumentConversionFlowTests {
         #expect(converter.callCount == 1)
         #expect(store.alert == nil)
 
-        if dirty { store.resolveExternalConflict(reloadingFromDisk: true) }
+        if dirty { try await resolveDisplayedConflict(in: store, reloadingFromDisk: true) }
         store.completeExternalReload(anchor: nil)
         #expect(store.conversionStoppedForSourceChange)
         store.exportDOCX()

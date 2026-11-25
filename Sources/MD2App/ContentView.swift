@@ -261,7 +261,8 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            DocumentCopyNotice(flow: document.copyFlow, settings: settings, onOpen: onOpenCreatedCopy)
+            DocumentCopyNotice(flow: document.copyFlow, settings: settings,
+                               hasExternalConflict: document.hasExternalConflict, onOpen: onOpenCreatedCopy)
             remoteResourceNotice(at: .banner)
             // The current sidebar must not set AppKit's window minimum. Measure
             // the allocated width even while resizing past the collapse threshold.
