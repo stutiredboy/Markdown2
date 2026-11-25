@@ -35,6 +35,9 @@ final class DocumentToolbarGUITests: XCTestCase {
                     for width in Self.widthSweep {
                         harness.resize(toWidth: width)
                         assertModeControlVisible(in: harness)
+                        let pauseTitle = language == .zhHans ? "暂停同步滚动" : "Pause Synchronized Scrolling"
+                        XCTAssertEqual(harness.item(labelled: pauseTitle) != nil, mode == .split,
+                                       "Scroll synchronization belongs to Side by Side (\(harness.description))")
                         XCTAssertEqual(
                             harness.toolbarHeight,
                             toolbarHeight,

@@ -28,6 +28,14 @@ text extractor, excluding UI such as broken-image messages and line numbers.
 Counting is debounced, runs off the main actor, and discards stale results.
 Clearing the selection or switching modes returns to document statistics.
 
+## Synchronized scrolling
+
+In Side by Side, choose **Pause Synchronized Scrolling** in the window toolbar
+to hold the preview in place while scrolling or typing in the source editor.
+You can also scroll the preview independently. Choose **Resume Synchronized
+Scrolling** to align the other pane to the one you last used. The control applies
+only to the current window.
+
 ## Outline
 
 The active heading is the last heading at or above the visible source line.

@@ -21,6 +21,7 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
     private let scan: @Sendable (FolderIndex.Root) throws -> FolderIndex.Snapshot
     private let onIndexInvalidated: () -> Void
     private let onIndexChanged: () -> Void
+    private let isTemporaryPreview: (FolderIndex.File) -> Bool
     private let onOpen: OpenDocument
 
     private let search = NSSearchField()
@@ -66,6 +67,7 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
         scan: @escaping @Sendable (FolderIndex.Root) throws -> FolderIndex.Snapshot = { try FolderIndex.scan($0) },
         onIndexInvalidated: @escaping () -> Void = {},
         onIndexChanged: @escaping () -> Void = {},
+        isTemporaryPreview: @escaping (FolderIndex.File) -> Bool = { _ in false },
         onOpen: @escaping OpenDocument
     ) {
         self.root = root
@@ -76,6 +78,7 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
         self.scan = scan
         self.onIndexInvalidated = onIndexInvalidated
         self.onIndexChanged = onIndexChanged
+        self.isTemporaryPreview = isTemporaryPreview
         self.onOpen = onOpen
         super.init()
         configureContents()
@@ -256,12 +259,18 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
         progress.widthAnchor.constraint(equalToConstant: 16).isActive = true
         progress.heightAnchor.constraint(equalToConstant: 16).isActive = true
         let spacer = NSView()
-        let actions = NSStackView(views: [refreshButton, cancelButton, progress, spacer, openButton])
+        // Keep a full-width row available for the localized document action.
+        let statusRow = NSStackView(views: [status, progress, refreshButton, cancelButton])
+        statusRow.alignment = .centerY
+        statusRow.spacing = 6
+        statusRow.detachesHiddenViews = true
+        status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let actions = NSStackView(views: [spacer, openButton])
         actions.alignment = .centerY
         actions.spacing = 8
         actions.detachesHiddenViews = true
 
-        let body = NSStackView(views: [pathRow, search, scroll, status, actions])
+        let body = NSStackView(views: [pathRow, search, scroll, statusRow, actions])
         body.orientation = .vertical
         body.alignment = .leading
         body.spacing = 8
@@ -276,7 +285,7 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
             pathRow.widthAnchor.constraint(equalTo: body.widthAnchor),
             search.widthAnchor.constraint(equalTo: body.widthAnchor),
             scroll.widthAnchor.constraint(equalTo: body.widthAnchor),
-            status.widthAnchor.constraint(equalTo: body.widthAnchor),
+            statusRow.widthAnchor.constraint(equalTo: body.widthAnchor),
             actions.widthAnchor.constraint(equalTo: body.widthAnchor)
         ])
     }
@@ -297,9 +306,7 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
         search.placeholderString = text(.folderFilterPlaceholder)
         search.setAccessibilityLabel(text(.folderQuickOpenField))
         outline.setAccessibilityLabel(text(.folderFileList))
-        openButton.title = text(.folderOpenSelection)
-        for (button, key) in [(refreshButton, L10nKey.folderRefresh), (cancelButton, .folderCancelScan),
-                              (openButton, .folderOpenSelection)] {
+        for (button, key) in [(refreshButton, L10nKey.folderRefresh), (cancelButton, .folderCancelScan)] {
             let label = text(key)
             button.toolTip = label
             button.setAccessibilityLabel(label)
@@ -722,8 +729,13 @@ final class FolderBrowserController: NSObject, NSOutlineViewDataSource, NSOutlin
         }
     }
 
-    private func updateOpenButton() {
-        openButton.isEnabled = selectedItem?.file != nil
+    func updateOpenButton() {
+        let file = selectedItem?.file
+        let title = text(file.map(isTemporaryPreview) == true ? .folderKeepDocumentOpen : .folderOpenSelection)
+        openButton.title = title
+        openButton.toolTip = title
+        openButton.setAccessibilityLabel(title)
+        openButton.isEnabled = file != nil
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {

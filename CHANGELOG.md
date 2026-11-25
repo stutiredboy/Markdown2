@@ -4,6 +4,8 @@
 
 ### Added
 
+- Pause synchronized scrolling in a Side by Side window to keep a table in view while writing. Resume from either pane to align the other with it.
+
 - Compare the editor and disk versions side by side when another app changes a document with unsaved edits. Save the editor draft as a separate copy, keep it in the original, or reload the disk version. Autosave waits for your decision.
 
 - Open a wide Mermaid diagram at its actual size in the preview, pan to read its labels, and press Esc to return to the same reading position.
@@ -28,7 +30,7 @@
 
 - Show a banner when remote images are detected and the document policy blocks loading. When allowed, use the green globe in the status bar to check the source of permission, revoke it or inspect image origins. **View → Remote Images** also provides the document controls. The Files sidebar shows the folder permission.
 
-- Browse files in a collapsible Files and Outline sidebar. Click a file or use Up and Down in the tree to skim in one native preview tab. Double-click, press Return, or edit to keep the file open as a regular tab. Return to the tree with Shift+Cmd+B. Folder indexing now refreshes on filesystem changes or on request.
+- Browse files in a collapsible Files and Outline sidebar. Click a file or use Up and Down in the tree to skim in one native preview tab. Choose **Keep Document Open ↵**, press Return, double-click, or edit the file to keep it open as a regular tab. Return to the tree with Shift+Cmd+B. Folder indexing now refreshes on filesystem changes or on request.
 
 ### Fixed
 
