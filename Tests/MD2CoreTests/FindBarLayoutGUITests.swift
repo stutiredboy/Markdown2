@@ -117,6 +117,7 @@ final class FindBarLayoutGUITests: XCTestCase {
                 let h = InteractionTestWindow()
                 defer { h.close() }
                 h.settings.newDocumentMode = mode
+                h.window.appearance = NSAppearance(named: mode == .read ? .aqua : .darkAqua)
                 h.store.text = isLong
                     ? filler + "# Middle section\n\nNeedle in this section.\n\n" + filler
                     : "# Needle in the heading\n\nFirst line below it."
@@ -133,7 +134,7 @@ final class FindBarLayoutGUITests: XCTestCase {
                 let visible = """
                     (() => {
                         const heading = document.querySelector('main h1');
-                        const current = document.querySelector('mark.md2-find-current');
+                        const current = Array.from(CSS.highlights.get('md2-find-current') || [])[0];
                         return !!current && [heading, heading.nextElementSibling, current].every(element => {
                             const r = element.getBoundingClientRect();
                             return r.height > 0 && r.top >= 0 && r.bottom <= innerHeight;
@@ -157,7 +158,9 @@ final class FindBarLayoutGUITests: XCTestCase {
                     XCTAssertTrue(hit === web || hit.isDescendant(of: web),
                                   "preview scrollbar lane hits \(hit) instead of WebKit in \(mode)")
                 }
-                try verifyPaintedMatch(in: web, h, name: "preview-find-\(mode.rawValue)-\(isLong ? "middle" : "first-line")")
+                let isDark = try XCTUnwrap(try h.js("matchMedia('(prefers-color-scheme: dark)').matches", web) as? Bool)
+                XCTAssertEqual(isDark, mode == .split)
+                try verifyPaintedMatch(in: web, h, expectedRGB: isDark ? [255, 189, 92] : [255, 172, 66], name: "preview-find-\(mode.rawValue)-\(isLong ? "middle" : "first-line")")
                 if isLong { try scrollViaTrack(in: web, h) }
             }
         }
@@ -165,16 +168,37 @@ final class FindBarLayoutGUITests: XCTestCase {
 
     /// AppKit can cache an earlier frame of WebKit's remote layer even after a
     /// DOM geometry read. Inspect the painted match in WebKit's own snapshot.
-    @MainActor private func verifyPaintedMatch(in web: WKWebView, _ h: InteractionTestWindow, name: String) throws {
+    @MainActor private func verifyPaintedMatch(in web: WKWebView, _ h: InteractionTestWindow,
+                                                expectedRGB: [Int], name: String) throws {
         let metrics = try XCTUnwrap(try h.js("""
             (() => {
-                const m = document.querySelector('mark.md2-find-current'), r = m.getBoundingClientRect();
-                const rgb = getComputedStyle(m).backgroundColor.match(/[0-9.]+/g).map(Number);
-                return [r.left, r.top, r.width, r.height, ...rgb];
+                const range = Array.from(CSS.highlights.get('md2-find-current'))[0];
+                const r = range.getBoundingClientRect();
+                return [r.left, r.top, r.width, r.height];
             })()
             """, web) as? [CGFloat])
-        XCTAssertEqual(metrics.count, 7)
-        guard metrics.count == 7 else { return }
+        XCTAssertEqual(metrics.count, 4)
+        guard metrics.count == 4 else { return }
+        let rect = CGRect(x: metrics[0], y: metrics[1], width: metrics[2], height: metrics[3])
+        // The outline and the font paint can be delivered in different WebKit
+        // frames. Poll actual painted pixels while the native bar is open.
+        let deadline = Date().addingTimeInterval(2)
+        var paint = try captureMatch(in: web, rect: rect, expectedRGB: expectedRGB)
+        while paint.fills <= 12 && Date() < deadline {
+            h.spin(for: 1.0 / 60)
+            paint = try autoreleasepool { try captureMatch(in: web, rect: rect, expectedRGB: expectedRGB) }
+        }
+        guard paint.fills > 12 else {
+            return XCTFail("only \(paint.fills) of 96 points paint the match background at \(rect) in \(name)")
+        }
+        if let dir = ProcessInfo.processInfo.environment["MD2_INTERACTION_EVIDENCE_DIR"] {
+            let png = try XCTUnwrap(NSBitmapImageRep(cgImage: paint.frame).representation(using: .png, properties: [:]))
+            try png.write(to: URL(fileURLWithPath: dir).appendingPathComponent(name + ".png"))
+        }
+    }
+
+    @MainActor private func captureMatch(in web: WKWebView, rect: CGRect, expectedRGB: [Int]) throws
+        -> (frame: CGImage, fills: Int) {
         let config = WKSnapshotConfiguration()
         config.afterScreenUpdates = true
         let done = expectation(description: "WebKit paints the located match")
@@ -183,7 +207,7 @@ final class FindBarLayoutGUITests: XCTestCase {
         wait(for: [done], timeout: 8)
         let frame = try XCTUnwrap(image?.cgImage(forProposedRect: nil, context: nil, hints: nil))
         let sx = CGFloat(frame.width) / web.bounds.width, sy = CGFloat(frame.height) / web.bounds.height
-        let box = CGRect(x: metrics[0] * sx, y: metrics[1] * sy, width: metrics[2] * sx, height: metrics[3] * sy)
+        let box = rect.applying(CGAffineTransform(scaleX: sx, y: sy))
         let crop = try XCTUnwrap(frame.cropping(to: box.integral))
         // Render into a known sRGB byte layout. AppKit's colorAt may label RGB
         // bytes as calibrated RGB and convert them a second time on readback.
@@ -196,14 +220,10 @@ final class FindBarLayoutGUITests: XCTestCase {
         let bytes = try XCTUnwrap(sample.data).assumingMemoryBound(to: UInt8.self)
         let matching = (0..<(width * height)).filter { index in
             (0..<3).allSatisfy { channel in
-                abs(CGFloat(bytes[index * bytesPerPixel + channel]) - metrics[4 + channel]) < 10
+                abs(Int(bytes[index * bytesPerPixel + channel]) - expectedRGB[channel]) < 10
             }
         }
-        XCTAssertGreaterThan(matching.count, 12, "only \(matching.count) of 96 points paint the match background at \(box) in \(name)")
-        if let dir = ProcessInfo.processInfo.environment["MD2_INTERACTION_EVIDENCE_DIR"] {
-            let png = try XCTUnwrap(NSBitmapImageRep(cgImage: frame).representation(using: .png, properties: [:]))
-            try png.write(to: URL(fileURLWithPath: dir).appendingPathComponent(name + ".png"))
-        }
+        return (frame, matching.count)
     }
 
     @MainActor private func scrollViaTrack(in web: WKWebView, _ h: InteractionTestWindow) throws {

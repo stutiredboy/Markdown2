@@ -334,13 +334,11 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 if (!caret || caret.startContainer.nodeType !== Node.TEXT_NODE ||
                     !block.contains(caret.startContainer)) { return hit; }
 
-                // Plain paragraphs have one BR per source break. Find wrappers
-                // split text nodes without changing their UTF-16 coordinate space.
-                var lines = [''], row = null, column = null, length = 0, nodes = 0;
-                var walker = document.createTreeWalker(block, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
-                while (walker.nextNode()) {
-                    var node = walker.currentNode;
-                    if (++nodes > 8192) { return hit; }
+                // Plain paragraphs have one BR per source break. Transformed
+                // inline content keeps the block-level source target.
+                if (block.childNodes.length > 8192) { return hit; }
+                var lines = [''], row = null, column = null, length = 0;
+                for (var node of block.childNodes) {
                     if (node.nodeType === Node.TEXT_NODE) {
                         length += node.length;
                         if (length > 16384) { return hit; }
@@ -351,7 +349,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
                         lines[lines.length - 1] += node.data;
                     } else if (node.tagName === 'BR') {
                         lines.push('');
-                    } else if (!node.matches('mark.md2-find')) { return hit; }
+                    } else { return hit; }
                 }
                 if (lines.at(-1) === '') { lines.pop(); }
                 var end = Number(block.dataset.md2SourceEndLine || hit.line);
@@ -1398,9 +1396,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
     static func lineNumberGutterScript(showsLineNumbers: Bool) -> String {
         """
         (function () {
-            // The digits are CSS generated content, never text nodes: the preview's
-            // find walks `document.body` text nodes, so real nodes here would be
-            // matched by find and would be merged by `clearFind`'s normalize().
+            // Generated digits stay outside the document text used by Find and Copy.
             var style = document.createElement('style');
             style.textContent =
                 ':root{--md2-gutter-width:46px;}' +

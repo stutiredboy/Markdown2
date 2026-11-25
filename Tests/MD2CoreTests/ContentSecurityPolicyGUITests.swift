@@ -360,7 +360,7 @@ final class ContentSecurityPolicyGUITests: XCTestCase, RenderedPageTesting {
                 """, in: webView) as? Bool, true)
             XCTAssertNotNil(try evaluate("window.__md2CaptureAnchor()", in: webView) as? [String: Any])
             XCTAssertEqual(try evaluate("window.__md2Find('needle').total", in: webView) as? Int, 1)
-            XCTAssertEqual(try evaluate("document.querySelectorAll('mark.md2-find').length", in: webView) as? Int, 1)
+            XCTAssertEqual(try evaluate(PreviewFindRanges.count, in: webView) as? Int, 1)
             try assertNoViolations(in: webView, "preview")
         }
     }

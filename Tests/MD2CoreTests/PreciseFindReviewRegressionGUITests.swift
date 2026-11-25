@@ -28,9 +28,9 @@ final class PreciseFindReviewRegressionGUITests: XCTestCase {
         harness.store.requestFind(.show)
         harness.spin(until: { harness.queryField != nil })
         try harness.enterQuery("foo")
-        try harness.waitForPage("document.querySelectorAll('mark.md2-find').length === 1 && document.querySelector('mark.md2-find').textContent === 'foo'", in: web, context: "native search matches before a hard break")
+        try harness.waitForPage("\(PreviewFindRanges.count) === 1 && \(PreviewFindRanges.firstText) === 'foo'", in: web, context: "native search matches before a hard break")
         try harness.enterQuery("foobar")
-        try harness.waitForPage("document.querySelectorAll('mark.md2-find').length === 0", in: web, context: "native search cannot invent a word across BR")
+        try harness.waitForPage("\(PreviewFindRanges.count) === 0", in: web, context: "native search cannot invent a word across BR")
     }
 
     @MainActor func testSnapshotNodeBudgetAndEmptyQueryReset() throws {

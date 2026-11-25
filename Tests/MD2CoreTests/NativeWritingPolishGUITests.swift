@@ -42,7 +42,7 @@ final class NativeWritingPolishGUITests: XCTestCase {
                 if mode == .read {
                     let web = try XCTUnwrap(activePreview(in: harness))
                     try harness.waitForPage(
-                        "document.querySelectorAll('mark.md2-find').length === 2",
+                        "\(PreviewFindRanges.count) === 2",
                         in: web,
                         context: "Read Find results have settled before changing the setting"
                     )
@@ -295,7 +295,7 @@ final class NativeWritingPolishGUITests: XCTestCase {
                     paragraph => paragraph.textContent.includes('修订位置'));
                 if (!working) return false;
                 const rect = working.getBoundingClientRect();
-                return document.querySelectorAll('mark.md2-find').length === 2
+                return \(PreviewFindRanges.count) === 2
                     && scrollY > 500 && rect.bottom > 0 && rect.top < innerHeight;
             })()
             """,

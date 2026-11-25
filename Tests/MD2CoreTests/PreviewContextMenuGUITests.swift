@@ -238,16 +238,24 @@ final class PreviewContextMenuGUITests: XCTestCase, RenderedPageTesting {
                 h.spin(until: { h.queryField != nil })
                 try h.enterQuery(query)
                 try h.waitForPage("""
-                    document.querySelectorAll('main p mark.md2-find').length === 2 &&
-                    !document.querySelector('.md2-line-gutter span')
+                    (() => {
+                        const hits = Array.from(CSS.highlights.get('md2-find') || []);
+                        const paragraphs = document.querySelectorAll('main p');
+                        return hits.length === 2 && hits.every((hit, i) =>
+                            paragraphs[i].contains(hit.startContainer) && hit.toString() === '\(query)') &&
+                            !document.querySelector('.md2-line-gutter span');
+                    })()
                     """, in: web, context: "both hits highlighted with line numbers hidden")
 
-                // Click a specific insertion boundary inside the second Find mark.
+                // Click a specific insertion boundary inside the second highlighted range.
                 // The expected UTF-16 offset above comes from the original source.
                 let target = """
-                    (() => { const node = document.querySelectorAll('main p mark.md2-find')[1].firstChild;
-                        const range = document.createRange(); range.setStart(node, 1);
-                        range.collapse(true); return range; })()
+                    (() => {
+                        const hit = Array.from(CSS.highlights.get('md2-find'))[1];
+                        const range = hit.cloneRange();
+                        range.setStart(hit.startContainer, hit.startOffset + 1);
+                        range.collapse(true); return range;
+                    })()
                     """
                 if useMenu {
                     let title = mode == .read ? "Edit This Paragraph in Source" : "在源码中编辑此段"

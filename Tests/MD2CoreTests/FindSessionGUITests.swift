@@ -37,8 +37,8 @@ final class FindSessionGUITests: XCTestCase {
         XCTAssertTrue(web.performKeyEquivalent(with: show))
         try harness.waitForPage("""
             document.querySelector('main')?.textContent.includes('needle three') &&
-            document.querySelectorAll('mark.md2-find').length === 3 &&
-            document.querySelectorAll('mark.md2-find')[0].classList.contains('md2-find-current')
+            \(PreviewFindRanges.count) === 3 &&
+            \(PreviewFindRanges.currentIndex) === 0
             """, in: web, context: "split preview restores its query before menu navigation")
         try waitForNative(harness, "both pane queries are restored and the preview field is focused") {
             let fields = harness.descendants(NSTextField.self).filter { $0.placeholderString == harness.settings.text(.findPlaceholder) }
@@ -49,7 +49,7 @@ final class FindSessionGUITests: XCTestCase {
         }
         XCTAssertEqual(NativeFindFocus.pane(in: harness.window), .preview)
         harness.store.requestFind(.next)
-        let index = "Array.from(document.querySelectorAll('mark.md2-find')).findIndex(e=>e.classList.contains('md2-find-current'))"
+        let index = PreviewFindRanges.currentIndex
         try harness.waitForPage("\(index) === 1", in: web, context: "split preview advances to the second match")
         XCTAssertEqual(try harness.js(index, web) as? Int, 1)
         let fields = harness.descendants(NSTextField.self).filter { $0.placeholderString == harness.settings.text(.findPlaceholder) }
@@ -212,9 +212,9 @@ final class FindSessionGUITests: XCTestCase {
                 coordinator.lastFindNavigationToken != consumed
             }
         }
-        XCTAssertEqual(try harness.js("document.querySelectorAll('mark.md2-find').length", web) as? Int, 0)
+        XCTAssertEqual(try harness.js(PreviewFindRanges.count, web) as? Int, 0)
         server.release()
-        try harness.waitForPage("document.querySelectorAll('mark.md2-find').length === 3 && Array.from(document.querySelectorAll('mark.md2-find')).findIndex(e=>e.classList.contains('md2-find-current')) === 1",
+        try harness.waitForPage("\(PreviewFindRanges.count) === 3 && \(PreviewFindRanges.currentIndex) === 1",
                                 in: web, context: "delayed page restores query and all three queued commands")
         XCTAssertEqual(try harness.js("window.__testFindResults", web) as? [Int], [1, 2, 3, 2],
                        "the pending query and navigation must execute once, in order")
@@ -271,18 +271,18 @@ final class FindSessionGUITests: XCTestCase {
         let web = try XCTUnwrap(harness.descendants(WKWebView.self).first)
         try harness.waitForPage("""
             document.readyState === 'complete' && document.querySelector('main')?.textContent.includes('needle three') &&
-            document.querySelectorAll('mark.md2-find').length === 3
+            \(PreviewFindRanges.count) === 3
             """, in: web, context: "Read restores query on the current rendered document")
-        XCTAssertEqual(try harness.js("document.querySelectorAll('mark.md2-find').length", web) as? Int, 3)
+        XCTAssertEqual(try harness.js(PreviewFindRanges.count, web) as? Int, 3)
         XCTAssertTrue(web.performKeyEquivalent(with: harness.findKey()))
-        try harness.waitForPage("Array.from(document.querySelectorAll('mark.md2-find')).findIndex(e=>e.classList.contains('md2-find-current')) === 1",
+        try harness.waitForPage("\(PreviewFindRanges.currentIndex) === 1",
                                 in: web, context: "hidden Read Cmd-G advances")
-        XCTAssertEqual(try harness.js("Array.from(document.querySelectorAll('mark.md2-find')).findIndex(e=>e.classList.contains('md2-find-current'))", web) as? Int, 1)
+        XCTAssertEqual(try harness.js(PreviewFindRanges.currentIndex, web) as? Int, 1)
         XCTAssertNil(harness.queryField)
         XCTAssertTrue(web.performKeyEquivalent(with: harness.findKey(previous: true)))
-        try harness.waitForPage("Array.from(document.querySelectorAll('mark.md2-find')).findIndex(e=>e.classList.contains('md2-find-current')) === 0",
+        try harness.waitForPage("\(PreviewFindRanges.currentIndex) === 0",
                                 in: web, context: "hidden Read Shift-Cmd-G returns")
-        XCTAssertEqual(try harness.js("Array.from(document.querySelectorAll('mark.md2-find')).findIndex(e=>e.classList.contains('md2-find-current'))", web) as? Int, 0)
+        XCTAssertEqual(try harness.js(PreviewFindRanges.currentIndex, web) as? Int, 0)
         harness.store.requestFind(.show)
         try waitForNative(harness, "Read Find reopens with its saved query and keyboard focus") {
             guard let field = harness.queryField, let fieldEditor = field.currentEditor() else { return false }

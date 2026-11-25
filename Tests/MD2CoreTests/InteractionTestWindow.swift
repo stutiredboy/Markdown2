@@ -5,6 +5,16 @@ import XCTest
 @testable import MD2App
 
 
+/// Observe the real WebKit highlight registry. A match spanning multiple
+/// inline text nodes contributes one range per painted fragment.
+enum PreviewFindRanges {
+    static let all = "Array.from(CSS.highlights.get('md2-find') ?? [])"
+    static let count = "(CSS.highlights.get('md2-find')?.size ?? 0)"
+    static let currentCount = "(CSS.highlights.get('md2-find-current')?.size ?? 0)"
+    static let firstText = "\(all)[0]?.toString()"
+    static let currentIndex = "\(all).findIndex(range => CSS.highlights.get('md2-find-current')?.has(range))"
+}
+
 @MainActor
 final class InteractionTestWindow {
     let store: DocumentStore
@@ -109,8 +119,8 @@ final class InteractionTestWindow {
             JSON.stringify({url:location.href,ready:document.readyState,
               text:document.querySelector('main')?.textContent.slice(0,600),
               paragraphs:document.querySelectorAll('p').length,
-              findAPI:typeof window.__md2Find,matches:document.querySelectorAll('mark.md2-find').length,
-              index:Array.from(document.querySelectorAll('mark.md2-find')).findIndex(e=>e.classList.contains('md2-find-current'))})
+              findAPI:typeof window.__md2Find,matches:\(PreviewFindRanges.count),
+              index:\(PreviewFindRanges.currentIndex)})
             """, web)
         let coordinator = web.navigationDelegate as? MarkdownPreviewView.Coordinator
         _ = try XCTUnwrap(satisfied ? true : nil,

@@ -6,10 +6,13 @@ import XCTest
 @testable import MD2App
 
 final class PreviewFindHighlightGUITests: XCTestCase {
-    @MainActor
-    func testDenseChineseMatchesPreserveEveryLineAndContrastInBothAppearances() throws {
+    override func setUpWithError() throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
                           "Set MD2_RUN_GUI_TESTS=1 for WebKit layout and appearance checks.")
+    }
+
+    @MainActor
+    func testDenseChineseMatchesPreserveEveryLineAndContrastInBothAppearances() throws {
         let text = String(repeating: "启动任务，核对任务状态。", count: 50)
         let rendered = MarkdownRenderer().render(text, assetMode: .appScheme)
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
@@ -31,8 +34,13 @@ final class PreviewFindHighlightGUITests: XCTestCase {
             let original = try lineStarts(in: web, harness: harness)
             XCTAssertGreaterThan(original.count, 2)
 
+            _ = try harness.js("window.originalFindText = document.querySelector('main p').firstChild; true", web)
             coordinator.runFindWhenReady("任务", in: web)
-            try harness.waitForPage("document.querySelectorAll('mark.md2-find').length === 100", in: web,
+            try harness.waitForPage("""
+                CSS.highlights.get('md2-find')?.size === 100 &&
+                [...CSS.highlights.get('md2-find')].every(r => r.startContainer === window.originalFindText && r.toString() === '任务') &&
+                !!document.querySelector('.md2-find-outline > i')
+                """, in: web,
                                     context: "all 100 occurrences are highlighted")
             XCTAssertEqual(try lineStarts(in: web, harness: harness), original)
             let contrast = try XCTUnwrap(try harness.js(Self.contrastProbe, web) as? [String: Double])
@@ -42,16 +50,55 @@ final class PreviewFindHighlightGUITests: XCTestCase {
             XCTAssertGreaterThanOrEqual(current, 4.5)
             XCTAssertGreaterThan(try XCTUnwrap(contrast["outlineWidth"]), 0)
 
+            _ = try harness.js("window.__md2FindNext(true); true", web)
+            try harness.waitForPage("""
+                [...CSS.highlights.get('md2-find-current')][0] === [...CSS.highlights.get('md2-find')][1]
+                """, in: web, context: "Next moves the current range to the second occurrence")
+            XCTAssertEqual(try lineStarts(in: web, harness: harness), original)
+
             coordinator.runFindWhenReady("", in: web)
-            try harness.waitForPage("!document.querySelector('mark.md2-find')", in: web, context: "highlights cleared")
+            try harness.waitForPage("""
+                !CSS.highlights.has('md2-find') && !CSS.highlights.has('md2-find-current') &&
+                !document.querySelector('.md2-find-outline > i') &&
+                document.querySelector('main p').firstChild === window.originalFindText
+                """, in: web, context: "clearing Find removes the paint and preserves the original text node")
             XCTAssertEqual(try lineStarts(in: web, harness: harness), original)
             XCTAssertEqual(try harness.js("document.querySelector('main p').textContent", web) as? String, text)
             print("Preview Find \(appearance.rawValue), 420 CSS px, 100 matches, \(original.count) lines; ordinary \(ordinary), current \(current)")
         }
     }
 
-    // Measure the visual line of each character across all text nodes, including
-    // the fragments Find wraps in <mark>. Equal heights alone could hide reflow.
+    @MainActor
+    func testCurrentMatchRevealsInsideAnOverflowingCodeBlock() throws {
+        let harness = InteractionTestWindow()
+        defer { harness.close() }
+        let line = String(repeating: "prefix ", count: 100) + "needle" + String(repeating: " suffix", count: 30)
+        let rendered = MarkdownRenderer().render("```\n" + line + "\n```", assetMode: .appScheme)
+        let preview = MarkdownPreviewView(
+            html: rendered.html, bodyHTML: rendered.body, baseURL: nil,
+            jumpHeadingID: .constant(nil), jumpFraction: .constant(nil), jumpAnchor: .constant(nil),
+            findQuery: .constant(""), findNavigation: .constant(nil), focusToken: nil
+        )
+        harness.host(preview, width: 420)
+        let web = try XCTUnwrap(harness.descendants(WKWebView.self).first)
+        let coordinator = try XCTUnwrap(web.navigationDelegate as? MarkdownPreviewView.Coordinator)
+        try harness.waitForPage("""
+            document.querySelector('pre')?.scrollWidth > innerWidth * 3 && document.querySelector('pre').scrollLeft === 0
+            """, in: web, context: "needle is outside the code viewport before Find")
+        coordinator.runFindWhenReady("needle", in: web)
+        try harness.waitForPage("""
+            (() => {
+                const range = CSS.highlights.get('md2-find-current')?.values().next().value;
+                if (!range || range.toString() !== 'needle') return false;
+                const pre = document.querySelector('pre'), clip = pre.getBoundingClientRect();
+                const r = range.getBoundingClientRect();
+                return pre.scrollLeft > 0 && r.left >= clip.left - 1 && r.right <= clip.right + 1 &&
+                    r.top >= 0 && r.bottom <= innerHeight && scrollX === 0;
+            })()
+            """, in: web, context: "the code block scrolls horizontally to reveal its current match")
+    }
+
+    // Equal paragraph heights can hide a character moving to a different line.
     @MainActor
     private func lineStarts(in web: WKWebView, harness: InteractionTestWindow) throws -> [Int] {
         try XCTUnwrap(try harness.js("""
@@ -84,9 +131,12 @@ final class PreviewFindHighlightGUITests: XCTestCase {
                 const fg = luminance(style.color), bg = luminance(style.backgroundColor);
                 return (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05);
             }
-            const ordinary = getComputedStyle(document.querySelector('mark.md2-find:not(.md2-find-current)'));
-            const current = getComputedStyle(document.querySelector('mark.md2-find-current'));
-            return {ordinary: contrast(ordinary), current: contrast(current), outlineWidth: parseFloat(current.outlineWidth)};
+            const paragraph = document.querySelector('main p');
+            const ordinary = getComputedStyle(paragraph, '::highlight(md2-find)');
+            const current = getComputedStyle(paragraph, '::highlight(md2-find-current)');
+            const outline = getComputedStyle(document.querySelector('.md2-find-outline > i'));
+            return {ordinary: contrast(ordinary), current: contrast(current),
+                    outlineWidth: Math.max(parseFloat(outline.borderTopWidth), parseFloat(outline.outlineWidth))};
         })()
         """
 }

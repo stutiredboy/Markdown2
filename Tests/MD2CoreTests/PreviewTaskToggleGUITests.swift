@@ -286,7 +286,7 @@ final class PreviewTaskToggleGUITests: XCTestCase {
         let gate = NavigationGate(in: preview)
         defer { gate.open() }
         let typography = "document.getElementById('md2-typography')"
-        let found = "document.querySelector('mark.md2-find')"
+        let found = "(\(PreviewFindRanges.count) > 0)"
         _ = try preview.page.evaluate("\(typography).remove(); true")
 
         // One turn of the main actor, so the load is still being prepared.
@@ -423,7 +423,7 @@ final class PreviewTaskToggleGUITests: XCTestCase {
         try skipUnlessGUITestsEnabled()
         let preview = try HeldPreview(test: self, text: "Needle.", findQuery: "Needle")
         defer { preview.close() }
-        let found = "document.querySelector('mark.md2-find') !== null"
+        let found = "(\(PreviewFindRanges.count) > 0)"
         XCTAssertTrue(try preview.page.waitFor(found))
 
         try preview.reload()

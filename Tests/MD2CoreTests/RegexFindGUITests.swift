@@ -43,8 +43,8 @@ final class RegexFindGUITests: XCTestCase {
         try wait(in: harness, "preview Find has restored the query") { harness.queryField?.stringValue == "cat[0-9]+" }
         XCTAssertFalse(harness.descendants(NSButton.self).contains { $0.accessibilityIdentifier() == "findRegex" })
         try harness.waitForPage("""
-            document.querySelectorAll('mark.md2-find').length === 1 &&
-            document.querySelector('mark.md2-find').textContent === 'cat[0-9]+'
+            \(PreviewFindRanges.count) === 1 &&
+            \(PreviewFindRanges.firstText) === 'cat[0-9]+'
             """, in: preview, context: "preview interprets source regex characters literally")
 
         harness.store.requestMode(.write)
