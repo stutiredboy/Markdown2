@@ -20,8 +20,31 @@ enum PreviewTextSearch {
         var findSnapshot = null;
         var findKey = null, findText = '';
         var pendingHeldFind = null, heldFindNode = null;
+        var movingFindRanges = [];
         var findOutline, outlineFrame, outlineResize, outlineChanges;
+        var openDiagramSelector = '.md2-diagram-viewer[open]';
+        var revealFindMatchEvent = '\#(PreviewMermaidViewer.revealFindMatchEvent)';
         window.__md2FindActive = false;
+        document.addEventListener('\#(PreviewMermaidViewer.moveDiagramEvent)', event => {
+            // WebKit collapses live Ranges when the SVG leaves its parent.
+            // Each Find fragment stores two offsets in the same text node.
+            if (event.detail === 'before') {
+                movingFindRanges = [];
+                for (var group of findGroups) {
+                    for (var range of group) {
+                        if (event.target.contains(range.startContainer)) {
+                            movingFindRanges.push([range, range.startContainer, range.startOffset, range.endOffset]);
+                        }
+                    }
+                }
+            } else if (event.detail === 'after') {
+                for (var [range, text, start, end] of movingFindRanges) {
+                    range.setStart(text, start);
+                    range.setEnd(text, end);
+                }
+                movingFindRanges = [];
+            }
+        });
         (function () {
             var style = document.createElement('style');
             style.textContent = `
@@ -54,10 +77,10 @@ enum PreviewTextSearch {
             var left = box.left + element.clientLeft, top = box.top + element.clientTop;
             return {left, top, right: left + element.clientWidth, bottom: top + element.clientHeight};
         }
-        function clipForFind(element, cache) {
-            if (!element || element === document.body) return viewportBox();
+        function clipForFind(element, root, cache) {
+            if (!element || element === root) return viewportBox();
             if (cache.has(element)) return cache.get(element);
-            var clip = clipForFind(element.parentElement, cache);
+            var clip = clipForFind(element.parentElement, root, cache);
             var style = getComputedStyle(element);
             if (style.overflowX !== 'visible' || style.overflowY !== 'visible') {
                 var box = scrollport(element);
@@ -92,11 +115,20 @@ enum PreviewTextSearch {
         function updateFindOutline() {
             outlineFrame = 0;
             if (!findOutline) return;
+            var group = findGroups[findCurrent];
+            var dialog = document.querySelector(openDiagramSelector);
+            var root = dialog && dialog.contains(group[0].startContainer) ? dialog : document.body;
+            if (findOutline.parentElement !== root) root.appendChild(findOutline);
+            if (dialog && root !== dialog) {
+                findOutline.replaceChildren();
+                return;
+            }
             var fragment = document.createDocumentFragment(), clips = new Map();
             // Only the current match owns outline boxes. Bound their count even
             // when a single long query matches thousands of inline fragments.
-            for (var range of visibleFindRanges(findGroups[findCurrent])) {
-                var clip = clipForFind(range.startContainer.parentElement, clips);
+            for (var range of visibleFindRanges(group)) {
+                if (!root.contains(range.startContainer)) continue;
+                var clip = clipForFind(range.startContainer.parentElement, root, clips);
                 for (var box of range.getClientRects()) {
                     if (box.width <= 0 || box.height <= 0 || box.right <= clip.left || box.left >= clip.right ||
                         box.bottom <= clip.top || box.top >= clip.bottom) continue;
@@ -123,12 +155,15 @@ enum PreviewTextSearch {
                 findOutline = document.createElement('div');
                 findOutline.className = 'md2-find-outline';
                 findOutline.setAttribute('aria-hidden', 'true');
-                document.body.appendChild(findOutline);
                 var main = document.querySelector('main');
                 if (main) {
                     outlineResize = new ResizeObserver(scheduleFindOutline);
                     outlineResize.observe(main);
-                    outlineChanges = new MutationObserver(scheduleFindOutline);
+                    outlineChanges = new MutationObserver(records => {
+                        // A modal outline is inside main. Its own repaint must
+                        // not schedule another frame.
+                        if (records.some(record => !findOutline.contains(record.target))) scheduleFindOutline();
+                    });
                     outlineChanges.observe(main, {subtree: true, childList: true, attributes: true, characterData: true});
                 }
             }
@@ -152,14 +187,17 @@ enum PreviewTextSearch {
             var group = findGroups[findCurrent];
             if (!group) return pendingHeldFind;
             var first = group[0], line = firstFindLine(group, document.body);
-            var clip = clipForFind(first.startContainer.parentElement, new Map());
-            var visible = line && line.bottom > clip.top && line.top < clip.bottom &&
+            var clip = clipForFind(first.startContainer.parentElement, document.body, new Map());
+            var visible = !document.querySelector(openDiagramSelector) && line && line.bottom > clip.top && line.top < clip.bottom &&
                 line.right > clip.left && line.left < clip.right;
             return {key: findKey, index: findCurrent, nodeOffset: first.startOffset,
                 before: findText.slice(Math.max(0, group.start - 64), group.start),
                 after: findText.slice(group.end, group.end + 64), top: visible ? line.top : null};
         }
         window.__md2FindClear = function (forPausedEdit) {
+            // An empty query or zero results ends Find's temporary hold on an
+            // original-size diagram. A live rebuild passes its pause state.
+            if (forPausedEdit === undefined) document.dispatchEvent(new Event(revealFindMatchEvent));
             pendingHeldFind = forPausedEdit ? captureHeldFind() : null;
             if (!pendingHeldFind) heldFindNode = null;
             else if (findGroups[findCurrent]) heldFindNode = new WeakRef(findGroups[findCurrent][0].startContainer);
@@ -225,8 +263,10 @@ enum PreviewTextSearch {
             // including adjacent inline runs, moving nested scrollports first.
             var start = group[0].startContainer.parentElement;
             if (!start) return;
+            var dialog = document.querySelector(openDiagramSelector);
+            var root = dialog?.contains(group[0].startContainer) ? dialog : document.body;
             var rtl = getComputedStyle(start).direction === 'rtl';
-            for (var el = start; el && el !== document.body; el = el.parentElement) {
+            for (var el = start; el && el !== root; el = el.parentElement) {
                 var style = getComputedStyle(el);
                 var scrollX = /^(auto|scroll|hidden)$/.test(style.overflowX) && el.scrollWidth > el.clientWidth;
                 var scrollY = /^(auto|scroll|hidden)$/.test(style.overflowY) && el.scrollHeight > el.clientHeight;
@@ -236,6 +276,7 @@ enum PreviewTextSearch {
                 el.scrollBy(scrollX ? horizontalReveal(rect, box, rtl) : 0,
                             scrollY ? (rect.top + rect.bottom - box.top - box.bottom) / 2 : 0);
             }
+            if (root === dialog) return;
             var rect = firstFindLine(group, document.body), box = viewportBox();
             if (rect) window.scrollBy(horizontalReveal(rect, box, rtl), (rect.top + rect.bottom - box.bottom) / 2);
         }
@@ -250,6 +291,13 @@ enum PreviewTextSearch {
             if (reveal !== false) {
                 releaseReference();
                 window.__md2FindActive = true;
+                var target = group[0].startContainer.parentElement;
+                var dialog = document.querySelector(openDiagramSelector);
+                if (target && !dialog?.contains(group[0].startContainer)) {
+                    target.dispatchEvent(new CustomEvent(revealFindMatchEvent, {
+                        bubbles: true, detail: findKey
+                    }));
+                }
                 revealFindRange(group);
                 clearTimeout(window.__md2FindTimer);
                 window.__md2FindTimer = setTimeout(() => { window.__md2FindActive = false; }, 400);
@@ -367,7 +415,11 @@ enum PreviewTextSearch {
                 return result;
             }
             heldFindNode = null;
-            return setCurrent(0, reveal);
+            // A query started from the actual-size view prefers the first
+            // match in that view. Navigation keeps the document order.
+            var dialog = document.querySelector(openDiagramSelector);
+            var first = dialog ? findGroups.findIndex(group => dialog.contains(group[0].startContainer)) : 0;
+            return setCurrent(Math.max(0, first), reveal);
         };
         window.__md2FindNext = function (forward) {
             return setCurrent(findCurrent + (forward ? 1 : -1));
