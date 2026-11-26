@@ -22,6 +22,30 @@ struct SourceLineMetadataTests {
         #expect(html.contains(#"<p data-md2-source-line="6">Second paragraph.</p>"#))
     }
 
+    @Test func rawHTMLBlocksCarryTheirOwnSourceLines() {
+        let markdown = """
+        Heading text
+
+        `literal <div>
+        still code`
+        <div>First block</div>
+        <div title="a &gt; b" data-md2-source-line="99"><span>Second block</span></div>
+
+        > <details open>
+        > <summary>Disclosure</summary>
+        > </details>
+        """
+
+        let body = MarkdownRenderer().render(markdown).body
+
+        #expect(body.contains("<code>literal &lt;div&gt; still code</code>"))
+        #expect(body.contains(#"<div data-md2-source-line="5">First block</div>"#))
+        #expect(body.contains(#"<div title="a &gt; b" data-md2-source-line="6"><span>Second block</span></div>"#))
+        #expect(body.contains(#"<details open data-md2-source-line="8">"#))
+        #expect(body.contains(#"<summary data-md2-source-line="9">Disclosure</summary>"#))
+        #expect(!body.contains(#"data-md2-source-line="99""#))
+    }
+
     @Test func longCodeBlockCarriesFullSpan() {
         let code = (1...40).map { "let value\($0) = \($0)" }.joined(separator: "\n")
         let markdown = """

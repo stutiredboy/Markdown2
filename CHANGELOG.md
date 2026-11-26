@@ -34,6 +34,8 @@
 
 ### Fixed
 
+- Open the corresponding source line when Command-double-clicking an HTML block in Preview or choosing **Edit This Paragraph in Source** from its context menu.
+
 - Keep every preview Find result visible when navigating between an actual-size Mermaid diagram and the document text.
 
 - Keep the document marked as unsaved after **Keep My Version** until the chosen editor version is saved to the original file.
