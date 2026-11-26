@@ -1078,7 +1078,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 var main = document.querySelector('main');
                 if (!main) { return null; }
                 options = options || {};
-                if (window.__md2FindClear) { window.__md2FindClear(); }
+                if (window.__md2FindClear) { window.__md2FindClear(window.__md2ScrollSyncPaused); }
                 var macrosChanged = !!(options.macros && window.__md2SetMathMacros
                     && window.__md2SetMathMacros(options.macros));
                 if (typeof options.loaded === 'string') { keyLoadedContent(main, options.loaded); }
@@ -1107,97 +1107,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 };
             };
 
-            // Hold the actual rendered block at its current pixel offset. Source
-            // line numbers change when a writer inserts lines above the reference.
-            function visibleReferences() {
-                var blocks = [];
-                var main = document.querySelector('main');
-                if (!main) { return blocks; }
-                for (var node of main.children) {
-                    if (isGutterLayer(node)) { continue; }
-                    var rect = node.getBoundingClientRect();
-                    if (rect.height <= 0 || rect.bottom <= 0) { continue; }
-                    if (rect.top >= window.innerHeight) { break; }
-                    blocks.push({node: node, top: rect.top});
-                }
-                return blocks;
-            }
-
-            var referenceObserver;
-            function releaseReference() {
-                if (referenceObserver) { referenceObserver.disconnect(); referenceObserver = null; }
-            }
-            window.__md2ChangeScrollSync = function (paused) {
-                window.__md2ScrollSyncPaused = paused;
-                clearTimeout(pending);
-                pending = null;
-                lastUserScrollIntentAt = 0;
-                // A pending mode-entry pin belongs to the previous sync state.
-                animatedPinEpoch++;
-                suppressUntil = 0;
-                releaseReference();
-            };
-            ['wheel', 'touchmove', 'mousedown', 'keydown'].forEach(function (type) {
-                window.addEventListener(type, releaseReference, { passive: true, capture: true });
-            });
-            function pinReference(blocks, y) {
-                releaseReference();
-                // An edit to the partially visible paragraph above a table
-                // replaces that paragraph. Keep the next surviving block.
-                var block = blocks.find(item => item.node && item.node.isConnected);
-                if (!block) { window.scrollTo(window.scrollX, y); return; }
-                var node = block.node, top = block.top;
-                var expectedY = window.scrollY;
-                function restore() {
-                    if (!node.isConnected || Math.abs(window.scrollY - expectedY) > 1) {
-                        releaseReference();
-                        return;
-                    }
-                    var delta = node.getBoundingClientRect().top - top;
-                    if (Math.abs(delta) > 0.5) { window.scrollBy(0, delta); }
-                    expectedY = window.scrollY;
-                }
-                restore();
-                // Earlier diagrams and images can finish long after the body
-                // swap. A user gesture or explicit navigation releases the pin.
-                referenceObserver = new ResizeObserver(restore);
-                referenceObserver.observe(document.querySelector('main'));
-            }
-
-            // A new diagram engine requires a new page. Find the same block
-            // in the new DOM, preferring the nearest source line for duplicates.
-            function referenceKey(node) {
-                return node.tagName + ':' + node.textContent.slice(0, 256);
-            }
-            window.__md2CaptureReference = function () {
-                var blocks = visibleReferences().map(function (block) {
-                    return { key: referenceKey(block.node), top: block.top,
-                        line: Number(block.node.dataset.md2SourceLine) || 0 };
-                });
-                return { y: window.scrollY, blocks: blocks };
-            };
-            window.__md2RestoreReference = function (place) {
-                // Index just the captured blocks. Walk the new body once,
-                // irrespective of how many of the visible paragraphs changed.
-                var byKey = new Map();
-                for (var block of place.blocks) {
-                    if (!byKey.has(block.key)) { byKey.set(block.key, []); }
-                    byKey.get(block.key).push(block);
-                }
-                for (var node of document.querySelector('main').children) {
-                    var matches = byKey.get(referenceKey(node));
-                    if (!matches) { continue; }
-                    var line = Number(node.dataset.md2SourceLine) || 0;
-                    for (var block of matches) {
-                        var delta = Math.abs(line - block.line);
-                        if (!block.node || delta < block.distance) {
-                            block.node = node;
-                            block.distance = delta;
-                        }
-                    }
-                }
-                pinReference(place.blocks, place.y);
-            };
+            \(PreviewHeldReference.script)
 
             window.__md2UpdateLivePreview = function (body, options, hold, caretLine) {
                 // Capture, reconcile and restore in a single WebKit turn, so
@@ -1414,8 +1324,6 @@ struct MarkdownPreviewView: NSViewRepresentable {
             context.coordinator.lastHTML = html
             context.coordinator.lastBody = bodyHTML
             context.coordinator.lastBaseURL = baseURL
-            context.coordinator.lastFindQuery = nil
-
             if canLiveUpdate {
                 context.coordinator.applyLiveContent(bodyHTML, mathMacros: mathMacros, in: webView)
             } else {
@@ -2000,6 +1908,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             liveUpdateGeneration += 1
             let generation = liveUpdateGeneration
             hasContentInFlight = true
+            queueFindAfterContentChange()
             liveUpdateWorkItem?.cancel()
             let baseURL = lastBaseURL
             let loadedBody = self.loadedBody
@@ -2056,17 +1965,14 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// Both update scripts end in a value WebKit can return, so an `error`
         /// means the update threw and the page may still show the old content.
         private func finishLiveContent(generation: Int, error: Error?, in webView: WKWebView) {
-            if error == nil, generation == liveUpdateGeneration {
-                hasContentInFlight = false
-                // Recheck retained images even when a preferences-only render
-                // changed the body without changing its source revision.
-                pageRevision = nil
-                labelPage(in: webView)
-                completeResumeIfReady(in: webView)
-            }
-            if let query = lastFindQuery, !query.isEmpty {
-                runFindWhenReady(query, in: webView)
-            }
+            guard error == nil, generation == liveUpdateGeneration else { return }
+            hasContentInFlight = false
+            // Recheck retained images even when a preferences-only render
+            // changed the body without changing its source revision.
+            pageRevision = nil
+            labelPage(in: webView)
+            completeResumeIfReady(in: webView)
+            applyPendingFind(in: webView)
         }
 
         /// Tells the page which source-line revision it shows, for it to send
@@ -2207,9 +2113,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// a same-query search from running against the previous document body.
         func beginLoading() {
             outlineMarginToken = nil
-            findGeneration = UUID()
-            findInFlight = false
-            if pendingFindQuery == nil { pendingFindQuery = lastFindQuery }
+            queueFindAfterContentChange()
             isLoaded = false
             viewportIsReady = false
             isAwaitingCommit = true
@@ -2310,15 +2214,19 @@ struct MarkdownPreviewView: NSViewRepresentable {
             findHostIsActive && findHost === webView && findGeneration == generation
         }
 
+        private func queueFindAfterContentChange() {
+            findGeneration = UUID()
+            findInFlight = false
+            if pendingFindQuery == nil { pendingFindQuery = lastFindQuery }
+        }
+
         /// Runs a preview search immediately when the page is ready, otherwise
         /// remembers the latest query and applies it after `didFinish`.
         func runFindWhenReady(_ query: String, in webView: WKWebView) {
             guard acceptsFindHost(webView) else { return }
             pendingFindQuery = query
             findGeneration = UUID()
-            if isLoaded {
-                applyPendingFind(in: webView)
-            }
+            applyPendingFind(in: webView)
         }
 
         /// Parses the `{total, index}` object returned by the JS find helpers and
@@ -2600,6 +2508,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             pendingHeldReference = nil
             applyPendingScroll(in: webView, consume: true)
             completeResumeIfReady(in: webView)
+            if holdsReadingPosition && findMayRevealMatches { applyPendingFind(in: webView) }
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
@@ -2659,7 +2568,10 @@ struct MarkdownPreviewView: NSViewRepresentable {
         }
 
         private func applyPendingFind(in webView: WKWebView) {
-            guard acceptsFindHost(webView), let query = pendingFindQuery else { return }
+            // A paused, visible Find result can be restored once the new page
+            // is interactive, including while an image is still downloading.
+            guard isLoaded || (holdsReadingPosition && findMayRevealMatches && viewportIsReady),
+                  !hasContentInFlight, acceptsFindHost(webView), let query = pendingFindQuery else { return }
             pendingFindQuery = nil
             findInFlight = true
             let generation = findGeneration
@@ -2688,7 +2600,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
                         PreviewTextSearch.ranges(query: query, text: text, options: options)
                     }.value
                     guard let self, let webView, self.isCurrentFind(generation, in: webView) else { return }
-                    let payload: [String: Any] = ["id": id, "ranges": ranges ?? [], "unavailable": ranges == nil]
+                    let payload: [String: Any] = ["id": id, "ranges": ranges ?? [], "unavailable": ranges == nil,
+                                                  "caseSensitive": options.caseSensitive, "wholeWord": options.wholeWord]
                     guard let data = try? JSONSerialization.data(withJSONObject: payload),
                           let json = String(data: data, encoding: .utf8) else {
                         self.completeFind(nil, generation: generation, in: webView)
