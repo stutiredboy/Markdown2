@@ -19,31 +19,19 @@ struct DocumentCopySnapshot: Sendable {
 
     init(operationID: UUID = UUID(), documentID: UUID, revision: Int, text: String,
          format: MarkdownFileFormat, sourceURL: URL, historyFileID: DocumentHistoryFileID? = nil) throws {
-        guard DocumentCopyWriter.isLocalFileURL(sourceURL), !sourceURL.hasDirectoryPath else {
+        let inspected = try DocumentCopyWriter.inspectSource(sourceURL)
+        guard DocumentCopyWriter.SourceEligibility(inspected.source) == .regular else {
             throw DocumentCopyError.invalidSource
         }
-        let directory = sourceURL.deletingLastPathComponent().resolvingSymlinksInPath()
-        let normalized = directory.appendingPathComponent(sourceURL.lastPathComponent)
-        let descriptor = try DocumentCopyWriter.openDirectory(directory)
-        defer { Darwin.close(descriptor) }
-        var parent = stat()
-        guard fstat(descriptor, &parent) == 0 else { throw DocumentCopyError.io(.inspectSource, errno) }
-        var source = stat()
-        guard fstatat(descriptor, normalized.lastPathComponent, &source, AT_SYMLINK_NOFOLLOW) == 0 else {
-            throw DocumentCopyError.io(.inspectSource, errno)
-        }
-        // A final-component symlink, directory, device, or FIFO is outside this
-        // first slice; in particular, never open a FIFO just to inspect a copy.
-        guard source.st_mode & S_IFMT == S_IFREG else { throw DocumentCopyError.invalidSource }
-        if let historyFileID, !historyFileID.matches(source) { throw DocumentCopyError.sourceChanged }
+        if let historyFileID, !historyFileID.matches(inspected.source) { throw DocumentCopyError.sourceChanged }
         self.operationID = operationID
         self.documentID = documentID
         self.revision = revision
         self.text = text
         self.format = format
-        self.sourceURL = normalized
-        sourceIdentity = DocumentCopyFileIdentity(source)
-        directoryIdentity = DocumentCopyFileIdentity(parent)
+        self.sourceURL = inspected.url
+        sourceIdentity = DocumentCopyFileIdentity(inspected.source)
+        directoryIdentity = DocumentCopyFileIdentity(inspected.parent)
     }
 }
 
@@ -97,6 +85,18 @@ enum DocumentCopyError: Error, Equatable {
 /// is deliberately no ordinary-rename fallback. fsync precedes commit, but this
 /// is not a promise of persistence through power loss or a filesystem failure.
 struct DocumentCopyWriter: Sendable {
+    enum SourceEligibility: Sendable {
+        case regular, symbolicLink, unavailable
+
+        fileprivate init(_ information: stat) {
+            switch information.st_mode & S_IFMT {
+            case S_IFREG: self = .regular
+            case S_IFLNK: self = .symbolicLink
+            default: self = .unavailable
+            }
+        }
+    }
+
     /// Narrow syscall seams for exercising short writes and failures against
     /// actual temporary files, rather than mocking an entire filesystem.
     struct IO: Sendable {
@@ -109,6 +109,13 @@ struct DocumentCopyWriter: Sendable {
 
     var io = IO()
     var checkCancellation: @Sendable () throws -> Void = { try Task.checkCancellation() }
+
+    /// Advisory for naming UI. The actual snapshot and writer still inspect
+    /// the source when the user confirms and before the copy is published.
+    static func sourceEligibility(at url: URL) -> SourceEligibility {
+        guard let inspected = try? inspectSource(url) else { return .unavailable }
+        return SourceEligibility(inspected.source)
+    }
 
     func writeNew(_ snapshot: DocumentCopySnapshot, to destination: URL,
                   verifiedHistoricalBytes: Data? = nil) throws -> DocumentCopyReceipt {
@@ -194,12 +201,29 @@ struct DocumentCopyWriter: Sendable {
         return receipt
     }
 
-    fileprivate static func isLocalFileURL(_ url: URL) -> Bool {
+    fileprivate static func inspectSource(_ url: URL) throws -> (url: URL, parent: stat, source: stat) {
+        guard isLocalFileURL(url), !url.hasDirectoryPath else { throw DocumentCopyError.invalidSource }
+        let directory = url.deletingLastPathComponent().resolvingSymlinksInPath()
+        let normalized = directory.appendingPathComponent(url.lastPathComponent)
+        let descriptor = try openDirectory(directory)
+        defer { Darwin.close(descriptor) }
+        var parent = stat()
+        guard fstat(descriptor, &parent) == 0 else { throw DocumentCopyError.io(.inspectSource, errno) }
+        var source = stat()
+        // Inspect the named entry without following a final-component link
+        // or opening a potentially blocking object such as a FIFO.
+        guard fstatat(descriptor, normalized.lastPathComponent, &source, AT_SYMLINK_NOFOLLOW) == 0 else {
+            throw DocumentCopyError.io(.inspectSource, errno)
+        }
+        return (normalized, parent, source)
+    }
+
+    private static func isLocalFileURL(_ url: URL) -> Bool {
         url.isFileURL && (url.host == nil || url.host == "" || url.host == "localhost")
             && url.query == nil && url.fragment == nil && !url.path.utf8.contains(0)
     }
 
-    fileprivate static func openDirectory(_ url: URL) throws -> Int32 {
+    private static func openDirectory(_ url: URL) throws -> Int32 {
         let descriptor = Darwin.open(url.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
         guard descriptor >= 0 else { throw DocumentCopyError.io(.openDirectory, errno) }
         return descriptor
