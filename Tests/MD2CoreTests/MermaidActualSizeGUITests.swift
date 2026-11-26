@@ -107,6 +107,110 @@ final class MermaidActualSizeGUITests: XCTestCase, RenderedPageTesting {
     }
 
     @MainActor
+    func testNativeFindRevealsProseAndOriginalSizeLabel() throws {
+        let h = InteractionTestWindow()
+        defer { h.close() }
+        h.settings.newDocumentMode = .read
+        h.settings.language = .english
+        let gap = String(repeating: "An intervening paragraph.\n\n", count: 30)
+        h.store.text = "Before Needle. Prose Only.\n\n" + gap
+            + Self.diagram.replacingOccurrences(of: "Hotel Eight", with: "Needle")
+            + "\n\n" + gap + "After Needle."
+        h.host(ContentView(document: h.store, settings: h.settings, onOpen: {}), width: 520, height: 440)
+        let web = try XCTUnwrap(h.descendants(WKWebView.self).first)
+        try h.waitForPage("\(openButton)?.hidden === false", in: web, context: "wide diagram rendered")
+        _ = try h.js("\(openButton).scrollIntoView({block:'center'}); true", web)
+        try click(openButton, in: web)
+        try h.waitForPage("!!\(canvas)?.querySelector('svg')", in: web, context: "actual-size viewer opened")
+        XCTAssertEqual(try h.js("""
+            (() => {
+                const canvas = \(canvas);
+                window.originalFindDiagram = canvas.querySelector('svg');
+                const label = [...canvas.querySelectorAll('.nodeLabel')].find(node => node.textContent.trim() === 'Needle');
+                return label.getBoundingClientRect().left > canvas.getBoundingClientRect().right;
+            })()
+            """, web) as? Bool, true, "the last node requires horizontal panning")
+
+        let show = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: h.window.windowNumber, context: nil,
+            characters: "f", charactersIgnoringModifiers: "f", isARepeat: false, keyCode: 3))
+        XCTAssertTrue(web.performKeyEquivalent(with: show))
+        h.spin(until: { h.queryField != nil })
+        try h.enterQuery("Needle")
+        var responder: NSResponder? = h.queryField
+        while let current = responder, !(current is NativeFindPaneOwner) { responder = current.nextResponder }
+        let bar = try XCTUnwrap(responder as? NativeFindBarController<PreviewFindBar>)
+
+        func waitForMatch(_ index: Int, prose: String? = nil, query: String = "Needle", total: Int = 3) throws {
+            let expectedSurface = prose.map { "owner?.textContent.startsWith('\($0)') && !dialog" }
+                ?? "canvas?.contains(element) && canvas.contains(window.originalFindDiagram) && canvas.scrollLeft > 0"
+            try h.waitForPage("""
+                (() => {
+                    if (\(PreviewFindRanges.count) !== \(total) || \(PreviewFindRanges.currentIndex) !== \(index)) return false;
+                    const range = Array.from(CSS.highlights.get('md2-find-current') || [])[0];
+                    if (!range || range.toString() !== '\(query)') return false;
+                    const dialog = document.querySelector('.md2-diagram-viewer[open]');
+                    const canvas = dialog?.querySelector('.md2-diagram-canvas');
+                    const element = range.startContainer.parentElement;
+                    const owner = element.closest('main > p');
+                    if (!(\(expectedSurface))) return false;
+                    const bounds = range.getBoundingClientRect();
+                    const visible = canvas?.getBoundingClientRect()
+                        || {left: 0, top: 0, right: innerWidth, bottom: innerHeight};
+                    if (bounds.width <= 0 || bounds.height <= 0 || bounds.left < visible.left - 1 ||
+                        bounds.right > visible.right + 1 || bounds.top < visible.top - 1 || bounds.bottom > visible.bottom + 1)
+                        return false;
+                    const x = (bounds.left + bounds.right) / 2, y = (bounds.top + bounds.bottom) / 2;
+                    const hit = document.elementFromPoint(x, y);
+                    const surface = canvas ? element.closest('g.node') : owner;
+                    if (!surface?.contains(hit)) return false;
+                    const outline = (dialog || document.body).querySelector('.md2-find-outline > i');
+                    const mark = outline?.getBoundingClientRect();
+                    return mark && mark.left <= x && mark.right >= x && mark.top <= y && mark.bottom >= y;
+                })()
+                """, in: web, context: "visible \(query) result \(index + 1) of \(total) in \(prose ?? "actual-size diagram")")
+            let status = "\(index + 1) of \(total)"
+            h.spin(until: { bar.rootView.statusText == status })
+            XCTAssertEqual(bar.rootView.statusText, status)
+        }
+
+        func navigate(previous: Bool = false) throws {
+            let field = try XCTUnwrap(h.queryField)
+            let y = field.convert(field.bounds, to: nil).midY
+            let row = h.descendants(NSButton.self, in: bar.view).filter {
+                let bounds = $0.convert($0.bounds, to: nil)
+                return bounds.minY <= y && bounds.maxY >= y
+            }.sorted { $0.convert($0.bounds, to: nil).minX < $1.convert($1.bounds, to: nil).minX }
+            XCTAssertEqual(row.count, 3, "Find shows Previous, Next, and Close")
+            let button = try XCTUnwrap(row.dropFirst(previous ? 0 : 1).first)
+            XCTAssertTrue(button.isEnabled)
+            button.performClick(nil)
+        }
+
+        try waitForMatch(1)
+        try navigate()
+        try waitForMatch(2, prose: "After")
+        try navigate()
+        try waitForMatch(0, prose: "Before")
+        try navigate()
+        try waitForMatch(1)
+        try navigate(previous: true)
+        try waitForMatch(0, prose: "Before")
+        try navigate(previous: true)
+        try waitForMatch(2, prose: "After")
+        try navigate(previous: true)
+        try waitForMatch(1)
+
+        try h.enterQuery("Never Matched")
+        h.spin(until: { bar.rootView.statusText == "No results" })
+        XCTAssertEqual(bar.rootView.statusText, "No results")
+        try h.waitForPage("\(PreviewFindRanges.count) === 0 && \(canvas)?.contains(window.originalFindDiagram)",
+                          in: web, context: "no results leaves the original-size viewer open")
+        try h.enterQuery("Prose Only")
+        try waitForMatch(0, prose: "Before", query: "Prose Only", total: 1)
+    }
+
+    @MainActor
     func testResizeAndLiveReplacementOfAnOpenDiagram() throws {
         let h = InteractionTestWindow()
         defer { h.close() }

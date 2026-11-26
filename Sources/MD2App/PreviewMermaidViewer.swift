@@ -3,6 +3,7 @@ import Foundation
 /// Installed only on the live preview, in WebKit's isolated client world.
 enum PreviewMermaidViewer {
     static let stateMessage = "mermaidViewerOpen"
+    static let revealFindMatchEvent = "md2-reveal-find-match"
 
     static func labels(language: AppLanguage) -> String {
         let labels = [L10n.text(.viewDiagramAtActualSize, language: language), L10n.text(.close, language: language)]
@@ -52,7 +53,7 @@ enum PreviewMermaidViewer {
             `;
             document.head.appendChild(style);
 
-            let viewer = null;
+            let viewer = null, suspendedForFind = null;
             // WebKit collapses live Ranges when their nodes are reparented.
             // Find stores one range per matching text fragment. Retain its
             // endpoints when the viewer moves this diagram into or out of view.
@@ -69,8 +70,9 @@ enum PreviewMermaidViewer {
                     range.setEnd(text, end);
                 }
             }
-            function openDiagram(block, svg, button) {
+            function openDiagram(block, svg, button, focusCanvas = true) {
                 if (viewer || !svg.isConnected) return;
+                suspendedForFind = null;
                 const size = svg.viewBox.baseVal;
                 const x = window.scrollX;
                 const blockViewportTop = block.getBoundingClientRect().top;
@@ -80,7 +82,7 @@ enum PreviewMermaidViewer {
                 const closeButton = document.createElement('button');
                 closeButton.type = 'button';
                 closeButton.setAttribute('aria-label', closeLabel);
-                closeButton.addEventListener('click', () => dialog.close());
+                closeButton.addEventListener('click', () => closeDiagram());
                 const canvas = document.createElement('div');
                 canvas.className = 'md2-diagram-canvas';
                 canvas.tabIndex = 0;
@@ -115,26 +117,53 @@ enum PreviewMermaidViewer {
                     svg.replaceWith(slot);
                     canvas.appendChild(svg);
                 });
-                viewer = {dialog, block, slot, canvas, closeButton};
-                dialog.addEventListener('close', () => {
+                function closeDiagram(restorePosition = true) {
+                    if (viewer?.dialog !== dialog) return;
                     viewer = null;
+                    if (dialog.open) dialog.close();
                     if (slot.isConnected) moveDiagram(svg, () => slot.replaceWith(svg));
                     dialog.remove();
                     if (block.isConnected) update(block);
                     window.dispatchEvent(new Event('resize'));
-                    if (button.isConnected) {
+                    if (restorePosition && button.isConnected) {
                         button.focus({preventScroll: true});
                         // Text preceding the diagram can reflow while the dialog
                         // is open. Restore the block to its original viewport row.
                         window.scrollTo(x, window.scrollY + block.getBoundingClientRect().top - blockViewportTop);
                     }
                     window.webkit.messageHandlers.\#(stateMessage).postMessage(false);
-                }, {once: true});
+                }
+                viewer = {dialog, block, slot, canvas, closeButton, svg, button, closeDiagram};
+                dialog.addEventListener('cancel', event => {
+                    event.preventDefault();
+                    closeDiagram();
+                });
+                dialog.addEventListener('close', () => closeDiagram(), {once: true});
                 dialog.showModal();
-                canvas.focus({preventScroll: true});
+                if (focusCanvas) canvas.focus({preventScroll: true});
                 window.webkit.messageHandlers.\#(stateMessage).postMessage(true);
             }
-            window.__md2CloseMermaidViewer = () => viewer?.dialog.close();
+            window.__md2CloseMermaidViewer = () => viewer?.closeDiagram();
+
+            // Find stays document-wide. Restore the inline SVG before the
+            // page scrolls to prose, then resume this diagram on a later hit
+            // from the same query. Both worlds share the DOM event target.
+            document.addEventListener('\#(revealFindMatchEvent)', event => {
+                if (event.target === document) {
+                    suspendedForFind = null;
+                    return;
+                }
+                if (suspendedForFind && suspendedForFind.key !== event.detail) suspendedForFind = null;
+                if (viewer && !viewer.dialog.contains(event.target)) {
+                    const {block, svg, button, closeDiagram} = viewer;
+                    closeDiagram(false);
+                    suspendedForFind = {block, svg, button, key: event.detail};
+                } else if (suspendedForFind?.svg.contains(event.target)) {
+                    const {block, svg, button} = suspendedForFind;
+                    suspendedForFind = null;
+                    if (button.isConnected && !button.hidden) openDiagram(block, svg, button, false);
+                }
+            });
 
             function update(block) {
                 if (!block.isConnected) { sizes.unobserve(block); return; }
@@ -162,7 +191,8 @@ enum PreviewMermaidViewer {
             // Mermaid replaces the block's text with the finished SVG, including
             // on live edits. Ignore mutations in its potentially large subtree.
             new MutationObserver(records => {
-                if (viewer && !viewer.slot.isConnected) viewer.dialog.close();
+                if (viewer && !viewer.slot.isConnected) viewer.closeDiagram();
+                if (suspendedForFind && !suspendedForFind.svg.isConnected) suspendedForFind = null;
                 for (const record of records) {
                     if (record.target.matches('.diagram-mermaid')) update(record.target);
                 }
