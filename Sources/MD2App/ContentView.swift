@@ -178,7 +178,7 @@ struct ContentView: View {
     @State private var previewOutlineMargin: (snapshot: OutlinePreviewSnapshot, width: CGFloat)?
     @State private var editorSelection: EditorSelection?
     @State private var previewSelection: String?
-    @State private var selectionStats: DocumentStats?
+    @State private var selectionStats: SelectionStats?
     /// On-demand readers for the *live* outgoing surface, so a switch right
     /// after a scroll uses the current viewport rather than a stale callback.
     @State private var editorViewport = EditorViewportReader()
@@ -310,13 +310,24 @@ struct ContentView: View {
             guard let selection = selectedContent else { return }
             do { try await Task.sleep(for: .milliseconds(80)) } catch { return }
             let features = settings.inlineFeatures
-            let worker = Task.detached(priority: .utility) { () -> DocumentStats? in
+            let worker = Task.detached(priority: .utility) { () -> SelectionStats? in
                 guard !Task.isCancelled else { return nil }
-                return switch selection {
-                case .markdown(let text):
-                    MarkdownRenderer().render(text, config: RenderConfig(inlineFeatures: features), assetMode: .appScheme).stats
+                switch selection {
+                case .markdown(let fragments):
+                    let renderer = MarkdownRenderer()
+                    let config = RenderConfig(inlineFeatures: features)
+                    var words = 0
+                    var characters = 0
+                    for fragment in fragments {
+                        guard !Task.isCancelled else { return nil }
+                        let stats = renderer.render(fragment, config: config, assetMode: .appScheme).stats
+                        words += stats.words
+                        characters += stats.characters
+                    }
+                    return SelectionStats(words: words, characters: characters)
                 case .renderedHTML(let html):
-                    DocumentStats(plainText: RenderedPlainText.extract(from: html))
+                    let stats = DocumentStats(plainText: RenderedPlainText.extract(from: html))
+                    return SelectionStats(words: stats.words, characters: stats.characters)
                 }
             }
             let result = await withTaskCancellationHandler {
@@ -1161,7 +1172,7 @@ struct ContentView: View {
     }
 
     private enum SelectedContent: Hashable, Sendable {
-        case markdown(String)
+        case markdown([String])
         case renderedHTML(String)
     }
 
@@ -1171,7 +1182,8 @@ struct ContentView: View {
 
     private var selectedContent: SelectedContent? {
         if usesEditorSelection {
-            return editorSelection?.text.map(SelectedContent.markdown)
+            guard let fragments = editorSelection?.fragments, !fragments.isEmpty else { return nil }
+            return .markdown(fragments)
         }
         return previewSelection.map(SelectedContent.renderedHTML)
     }

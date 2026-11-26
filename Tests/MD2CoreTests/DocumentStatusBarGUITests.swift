@@ -10,6 +10,54 @@ final class DocumentStatusBarGUITests: XCTestCase {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1", "Requires AppKit and WebKit")
     }
 
+    @MainActor func testDiscontiguousSourceSelectionCountsOnlySelectedText() throws {
+        if try runInIsolatedNativeProcess(#function, childVariable: "MD2_STATUS_NATIVE_CASE") { return }
+        defer { print("MD2_NATIVE_COMPLETED=\(#function)") }
+        let app = NSApplication.shared
+        let previousPolicy = app.activationPolicy()
+        _ = app.setActivationPolicy(.regular)
+        app.finishLaunching()
+        defer { _ = app.setActivationPolicy(previousPolicy) }
+        let files = FileManager.default
+        let root = files.temporaryDirectory.appendingPathComponent("StatusSelections-\(UUID())")
+        try files.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? files.removeItem(at: root) }
+        let source = root.appendingPathComponent("Review 📝.md")
+        try "Alpha\nBravo\nCharlie".write(to: source, atomically: true, encoding: .utf8)
+
+        let store = DocumentStore()
+        store.open(source)
+        let host = InteractionTestWindow(store: store)
+        defer { host.close() }
+        host.settings.language = .english
+        host.settings.defaultMode = .write
+        host.host(ContentView(document: store, settings: host.settings, onOpen: {}), width: 720)
+        host.spin(until: { store.editorSession.textView?.window === host.window && store.editorJumpAnchor == nil })
+        let editor = try XCTUnwrap(store.editorSession.textView)
+        XCTAssertTrue(host.window.makeFirstResponder(editor))
+        let alpha = NSRange(location: 0, length: 5)
+        let charlie = NSRange(location: 12, length: 7)
+
+        editor.setSelectedRange(alpha)
+        _ = try visible("document-caret-position", text: "Ln 1, Col 1 – Ln 1, Col 6", in: host)
+        _ = try visible("document-selection-count", text: "Selection: 1 / 3 words · 5 chars", in: host)
+
+        let ranges = [NSValue(range: alpha), NSValue(range: charlie)]
+        editor.selectedRanges = ranges
+        XCTAssertEqual(editor.selectedRanges, ranges)
+        let count = try visible("document-selection-count", text: "Selection: 2 / 3 words · 12 chars", in: host)
+        let position = try visible("document-caret-position", text: "2 selections", in: host)
+        XCTAssertLessThanOrEqual(position.maxX, count.minX)
+
+        editor.setSelectedRange(alpha)
+        _ = try visible("document-caret-position", text: "Ln 1, Col 1 – Ln 1, Col 6", in: host)
+        _ = try visible("document-selection-count", text: "Selection: 1 / 3 words · 5 chars", in: host)
+
+        editor.setSelectedRange(NSRange(location: NSMaxRange(charlie), length: 0))
+        _ = try visible("document-caret-position", text: "Ln 3, Col 8", in: host)
+        _ = try visible("document-word-count", text: "3 words", in: host)
+    }
+
     @MainActor func testPrimaryValuesInfoAndConversionAt720Points() throws {
         if try runInIsolatedNativeProcess(#function, childVariable: "MD2_STATUS_NATIVE_CASE") { return }
         defer { print("MD2_NATIVE_COMPLETED=\(#function)") }

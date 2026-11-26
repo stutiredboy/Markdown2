@@ -15,14 +15,15 @@ final class ReadingImprovementsGUITests: XCTestCase {
         defer { host.close() }
         let editor = try XCTUnwrap(host.store.editorSession.textView)
         let coordinator = try XCTUnwrap(Mirror(reflecting: host.store.editorSession).children.first { $0.label == "coordinator" }?.value as? MarkdownEditorView.Coordinator)
-        var selection: String?
+        var selection: [String]?
         let onSelection = coordinator.onSelectionChange
-        coordinator.onSelectionChange = { selection = $0.text; onSelection($0) }
+        coordinator.onSelectionChange = { selection = $0.fragments; onSelection($0) }
         let text = editor.string
         let selected = (text as NSString).range(of: "中文 **正文** [链接](https://example.com/path)")
         editor.setSelectedRange(selected)
         host.spin(0.35)
-        XCTAssertEqual(DocumentStats(markdown: try XCTUnwrap(selection)).words, 6)
+        XCTAssertEqual(selection, [(text as NSString).substring(with: selected)])
+        XCTAssertEqual(DocumentStats(markdown: try XCTUnwrap(selection?.first)).words, 6)
 
         host.settings.typography.editorFont = .monospaced
         host.settings.typography.fontSize = 20
@@ -36,10 +37,10 @@ final class ReadingImprovementsGUITests: XCTestCase {
         let latinFont = try XCTUnwrap(editor.textStorage?.attribute(.font, at: (text as NSString).range(of: "https").location, effectiveRange: nil) as? NSFont)
         XCTAssertEqual(latinFont.familyName, NSFont.monospacedSystemFont(ofSize: 22, weight: .regular).familyName)
         editor.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
-        coordinator.onSelectionChange = { selection = $0.text; onSelection($0) }
+        coordinator.onSelectionChange = { selection = $0.fragments; onSelection($0) }
         coordinator.reportSelection(in: editor)
         host.spin(0.2)
-        XCTAssertNil(selection)
+        XCTAssertEqual(selection, [])
         editor.insertText("中文", replacementRange: NSRange(location: NSNotFound, length: 0))
         host.spin(0.15)
         host.store.undoManager.undo()

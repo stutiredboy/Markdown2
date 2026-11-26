@@ -16,15 +16,17 @@ the HTML5 named-reference table comes from Python's standard `html.entities.html
 Characters refer to extracted text; lines refer to source lines, not wrapping.
 
 Read shows the word count and estimated reading time. Write shows the source
-line and column, and both endpoints of a selection. Side by Side follows the
-active pane. Open **Document Info** for the full file path, encoding, line
-endings, document counts, and zoom. During a conversion the status bar shows
-the export progress and a **Cancel** button.
+line and column, both endpoints of a single selection, or the number of
+discontiguous selections. Side by Side follows the active pane. Open
+**Document Info** for the full file path, encoding, line endings, document
+counts, and zoom. During a conversion the status bar shows the export progress
+and a **Cancel** button.
 
 The status bar shows selection / document units for a nonempty selection.
-Editor selections are rendered as Markdown fragments using the active inline
-syntax settings. Preview selections use a cloned DOM range and the same plain
-text extractor, excluding UI such as broken-image messages and line numbers.
+Each editor selection is rendered separately as Markdown using the active
+inline syntax settings, and the counts are added together. Preview selections
+use a cloned DOM range and the same plain text extractor, excluding UI such as
+broken-image messages and line numbers.
 Counting is debounced, runs off the main actor, and discards stale results.
 Clearing the selection or switching modes returns to document statistics.
 
