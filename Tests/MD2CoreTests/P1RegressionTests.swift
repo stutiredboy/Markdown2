@@ -14,7 +14,7 @@ struct P1RegressionTests {
         #expect(!body.contains("data-md2-task-line="))
         #expect(body.contains(#"src="missing.png""#))
         #expect(body.contains(#"<b title="ok">text</b>"#))
-        #expect(body.contains("<details open>"))
+        #expect(body.contains(#"<details open data-md2-source-line="1">"#))
     }
 
     @Test(arguments: ["javascript&#58;void%200", "java&#x73;cript:alert", "java&Tab;script:alert", "data:text/html,test", "vbscript:alert"])

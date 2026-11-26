@@ -269,7 +269,7 @@ public struct MarkdownRenderer: Sendable {
                 continue
             }
 
-            let paragraph = paragraphBlock(from: lines, startIndex: index, context: context)
+            let paragraph = paragraphBlock(from: lines, startIndex: index, context: context, lineOffset: lineOffset)
             appendBlock(paragraph.html, from: index, to: paragraph.nextIndex)
             index = paragraph.nextIndex
         }
@@ -1123,7 +1123,9 @@ public struct MarkdownRenderer: Sendable {
         return ("<\(tag)\(startAttribute)\(className)>\n\(listItems.joined(separator: "\n"))\n</\(tag)>", index)
     }
 
-    private func paragraphBlock(from lines: [String], startIndex: Int, context: InlineContext, renderContent: Bool = true) -> (html: String, nextIndex: Int) {
+    private func paragraphBlock(
+        from lines: [String], startIndex: Int, context: InlineContext, lineOffset: Int = 0, renderContent: Bool = true
+    ) -> (html: String, nextIndex: Int) {
         var paragraphLines: [String] = []
         var index = startIndex
 
@@ -1149,10 +1151,13 @@ public struct MarkdownRenderer: Sendable {
             index += 1
         }
 
-        return (renderContent ? "<p>\(paragraphHTML(paragraphLines, context: context))</p>" : "", max(index, startIndex + 1))
+        let nextIndex = max(index, startIndex + 1)
+        guard renderContent else { return ("", nextIndex) }
+        let body = paragraphHTML(paragraphLines, context: context, startLine: lineOffset + startIndex + 1)
+        return ("<p>\(body)</p>", nextIndex)
     }
 
-    private func paragraphHTML(_ lines: [String], context: InlineContext) -> String {
+    private func paragraphHTML(_ lines: [String], context: InlineContext, startLine: Int) -> String {
         let source = lines.enumerated().map { index, line in
             let hasHardBreak = line.hasSuffix("  ") || line.hasSuffix("\\")
             let content: String
@@ -1172,7 +1177,7 @@ public struct MarkdownRenderer: Sendable {
             }
             return "\(content)\n"
         }.joined()
-        return inlineHTML(source, context: context)
+        return inlineHTML(source, context: context, paragraphStartLine: startLine)
     }
 
     // MARK: Footnotes
@@ -1563,7 +1568,7 @@ public struct MarkdownRenderer: Sendable {
     /// ``protectBackslashEscapes`` on purpose: the math delimiters (`$`, `\(`, `\)`)
     /// are built from backslash-escapable punctuation, so the escape pass would
     /// otherwise dismantle them before math ever saw them.
-    private func inlineHTML(_ markdown: String, context: InlineContext? = nil) -> String {
+    private func inlineHTML(_ markdown: String, context: InlineContext? = nil, paragraphStartLine: Int? = nil) -> String {
         let protector = InlineProtector()
 
         let pipeline: [(String) -> String] = [
@@ -1571,7 +1576,7 @@ public struct MarkdownRenderer: Sendable {
             { protectBackslashEscapes($0, protector: protector) },
             { protectHTMLEntities($0, protector: protector) },
             { protectAutolinks($0, protector: protector) },
-            { protectRawHTML($0, protector: protector) },
+            { protectRawHTML($0, protector: protector, paragraphStartLine: paragraphStartLine) },
             { applyFootnoteReferences($0, protector: protector, footnotes: context?.footnotes) },
             { applyCitations($0, protector: protector, citations: context?.citations) },
             { applyCrossReferences($0, protector: protector, crossReferences: context?.crossReferences) },
@@ -1676,10 +1681,33 @@ public struct MarkdownRenderer: Sendable {
 
     /// Formatting HTML is rebuilt with inert attributes before it is protected.
     /// Everything outside this tag allowlist is escaped as visible source.
-    private func protectRawHTML(_ text: String, protector: InlineProtector) -> String {
-        replaceMatches(in: text, pattern: #"</?(?:abbr|b|br|cite|code|del|details|div|em|i|img|kbd|mark|small|span|strong|sub|summary|sup|u)(?:\s+[^<>]*)?/?>"#) { match, source in
+    private func protectRawHTML(_ text: String, protector: InlineProtector, paragraphStartLine: Int?) -> String {
+        var line = paragraphStartLine
+        var previousTag = text.startIndex
+        var blockLines: [Int: Int] = [:]
+        return replaceMatches(
+            in: text,
+            pattern: #"</?(?:(details|div|summary)|abbr|b|br|cite|code|del|em|i|img|kbd|mark|small|span|strong|sub|sup|u)(?:\s+[^<>]*)?/?>"#,
+            prepare: { match, source in
+                guard let currentLine = line, match.range(at: 1).location != NSNotFound,
+                      let range = Range(match.range, in: source), !source[range].hasPrefix("</") else { return }
+                // Earlier inline passes may have folded source breaks inside a
+                // code or math token. Count the authored breaks between tags.
+                let prefix = protector.source(in: String(source[previousTag..<range.lowerBound]))
+                let tagLine = currentLine + prefix.utf8.count(where: { $0 == UInt8(ascii: "\n") })
+                blockLines[match.range.location] = tagLine
+                line = tagLine
+                previousTag = range.lowerBound
+            }
+        ) { match, source in
             let tag = matchText(match, in: source)
-            return protector.protect(HTMLSafety.sanitizeTag(protector.restore(in: tag)), source: escapeHTML(tag))
+            var sanitized = HTMLSafety.sanitizeTag(protector.restore(in: tag))
+            if let tagLine = blockLines[match.range.location] {
+                // WebKit ends the enclosing <p> before these tags. Attach the
+                // source line after sanitizing, to the element that owns the text.
+                sanitized = taggedWithSourceLines(sanitized, startLine: tagLine, endLine: tagLine)
+            }
+            return protector.protect(sanitized, source: escapeHTML(tag))
         }
     }
 

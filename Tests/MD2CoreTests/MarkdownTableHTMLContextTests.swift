@@ -9,7 +9,7 @@ struct MarkdownTableHTMLContextTests {
     func openingTagEscapesFollowRendererParity(_ slashes: Int) throws {
         let prefix = "Use " + String(repeating: "\\", count: slashes) + "<div> as text.\n\n"
         let rendered = MarkdownRenderer().render(prefix + table).body
-        #expect(rendered.contains("<div>") == slashes.isMultiple(of: 2))
+        #expect(rendered.contains(#"<div data-md2-source-line="1">"#) == slashes.isMultiple(of: 2))
         #expect(rendered.contains("&lt;div&gt;") == !slashes.isMultiple(of: 2))
         try expectNavigation(prefix, allowed: !slashes.isMultiple(of: 2))
     }
@@ -54,7 +54,7 @@ struct MarkdownTableHTMLContextTests {
         let rendered = MarkdownRenderer().render(prefix + table).body
         #expect(rendered.contains("<code>"))
         #expect(rendered.contains("&lt;div&gt;"))
-        #expect(!rendered.contains("<div>"))
+        #expect(!rendered.contains("<div"))
         try expectNavigation(prefix, allowed: true)
     }
 

@@ -261,17 +261,7 @@ final class PreviewContextMenuGUITests: XCTestCase, RenderedPageTesting {
                     let title = mode == .read ? "Edit This Paragraph in Source" : "在源码中编辑此段"
                     try useNativeMenu(on: target, in: web, action: .editParagraph(title), copyIdentifiers: [])
                 } else {
-                    let location = try windowPoint(on: target, in: web)
-                    for clicks in 1...2 {
-                        for kind: NSEvent.EventType in [.leftMouseDown, .leftMouseUp] {
-                            let event = try XCTUnwrap(NSEvent.mouseEvent(with: kind, location: location,
-                                modifierFlags: .command, timestamp: ProcessInfo.processInfo.systemUptime,
-                                windowNumber: h.window.windowNumber, context: nil, eventNumber: 0,
-                                clickCount: clicks, pressure: kind == .leftMouseDown ? 1 : 0))
-                            if kind == .leftMouseDown { web.mouseDown(with: event) }
-                            else { web.mouseUp(with: event) }
-                        }
-                    }
+                    try commandDoubleClick(on: target, in: web)
                 }
 
                 let caret = NSRange(location: expected, length: 0)
@@ -286,6 +276,71 @@ final class PreviewContextMenuGUITests: XCTestCase, RenderedPageTesting {
                 XCTAssertEqual(editor.string, source)
                 XCTAssertFalse(h.store.undoManager.canUndo)
                 XCTAssertEqual(h.descendants(WKWebView.self).isEmpty, mode == .read)
+            }
+        }
+    }
+
+    @MainActor func testEditingTheSecondHTMLBlockOpensItsSourceWithTheGutterHidden() throws {
+        let block = "<div>同样的区块</div>"
+        let source = "# 标题 🧭\n\n\(block)\n\n\(block)"
+        let location = (source as NSString).range(of: block, options: .backwards).location
+        let caret = NSRange(location: location, length: 0)
+        let blocks = """
+            Array.from(document.querySelectorAll('main div')).filter(div =>
+                !div.firstElementChild && div.textContent === '同样的区块')
+            """
+        let target = """
+            (() => {
+                const range = document.createRange();
+                range.selectNodeContents((\(blocks))[1]);
+                return range;
+            })()
+            """
+        for mode in [EditorMode.read, .split] {
+            for useMenu in [false, true] {
+                let h = InteractionTestWindow()
+                defer { h.close() }
+                h.settings.newDocumentMode = mode
+                h.settings.showsLineNumbersInPreview = false
+                h.settings.language = .zhHans
+                h.store.text = source
+                h.host(ContentView(document: h.store, settings: h.settings, onOpen: {}), width: 980)
+                let web = try XCTUnwrap(h.descendants(WKWebView.self).first)
+                try h.waitForPage("(\(blocks)).length === 2 && !document.querySelector('.md2-line-gutter span')",
+                                  in: web, context: "two visible HTML blocks in \(mode)")
+
+                if useMenu {
+                    try useNativeMenu(on: target, in: web, action: .editParagraph("在源码中编辑此段"), copyIdentifiers: [])
+                } else {
+                    try commandDoubleClick(on: target, in: web)
+                }
+
+                h.spin(until: {
+                    guard let editor = h.store.editorSession.textView else { return false }
+                    return h.window.firstResponder === editor && editor.selectedRange() == caret
+                })
+                let editor = try XCTUnwrap(h.store.editorSession.textView)
+                XCTAssertTrue(h.window.firstResponder === editor)
+                XCTAssertEqual(editor.selectedRange(), caret, "mode=\(mode), menu=\(useMenu)")
+                XCTAssertEqual(h.store.text, source)
+                XCTAssertEqual(editor.string, source)
+                XCTAssertFalse(h.store.undoManager.canUndo)
+                XCTAssertEqual(h.descendants(WKWebView.self).isEmpty, mode == .read)
+            }
+        }
+    }
+
+    @MainActor private func commandDoubleClick(on target: String, in webView: WKWebView) throws {
+        let window = try XCTUnwrap(webView.window)
+        let location = try windowPoint(on: target, in: webView)
+        for clicks in 1...2 {
+            for kind: NSEvent.EventType in [.leftMouseDown, .leftMouseUp] {
+                let event = try XCTUnwrap(NSEvent.mouseEvent(with: kind, location: location,
+                    modifierFlags: .command, timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                    clickCount: clicks, pressure: kind == .leftMouseDown ? 1 : 0))
+                if kind == .leftMouseDown { webView.mouseDown(with: event) }
+                else { webView.mouseUp(with: event) }
             }
         }
     }
