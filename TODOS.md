@@ -114,7 +114,7 @@ correcting it in the source.
   saving. Once it reports the document saved, read the original file and
   reopen it. Both must show the chosen editor version, `base`.
 
-- [ ] **P2 — Give the status bar a hierarchy for reading and editing.**
+- [x] **P2 — Give the status bar a hierarchy for reading and editing.**
   Reopened after PR #101. At 720 pt, the deferred-conflict button clips
   selection information that was fully visible on `8dac595`.
 
@@ -159,7 +159,7 @@ The following cases reproduced on `9f65cb4` and on an earlier revision.
   px of its recorded position. Also rerun the three passing pause cases above
   for an active Find result, inserted data rows and a reloaded local image.
 
-- [ ] **P2 — Find text inside author highlights and respect its place in a sentence.**
+- [x] **P2 — Find text inside author highlights and respect its place in a sentence.**
   **Reproduce.** Enable highlight syntax and preview two paragraphs,
   `左==验收==右` and `普通验收`. Search for `验收`, then for `左右`. The first
   query finds only the plain occurrence. The second incorrectly selects
@@ -169,7 +169,7 @@ The following cases reproduced on `9f65cb4` and on an earlier revision.
   visit both. Searching for `左右` must yield zero. Closing Find must leave
   the author's highlight visible.
 
-- [ ] **P2 — Make preview Find results inside a disclosure visible.**
+- [x] **P2 — Make preview Find results inside a disclosure visible.**
   **Reproduce.** Preview
   `<details><summary>Summary</summary>collapsedkeyword</details>`.
   Leave it collapsed and search for `collapsedkeyword`. Find reports one

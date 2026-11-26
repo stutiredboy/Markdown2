@@ -21,17 +21,17 @@ final class InteractionTestWindow {
     let window: NSWindow
     let suite = "FindInteractionGUITests-\(UUID().uuidString)"
     let settings: AppSettings
-    init(store: DocumentStore = DocumentStore()) {
+    init(store: DocumentStore = DocumentStore(), window: NSWindow? = nil) {
         _ = NSApplication.shared
         self.store = store
         settings = AppSettings(defaults: UserDefaults(suiteName: suite)!)
         settings.newDocumentMode = .write
         settings.defaultMode = .write
         settings.showsOutlineByDefault = false
-        window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 900, height: 650),
-                          styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.animationBehavior = .none
+        self.window = window ?? NSWindow(contentRect: NSRect(x: 100, y: 100, width: 900, height: 650),
+                                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        self.window.isReleasedWhenClosed = false
+        self.window.animationBehavior = .none
     }
     func host<V: View>(_ root: V, width: CGFloat = 900, height: CGFloat = 650) {
         window.title = store.displayTitle

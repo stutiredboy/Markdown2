@@ -98,6 +98,205 @@ final class PreviewFindHighlightGUITests: XCTestCase {
             """, in: web, context: "the code block scrolls horizontally to reveal its current match")
     }
 
+    @MainActor
+    func testAuthorHighlightsParticipateInNativeFind() throws {
+        let suite = "PreviewFindHighlightGUITests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = AppSettings(defaults: defaults)
+        settings.newDocumentMode = .read
+        settings.language = .english
+        settings.enablesHighlight = true
+        let store = DocumentStore(syntaxConfigProvider: { (settings.inlineFeatures, settings.alertLanguage) })
+        let harness = InteractionTestWindow(store: store)
+        defer { harness.close() }
+        harness.settings.language = .english
+        harness.window.appearance = NSAppearance(named: .aqua)
+        store.text = "左==验收==右\n\n普通验收"
+        harness.host(ContentView(document: store, settings: settings, onOpen: {}), width: 720)
+        let web = try XCTUnwrap(harness.descendants(WKWebView.self).first)
+        try harness.waitForPage("document.querySelector('main p > mark')?.textContent === '验收'", in: web,
+                                context: "author highlighting is enabled in the Read window")
+        _ = try harness.js("""
+            window.originalAuthorMark = document.querySelector('main p > mark');
+            window.originalAuthorColor = getComputedStyle(originalAuthorMark).backgroundColor;
+            true
+            """, web)
+        let bar = try showNativeFind(in: web, harness: harness)
+        try harness.enterQuery("验收")
+        let authorMatch = "element === window.originalAuthorMark"
+        let plainMatch = "element.matches('main p') && element.textContent === '普通验收'"
+        try waitForVisibleMatch(0, of: 2, query: "验收", owner: authorMatch, in: web, bar: bar, harness: harness)
+        XCTAssertEqual(try harness.js("""
+            \(PreviewFindRanges.all).every(range => {
+                const r = range.getBoundingClientRect();
+                return r.width > 0 && r.height > 0 && r.top >= 0 && r.bottom <= innerHeight;
+            })
+            """, web) as? Bool, true, "the two results are visible together")
+        try capturePreview("find-author-first", in: web)
+        try navigate(bar: bar, harness: harness)
+        try waitForVisibleMatch(1, of: 2, query: "验收", owner: plainMatch, in: web, bar: bar, harness: harness)
+        try capturePreview("find-author-second", in: web)
+        try navigate(bar: bar, harness: harness)
+        try waitForVisibleMatch(0, of: 2, query: "验收", owner: authorMatch, in: web, bar: bar, harness: harness)
+        try navigate(previous: true, bar: bar, harness: harness)
+        try waitForVisibleMatch(1, of: 2, query: "验收", owner: plainMatch, in: web, bar: bar, harness: harness)
+        try navigate(previous: true, bar: bar, harness: harness)
+        try waitForVisibleMatch(0, of: 2, query: "验收", owner: authorMatch, in: web, bar: bar, harness: harness)
+
+        try harness.enterQuery("左验收右")
+        try harness.waitForPage("""
+            \(PreviewFindRanges.currentCount) === 3 &&
+            \(PreviewFindRanges.all).map(range => range.toString()).join('') === '左验收右'
+            """, in: web, context: "the inline formatting keeps the full sentence intact")
+        verifyStatus("1 of 1", bar: bar, harness: harness)
+        try harness.enterQuery("左右")
+        try harness.waitForPage("\(PreviewFindRanges.count) === 0 && \(PreviewFindRanges.currentCount) === 0", in: web,
+                                context: "the marked text separates the surrounding characters")
+        verifyStatus("No results", bar: bar, harness: harness)
+        try harness.press(.closeFind)
+        try harness.waitForPage("""
+            document.querySelectorAll('main mark').length === 1 &&
+            document.querySelector('main mark') === originalAuthorMark &&
+            getComputedStyle(originalAuthorMark).backgroundColor === originalAuthorColor &&
+            originalAuthorMark.getBoundingClientRect().width > 0 &&
+            originalAuthorMark.parentElement.textContent === '左验收右' &&
+            \(PreviewFindRanges.count) === 0 && \(PreviewFindRanges.currentCount) === 0
+            """, in: web, context: "the original author highlight is visible after closing Find")
+        try capturePreview("find-author-after-close", in: web)
+    }
+
+    @MainActor
+    func testNativeFindRevealsCollapsedDisclosuresInDocumentOrder() throws {
+        let harness = InteractionTestWindow()
+        defer { harness.close() }
+        harness.settings.newDocumentMode = .read
+        harness.settings.language = .english
+        harness.window.appearance = NSAppearance(named: .aqua)
+        let gap = String(repeating: "An intervening paragraph.\n\n", count: 18)
+        harness.store.text = "<details><summary>Summary</summary>collapsedkeyword</details>\n\n" + gap
+            + "<details><summary>Nested keyword heading</summary><div><details><summary>Inner heading</summary>"
+            + "<div>Inner <mark>keyword</mark> body.</div></details></div></details>\n\n" + gap + "Ordinary keyword."
+        harness.host(ContentView(document: harness.store, settings: harness.settings, onOpen: {}), width: 720)
+        let web = try XCTUnwrap(harness.descendants(WKWebView.self).first)
+        let state = "Array.from(document.querySelectorAll('details')).map(d => d.open ? '1' : '0').join('')"
+        try harness.waitForPage("\(state) === '000'", in: web, context: "all three disclosures start closed")
+        let bar = try showNativeFind(in: web, harness: harness)
+        try harness.enterQuery("Summarycollapsedkeyword")
+        verifyStatus("No results", bar: bar, harness: harness)
+        XCTAssertEqual(try harness.js(state, web) as? String, "000")
+
+        let first = "element === document.querySelector('details')"
+        let summary = "element.matches('summary') && element.textContent === 'Nested keyword heading'"
+        let nested = "element.matches('details details mark')"
+        let prose = "element.matches('main p') && element.textContent === 'Ordinary keyword.'"
+        try harness.enterQuery("collapsedkeyword")
+        try waitForVisibleMatch(0, of: 1, query: "collapsedkeyword", owner: first,
+                                in: web, bar: bar, harness: harness)
+        XCTAssertEqual(try harness.js(state, web) as? String, "100")
+        try capturePreview("find-disclosure-open", in: web)
+
+        try harness.enterQuery("keyword")
+        try waitForVisibleMatch(0, of: 4, query: "keyword", owner: first, in: web, bar: bar, harness: harness)
+        try navigate(bar: bar, harness: harness)
+        try waitForVisibleMatch(1, of: 4, query: "keyword", owner: summary, in: web, bar: bar, harness: harness)
+        XCTAssertEqual(try harness.js(state, web) as? String, "100", "a summary is already visible")
+        try capturePreview("find-disclosure-summary", in: web)
+        try navigate(bar: bar, harness: harness)
+        try waitForVisibleMatch(2, of: 4, query: "keyword", owner: nested, in: web, bar: bar, harness: harness)
+        XCTAssertEqual(try harness.js(state, web) as? String, "111", "the current body hit opens its two ancestors")
+        try capturePreview("find-disclosure-nested", in: web)
+        try navigate(bar: bar, harness: harness)
+        try waitForVisibleMatch(3, of: 4, query: "keyword", owner: prose, in: web, bar: bar, harness: harness)
+        try navigate(bar: bar, harness: harness)
+        try waitForVisibleMatch(0, of: 4, query: "keyword", owner: first, in: web, bar: bar, harness: harness)
+        for (index, owner) in [prose, nested, summary, first].enumerated() {
+            try navigate(previous: true, bar: bar, harness: harness)
+            try waitForVisibleMatch(3 - index, of: 4, query: "keyword", owner: owner, in: web, bar: bar, harness: harness)
+        }
+        try harness.enterQuery("collapsedkeyword")
+        try waitForVisibleMatch(0, of: 1, query: "collapsedkeyword", owner: first,
+                                in: web, bar: bar, harness: harness)
+    }
+
+    @MainActor
+    private func showNativeFind(in web: WKWebView, harness: InteractionTestWindow) throws
+        -> NativeFindBarController<PreviewFindBar> {
+        let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: harness.window.windowNumber, context: nil,
+            characters: "f", charactersIgnoringModifiers: "f", isARepeat: false, keyCode: 3))
+        XCTAssertTrue(web.performKeyEquivalent(with: event))
+        harness.spin(until: { harness.queryField != nil })
+        var responder: NSResponder? = try XCTUnwrap(harness.queryField)
+        while let current = responder, !(current is NativeFindPaneOwner) { responder = current.nextResponder }
+        return try XCTUnwrap(responder as? NativeFindBarController<PreviewFindBar>)
+    }
+
+    @MainActor
+    private func verifyStatus(_ status: String, bar: NativeFindBarController<PreviewFindBar>,
+                              harness: InteractionTestWindow, file: StaticString = #filePath, line: UInt = #line) {
+        harness.spin(until: { bar.rootView.statusText == status })
+        XCTAssertEqual(bar.rootView.statusText, status, file: file, line: line)
+    }
+
+    @MainActor
+    private func navigate(previous: Bool = false, bar: NativeFindBarController<PreviewFindBar>,
+                          harness: InteractionTestWindow) throws {
+        let field = try XCTUnwrap(harness.queryField)
+        let y = field.convert(field.bounds, to: nil).midY
+        let row = harness.descendants(NSButton.self, in: bar.view).filter {
+            let bounds = $0.convert($0.bounds, to: nil)
+            return bounds.minY <= y && bounds.maxY >= y
+        }.sorted { $0.convert($0.bounds, to: nil).minX < $1.convert($1.bounds, to: nil).minX }
+        XCTAssertEqual(row.count, 3, "Find shows Previous, Next, and Close")
+        let button = try XCTUnwrap(row.dropFirst(previous ? 0 : 1).first)
+        XCTAssertTrue(button.isEnabled)
+        button.performClick(nil)
+    }
+
+    @MainActor
+    private func waitForVisibleMatch(_ index: Int, of total: Int, query: String, owner: String,
+                                     in web: WKWebView, bar: NativeFindBarController<PreviewFindBar>,
+                                     harness: InteractionTestWindow, file: StaticString = #filePath,
+                                     line: UInt = #line) throws {
+        try harness.waitForPage("""
+            (() => {
+                if (\(PreviewFindRanges.count) !== \(total) || \(PreviewFindRanges.currentIndex) !== \(index)) return false;
+                if (\(PreviewFindRanges.all).some(range => range.toString() !== '\(query)')) return false;
+                const range = CSS.highlights.get('md2-find-current')?.values().next().value;
+                if (!range) return false;
+                const element = range.startContainer.parentElement;
+                if (!(\(owner))) return false;
+                const rect = range.getBoundingClientRect();
+                if (!rect.width || !rect.height || rect.top < 0 || rect.bottom > innerHeight ||
+                    rect.left < 0 || rect.right > innerWidth) return false;
+                const x = (rect.left + rect.right) / 2, y = (rect.top + rect.bottom) / 2;
+                const outline = document.querySelector('.md2-find-outline > i')?.getBoundingClientRect();
+                return element.contains(document.elementFromPoint(x, y)) && outline &&
+                    outline.left <= x && outline.right >= x && outline.top <= y && outline.bottom >= y;
+            })()
+            """, in: web, context: "visible '\(query)' result \(index + 1) of \(total) (\(owner))", file: file, line: line)
+        verifyStatus("\(index + 1) of \(total)", bar: bar, harness: harness, file: file, line: line)
+        let top = try XCTUnwrap(try harness.js("""
+            CSS.highlights.get('md2-find-current').values().next().value.getBoundingClientRect().top
+            """, web) as? Double, file: file, line: line)
+        print("Preview Find '\(query)' \(index + 1) of \(total), visible at y=\(top) CSS px")
+    }
+
+    @MainActor
+    private func capturePreview(_ name: String, in web: WKWebView) throws {
+        guard let directory = ProcessInfo.processInfo.environment["MD2_INTERACTION_EVIDENCE_DIR"] else { return }
+        let configuration = WKSnapshotConfiguration()
+        configuration.afterScreenUpdates = true
+        let done = expectation(description: "capture \(name)")
+        var screenshot: NSImage?
+        web.takeSnapshot(with: configuration) { image, _ in screenshot = image; done.fulfill() }
+        wait(for: [done], timeout: 8)
+        let frame = try XCTUnwrap(screenshot?.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        let png = try XCTUnwrap(NSBitmapImageRep(cgImage: frame).representation(using: .png, properties: [:]))
+        try png.write(to: URL(fileURLWithPath: directory).appendingPathComponent(name + ".png"))
+    }
+
     // Equal paragraph heights can hide a character moving to a different line.
     @MainActor
     private func lineStarts(in web: WKWebView, harness: InteractionTestWindow) throws -> [Int] {
