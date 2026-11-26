@@ -330,7 +330,11 @@ struct DocumentExternalChangeTests {
         let directory = url.deletingLastPathComponent()
         defer { try? FileManager.default.removeItem(at: directory) }
         let newURL = directory.appendingPathComponent("Recovered.md")
-        let store = DocumentStore(saveLocationPicker: { _ in newURL }, fileWatcherFactory: { FakeFileWatcher() })
+        var saveLocationRequests = 0
+        let store = DocumentStore(saveLocationPicker: { _ in
+            saveLocationRequests += 1
+            return newURL
+        }, fileWatcherFactory: { FakeFileWatcher() })
         defer { store.closeDocument(discardRecovery: true) }
         store.open(url)
         store.text = "Editor draft"
@@ -344,9 +348,16 @@ struct DocumentExternalChangeTests {
             store.deferExternalConflict()
         } else {
             store.deferExternalConflict()
+            #expect(store.canReviewExternalConflict)
             try FileManager.default.removeItem(at: url)
+            store.reviewExternalConflict()
+            #expect(!store.canReviewExternalConflict)
+            #expect(store.externalConflictRequest == nil)
+            #expect(store.text == "Editor draft" && store.isDirty)
         }
+        #expect(saveLocationRequests == 0)
         #expect(store.save())
+        #expect(saveLocationRequests == 1)
         #expect(try Data(contentsOf: newURL) == Data("Editor draft".utf8))
         #expect(!FileManager.default.fileExists(atPath: url.path))
     }

@@ -515,17 +515,10 @@ final class DocumentStore: ObservableObject {
         // An unresolved external conflict blocks every write; asking again is
         // the only honest response to another ⌘S.
         if hasExternalConflict {
-            if linkedSaveRepairHash != nil, linkedSaveCheckpoint?.text != text {
-                linkedSaveRepairHash = nil
-            }
-            guard pendingConflictReload == nil else { return false }
-            if externalConflictRequest == nil {
-                refreshFileLocation()
-                if backingFileMissing, !offersLinkedSaveRepair {
-                    hasExternalConflict = false
-                    return presentSaveLocationAndWrite()
-                }
-                externalConflictRequest = ExternalConflictRequest()
+            reviewExternalConflict()
+            if isExternalConflictDeferred, backingFileMissing {
+                hasExternalConflict = false
+                return presentSaveLocationAndWrite()
             }
             return false
         }
@@ -2061,8 +2054,26 @@ final class DocumentStore: ObservableObject {
             && textMutationRevision == comparison.editorRevision && fileFormat == comparison.editorFormat
     }
 
-    /// Esc and saving a copy leave the original suspended. Its next manual
-    /// Save reopens the comparison, or offers relocation if the file is gone.
+    private var isExternalConflictDeferred: Bool {
+        !isClosed && hasExternalConflict && externalConflictRequest == nil && pendingConflictReload == nil
+    }
+
+    var canReviewExternalConflict: Bool {
+        isExternalConflictDeferred && fileURL != nil && !backingFileMissing
+    }
+
+    func reviewExternalConflict() {
+        guard !isClosed, hasExternalConflict else { return }
+        if linkedSaveRepairHash != nil, linkedSaveCheckpoint?.text != text {
+            linkedSaveRepairHash = nil
+        }
+        guard isExternalConflictDeferred else { return }
+        refreshFileLocation()
+        guard !backingFileMissing || offersLinkedSaveRepair else { return }
+        externalConflictRequest = ExternalConflictRequest()
+    }
+
+    /// Later, Esc, and saving a copy leave the original suspended.
     func deferExternalConflict() {
         guard hasExternalConflict, !offersLinkedSaveRepair, pendingConflictReload == nil else { return }
         externalConflictRequest = nil

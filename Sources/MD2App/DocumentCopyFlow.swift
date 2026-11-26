@@ -204,7 +204,6 @@ final class DocumentCopyFlow: ObservableObject {
 struct DocumentCopyNotice: View {
     @ObservedObject var flow: DocumentCopyFlow
     @ObservedObject var settings: AppSettings
-    let hasExternalConflict: Bool
     let onOpen: (DocumentCopyReceipt) -> Void
 
     var body: some View {
@@ -214,11 +213,6 @@ struct DocumentCopyNotice: View {
                     .fixedSize(horizontal: false, vertical: true)
                 if let detail = flow.detail {
                     Text(detail).font(.caption).textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if hasExternalConflict, flow.receipt != nil {
-                    Text(settings.text(.conflictCopySavedHint))
-                        .font(.caption)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 HStack {

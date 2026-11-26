@@ -34,6 +34,8 @@
 
 ### Fixed
 
+- See that autosave is paused in the status bar after choosing **Later**, and reopen the conflict comparison from there.
+
 - Count each discontiguous source selection separately and show the number of selected ranges in the status bar.
 
 - Open the corresponding source line when Command-double-clicking an HTML block in Preview or choosing **Edit This Paragraph in Source** from its context menu.
