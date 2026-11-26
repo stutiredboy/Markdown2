@@ -413,7 +413,8 @@ struct DocumentExternalChangeTests {
         let snapshot = try #require(try recovery.load().first)
         #expect(snapshot.text == "base" && snapshot.isDirty)
 
-        #expect(await waitUntil { !store.isDirty })
+        // Autosave shares the main actor with the rest of the parallel suite.
+        try #require(await waitUntil(timeout: 30) { !store.isDirty })
         #expect(try Data(contentsOf: url) == Data("base".utf8))
         #expect(store.closeDocument(discardRecovery: true))
         let reopened = makeStore(FakeFileWatcher())
