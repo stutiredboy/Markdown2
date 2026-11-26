@@ -102,7 +102,7 @@ reading its context and correcting it in the source.
   original should stay paused during comparison, and saving a copy should
   leave both versions available. See the [document lifecycle](Docs/DocumentLifecycle.md).
 
-- [ ] **P1 — Make “Keep My Version” report the true save state.** Open an
+- [x] **P1 — Make “Keep My Version” report the true save state.** Open an
   unmodified file containing `base`. Write `theirs` to it externally and
   invoke Save before the file watcher delivers the change. Choose **Keep My
   Version**. On both `eeb15a6` and `83a1ed2`, the document model cleared the
