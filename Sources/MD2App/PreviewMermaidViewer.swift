@@ -4,6 +4,7 @@ import Foundation
 enum PreviewMermaidViewer {
     static let stateMessage = "mermaidViewerOpen"
     static let revealFindMatchEvent = "md2-reveal-find-match"
+    static let moveDiagramEvent = "md2-move-diagram"
 
     static func labels(language: AppLanguage) -> String {
         let labels = [L10n.text(.viewDiagramAtActualSize, language: language), L10n.text(.close, language: language)]
@@ -54,21 +55,12 @@ enum PreviewMermaidViewer {
             document.head.appendChild(style);
 
             let viewer = null, suspendedForFind = null;
-            // WebKit collapses live Ranges when their nodes are reparented.
-            // Find stores one range per matching text fragment. Retain its
-            // endpoints when the viewer moves this diagram into or out of view.
             function moveDiagram(svg, move) {
-                const endpoints = [];
-                for (const range of CSS.highlights.get('md2-find') || []) {
-                    if (svg.contains(range.startContainer)) {
-                        endpoints.push([range, range.startContainer, range.startOffset, range.endOffset]);
-                    }
-                }
+                // Find owns its Ranges in the page world. Let it save and
+                // restore their endpoints around this synchronous DOM move.
+                svg.dispatchEvent(new CustomEvent('\#(moveDiagramEvent)', {bubbles: true, detail: 'before'}));
                 move();
-                for (const [range, text, start, end] of endpoints) {
-                    range.setStart(text, start);
-                    range.setEnd(text, end);
-                }
+                svg.dispatchEvent(new CustomEvent('\#(moveDiagramEvent)', {bubbles: true, detail: 'after'}));
             }
             function openDiagram(block, svg, button, focusCanvas = true) {
                 if (viewer || !svg.isConnected) return;

@@ -20,10 +20,31 @@ enum PreviewTextSearch {
         var findSnapshot = null;
         var findKey = null, findText = '';
         var pendingHeldFind = null, heldFindNode = null;
+        var movingFindRanges = [];
         var findOutline, outlineFrame, outlineResize, outlineChanges;
         var openDiagramSelector = '.md2-diagram-viewer[open]';
         var revealFindMatchEvent = '\#(PreviewMermaidViewer.revealFindMatchEvent)';
         window.__md2FindActive = false;
+        document.addEventListener('\#(PreviewMermaidViewer.moveDiagramEvent)', event => {
+            // WebKit collapses live Ranges when the SVG leaves its parent.
+            // Each Find fragment stores two offsets in the same text node.
+            if (event.detail === 'before') {
+                movingFindRanges = [];
+                for (var group of findGroups) {
+                    for (var range of group) {
+                        if (event.target.contains(range.startContainer)) {
+                            movingFindRanges.push([range, range.startContainer, range.startOffset, range.endOffset]);
+                        }
+                    }
+                }
+            } else if (event.detail === 'after') {
+                for (var [range, text, start, end] of movingFindRanges) {
+                    range.setStart(text, start);
+                    range.setEnd(text, end);
+                }
+                movingFindRanges = [];
+            }
+        });
         (function () {
             var style = document.createElement('style');
             style.textContent = `
@@ -242,8 +263,8 @@ enum PreviewTextSearch {
             // including adjacent inline runs, moving nested scrollports first.
             var start = group[0].startContainer.parentElement;
             if (!start) return;
-            var dialog = start.closest(openDiagramSelector);
-            var root = dialog || document.body;
+            var dialog = document.querySelector(openDiagramSelector);
+            var root = dialog?.contains(group[0].startContainer) ? dialog : document.body;
             var rtl = getComputedStyle(start).direction === 'rtl';
             for (var el = start; el && el !== root; el = el.parentElement) {
                 var style = getComputedStyle(el);
@@ -255,7 +276,7 @@ enum PreviewTextSearch {
                 el.scrollBy(scrollX ? horizontalReveal(rect, box, rtl) : 0,
                             scrollY ? (rect.top + rect.bottom - box.top - box.bottom) / 2 : 0);
             }
-            if (dialog) return;
+            if (root === dialog) return;
             var rect = firstFindLine(group, document.body), box = viewportBox();
             if (rect) window.scrollBy(horizontalReveal(rect, box, rtl), (rect.top + rect.bottom - box.bottom) / 2);
         }
@@ -271,7 +292,8 @@ enum PreviewTextSearch {
                 releaseReference();
                 window.__md2FindActive = true;
                 var target = group[0].startContainer.parentElement;
-                if (target && !target.closest(openDiagramSelector)) {
+                var dialog = document.querySelector(openDiagramSelector);
+                if (target && !dialog?.contains(group[0].startContainer)) {
                     target.dispatchEvent(new CustomEvent(revealFindMatchEvent, {
                         bubbles: true, detail: findKey
                     }));
@@ -393,8 +415,8 @@ enum PreviewTextSearch {
                 return result;
             }
             heldFindNode = null;
-            // A query started from the actual-size view prefers its first
-            // visible-surface match. Navigation keeps the document order.
+            // A query started from the actual-size view prefers the first
+            // match in that view. Navigation keeps the document order.
             var dialog = document.querySelector(openDiagramSelector);
             var first = dialog ? findGroups.findIndex(group => dialog.contains(group[0].startContainer)) : 0;
             return setCurrent(Math.max(0, first), reveal);

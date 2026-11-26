@@ -141,14 +141,16 @@ final class MermaidActualSizeGUITests: XCTestCase, RenderedPageTesting {
         while let current = responder, !(current is NativeFindPaneOwner) { responder = current.nextResponder }
         let bar = try XCTUnwrap(responder as? NativeFindBarController<PreviewFindBar>)
 
-        func waitForMatch(_ index: Int, prose: String? = nil, query: String = "Needle", total: Int = 3) throws {
+        func waitForMatch(_ index: Int, prose: String? = nil, query: String = "Needle", total: Int = 3,
+                          file: StaticString = #filePath, line: UInt = #line) throws {
             let expectedSurface = prose.map { "owner?.textContent.startsWith('\($0)') && !dialog" }
                 ?? "canvas?.contains(element) && canvas.contains(window.originalFindDiagram) && canvas.scrollLeft > 0"
             try h.waitForPage("""
                 (() => {
                     if (\(PreviewFindRanges.count) !== \(total) || \(PreviewFindRanges.currentIndex) !== \(index)) return false;
+                    if (\(PreviewFindRanges.all).some(range => range.toString() !== '\(query)')) return false;
                     const range = Array.from(CSS.highlights.get('md2-find-current') || [])[0];
-                    if (!range || range.toString() !== '\(query)') return false;
+                    if (!range) return false;
                     const dialog = document.querySelector('.md2-diagram-viewer[open]');
                     const canvas = dialog?.querySelector('.md2-diagram-canvas');
                     const element = range.startContainer.parentElement;
@@ -168,7 +170,8 @@ final class MermaidActualSizeGUITests: XCTestCase, RenderedPageTesting {
                     const mark = outline?.getBoundingClientRect();
                     return mark && mark.left <= x && mark.right >= x && mark.top <= y && mark.bottom >= y;
                 })()
-                """, in: web, context: "visible \(query) result \(index + 1) of \(total) in \(prose ?? "actual-size diagram")")
+                """, in: web, context: "visible \(query) result \(index + 1) of \(total) in \(prose ?? "actual-size diagram")",
+                file: file, line: line)
             let status = "\(index + 1) of \(total)"
             h.spin(until: { bar.rootView.statusText == status })
             XCTAssertEqual(bar.rootView.statusText, status)
