@@ -201,9 +201,210 @@ final class SplitScrollPauseGUITests: XCTestCase {
                        "the preview was the latest scroll source even with the insertion point in the editor")
     }
 
+    @MainActor func testPausedPreviewKeepsTheCurrentFindOccurrenceWhenEditingAnEarlierMatch() throws {
+        let host = InteractionTestWindow()
+        defer { host.close() }
+        let paragraphs = ["First Needle"] + (1...100).map { "Meeting notes \($0)" }
+            + ["Second Needle"] + (1...30).map { "Footer \($0)" }
+        host.store.text = paragraphs.joined(separator: "\n\n")
+        let second = "Array.from(document.querySelectorAll('main p')).find(p => p.textContent === 'Second Needle')"
+        let web = try mountDocument(in: host, settings: host.settings, marker: "Second Needle", ready: "!!(\(second))")
+        let find = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                                                  timestamp: ProcessInfo.processInfo.systemUptime,
+                                                  windowNumber: host.window.windowNumber, context: nil, characters: "f",
+                                                  charactersIgnoringModifiers: "f", isARepeat: false, keyCode: 3))
+        XCTAssertTrue(web.performKeyEquivalent(with: find))
+        host.spin(until: { host.queryField != nil })
+        try host.enterQuery("Needle")
+        try host.waitForPage("\(PreviewFindRanges.count) === 2 && \(PreviewFindRanges.currentIndex) === 0", in: web,
+                             context: "the first of two matches is current before navigating")
+        host.store.requestFind(.next)
+        let highlight = "CSS.highlights.get('md2-find-current')?.values().next().value"
+        let currentIsSecond = "(\(highlight))?.startContainer.parentElement.closest('p') === (\(second))"
+        try host.waitForPage(currentIsSecond, in: web, context: "Find Next selected the second paragraph")
+        try toggle(in: host, paused: false)
+        let y = try visibleTop(of: second, in: web, host: host)
+
+        let field = try XCTUnwrap(host.queryField)
+        var owner: NSResponder? = field
+        while let responder = owner, !(responder is NativeFindPaneOwner) { owner = responder.nextResponder }
+        let bar = try XCTUnwrap(owner as? NativeFindBarController<PreviewFindBar>)
+        try insert("Edited ", before: "First Needle", in: host)
+        try host.waitForPage("""
+            \(PreviewFindRanges.all)[0]?.startContainer.textContent.includes('Edited First Needle')
+                && \(PreviewFindRanges.count) === 2 && (\(currentIsSecond))
+            """, in: web, context: "both highlights were repainted with the second still current")
+        host.spin(until: { bar.rootView.statusText == "2 of 2" })
+        XCTAssertEqual(bar.rootView.statusText, "2 of 2")
+        XCTAssertEqual(try visibleTop(of: second, in: web, host: host), y, accuracy: 2)
+
+        // The same occurrence changes index when an earlier match is added.
+        try insert("New Needle. ", before: "Edited First Needle", in: host)
+        try host.waitForPage("\(PreviewFindRanges.count) === 3 && \(PreviewFindRanges.currentIndex) === 2 && (\(currentIsSecond))",
+                             in: web, context: "the original current result is now third")
+        host.spin(until: { bar.rootView.statusText == "3 of 3" })
+        XCTAssertEqual(bar.rootView.statusText, "3 of 3")
+        XCTAssertEqual(try visibleTop(of: second, in: web, host: host), y, accuracy: 2)
+
+        _ = try host.js("window.beforeMermaid = true", web)
+        try insert("```mermaid\ngraph LR; A-->B;\n```\n\n", before: "New Needle.", in: host)
+        try host.waitForPage("""
+            !window.beforeMermaid && window.__md2DiagramsSettled === true && !!document.querySelector('.diagram svg')
+                && \(PreviewFindRanges.count) === 3 && (\(currentIsSecond))
+            """, in: web, context: "the fresh page restores the same current result")
+        XCTAssertEqual(try visibleTop(of: second, in: web, host: host), y, accuracy: 2)
+
+        // A selected result can remain current after a reader scrolls away.
+        // A repaint after the next edit must hold what is actually visible.
+        let reading = "Array.from(document.querySelectorAll('main p')).find(p => p.textContent === 'Meeting notes 50')"
+        _ = try host.js("window.dispatchEvent(new WheelEvent('wheel', { deltaY: -800 }))", web)
+        let readingY = try positionReference(reading, at: 60, in: web, host: host)
+        XCTAssertEqual(try host.js("(\(second)).getBoundingClientRect().top > innerHeight", web) as? Bool, true)
+        try insert("Checked ", before: "New Needle.", in: host)
+        try host.waitForPage("""
+            \(PreviewFindRanges.all)[0]?.startContainer.textContent.includes('Checked New Needle.')
+                && \(PreviewFindRanges.count) === 3 && (\(currentIsSecond))
+            """, in: web, context: "the offscreen result remains current after repaint")
+        XCTAssertEqual(try visibleTop(of: reading, in: web, host: host), readingY, accuracy: 2)
+        XCTAssertTrue(host.window.makeFirstResponder(field))
+        host.store.requestFind(.previous)
+        try host.waitForPage("\(PreviewFindRanges.currentIndex) === 1 && !(\(currentIsSecond))", in: web,
+                             context: "an explicit Previous moves from the preserved match")
+        _ = try visibleTop(of: highlight, in: web, host: host)
+    }
+
+    @MainActor func testPausedPreviewKeepsRecord60WhenTwentyTableRowsAreInserted() throws {
+        let host = InteractionTestWindow()
+        defer { host.close() }
+        // The rows just above Record 60 repeat a run from twenty rows
+        // earlier. After insertion, the same ordinal can point to the wrong run.
+        let rows = (1...150).map { row in
+            let label = (32...39).contains(row) ? row + 20 : row
+            return "| Record \(label) | Value \(label) |"
+        }.joined(separator: "\n")
+        host.store.text = "| Key | Value |\n| --- | --- |\n" + rows
+        let web = try mountDocument(in: host, settings: host.settings, marker: "Record 150",
+                                    ready: "document.querySelectorAll('tbody tr').length === 150")
+        try toggle(in: host, paused: false)
+        let record = "Array.from(document.querySelectorAll('tbody tr')).find(row => row.cells[0].textContent === 'Record 60')"
+        let y = try positionReference(record, at: 70, in: web, host: host)
+        try insert((1...20).map { "| Added \($0) | check |\n" }.joined(), before: "| Record 1 |", in: host)
+        try host.waitForPage("""
+            window.initialPage && document.querySelectorAll('tbody tr').length === 170
+                && document.querySelector('tbody').rows[19].cells[0].textContent === 'Added 20'
+                && document.querySelector('tbody').rows[79] === (\(record))
+            """, in: web, context: "all twenty new rows rendered above the original record in a live update")
+        XCTAssertEqual(try visibleTop(of: record, in: web, host: host), y, accuracy: 2)
+
+        // The new page now starts with another table that has identical
+        // headers. Only the original table contains the held record.
+        try insert("| Key | Value |\n| --- | --- |\n| Draft | Pending |\n\n"
+                   + "```mermaid\ngraph LR; A-->B;\n```\n\n", before: "| Key | Value |", in: host)
+        try host.waitForPage("""
+            !window.initialPage && window.__md2DiagramsSettled === true && !!document.querySelector('.diagram svg')
+                && document.querySelectorAll('table').length === 2
+                && document.querySelector('table tbody tr').cells[0].textContent === 'Draft'
+                && document.querySelectorAll('table')[1].tBodies[0].rows[79] === (\(record))
+            """, in: web, context: "the original record belongs to the second table after the fresh navigation")
+        XCTAssertEqual(try visibleTop(of: record, in: web, host: host), y, accuracy: 2)
+    }
+
+    @MainActor func testPausedPreviewKeepsRecord60WhenTwentyListItemsAreInserted() throws {
+        let host = InteractionTestWindow()
+        defer { host.close() }
+        host.store.text = (1...150).map { "- Record \($0)" }.joined(separator: "\n")
+        let web = try mountDocument(in: host, settings: host.settings, marker: "Record 150",
+                                    ready: "document.querySelectorAll('main li').length === 150")
+        try toggle(in: host, paused: false)
+        let record = "Array.from(document.querySelectorAll('main li')).find(li => li.textContent.trim() === 'Record 60')"
+        let y = try positionReference(record, at: 70, in: web, host: host)
+        try insert((1...20).map { "- Added \($0)\n" }.joined(), before: "- Record 1\n", in: host)
+        try host.waitForPage("""
+            window.initialPage && document.querySelectorAll('main li').length === 170
+                && document.querySelectorAll('main li')[19].textContent.trim() === 'Added 20'
+                && document.querySelectorAll('main li')[79] === (\(record))
+            """, in: web, context: "all twenty new list items rendered above the original item")
+        XCTAssertEqual(try visibleTop(of: record, in: web, host: host), y, accuracy: 2)
+    }
+
+    @MainActor func testPausedPreviewKeepsTheSecondLocalImageAfterLoadingMermaid() throws {
+        let files = FileManager.default
+        let directory = files.temporaryDirectory.appendingPathComponent("HeldPreviewImages-\(UUID())", isDirectory: true)
+        try files.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? files.removeItem(at: directory) }
+        // Both paragraphs have the same tag, alt text and empty textContent.
+        // The two genuinely different image files identify what is being read.
+        try writeImage(height: 950, color: .red, to: directory.appendingPathComponent("first.png"))
+        try writeImage(height: 1050, color: .blue, to: directory.appendingPathComponent("second.png"))
+        let url = directory.appendingPathComponent("Photos.md")
+        let text = "# Photos\n\n![Photo](first.png)\n\n![Photo](second.png)\n\n"
+            + (1...30).map { "End note \($0)." }.joined(separator: "\n\n")
+        try text.write(to: url, atomically: true, encoding: .utf8)
+        let host = InteractionTestWindow()
+        defer { host.store.closeDocument(discardRecovery: true); host.close() }
+        host.store.open(url)
+        let second = "Array.from(document.querySelectorAll('main img')).find(img => img.naturalHeight === 1050)"
+        let bothDecoded = """
+            document.querySelectorAll('main img').length === 2
+                && document.querySelector('main img')?.naturalHeight === 950 && !!(\(second))
+            """
+        let web = try mountDocument(in: host, settings: host.settings, marker: "Photos", ready: bothDecoded)
+        try toggle(in: host, paused: false)
+        let secondSource = try XCTUnwrap(try host.js("(\(second)).currentSrc", web) as? String)
+        XCTAssertTrue(secondSource.hasPrefix("md2-local-image://"))
+        let y = try positionReference(second, at: -90, in: web, host: host)
+        try insert("```mermaid\ngraph LR; A-->B;\n```\n\n", before: "![Photo](first.png)", in: host)
+        try host.waitForPage("""
+            !window.initialPage && window.__md2DiagramsSettled === true && !!document.querySelector('.diagram svg')
+                && (\(bothDecoded))
+            """, in: web, context: "new page has painted Mermaid and both local images")
+        XCTAssertEqual(try host.js("(\(second)).currentSrc", web) as? String, secondSource)
+        XCTAssertEqual(try visibleTop(of: second, in: web, host: host), y, accuracy: 2)
+    }
+
+    @MainActor private func positionReference(_ expression: String, at top: Double, in web: WKWebView,
+                                              host: InteractionTestWindow) throws -> Double {
+        _ = try host.js("window.initialPage = true; scrollBy(0, (\(expression)).getBoundingClientRect().top - (\(top)))", web)
+        let y = try visibleTop(of: expression, in: web, host: host)
+        XCTAssertEqual(y, top, accuracy: 2)
+        return y
+    }
+
+    @MainActor private func visibleTop(of expression: String, in web: WKWebView, host: InteractionTestWindow,
+                                        file: StaticString = #filePath, line: UInt = #line) throws -> Double {
+        let result = try host.js("""
+            (() => {
+                const rect = (\(expression)).getBoundingClientRect();
+                return { top: rect.top, visible: rect.bottom > 0 && rect.top < innerHeight && rect.height > 0 };
+            })()
+            """, web)
+        let bounds = try XCTUnwrap(result as? [String: NSNumber], file: file, line: line)
+        XCTAssertEqual(bounds["visible"]?.boolValue, true, "the reference should be visible: \(bounds)", file: file, line: line)
+        return try XCTUnwrap(bounds["top"]?.doubleValue, file: file, line: line)
+    }
+
+    @MainActor private func insert(_ text: String, before marker: String, in host: InteractionTestWindow) throws {
+        let editor = try XCTUnwrap(host.store.editorSession.textView)
+        let target = (editor.string as NSString).range(of: marker)
+        let offset = try XCTUnwrap(target.location == NSNotFound ? nil : target.location, "missing source marker \(marker)")
+        let caret = NSRange(location: offset, length: 0)
+        XCTAssertTrue(host.window.makeFirstResponder(editor))
+        editor.setSelectedRange(caret)
+        editor.scrollRangeToVisible(caret)
+        editor.insertText(text, replacementRange: caret)
+    }
+
+    @MainActor private func writeImage(height: Int, color: NSColor, to url: URL) throws {
+        let context = try XCTUnwrap(CGContext(data: nil, width: 320, height: height, bitsPerComponent: 8,
+                                              bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(color.cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: 320, height: height))
+        let image = NSBitmapImageRep(cgImage: try XCTUnwrap(context.makeImage()))
+        try XCTUnwrap(image.representation(using: .png, properties: [:])).write(to: url)
+    }
+
     @MainActor private func mount(in host: InteractionTestWindow, settings: AppSettings, imageURL: String? = nil) throws -> WKWebView {
-        settings.language = .english
-        settings.newDocumentMode = .split
         let paragraphs = (1...110).map { index in
             switch index {
             case 12: "Draft summary."
@@ -213,16 +414,25 @@ final class SplitScrollPauseGUITests: XCTestCase {
         }
         host.store.text = paragraphs.joined(separator: "\n\n")
             + (imageURL.map { "\n\n![Image still loading](\($0))" } ?? "")
+        return try mountDocument(in: host, settings: settings, marker: "Reference value",
+                                 ready: "!!document.querySelector('table')", requireLoaded: imageURL == nil)
+    }
+
+    @MainActor private func mountDocument(in host: InteractionTestWindow, settings: AppSettings, marker: String,
+                                           ready: String, requireLoaded: Bool = true) throws -> WKWebView {
+        settings.language = .english
+        settings.newDocumentMode = .split
+        settings.defaultMode = .split
         // Mount the fixture after its first render. Otherwise a blank page
         // can still be restoring its initial scroll during our first gesture.
-        host.spin(until: { host.store.rendered.body.contains("Reference value") })
+        host.spin(until: { host.store.rendered.body.contains(marker) })
         host.window.setContentSize(NSSize(width: 1020, height: 610))
         host.window.contentView = NSHostingView(rootView: ContentView(document: host.store, settings: settings, onOpen: {}))
         host.window.makeKeyAndOrderFront(nil)
         host.spin(until: { !host.descendants(WKWebView.self).isEmpty })
         let web = try XCTUnwrap(host.descendants(WKWebView.self).first)
-        try host.waitForPage("!!document.querySelector('table') && typeof window.__md2CaptureAnchor === 'function'",
-                             in: web, context: "fixture table in split preview", requireLoaded: imageURL == nil)
+        try host.waitForPage("(\(ready)) && typeof window.__md2CaptureAnchor === 'function'",
+                             in: web, context: "fixture in split preview", requireLoaded: requireLoaded)
         host.spin(for: 0.35)
         return web
     }

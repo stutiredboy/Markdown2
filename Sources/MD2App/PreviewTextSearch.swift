@@ -18,6 +18,8 @@ enum PreviewTextSearch {
         var findGroups = [];
         var findCurrent = -1;
         var findSnapshot = null;
+        var findKey = null, findText = '';
+        var pendingHeldFind = null, heldFindNode = null;
         var findOutline, outlineFrame, outlineResize, outlineChanges;
         window.__md2FindActive = false;
         (function () {
@@ -142,9 +144,59 @@ enum PreviewTextSearch {
             if (outlineChanges) outlineChanges.disconnect();
             if (findOutline) findOutline.remove();
             outlineResize = outlineChanges = findOutline = null;
-            findGroups = []; findCurrent = -1; findSnapshot = null;
+            findGroups = []; findCurrent = -1; findSnapshot = null; findKey = null; findText = '';
         }
-        window.__md2FindClear = clearFind;
+        // Keep a small, serializable description even when a fresh engine page
+        // replaces all DOM nodes. Live edits can usually reuse the exact node.
+        function captureHeldFind() {
+            var group = findGroups[findCurrent];
+            if (!group) return pendingHeldFind;
+            var first = group[0], line = firstFindLine(group, document.body);
+            var clip = clipForFind(first.startContainer.parentElement, new Map());
+            var visible = line && line.bottom > clip.top && line.top < clip.bottom &&
+                line.right > clip.left && line.left < clip.right;
+            return {key: findKey, index: findCurrent, nodeOffset: first.startOffset,
+                before: findText.slice(Math.max(0, group.start - 64), group.start),
+                after: findText.slice(group.end, group.end + 64), top: visible ? line.top : null};
+        }
+        window.__md2FindClear = function (forPausedEdit) {
+            pendingHeldFind = forPausedEdit ? captureHeldFind() : null;
+            if (!pendingHeldFind) heldFindNode = null;
+            else if (findGroups[findCurrent]) heldFindNode = new WeakRef(findGroups[findCurrent][0].startContainer);
+            clearFind();
+        };
+        function unavailableFind() {
+            window.__md2FindClear();
+            return {total: 0, index: 0, unavailable: true};
+        }
+        function heldFindIndex(held) {
+            var node = heldFindNode?.deref();
+            var retained = findGroups.findIndex(g => g[0].startContainer === node &&
+                                                      g[0].startOffset === held.nodeOffset);
+            if (retained >= 0) return retained;
+            // Compare a bounded context on each side, so adding another hit
+            // earlier in the document doesn't change which occurrence is held.
+            var best = -1, bestScore = -1;
+            for (var i = 0; i < findGroups.length; i++) {
+                var group = findGroups[i], left = 0, right = 0;
+                while (left < held.before.length && held.before[held.before.length - left - 1] ===
+                       findText[group.start - left - 1]) left++;
+                while (right < held.after.length && held.after[right] === findText[group.end + right]) right++;
+                var score = left + right;
+                if (score > bestScore || (score === bestScore && Math.abs(i - held.index) < Math.abs(best - held.index))) {
+                    best = i; bestScore = score;
+                }
+            }
+            return bestScore >= Math.min(12, held.before.length + held.after.length) ? best : -1;
+        }
+        // If the reader scrolls while the new snapshot is being matched, the
+        // highlight still follows its occurrence but its old location expires.
+        function cancelHeldFindPosition() {
+            if (pendingHeldFind) pendingHeldFind.top = null;
+        }
+        for (var event of ['wheel', 'touchmove', 'mousedown', 'keydown']) {
+            window.addEventListener(event, cancelHeldFindPosition, {capture: true, passive: true});
+        }
         function horizontalReveal(rect, box, rtl) {
             if (rect.right - rect.left > box.right - box.left)
                 return rtl ? rect.right - box.right : rect.left - box.left;
@@ -196,6 +248,7 @@ enum PreviewTextSearch {
             CSS.highlights.delete('md2-find-current');
             CSS.highlights.set('md2-find-current', highlight);
             if (reveal !== false) {
+                releaseReference();
                 window.__md2FindActive = true;
                 revealFindRange(group);
                 clearTimeout(window.__md2FindTimer);
@@ -241,7 +294,7 @@ enum PreviewTextSearch {
                 var block = node.parentElement.closest('p,div,li,pre,h1,h2,h3,h4,h5,h6,td,th,blockquote,section,main');
                 if (acceptedNodes && block !== lastBlock) text += '\n';
                 if (acceptedNodes >= 20000 || text.length + value.length > 2000000) {
-                    return { unavailable: true };
+                    return unavailableFind();
                 }
                 if (isBreak) breaks.push(node);
                 else records.push({ node: node, start: text.length, text: value });
@@ -249,7 +302,7 @@ enum PreviewTextSearch {
                 text += value; lastBlock = block;
             }
             var id = String(Date.now()) + '-' + String(Math.random());
-            findSnapshot = { id: id, records: records, breaks: breaks };
+            findSnapshot = { id: id, text: text, records: records, breaks: breaks };
             return { id: id, text: text };
         };
         window.__md2Find = function (query, payload, reveal) {
@@ -257,11 +310,11 @@ enum PreviewTextSearch {
             // original direct page API useful for diagnostics and CSP probes.
             if (!payload) {
                 var snapshot = window.__md2FindSnapshot();
-                if (snapshot.unavailable) return { total: 0, index: 0, unavailable: true };
+                if (snapshot.unavailable) return snapshot;
                 var lower = snapshot.text.toLowerCase(), needle = (query || '').toLowerCase(), ranges = [], at = 0;
                 if (needle) while ((at = lower.indexOf(needle, at)) >= 0) {
                     ranges.push([at, needle.length]); at += needle.length;
-                    if (ranges.length > 20000) return { total: 0, index: 0, unavailable: true };
+                    if (ranges.length > 20000) return unavailableFind();
                 }
                 payload = { id: snapshot.id, ranges: ranges };
             }
@@ -271,8 +324,10 @@ enum PreviewTextSearch {
                 findSnapshot.breaks.some(node => !node.isConnected)) {
                 clearFind(); return { stale: true };
             }
-            if (payload.unavailable) { clearFind(); return { total: 0, index: 0, unavailable: true }; }
-            var ranges = payload.ranges, groupMap = ranges.map(() => []), rangeCursor = 0;
+            if (payload.unavailable) return unavailableFind();
+            var ranges = payload.ranges, groupMap = ranges.map(([start, length]) => {
+                var group = []; group.start = start; group.end = start + length; return group;
+            }), rangeCursor = 0;
             for (var record of records) {
                 var nodeEnd = record.start + record.text.length;
                 while (rangeCursor < ranges.length && ranges[rangeCursor][0] + ranges[rangeCursor][1] <= record.start) rangeCursor++;
@@ -287,9 +342,32 @@ enum PreviewTextSearch {
                 }
             }
             findGroups = groupMap.filter(g => g.length);
-            if (findGroups.length) CSS.highlights.set('md2-find', makeFindHighlight(findGroups.flat()));
+            if (!findGroups.length) {
+                window.__md2FindClear();
+                return {total: 0, index: 0};
+            }
+            CSS.highlights.set('md2-find', makeFindHighlight(findGroups.flat()));
+            findKey = JSON.stringify([query, !!payload.caseSensitive, !!payload.wholeWord]);
+            findText = findSnapshot.text;
             findSnapshot = null;
-            return findGroups.length ? setCurrent(0, reveal) : { total: 0, index: 0 };
+            var held = pendingHeldFind;
+            pendingHeldFind = null;
+            if (held && held.key === findKey) {
+                var index = heldFindIndex(held);
+                heldFindNode = null;
+                // A deleted occurrence falls back to its former ordinal without
+                // scrolling away from the reader's independently held viewport.
+                var result = setCurrent(index >= 0 ? index : Math.min(held.index, findGroups.length - 1), false);
+                if (index >= 0 && window.__md2ScrollSyncPaused && held.top !== null && reveal !== false) {
+                    var group = findGroups[index];
+                    pinReference([{node: group[0].startContainer, top: held.top, measureTop: function () {
+                        return firstFindLine(group, document.body)?.top;
+                    }}], window.scrollY);
+                }
+                return result;
+            }
+            heldFindNode = null;
+            return setCurrent(0, reveal);
         };
         window.__md2FindNext = function (forward) {
             return setCurrent(findCurrent + (forward ? 1 : -1));
