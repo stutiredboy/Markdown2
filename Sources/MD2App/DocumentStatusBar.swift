@@ -1,11 +1,16 @@
 import MD2Core
 import SwiftUI
 
+struct SelectionStats: Sendable {
+    let words: Int
+    let characters: Int
+}
+
 struct DocumentStatusBar<RemoteImages: View>: View {
     let showsEditorPosition: Bool
     let editorSelection: EditorSelection?
     let stats: DocumentStats
-    let selectionStats: DocumentStats?
+    let selectionStats: SelectionStats?
     let url: URL?
     let format: MarkdownFileFormat
     let settings: AppSettings
@@ -78,6 +83,9 @@ struct DocumentStatusBar<RemoteImages: View>: View {
     }
 
     private var positionLabel: String {
+        if let count = editorSelection?.fragments.count, count > 1 {
+            return String(format: settings.text(.statusSelectionRanges), count)
+        }
         func label(_ position: EditorSourcePosition) -> String {
             String(format: settings.text(.statusPosition), position.line, position.column)
         }

@@ -539,9 +539,7 @@ struct MarkdownEditorView: NSViewRepresentable {
                 }
                 let start = self.session.sourceIndex.position(at: range.location, in: source)
                 let end = range.length == 0 ? start : self.session.sourceIndex.position(at: NSMaxRange(range), in: source)
-                self.onSelectionChange(EditorSelection(
-                    text: fragments.isEmpty ? nil : fragments.joined(separator: "\n"), start: start, end: end
-                ))
+                self.onSelectionChange(EditorSelection(fragments: fragments, start: start, end: end))
             }
         }
         var onFindShortcut: (_ action: FindCommand.Action) -> Void = { _ in }

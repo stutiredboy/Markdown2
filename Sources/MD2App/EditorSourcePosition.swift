@@ -8,7 +8,7 @@ struct EditorSourcePosition: Equatable {
 }
 
 struct EditorSelection {
-    let text: String?
+    let fragments: [String]
     let start: EditorSourcePosition
     let end: EditorSourcePosition
 }
