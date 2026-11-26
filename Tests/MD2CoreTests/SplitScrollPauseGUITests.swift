@@ -282,6 +282,45 @@ final class SplitScrollPauseGUITests: XCTestCase {
         _ = try visibleTop(of: highlight, in: web, host: host)
     }
 
+    @MainActor func testPausedPreviewKeepsRecord60WhenTableHeaderGrows() throws {
+        let host = InteractionTestWindow()
+        defer { host.close() }
+        let rows = (1...150).map { "| Record \($0) | Value \($0) |" }.joined(separator: "\n")
+        let source = "# audit-title\n\n| Key | Value |\n|---|---|\n" + rows + "\n\nClosing note.\n"
+        host.store.text = source
+        let web = try mountDocument(in: host, settings: host.settings, marker: "Record 150",
+                                    ready: "document.querySelectorAll('tbody tr').length === 150",
+                                    size: NSSize(width: 1046, height: 650))
+        try toggle(in: host, paused: false)
+        let record = "Array.from(document.querySelectorAll('tbody td')).find(cell => cell.textContent === 'Record 60')"
+        _ = try positionReference(record, at: 70, in: web, host: host)
+        host.spin(for: 0.3)
+        let before = try visibleTop(of: record, in: web, host: host)
+        XCTAssertEqual(before, 71, accuracy: 2)
+
+        let editor = try XCTUnwrap(host.store.editorSession.textView)
+        let key = (editor.string as NSString).range(of: "Key")
+        let start = try XCTUnwrap(key.location == NSNotFound ? nil : key.location)
+        let caret = NSRange(location: start, length: 0)
+        XCTAssertTrue(host.window.makeFirstResponder(editor))
+        editor.setSelectedRange(caret)
+        editor.scrollRangeToVisible(caret)
+        XCTAssertEqual(try visibleTop(of: record, in: web, host: host), before, accuracy: 2)
+        let tallHeader = "Key<br>Region<br>Office<br>Department<br>Owner"
+        editor.insertText(tallHeader, replacementRange: key)
+        XCTAssertEqual(editor.string, (source as NSString).replacingCharacters(in: key, with: tallHeader))
+        try host.waitForPage("""
+            document.querySelector('thead th')?.textContent === 'KeyRegionOfficeDepartmentOwner'
+                && document.querySelectorAll('thead th br').length === 4
+                && document.querySelectorAll('tbody tr').length === 150
+            """, in: web, context: "the five-line header and all data rows rendered")
+        host.spin(for: 0.65)
+        let after = try visibleTop(of: record, in: web, host: host)
+        let height = try XCTUnwrap(try host.js("innerHeight", web) as? Double)
+        print("Paused preview Record 60 after header growth in CSS px: before y=\(before), after y=\(after), viewport=\(height)")
+        XCTAssertEqual(after, before, accuracy: 2, "the same visible record must stay in place when the header grows")
+    }
+
     @MainActor func testPausedPreviewKeepsRecord60WhenTwentyTableRowsAreInserted() throws {
         let host = InteractionTestWindow()
         defer { host.close() }
@@ -303,7 +342,8 @@ final class SplitScrollPauseGUITests: XCTestCase {
                 && document.querySelector('tbody').rows[19].cells[0].textContent === 'Added 20'
                 && document.querySelector('tbody').rows[79] === (\(record))
             """, in: web, context: "all twenty new rows rendered above the original record in a live update")
-        XCTAssertEqual(try visibleTop(of: record, in: web, host: host), y, accuracy: 2)
+        let insertedY = try visibleTop(of: record, in: web, host: host)
+        XCTAssertEqual(insertedY, y, accuracy: 2)
 
         // The new page now starts with another table that has identical
         // headers. Only the original table contains the held record.
@@ -315,7 +355,9 @@ final class SplitScrollPauseGUITests: XCTestCase {
                 && document.querySelector('table tbody tr').cells[0].textContent === 'Draft'
                 && document.querySelectorAll('table')[1].tBodies[0].rows[79] === (\(record))
             """, in: web, context: "the original record belongs to the second table after the fresh navigation")
-        XCTAssertEqual(try visibleTop(of: record, in: web, host: host), y, accuracy: 2)
+        let reloadedY = try visibleTop(of: record, in: web, host: host)
+        print("Paused preview Record 60 in CSS px: before y=\(y), inserted y=\(insertedY), reloaded y=\(reloadedY)")
+        XCTAssertEqual(reloadedY, y, accuracy: 2)
     }
 
     @MainActor func testPausedPreviewKeepsRecord60WhenTwentyListItemsAreInserted() throws {
@@ -368,7 +410,9 @@ final class SplitScrollPauseGUITests: XCTestCase {
                 && (\(bothDecoded))
             """, in: web, context: "new page has painted Mermaid and both local images")
         XCTAssertEqual(try host.js("(\(second)).currentSrc", web) as? String, secondSource)
-        XCTAssertEqual(try visibleTop(of: second, in: web, host: host), y, accuracy: 2)
+        let reloadedY = try visibleTop(of: second, in: web, host: host)
+        print("Paused preview second local image in CSS px: before y=\(y), reloaded y=\(reloadedY)")
+        XCTAssertEqual(reloadedY, y, accuracy: 2)
     }
 
     @MainActor private func positionReference(_ expression: String, at top: Double, in web: WKWebView,
@@ -428,14 +472,15 @@ final class SplitScrollPauseGUITests: XCTestCase {
     }
 
     @MainActor private func mountDocument(in host: InteractionTestWindow, settings: AppSettings, marker: String,
-                                           ready: String, requireLoaded: Bool = true) throws -> WKWebView {
+                                           ready: String, requireLoaded: Bool = true,
+                                           size: NSSize = NSSize(width: 1020, height: 610)) throws -> WKWebView {
         settings.language = .english
         settings.newDocumentMode = .split
         settings.defaultMode = .split
         // Mount the fixture after its first render. Otherwise a blank page
         // can still be restoring its initial scroll during our first gesture.
         host.spin(until: { host.store.rendered.body.contains(marker) })
-        host.window.setContentSize(NSSize(width: 1020, height: 610))
+        host.window.setContentSize(size)
         host.window.contentView = NSHostingView(rootView: ContentView(document: host.store, settings: settings, onOpen: {}))
         host.window.makeKeyAndOrderFront(nil)
         host.spin(until: { !host.descendants(WKWebView.self).isEmpty })
