@@ -388,6 +388,69 @@ struct DocumentExternalChangeTests {
         #expect(try String(contentsOf: url, encoding: .utf8) == "# Doc\n\nExternal edit.\n")
     }
 
+    @Test func keepingCleanEditorVersionMarksItUnsavedUntilAutosaveRestoresDisk() async throws {
+        let url = try makeTempDocument("base")
+        let directory = url.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let recovery = DocumentRecoveryRepository(directory: directory.appendingPathComponent("Recovery"))
+        let store = DocumentStore(fileWatcherFactory: { FakeFileWatcher() }, recoveryRepository: recovery,
+                                  autosaveDelay: 0.5)
+        defer { store.closeDocument(discardRecovery: true) }
+        store.open(url)
+        try #require(store.text == "base" && !store.isDirty)
+
+        let theirs = Data("theirs".utf8)
+        // Do not fire the watcher. Save must discover the external write first.
+        try theirs.write(to: url, options: .atomic)
+        #expect(!store.save())
+        try #require(store.hasExternalConflict)
+        try await resolveDisplayedConflict(in: store, reloadingFromDisk: false)
+
+        #expect(!store.hasExternalConflict)
+        #expect(store.text == "base")
+        #expect(try Data(contentsOf: url) == theirs)
+        #expect(store.isDirty)
+        let snapshot = try #require(try recovery.load().first)
+        #expect(snapshot.text == "base" && snapshot.isDirty)
+
+        // Autosave shares the main actor with the rest of the parallel suite.
+        try #require(await waitUntil(timeout: 30) { !store.isDirty })
+        #expect(try Data(contentsOf: url) == Data("base".utf8))
+        #expect(store.closeDocument(discardRecovery: true))
+        let reopened = makeStore(FakeFileWatcher())
+        defer { reopened.closeDocument(discardRecovery: true) }
+        reopened.open(url)
+        #expect(reopened.text == "base" && !reopened.isDirty)
+    }
+
+    @Test func keepingEditorVersionCancelsAnExternalReloadAwaitingItsViewport() async throws {
+        let url = try makeTempDocument("base")
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let watcher = FakeFileWatcher()
+        let store = makeStore(watcher)
+        defer { store.closeDocument(discardRecovery: true) }
+        store.open(url)
+
+        let theirs = Data("theirs".utf8)
+        try theirs.write(to: url, options: .atomic)
+        watcher.fire()
+        try #require(await waitUntil { store.pendingExternalReload != nil })
+        #expect(store.text == "base" && !store.isDirty)
+        #expect(!store.save())
+        try #require(store.hasExternalConflict)
+        try await resolveDisplayedConflict(in: store, reloadingFromDisk: false)
+
+        // A Read-mode viewport callback can arrive after the conflict is resolved.
+        store.completeExternalReload(anchor: nil)
+        #expect(store.pendingExternalReload == nil)
+        #expect(!store.hasExternalConflict)
+        #expect(store.text == "base" && store.isDirty)
+        #expect(try Data(contentsOf: url) == theirs)
+        #expect(store.save())
+        #expect(!store.isDirty)
+        #expect(try Data(contentsOf: url) == Data("base".utf8))
+    }
+
     @Test func externalDeletionMarksDirtyAndExplicitSaveCanRecreate() async throws {
         let watcher = FakeFileWatcher()
         let url = try makeTempDocument("# Doc\n")

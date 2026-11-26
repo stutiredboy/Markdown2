@@ -2088,10 +2088,14 @@ final class DocumentStore: ObservableObject {
             pendingConflictReload = comparison
             beginExternalReload()
         } else {
+            // A clean reload may still be waiting for its viewport anchor.
+            pendingExternalReload = nil
             clearLinkedSaveCheckpoint()
             lastKnownFingerprint = DocumentFileFingerprint(modificationDate: DocumentFileFingerprint.modificationDate(at: url),
                                                           contentHash: comparison.disk.contentHash)
             if copyFileReference == nil { fileIdentity = DocumentFileIdentity(url: url) }
+            // The retained editor version needs saving even without a local edit.
+            if !isDirty { isDirty = true }
             hasExternalConflict = false
             scheduleAutosaveIfNeeded()
             persistRecoveryNow()
