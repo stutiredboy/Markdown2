@@ -67,7 +67,7 @@ reading its context and correcting it in the source.
   while pressing Return, using the button, or editing A keeps it open when B
   is selected. See the [folder workflow](Docs/FolderWorkflow.md).
 
-- [ ] **P2 — Let a writer hold a reference in place in Side by Side.**
+- [x] **P2 — Let a writer hold a reference in place in Side by Side.**
   Keep the existing per-window pause control. Verify that scrolling to a
   summary and typing on the left holds the table in place on the right.
   Resuming from either pane must align the other pane once and restore
