@@ -330,6 +330,78 @@ final class PreviewContextMenuGUITests: XCTestCase, RenderedPageTesting {
         }
     }
 
+    @MainActor func testEditingTextImmediatelyAfterAnHTMLBlockUsesItsOwnSourceLine() throws {
+        let source = "Plain above\n<div>Mixed HTML</div>\nPlain after XYZ"
+        let original = source as NSString
+        let xyzOffset = original.range(of: "XYZ").location + 1
+        let htmlOffset = original.range(of: "<div>").location
+        for mode in [EditorMode.read, .split] {
+            for useMenu in [true, false] {
+                for (text, expectedOffset) in [("XYZ", xyzOffset), ("Mixed HTML", htmlOffset)] {
+                    let host = InteractionTestWindow()
+                    defer { host.close() }
+                    host.settings.newDocumentMode = mode
+                    host.settings.showsLineNumbersInEditor = false
+                    host.settings.showsLineNumbersInPreview = false
+                    host.settings.language = .zhHans
+                    host.store.text = source
+                    host.host(ContentView(document: host.store, settings: host.settings, onOpen: {}), width: 980)
+                    let web = try XCTUnwrap(host.descendants(WKWebView.self).first)
+                    try host.waitForPage("""
+                        Array.from(document.querySelectorAll('main div')).some(div => div.textContent === 'Mixed HTML')
+                            && document.querySelector('main').innerText.includes('Plain after XYZ')
+                            && !document.querySelector('.md2-line-gutter span')
+                        """, in: web, context: "the three contiguous source lines rendered with line numbers hidden")
+
+                    // Use the displayed text, independent of whether it is a
+                    // direct child of main or has its own source-mapped block.
+                    let target = """
+                        (() => {
+                            const walker = document.createTreeWalker(document.querySelector('main'), NodeFilter.SHOW_TEXT);
+                            for (let node; (node = walker.nextNode());) {
+                                const offset = node.data.indexOf('\(text)');
+                                if (offset < 0) continue;
+                                const range = document.createRange();
+                                range.setStart(node, offset + 1);
+                                range.collapse(true);
+                                return range;
+                            }
+                        })()
+                        """
+                    let gesture = useMenu ? "context menu" : "Cmd double-click"
+                    let stage = "\(mode.rawValue), \(gesture), \(text)"
+                    if useMenu {
+                        try useNativeMenu(on: target, in: web, action: .editParagraph("在源码中编辑此段"), copyIdentifiers: [])
+                    } else {
+                        try commandDoubleClick(on: target, in: web)
+                    }
+
+                    let expected = NSRange(location: expectedOffset, length: 0)
+                    host.spin(until: {
+                        guard let editor = host.store.editorSession.textView else { return false }
+                        return host.window.firstResponder === editor && editor.selectedRange() == expected
+                    })
+                    guard let editor = host.store.editorSession.textView else {
+                        XCTFail("\(stage): source editor did not open")
+                        print("HTML block source navigation (\(stage)): no source editor")
+                        continue
+                    }
+                    let selection = editor.selectedRange()
+                    var sourceIndex = EditorSourceIndex()
+                    let position = sourceIndex.position(at: selection.location, in: editor.string as NSString)
+                    let finalMode = host.descendants(WKWebView.self).isEmpty ? "Write" : "Side by Side"
+                    print("HTML block source navigation (\(stage) → \(finalMode)): line \(position.line), column \(position.column), selection \(selection)")
+                    XCTAssertEqual(selection, expected, stage)
+                    XCTAssertTrue(host.window.firstResponder === editor, stage)
+                    XCTAssertEqual(host.descendants(WKWebView.self).isEmpty, mode == .read, stage)
+                    XCTAssertEqual(host.store.text, source, stage)
+                    XCTAssertEqual(editor.string, source, stage)
+                    XCTAssertFalse(host.store.undoManager.canUndo, stage)
+                }
+            }
+        }
+    }
+
     @MainActor private func commandDoubleClick(on target: String, in webView: WKWebView) throws {
         let window = try XCTUnwrap(webView.window)
         let location = try windowPoint(on: target, in: webView)

@@ -331,13 +331,57 @@ struct MarkdownPreviewView: NSViewRepresentable {
         // trusted main-frame context data, synchronously, in this isolated world.
         // Native willOpenMenu consumes it; the data never authorizes navigation.
         (function () {
+            function isContinuationPart(node) {
+                return node?.nodeType === Node.TEXT_NODE ||
+                    (node?.nodeType === Node.ELEMENT_NODE && !node.matches('br,[data-md2-source-line]') &&
+                     getComputedStyle(node).display.startsWith('inline'));
+            }
+            function continuationHit(event, owner) {
+                var caret = document.caretRangeFromPoint(event.clientX, event.clientY);
+                var text = caret?.startContainer;
+                if (text?.nodeType !== Node.TEXT_NODE || !owner.contains(text)) { return null; }
+                // A caret lookup can snap to text even when the user clicks
+                // blank space. Accept a point on the nearby glyphs only.
+                var probe = caret.cloneRange(), offset = caret.startOffset;
+                probe.setStart(text, Math.max(0, offset - 1));
+                probe.setEnd(text, Math.min(text.length, offset + 1));
+                if (!Array.from(probe.getClientRects()).some(rect => rect.left <= event.clientX &&
+                    rect.right >= event.clientX && rect.top <= event.clientY && rect.bottom >= event.clientY)) { return null; }
+                var first = text;
+                while (first.parentNode !== owner) { first = first.parentNode; }
+                if (!isContinuationPart(first)) { return null; }
+                // The marker must be a direct sibling in this run. Never look
+                // through an authored BR or across another source block.
+                for (var steps = 0; isContinuationPart(first.previousSibling); steps++) {
+                    if (steps >= 8192) { return null; }
+                    first = first.previousSibling;
+                }
+                var marker = first.previousSibling;
+                var line = Number(marker?.dataset?.md2SourceNextLine);
+                if (marker?.tagName !== 'BR' || !Number.isSafeInteger(line) || line <= 0) { return null; }
+                var hit = {line: line, revision: window.__md2TextRevision};
+                var plain = '', column = null;
+                for (var node = first, count = 0; isContinuationPart(node); node = node.nextSibling, count++) {
+                    if (count >= 8192 || node.nodeType !== Node.TEXT_NODE || plain.length + node.length > 16384) { return hit; }
+                    if (node === text) { column = plain.length + offset; }
+                    plain += node.data;
+                }
+                if (column !== null) { Object.assign(hit, {plainLines: [plain], row: 0, column: column}); }
+                return hit;
+            }
             // Resolve the block under the pointer, independently of visible gutter
             // numbers and of WebKit's current (possibly word-wide) selection.
             function paragraphHit(event) {
                 var target = event.target;
                 if (!target.closest || target.closest('input,button,.md2-line-gutter,.md2-diagram-viewer')) { return null; }
+                var main = target.closest('main');
+                if (!main) { return null; }
                 var block = target.closest('[data-md2-source-line]');
-                if (!block || !block.closest('main')) { return null; }
+                if (!block || block.matches('blockquote,li')) {
+                    var continuation = continuationHit(event, block || main);
+                    if (continuation) { return continuation; }
+                }
+                if (!block || !main.contains(block)) { return null; }
                 var hit = { line: Number(block.dataset.md2SourceLine), revision: window.__md2TextRevision };
                 if (block.tagName !== 'P') { return hit; }
                 var caret = document.caretRangeFromPoint(event.clientX, event.clientY);
@@ -865,8 +909,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
             // --- Live content update ---------------------------------------
             // Source-line metadata: inserting a line above a block changes
             // these values and nothing else in the block.
-            var lineAttributes = ['data-md2-source-line', 'data-md2-source-end-line', 'data-md2-task-line'];
-            var lineSelector = '[data-md2-source-line],[data-md2-source-end-line],[data-md2-task-line]';
+            var lineAttributes = ['data-md2-source-line', 'data-md2-source-end-line', 'data-md2-source-next-line', 'data-md2-task-line'];
+            var lineSelector = lineAttributes.map(name => `[${name}]`).join(',');
 
             function isGutterLayer(node) {
                 return node.nodeType === 1 && node.classList.contains('md2-line-gutter');

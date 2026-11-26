@@ -193,7 +193,7 @@ The following cases reproduced on `9f65cb4` and on an earlier revision.
   Repeat with the backticked hash, a wide table and a fenced code block to
   confirm inline wrapping and block-local scrolling still work.
 
-- [ ] **P2 — Locate plain text immediately after an HTML block in the source.**
+- [x] **P2 — Locate plain text immediately after an HTML block in the source.**
   **Reproduce.** With preview line numbers hidden, enter these three source
   lines with no blank lines between them.
 
