@@ -181,7 +181,7 @@ The following cases reproduced on `9f65cb4` and on an earlier revision.
   fixture must yield zero. With the disclosure open, the same query must
   yield exactly one visible match in either case.
 
-- [ ] **P2 — Wrap bare hashes and long automatic links in a narrow preview.**
+- [x] **P2 — Wrap bare hashes and long automatic links in a narrow preview.**
   **Reproduce.** Use 16 px body text and a 420 CSS px preview. Show
   `0123456789abcdef` repeated four times as one bare token. In a separate
   document, append the same token to `https://example.test/` as a bare URL.

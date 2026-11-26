@@ -38,6 +38,8 @@
 
 - Find text inside author highlights in the preview. Navigating to a result inside a collapsed disclosure opens it and reveals the match.
 
+- Wrap long plain-text tokens and automatic links in narrow previews. Wide tables and fenced code scroll within their own blocks.
+
 - Count each discontiguous source selection separately and show the number of selected ranges in the status bar.
 
 - Open the corresponding source line when Command-double-clicking an HTML block or the plain text immediately after it in Preview, or choosing **Edit This Paragraph in Source** from its context menu.
