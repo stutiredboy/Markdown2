@@ -17,6 +17,8 @@ struct DocumentStatusBar<RemoteImages: View>: View {
     let convertingFormat: DocumentExportFormat?
     let conversionStoppedForSourceChange: Bool
     let cancelConversion: () -> Void
+    let canReviewExternalConflict: Bool
+    let reviewExternalConflict: () -> Void
     let remoteImages: RemoteImages
 
     @State private var showsInfo = false
@@ -71,6 +73,12 @@ struct DocumentStatusBar<RemoteImages: View>: View {
                 .foregroundStyle(.secondary)
                 .accessibilityIdentifier("document-info")
                 .popover(isPresented: $showsInfo, arrowEdge: .top) { info }
+            }
+            if canReviewExternalConflict {
+                Button(settings.text(.reviewExternalConflict), action: reviewExternalConflict)
+                    .buttonStyle(.borderless)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .accessibilityIdentifier("review-external-conflict")
             }
             remoteImages
         }

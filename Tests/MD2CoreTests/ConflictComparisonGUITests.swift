@@ -7,6 +7,62 @@ import XCTest
 
 final class ConflictComparisonGUITests: XCTestCase {
     @MainActor
+    func testLaterKeepsAutosavePausedAndOffersConflictReviewFromStatusBar() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+                          "Set MD2_RUN_GUI_TESTS=1 to exercise the native conflict sheet.")
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ConflictLater-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = directory.appendingPathComponent("Draft.md")
+        try Data("原稿\n".utf8).write(to: original)
+        let app = try await FolderTestApplication.launch(in: directory, arguments: [original.path], language: .zhHans)
+        defer { app.close() }
+        let window = try app.documentWindow(original)
+        try app.resize(window, toWidth: 720)
+        let editor = try app.editor(in: window)
+
+        func find(_ id: String) -> AXUIElement? {
+            app.windows.lazy.compactMap { app.descendant($0) { app.identifier($0) == id } }.first
+        }
+        func enabled(_ id: String) throws -> AXUIElement {
+            try app.waitFor("enabled \(id)") {
+                guard let element = find(id), app.attribute(kAXEnabledAttribute, of: element) as? Bool == true else { return nil }
+                return element
+            }
+        }
+
+        try app.replaceEditorText("本地编辑\n", in: editor)
+        try Data("首次磁盘修改\n".utf8).write(to: original, options: .atomic)
+        _ = try enabled("conflictReload")
+        try app.press(enabled("conflictLater"))
+
+        let statusID = "review-external-conflict"
+        _ = try app.waitFor("comparison closed after Later") { find("conflictLater") == nil ? window : nil }
+        let status = try enabled(statusID)
+        XCTAssertTrue(app.labels(status).contains("自动保存已暂停 · 查看冲突"))
+        let statusFrame = try app.frame(of: status)
+        XCTAssertFalse(statusFrame.isEmpty)
+        XCTAssertTrue(try app.frame(of: window).contains(statusFrame))
+        XCTAssertNil(find("openCreatedCopy"))
+
+        let draft = "稍后继续编辑\n"
+        let disk = "暂缓后的磁盘修改\n"
+        try app.replaceEditorText(draft, in: editor)
+        try Data(disk.utf8).write(to: original, options: .atomic)
+        try await Task.sleep(for: .seconds(5.25))
+        XCTAssertEqual(try Data(contentsOf: original), Data(disk.utf8))
+        XCTAssertEqual(app.value(editor), draft)
+        XCTAssertNil(find("conflictLater"))
+
+        try app.press(enabled(statusID))
+        try app.press(enabled("conflictReload"))
+        _ = try app.waitFor("latest disk version reloaded and paused status cleared") {
+            app.value(editor) == disk && find(statusID) == nil ? editor : nil
+        }
+        XCTAssertEqual(try Data(contentsOf: original), Data(disk.utf8))
+    }
+
+    @MainActor
     func testCompareBothPassagesSaveEditorCopyAndReloadOriginal() async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
                           "Set MD2_RUN_GUI_TESTS=1 to exercise the native conflict sheet.")
@@ -71,6 +127,12 @@ final class ConflictComparisonGUITests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: original), bom + Data(theirs.utf8))
         XCTAssertEqual(try Data(contentsOf: copy), bom + Data(mine.utf8))
         XCTAssertEqual(app.value(editor), mine)
+        let status = try control("review-external-conflict")
+        XCTAssertTrue(app.labels(status).contains("Autosave paused · View conflict"))
+        try pressEnabled("dismissCopyNotice")
+        _ = try app.waitFor("paused status after dismissing the copy receipt") {
+            find("openCreatedCopy") == nil ? find("review-external-conflict") : nil
+        }
 
         // Saving the separate copy must leave the original decision available.
         try app.key(kVK_ANSI_S, flags: .maskCommand)

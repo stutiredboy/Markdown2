@@ -496,7 +496,8 @@ enum L10nKey: String, CaseIterable, Sendable {
     case unsavedChangesMessage
     case externalChangeConflictTitle
     case externalChangeConflictMessage
-    case conflictEditorVersion, conflictDiskVersion, conflictSaveEditorCopy, conflictConfirmCopy, conflictCopyLocation, conflictCopySavedHint
+    case conflictEditorVersion, conflictDiskVersion, conflictSaveEditorCopy, conflictConfirmCopy, conflictCopyLocation
+    case reviewExternalConflict
     case conflictLoading, conflictUnavailable, conflictUndecodable, conflictMatchingText, conflictReviewAgain, conflictRefresh
     case conflictCoarse, conflictOneLine, conflictLineRange, conflictNoPassage, conflictBlankLine
     case conflictPage, conflictPreviousPage, conflictNextPage
@@ -854,7 +855,7 @@ enum L10n {
         .conflictSaveEditorCopy: "Save Editor Copy…",
         .conflictConfirmCopy: "Save Copy",
         .conflictCopyLocation: "Create a new file in %@",
-        .conflictCopySavedHint: "Autosave is paused for the original. Choose Save to compare its versions again.",
+        .reviewExternalConflict: "Autosave paused · View conflict",
         .conflictLoading: "Comparing versions…",
         .conflictUnavailable: "The disk file could not be verified. Check its location and permissions, then refresh the comparison.",
         .conflictUndecodable: "The disk file has an unsupported encoding. Save an editor copy to keep the disk file, or choose Keep My Version to overwrite it on the next save.",
@@ -1292,7 +1293,7 @@ enum L10n {
         .conflictSaveEditorCopy: "将编辑稿另存为副本…",
         .conflictConfirmCopy: "保存副本",
         .conflictCopyLocation: "在 %@ 中创建新文件",
-        .conflictCopySavedHint: "原稿的自动保存已暂停。在原稿窗口选择“保存”可再次比较两个版本。",
+        .reviewExternalConflict: "自动保存已暂停 · 查看冲突",
         .conflictLoading: "正在比较两个版本…",
         .conflictUnavailable: "无法确认磁盘文件。请检查文件位置和访问权限，然后刷新比较。",
         .conflictUndecodable: "磁盘文件的编码不受支持。可将编辑稿另存为副本以保留磁盘文件，或选择“保留我的版本”，在下次保存时覆盖磁盘文件。",

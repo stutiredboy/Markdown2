@@ -262,10 +262,21 @@ struct ContentView: View {
         _showsOutline = State(initialValue: settings.showsOutlineByDefault)
     }
 
+    private var statusBar: some View {
+        DocumentStatusBar(
+            showsEditorPosition: usesEditorSelection, editorSelection: editorSelection,
+            stats: document.rendered.stats, selectionStats: selectionStats, url: document.fileURL,
+            format: document.fileFormat, settings: settings, convertingFormat: document.convertingFormat,
+            conversionStoppedForSourceChange: document.conversionStoppedForSourceChange,
+            cancelConversion: document.cancelConversion,
+            canReviewExternalConflict: document.canReviewExternalConflict, reviewExternalConflict: document.reviewExternalConflict,
+            remoteImages: remoteResourceNotice(at: .statusBar)
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            DocumentCopyNotice(flow: document.copyFlow, settings: settings,
-                               hasExternalConflict: document.hasExternalConflict, onOpen: onOpenCreatedCopy)
+            DocumentCopyNotice(flow: document.copyFlow, settings: settings, onOpen: onOpenCreatedCopy)
             remoteResourceNotice(at: .banner)
             // The current sidebar must not set AppKit's window minimum. Measure
             // the allocated width even while resizing past the collapse threshold.
@@ -277,14 +288,7 @@ struct ContentView: View {
             }
 
             Divider()
-            DocumentStatusBar(
-                showsEditorPosition: usesEditorSelection, editorSelection: editorSelection,
-                stats: document.rendered.stats, selectionStats: selectionStats, url: document.fileURL,
-                format: document.fileFormat, settings: settings, convertingFormat: document.convertingFormat,
-                conversionStoppedForSourceChange: document.conversionStoppedForSourceChange,
-                cancelConversion: document.cancelConversion,
-                remoteImages: remoteResourceNotice(at: .statusBar)
-            )
+            statusBar
         }
         .background { remoteResourceNotice(at: .banner).sheetAnchor }
         .frame(minWidth: DocumentLayoutMetrics.minimumWindowWidth(mode: mode), minHeight: 540)
