@@ -109,11 +109,45 @@ final class ReadingImprovementsGUITests: XCTestCase {
         host.spin(until: { !margins.isEmpty })
         let gutter = try XCTUnwrap(margins.first)
         XCTAssertGreaterThanOrEqual(gutter, 220)
-        // A long unbroken token can reach beyond the border box of <main>.
-        // Rendering it should reserve that space for the document.
-        _ = try evaluate("document.querySelector('main').append(document.createTextNode('W'.repeat(400)));", in: webView)
-        host.spin(until: { margins.count >= 2 })
-        XCTAssertLessThan(try XCTUnwrap(margins.dropFirst().first), 220)
+
+        let wrapped = try XCTUnwrap(try evaluate("""
+            (() => {
+                const main = document.querySelector('main');
+                const word = main.appendChild(document.createTextNode('W'.repeat(400)));
+                window.outlineMarginTestWord = word;
+                const range = document.createRange();
+                range.selectNodeContents(word);
+                return {lines: new Set([...range.getClientRects()].map(rect => rect.top)).size,
+                        width: main.clientWidth, scrollWidth: main.scrollWidth};
+            })()
+            """, in: webView) as? [String: Int])
+        XCTAssertGreaterThan(try XCTUnwrap(wrapped["lines"]), 1)
+        XCTAssertEqual(wrapped["width"], wrapped["scrollWidth"])
+        let beforeRemeasurement = margins.count
+        // An unchanged margin is normally deduplicated. Reattach the same
+        // observer to get a fresh measurement after the line wraps.
+        coordinator.observeOutlineMargin(in: webView)
+        host.spin(until: { margins.count > beforeRemeasurement })
+        let wrappedGutter = try XCTUnwrap(margins.dropFirst(beforeRemeasurement).first)
+        XCTAssertEqual(wrappedGutter, gutter, accuracy: 1)
+
+        // Content that cannot wrap still needs the same outline protection.
+        let beforeOverflow = margins.count
+        XCTAssertEqual(try evaluate("""
+            (() => {
+                const word = window.outlineMarginTestWord;
+                const main = word.parentElement;
+                const nowrap = document.createElement('span');
+                nowrap.style.whiteSpace = 'nowrap';
+                word.replaceWith(nowrap);
+                nowrap.append(word);
+                return main.scrollWidth > main.clientWidth;
+            })()
+            """, in: webView) as? Bool, true)
+        host.spin(until: { margins.count > beforeOverflow })
+        let overflowGutter = try XCTUnwrap(margins.dropFirst(beforeOverflow).first)
+        XCTAssertLessThan(overflowGutter, 220)
+        print("Read outline margin in CSS px: initial \(gutter), wrapped \(wrappedGutter), nonwrapping overflow \(overflowGutter)")
     }
 
     @MainActor func testOutlinePersistsAfterJumpAndFollowsBothSurfaces() throws {
