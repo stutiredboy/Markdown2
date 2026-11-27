@@ -593,8 +593,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
         // after a mode switch.
         let source = """
         var lastUserScrollIntentAt = 0;
-        function markUserScrollIntent() {
+        function markUserScrollIntent(event) {
             lastUserScrollIntentAt = Date.now();
+            window.__md2NoteHeldReloadScroll?.(event);
             if (window.__md2ScrollSyncPaused) {
                 window.webkit.messageHandlers.\(Self.anchorMessageName).postMessage({ interaction: true });
             }
@@ -604,7 +605,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         window.addEventListener('mousedown', markUserScrollIntent, { passive: true });
         window.addEventListener('keydown', function(event) {
             var keys = ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '];
-            if (keys.indexOf(event.key) >= 0) { markUserScrollIntent(); }
+            if (keys.indexOf(event.key) >= 0) { markUserScrollIntent(event); }
         }, true);
         (function () {
             var style = document.createElement('style');
@@ -1209,6 +1210,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
                                                 name: PreviewMermaidViewer.stateMessage)
         Self.installInteractionBridge(on: configuration.userContentController, handler: context.coordinator)
         configuration.userContentController.add(context.coordinator, name: Self.anchorMessageName)
+        configuration.userContentController.add(context.coordinator, name: PreviewHeldReference.reloadMessageName)
         configuration.userContentController.add(context.coordinator, name: Self.outlineMarginMessageName)
         configuration.userContentController.add(context.coordinator, contentWorld: .defaultClient, name: Self.selectionMessageName)
         configuration.userContentController.addUserScript(WKUserScript(source: Self.selectionScript,
@@ -1345,6 +1347,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
             context.coordinator.remoteResourcePolicy = remoteResourcePolicy
             context.coordinator.remoteResourceContextToken = remoteResourceContextToken
             context.coordinator.resourceContextIsActive = true
+        } else if baseURLChanged {
+            context.coordinator.invalidateHeldReload()
         }
         guard context.coordinator.resourceContextIsActive else { return }
         registerViewportReader(in: webView, coordinator: context.coordinator)
@@ -1783,13 +1787,17 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 focusState?.preserveFocus(from: webView)
             }
             resourceContextIsActive = false
-            heldReloadCapture = nil
-            pendingHeldReference = nil
+            invalidateHeldReload()
             pendingEditorFollow = nil
             pendingResumeCapture = nil
             beginLoading()
             documentLoader.invalidate(in: webView)
             (webView as? PreviewWebView)?.invalidateContextMenu()
+        }
+
+        func invalidateHeldReload() {
+            heldReloadCapture = nil
+            pendingHeldReload = nil
         }
         var onEnterEdit: () -> Void = {}
         var onEditParagraph: (PreviewParagraphHit) -> Void = { _ in }
@@ -1875,7 +1883,15 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// instead of leaving the preview stuck at the top. Consumed by the
         /// post-load apply and cleared once the user scrolls.
         private var pendingScroll: ModeSwitchAnchor?
-        private var pendingHeldReference: [String: Any]?
+        private struct HeldReload {
+            let id: UUID
+            let page: URL
+            let window: ObjectIdentifier?
+            let resourceContext: UUID?
+            var sequence = 0
+            var place: [String: Any]?
+        }
+        private var pendingHeldReload: HeldReload?
         private var heldReloadCapture: UUID?
         private var pendingEditorFollow: Double?
         fileprivate var pendingResumeCapture: ((PreviewViewportReader.Position?) -> Void)?
@@ -1904,7 +1920,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             pendingScroll = nil
             pendingEditorFollow = nil
             pendingResumeCapture = nil
-            if !keepLoadingReference { pendingHeldReference = nil }
+            if !keepLoadingReference { pendingHeldReload = nil }
         }
 
         func followEditor(to line: Double, whenReady: Bool, in webView: WKWebView) {
@@ -2115,9 +2131,13 @@ struct MarkdownPreviewView: NSViewRepresentable {
             captureTimeoutWorkItem = timeout
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.captureTimeout, execute: timeout)
 
-            let capture = includeReference
-                ? "({ ...window.__md2CaptureAnchor(), heldReference: window.__md2CaptureReference() })"
-                : "window.__md2CaptureAnchor?.()"
+            let capture: String
+            if includeReference, let reload = pendingHeldReload {
+                let page = Self.jsStringLiteral(reload.page.absoluteString)
+                capture = "({ ...window.__md2CaptureAnchor(), heldReference: window.__md2BeginHeldReload('\(reload.id.uuidString)', \(page)) })"
+            } else {
+                capture = "window.__md2CaptureAnchor?.()"
+            }
             webView.evaluateJavaScript(capture) { [weak self] result, _ in
                 let position = (result as? [String: Any]).map {
                     PreviewViewportReader.Position(
@@ -2174,15 +2194,18 @@ struct MarkdownPreviewView: NSViewRepresentable {
         func loadLatest(fragment: String?, preservingReference: Bool, in webView: WKWebView) {
             guard heldReloadCapture == nil else { return }
             (webView as? PreviewWebView)?.invalidateContextMenu()
-            if preservingReference {
+            if preservingReference, let page = documentLoader.documentPageURL {
                 let token = UUID()
                 heldReloadCapture = token
+                pendingHeldReload = HeldReload(id: token, page: page, window: webView.window.map(ObjectIdentifier.init),
+                                               resourceContext: remoteResourceContextToken)
                 capturePosition(in: webView, includeReference: true) { [weak self, weak webView] position in
                     guard let self, let webView, self.resourceContextIsActive,
                           self.heldReloadCapture == token else { return }
                     self.heldReloadCapture = nil
-                    if self.holdsReadingPosition || self.pendingEditorFollow == nil {
-                        self.pendingHeldReference = position?.heldReference
+                    if self.pendingHeldReload?.id == token, self.pendingHeldReload?.sequence == 0,
+                       self.holdsReadingPosition || self.pendingEditorFollow == nil {
+                        self.pendingHeldReload?.place = position?.heldReference
                     }
                     self.loadLatest(fragment: fragment, preservingReference: false, in: webView)
                 }
@@ -2206,6 +2229,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         /// does not, so that goes along. A page still loading has none to keep.
         private func reloadLatestContent(in webView: WKWebView) {
             guard resourceContextIsActive else { return }
+            invalidateHeldReload()
             (webView as? PreviewWebView)?.invalidateContextMenu()
             capturePosition(in: webView) { [weak self, weak webView] position in
                 guard let self, let webView, self.resourceContextIsActive else { return }
@@ -2333,11 +2357,21 @@ struct MarkdownPreviewView: NSViewRepresentable {
         }
 
         private func messageIsFromCurrentPage(_ message: WKScriptMessage) -> Bool {
-            guard let documentURL = documentLoader.documentPageURL,
-                  let frameURL = message.frameInfo.request.url else { return false }
+            guard let documentURL = documentLoader.documentPageURL else { return false }
+            return messagePage(message) == documentURL
+        }
+
+        private func messagePage(_ message: WKScriptMessage) -> URL? {
+            guard let frameURL = message.frameInfo.request.url else { return nil }
             var page = URLComponents(url: frameURL.absoluteURL, resolvingAgainstBaseURL: false)
             page?.fragment = nil
-            return page?.url == documentURL
+            return page?.url
+        }
+
+        private func messageIsFromOutgoingPage(_ message: WKScriptMessage, in webView: WKWebView) -> Bool {
+            guard let reload = pendingHeldReload else { return false }
+            return reload.page == messagePage(message) && reload.window == webView.window.map(ObjectIdentifier.init)
+                && reload.resourceContext == remoteResourceContextToken
         }
 
         func userContentController(
@@ -2405,11 +2439,17 @@ struct MarkdownPreviewView: NSViewRepresentable {
                       let line = body["line"] as? Int, line > 0 else { return }
                 onEditFormula(line, page.config.revision, window)
             case MarkdownPreviewView.anchorMessageName:
-                guard let body = message.body as? [String: Any] else { return }
+                guard message.world == .page, let webView = message.webView, acceptsFindHost(webView),
+                      let body = message.body as? [String: Any] else { return }
                 if body["interaction"] as? Bool == true {
-                    if holdsReadingPosition { onPausedInteraction() }
+                    if holdsReadingPosition && (messageIsFromCurrentPage(message) || messageIsFromOutgoingPage(message, in: webView)) {
+                        onPausedInteraction()
+                    }
                     return
                 }
+                // The outgoing viewport has its own content-based handoff.
+                // A debounced report from it cannot clear that newer position.
+                guard messageIsFromCurrentPage(message), !messageIsFromOutgoingPage(message, in: webView) else { return }
                 let isUserInitiated = (body["user"] as? NSNumber)?.boolValue ?? false
                 if ignoreNextAnchorMessage {
                     ignoreNextAnchorMessage = false
@@ -2420,9 +2460,18 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 if isUserInitiated {
                     pendingScroll = nil
                     pendingEditorFollow = nil
-                    pendingHeldReference = nil
+                    pendingHeldReload = nil
                 }
                 onAnchorChange(Self.viewportAnchor(fromMessage: body), isUserInitiated)
+            case PreviewHeldReference.reloadMessageName:
+                guard message.world == .page, let webView = message.webView, acceptsFindHost(webView),
+                      messageIsFromOutgoingPage(message, in: webView), var reload = pendingHeldReload,
+                      let body = message.body as? [String: Any], body["token"] as? String == reload.id.uuidString,
+                      let sequence = body["sequence"] as? Int, sequence > reload.sequence,
+                      let place = body["place"] as? [String: Any] else { return }
+                reload.sequence = sequence
+                reload.place = place
+                pendingHeldReload = reload
             case MarkdownPreviewView.outlineMarginMessageName:
                 guard isLoaded, message.world == .page, let outlineMarginToken,
                       let body = message.body as? [String: Any], body["token"] as? String == outlineMarginToken,
@@ -2544,12 +2593,15 @@ struct MarkdownPreviewView: NSViewRepresentable {
             applyMermaidViewerLanguage(in: webView)
             applyLineNumbersVisibility(in: webView)
             if holdsReadingPosition { webView.evaluateJavaScript("window.__md2ChangeScrollSync?.(true);") }
-            if pendingScroll == nil, pendingEditorFollow == nil, let pendingHeldReference {
-                webView.callAsyncJavaScript("window.__md2RestoreReference(place);",
-                                            arguments: ["place": pendingHeldReference], in: nil, in: .page,
+            if pendingScroll == nil, pendingEditorFollow == nil, let reload = pendingHeldReload, let place = reload.place,
+               let page = documentLoader.documentPageURL, page != reload.page,
+               reload.window == webView.window.map(ObjectIdentifier.init), reload.resourceContext == remoteResourceContextToken {
+                webView.callAsyncJavaScript("""
+                    if (location.href.split('#')[0] === page) { window.__md2RestoreReference?.(place); }
+                    """, arguments: ["place": place, "page": page.absoluteString], in: nil, in: .page,
                                             completionHandler: nil)
             }
-            pendingHeldReference = nil
+            pendingHeldReload = nil
             applyPendingScroll(in: webView, consume: true)
             completeResumeIfReady(in: webView)
             if holdsReadingPosition && findMayRevealMatches { applyPendingFind(in: webView) }

@@ -253,22 +253,27 @@ The following cases reproduced on `9f65cb4` and on an earlier revision.
 
 ### Follow-up from the 2026-11-27 recheck
 
-- [ ] **P2 — Keep the latest reading position during a full preview reload.**
+- [x] **P2 — Keep the latest reading position during a full preview reload.**
   **Reproduce.** In Side by Side with scroll sync paused, hold `Record 60`
-  near the top of the preview in a document with a 150-row table and a long
-  list of links below it. Add the document's first Mermaid block after the
-  table's closing paragraph. Use the native wheel to scroll the old preview
-  after it captures its reading position and before the new page replaces it.
-  In the foreground probe on `1f88d99` and `dbd5ff6`, `Record 60`
-  moved from 70.95 to 329.95 CSS px on the old page, then returned to 70.95
-  CSS px after the new page drew the diagram.
+  about 71 CSS px from the top of the preview. Use a 150-row table followed
+  by `Closing note.` and 3,500 existing links to relative paths. Insert
+  the document's first Mermaid block after `Closing note.`. In the old
+  page's capture callback, send a native pixel wheel event and confirm it
+  reached the old page and moved it. On `b4f6d87`, `Record 60` moved from
+  70.95 to 329.95 CSS px on the old page, then returned to 70.95 CSS px
+  after the new page drew the diagram.
 
-  **Verify** with a native window. Confirm that the wheel event changes the
-  position after the old-page capture. Once the new page and diagram settle,
-  locate the same visible record by its text and compare its top edge with
-  the position after the wheel event. The difference must be at most 2 CSS
-  px. Also verify a full reload without scrolling keeps the original position
-  and a live update with the same wheel gesture keeps the new position.
+  **Verify** in a native window. Require a trusted wheel and an actual scroll
+  in the old page after capture. Once the replacement page and SVG settle,
+  locate the same visible record by its text. Its top edge must be within
+  2 CSS px of the position after the wheel. Repeat with two effective wheel
+  events and use the position after the second. Also insert the first diagram
+  above the table and keep the same record in place as the page height above
+  it changes. A full reload without scrolling must keep the original position.
+  For a live edit that adds four lines to the table header, the same wheel
+  gesture must keep the post-scroll position on the same page. For Find, queue
+  Previous after the old page captures the second match and require the new
+  page to show the first match, `1 of 2`.
 
 ## Already delivered
 

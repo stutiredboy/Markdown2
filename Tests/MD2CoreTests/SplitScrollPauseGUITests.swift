@@ -477,11 +477,208 @@ final class SplitScrollPauseGUITests: XCTestCase {
         try expectHeldTableCell("Record 60", at: shiftedRecord60, step: "after user scroll and next edit", in: web, host: host)
     }
 
-    @MainActor private func pausedTableFixture(in host: InteractionTestWindow) throws -> (WKWebView, Double) {
+    @MainActor func testPausedReloadKeepsOneTrustedOldPageWheel() throws {
+        try exercisePausedReloadWheels([260])
+    }
+
+    @MainActor func testPausedReloadKeepsTwoSuccessiveTrustedOldPageWheels() throws {
+        try exercisePausedReloadWheels([260, -180])
+    }
+
+    @MainActor func testPausedReloadKeepsTheScrolledRecordWhenMermaidIsAboveTheTable() throws {
+        try exercisePausedReloadWheels([260], mermaidAboveTable: true)
+    }
+
+    @MainActor func testPausedReloadWithoutAUserWheelKeepsTheCapturedPosition() throws {
+        let host = InteractionTestWindow()
+        defer { host.close() }
+        let (web, initialY) = try pausedTableFixture(in: host, linkCount: 3500)
+        let trace = try observePausedTableScroll(in: web, host: host)
+        defer { web.configuration.userContentController.removeScriptMessageHandler(forName: PausedTableScrollTrace.name) }
+        var capture: PausedTableScrollTrace.Event?
+        trace.onEvent = { event in
+            if event.kind == "capture", capture == nil { capture = event }
+            XCTAssertFalse(event.kind == "wheel" && event.trusted, "the reload control has no user wheel")
+        }
+
+        try insertFirstMermaidInPausedTable(in: host)
+        try waitForReplacementTablePreview(in: web, host: host)
+        let captured = try XCTUnwrap(capture)
+        XCTAssertTrue(captured.visible)
+        XCTAssertEqual(captured.y, initialY, accuracy: 2)
+        let finalY = try visibleTop(of: tableCell(named: "Record 60"), in: web, host: host)
+        print("Paused reload without wheel, CSS px: initial=\(initialY), capture=\(captured.y), final=\(finalY), delta=\(finalY - captured.y)")
+        XCTAssertEqual(finalY, captured.y, accuracy: 2)
+    }
+
+    @MainActor func testPausedLiveHeaderEditKeepsTheWheelBeforeTheDOMUpdate() throws {
+        let host = InteractionTestWindow()
+        defer { host.close() }
+        let (web, initialY) = try pausedTableFixture(in: host, linkCount: 3500)
+        let trace = try observePausedTableScroll(in: web, host: host)
+        defer { web.configuration.userContentController.removeScriptMessageHandler(forName: PausedTableScrollTrace.name) }
+        let initialScrollY = try XCTUnwrap(try host.js("scrollY", web) as? Double)
+        var wheel: PausedTableScrollTrace.Event?
+        var scroll: PausedTableScrollTrace.Event?
+        trace.onEvent = { event in
+            if event.kind == "wheel", event.trusted, event.deltaY < 0, wheel == nil { wheel = event }
+            if event.kind == "scroll", event.trusted, event.headerBreaks == 0,
+               scroll == nil, initialScrollY - event.scrollY > 150 {
+                scroll = event
+            }
+        }
+        let tallHeader = "Key<br>Region<br>Office<br>Department<br>Owner"
+        try editPausedTableHeader("Key", replacement: tallHeader, in: web, host: host) {
+            web.scrollWheel(with: try self.nativeWheelEvent(by: 260, in: web, host: host))
+        }
+        let trustedWheel = try XCTUnwrap(wheel, "the native wheel must reach the original preview")
+        let userScroll = try XCTUnwrap(scroll, "the wheel must actually scroll before the update")
+        XCTAssertEqual(trustedWheel.headerBreaks, 0, "the native wheel must precede the DOM replacement")
+        XCTAssertEqual(userScroll.headerBreaks, 0, "the scroll must take effect while the original header is visible")
+        XCTAssertTrue(userScroll.visible)
+        XCTAssertGreaterThan(abs(userScroll.y - initialY), 150)
+        XCTAssertEqual(try host.js("window.initialPage === true && document.querySelectorAll('main a').length === 3500", web) as? Bool, true)
+        let finalY = try visibleTop(of: tableCell(named: "Record 60"), in: web, host: host)
+        print("Paused live edit with wheel, CSS px: initial=\(initialY), user=\(userScroll.y), final=\(finalY), delta=\(finalY - userScroll.y)")
+        XCTAssertEqual(finalY, userScroll.y, accuracy: 2)
+    }
+
+    @MainActor private func exercisePausedReloadWheels(_ deltas: [Int32], mermaidAboveTable: Bool = false) throws {
+        let host = InteractionTestWindow()
+        defer { host.close() }
+        let (web, initialY) = try pausedTableFixture(in: host, linkCount: 3500)
+        let trace = try observePausedTableScroll(in: web, host: host)
+        defer { web.configuration.userContentController.removeScriptMessageHandler(forName: PausedTableScrollTrace.name) }
+        var capture: PausedTableScrollTrace.Event?
+        var wheels: [PausedTableScrollTrace.Event] = []
+        var scrolls: [PausedTableScrollTrace.Event] = []
+        var scrollBeforeWheel: PausedTableScrollTrace.Event?
+        func recordScroll(_ event: PausedTableScrollTrace.Event) throws {
+            guard scrolls.count < deltas.count, let prior = scrolls.last ?? capture else { return }
+            let direction = deltas[scrolls.count] > 0 ? -1.0 : 1.0
+            guard (event.scrollY - prior.scrollY) * direction > 100 else { return }
+            // The compositor can report the effective scroll before the DOM
+            // dispatches its wheel event. Accept it once both observations exist.
+            guard scrolls.count < wheels.count else { scrollBeforeWheel = event; return }
+            scrolls.append(event)
+            scrollBeforeWheel = nil
+            if scrolls.count < deltas.count {
+                web.scrollWheel(with: try nativeWheelEvent(by: deltas[scrolls.count], in: web, host: host))
+            }
+        }
+        func secondWheelMovement() -> PausedTableScrollTrace.Event? {
+            // WebKit can replace the page before delivering the second scroll
+            // callback. Its trusted wheel can already observe the scroll offset
+            // and the corresponding movement of the same visible row.
+            guard deltas.count == 2, wheels.count == 2, let first = scrolls.first else { return nil }
+            let second = wheels[1]
+            let direction = deltas[1] > 0 ? -1.0 : 1.0
+            guard (second.scrollY - first.scrollY) * direction > 100,
+                  (first.y - second.y) * direction > 100 else { return nil }
+            return second
+        }
+        trace.onEvent = { event in
+            switch event.kind {
+            case "capture" where capture == nil:
+                capture = event
+                web.scrollWheel(with: try self.nativeWheelEvent(by: deltas[0], in: web, host: host))
+            case "wheel" where event.trusted && event.deltaY != 0 && capture != nil && wheels.count <= scrolls.count:
+                guard wheels.count < deltas.count, (event.deltaY < 0) == (deltas[wheels.count] > 0) else { return }
+                wheels.append(event)
+                if let scrollBeforeWheel { try recordScroll(scrollBeforeWheel) }
+            case "scroll" where event.trusted:
+                try recordScroll(event)
+            default:
+                break
+            }
+        }
+
+        if mermaidAboveTable {
+            try insert("```mermaid\ngraph LR; A-->B;\n```\n\n", before: "| Key | Value |", in: host)
+        } else {
+            try insertFirstMermaidInPausedTable(in: host)
+        }
+        host.spin(until: { scrolls.count == deltas.count || secondWheelMovement() != nil || trace.inputError != nil })
+        XCTAssertNil(trace.inputError)
+        let captured = try XCTUnwrap(capture, "the old page must capture before the first wheel")
+        XCTAssertEqual(captured.y, initialY, accuracy: 2)
+        let firstScroll = try XCTUnwrap(scrolls.first, "the first wheel must produce an old-page scroll event")
+        XCTAssertGreaterThan(abs(firstScroll.y - captured.y), 150)
+        try waitForReplacementTablePreview(in: web, host: host)
+
+        XCTAssertEqual(wheels.count, deltas.count, "each injected wheel must reach the old page as trusted input")
+        var measuredScrolls = scrolls
+        if measuredScrolls.count == 1, let moved = secondWheelMovement() {
+            measuredScrolls.append(moved)
+            print("Paused reload second scroll confirmed by trusted wheel geometry during the page swap.")
+        }
+        XCTAssertEqual(measuredScrolls.count, deltas.count, "each trusted wheel must actually scroll the old page")
+        let lastScroll = try XCTUnwrap(measuredScrolls.last)
+        if deltas.count == 2 {
+            XCTAssertGreaterThan(abs(lastScroll.y - firstScroll.y), 100)
+        }
+        XCTAssertTrue(captured.visible && measuredScrolls.allSatisfy(\.visible))
+
+        let finalY = try visibleTop(of: tableCell(named: "Record 60"), in: web, host: host)
+        let finalScrollY = try XCTUnwrap(try host.js("scrollY", web) as? Double)
+        print("Paused reload \(deltas.count) wheel(s), CSS px: initial=\(initialY), capture=\(captured.y), "
+              + "old scroll positions=\(measuredScrolls.map(\.y)), final=\(finalY), delta=\(finalY - lastScroll.y), "
+              + "old scrollY=\(lastScroll.scrollY), final scrollY=\(finalScrollY)")
+        XCTAssertEqual(finalY, lastScroll.y, accuracy: 2, "Record 60 must stay where the last trusted wheel left it")
+        if mermaidAboveTable {
+            XCTAssertGreaterThan(abs(finalScrollY - lastScroll.scrollY), 2,
+                                 "the same record is held after content above it changes height")
+        }
+    }
+
+    @MainActor private func observePausedTableScroll(in web: WKWebView, host: InteractionTestWindow) throws -> PausedTableScrollTrace {
+        let trace = PausedTableScrollTrace()
+        web.configuration.userContentController.add(trace, name: PausedTableScrollTrace.name)
+        _ = try host.js("""
+            (() => {
+                function report(kind, event) {
+                    if (!window.initialPage) return;
+                    const rect = (\(tableCell(named: "Record 60")))?.getBoundingClientRect();
+                    if (!rect) return;
+                    window.webkit.messageHandlers.\(PausedTableScrollTrace.name).postMessage({
+                        kind, y: rect.top, scrollY, trusted: event?.isTrusted ?? false,
+                        visible: rect.height > 0 && rect.bottom > 0 && rect.top < innerHeight,
+                        deltaY: event?.deltaY ?? 0, headerBreaks: document.querySelectorAll('thead th br').length
+                    });
+                }
+                const capture = window.__md2CaptureReference;
+                window.__md2CaptureReference = function (...args) {
+                    const position = capture.apply(this, args);
+                    report('capture');
+                    return position;
+                };
+                window.addEventListener('wheel', event => report('wheel', event), {passive: true});
+                window.addEventListener('scroll', event => report('scroll', event), {passive: true});
+                return true;
+            })()
+            """, web)
+        return trace
+    }
+
+    @MainActor private func insertFirstMermaidInPausedTable(in host: InteractionTestWindow) throws {
+        try insert("\n\n```mermaid\ngraph LR; A-->B;\n```", before: "\n\n[Design note 0]", in: host)
+    }
+
+    @MainActor private func waitForReplacementTablePreview(in web: WKWebView, host: InteractionTestWindow) throws {
+        try host.waitForPage("""
+            !window.initialPage && window.__md2DiagramsSettled === true && !!document.querySelector('.diagram svg')
+                && document.querySelectorAll('tbody tr').length === 150 && document.querySelectorAll('main a').length === 3500
+            """, in: web, context: "a fresh preview contains the first Mermaid diagram and the same table and links")
+        host.spin(for: 0.5)
+    }
+
+    @MainActor private func pausedTableFixture(in host: InteractionTestWindow, linkCount: Int = 0) throws -> (WKWebView, Double) {
         let rows = (1...150).map { "| Record \($0) | Value \($0) |" }.joined(separator: "\n")
-        host.store.text = "# audit-title\n\n| Key | Value |\n|---|---|\n" + rows + "\n\nClosing note.\n"
+        let links = (0..<linkCount).map { "[Design note \($0)](review-\($0).md)" }.joined(separator: " ")
+        let notes = links.isEmpty ? "" : "\n" + links
+        host.store.text = "# audit-title\n\n| Key | Value |\n|---|---|\n" + rows + "\n\nClosing note.\n" + notes
         let web = try mountDocument(in: host, settings: host.settings, marker: "Record 150",
-                                    ready: "document.querySelectorAll('tbody tr').length === 150",
+                                    ready: "document.querySelectorAll('tbody tr').length === 150 && document.querySelectorAll('main a').length === \(linkCount)",
                                     size: NSSize(width: 1046, height: 650))
         try toggle(in: host, paused: false)
         let record = tableCell(named: "Record 60")
@@ -493,7 +690,8 @@ final class SplitScrollPauseGUITests: XCTestCase {
     }
 
     @MainActor private func editPausedTableHeader(_ header: String, replacement: String, append: Bool = false,
-                                                in web: WKWebView, host: InteractionTestWindow) throws {
+                                                in web: WKWebView, host: InteractionTestWindow,
+                                                afterSourceEdit: () throws -> Void = {}) throws {
         let editor = try XCTUnwrap(host.store.editorSession.textView)
         let source = editor.string as NSString
         let line = source.range(of: "| \(header) | Value |")
@@ -506,6 +704,7 @@ final class SplitScrollPauseGUITests: XCTestCase {
         editor.scrollRangeToVisible(edit)
         editor.insertText(replacement, replacementRange: edit)
         XCTAssertEqual(editor.string, expected)
+        try afterSourceEdit()
         let lines = (append ? header + replacement : replacement).components(separatedBy: "<br>")
         try host.waitForPage("""
             document.querySelector('thead th')?.textContent === '\(lines.joined())'
@@ -782,5 +981,44 @@ final class SplitScrollPauseGUITests: XCTestCase {
         NSApp.postEvent(wheel, atStart: true)
         return try XCTUnwrap(NSApp.nextEvent(matching: .scrollWheel, until: Date().addingTimeInterval(2),
                                             inMode: .default, dequeue: true))
+    }
+}
+
+@MainActor private final class PausedTableScrollTrace: NSObject, WKScriptMessageHandler {
+    static let name = "md2PausedTableScrollTest"
+
+    struct Event {
+        let kind: String
+        let y: Double
+        let scrollY: Double
+        let visible: Bool
+        let trusted: Bool
+        let deltaY: Double
+        let headerBreaks: Int
+
+        init?(_ body: Any) {
+            guard let data = body as? [String: Any], let kind = data["kind"] as? String,
+                  let y = data["y"] as? Double, let scrollY = data["scrollY"] as? Double,
+                  let visible = data["visible"] as? Bool, let trusted = data["trusted"] as? Bool,
+                  let deltaY = data["deltaY"] as? Double, let headerBreaks = data["headerBreaks"] as? Int else { return nil }
+            self.kind = kind
+            self.y = y
+            self.scrollY = scrollY
+            self.visible = visible
+            self.trusted = trusted
+            self.deltaY = deltaY
+            self.headerBreaks = headerBreaks
+        }
+    }
+
+    var onEvent: ((Event) throws -> Void)?
+    private(set) var inputError: Error?
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard let event = Event(message.body) else { return }
+        print("Paused table old page \(event.kind): y=\(event.y), scrollY=\(event.scrollY), "
+              + "trusted=\(event.trusted), deltaY=\(event.deltaY), header breaks=\(event.headerBreaks)")
+        do { try onEvent?(event) }
+        catch { inputError = error }
     }
 }

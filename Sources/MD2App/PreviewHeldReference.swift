@@ -1,5 +1,7 @@
 /// Tracks visible rendered content across a split preview edit or a new engine page.
 enum PreviewHeldReference {
+    static let reloadMessageName = "heldReferenceReload"
+
     static let script = #"""
     // Source line numbers change on insertion. A container top also cannot
     // describe a reader's place inside a large, newly rebuilt table or list.
@@ -299,13 +301,43 @@ enum PreviewHeldReference {
         restore();
     }
 
-    window.__md2CaptureReference = function () {
+    function captureHeldReference() {
         var blocks = visibleReferences().map(function (block) {
             return { tag: block.tag, key: heldKey(block.node), index: block.index,
                 top: block.top, group: block.group };
         });
         return { y: window.scrollY, blocks: blocks, find: captureHeldFind() };
+    }
+    window.__md2CaptureReference = captureHeldReference;
+
+    var outgoingReference = null;
+    window.__md2BeginHeldReload = function (token, page) {
+        if (location.href.split('#')[0] !== page) { return null; }
+        outgoingReference = {token, y: window.scrollY, sequence: 0, userIntent: false};
+        return window.__md2CaptureReference();
     };
+
+    function publishOutgoingReference() {
+        var outgoing = outgoingReference, y = window.scrollY;
+        if (!outgoing?.userIntent || y === outgoing.y) { return; }
+        outgoing.y = y;
+        window.webkit.messageHandlers.\#(reloadMessageName).postMessage({
+            token: outgoing.token, sequence: ++outgoing.sequence, place: captureHeldReference()
+        });
+    }
+
+    window.__md2NoteHeldReloadScroll = function (event) {
+        if (!outgoingReference || !event.isTrusted || (event.type === 'wheel' && event.deltaY === 0)) { return; }
+        outgoingReference.userIntent = true;
+        // WebKit can apply the wheel movement before delivering the DOM input.
+        publishOutgoingReference();
+    };
+    window.addEventListener('scroll', publishOutgoingReference, {passive: true});
+    window.addEventListener('pagehide', function () {
+        publishOutgoingReference();
+        outgoingReference = null;
+    });
+
     window.__md2RestoreReference = function (place) {
         pendingHeldFind = place.find || null;
         pinReference(place.blocks, place.y);
