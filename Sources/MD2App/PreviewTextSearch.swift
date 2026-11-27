@@ -127,7 +127,7 @@ enum PreviewTextSearch {
             // Only the current match owns outline boxes. Bound their count even
             // when a single long query matches thousands of inline fragments.
             for (var range of visibleFindRanges(group)) {
-                if (!root.contains(range.startContainer)) continue;
+                if (!root.contains(range.startContainer) || closedFindDisclosures(range.startContainer).length) continue;
                 var clip = clipForFind(range.startContainer.parentElement, root, clips);
                 for (var box of range.getClientRects()) {
                     if (box.width <= 0 || box.height <= 0 || box.right <= clip.left || box.left >= clip.right ||
@@ -188,7 +188,8 @@ enum PreviewTextSearch {
             if (!group) return pendingHeldFind;
             var first = group[0], line = firstFindLine(group, document.body);
             var clip = clipForFind(first.startContainer.parentElement, document.body, new Map());
-            var visible = !document.querySelector(openDiagramSelector) && line && line.bottom > clip.top && line.top < clip.bottom &&
+            var visible = !closedFindDisclosures(first.startContainer).length && !document.querySelector(openDiagramSelector) &&
+                line && line.bottom > clip.top && line.top < clip.bottom &&
                 line.right > clip.left && line.left < clip.right;
             return {key: findKey, index: findCurrent, nodeOffset: first.startOffset,
                 before: findText.slice(Math.max(0, group.start - 64), group.start),
@@ -258,6 +259,20 @@ enum PreviewTextSearch {
             }
             return line;
         }
+        function closedFindDisclosures(node) {
+            var closed = [];
+            for (var details = node.parentElement?.closest('details'); details;
+                 details = details.parentElement?.closest('details')) {
+                // The first summary stays visible even when its details is closed.
+                if (!details.open && !details.querySelector(':scope > summary')?.contains(node)) closed.push(details);
+            }
+            return closed;
+        }
+        function openFindDisclosures(group) {
+            for (var range of group) {
+                for (var details of closedFindDisclosures(range.startContainer)) details.open = true;
+            }
+        }
         function revealFindRange(group) {
             // Range has no scrollIntoView. Reveal the whole first visual line,
             // including adjacent inline runs, moving nested scrollports first.
@@ -284,10 +299,6 @@ enum PreviewTextSearch {
             if (!findGroups.length) return { total: 0, index: 0 };
             findCurrent = ((index % findGroups.length) + findGroups.length) % findGroups.length;
             var group = findGroups[findCurrent];
-            var highlight = makeFindHighlight(group);
-            highlight.priority = 1;
-            CSS.highlights.delete('md2-find-current');
-            CSS.highlights.set('md2-find-current', highlight);
             if (reveal !== false) {
                 releaseReference();
                 window.__md2FindActive = true;
@@ -298,10 +309,16 @@ enum PreviewTextSearch {
                         bubbles: true, detail: findKey
                     }));
                 }
+                openFindDisclosures(group);
                 revealFindRange(group);
                 clearTimeout(window.__md2FindTimer);
                 window.__md2FindTimer = setTimeout(() => { window.__md2FindActive = false; }, 400);
             }
+            // Register the current paint after disclosure layout and any SVG move.
+            var highlight = makeFindHighlight(group);
+            highlight.priority = 1;
+            CSS.highlights.delete('md2-find-current');
+            CSS.highlights.set('md2-find-current', highlight);
             showFindOutline();
             return { total: findGroups.length, index: findCurrent + 1 };
         }
@@ -329,9 +346,18 @@ enum PreviewTextSearch {
                     var isBreak = node.nodeType === Node.ELEMENT_NODE && node.tagName === 'BR';
                     if (node.nodeType === Node.ELEMENT_NODE && !isBreak) return NodeFilter.FILTER_SKIP;
                     var p = isBreak ? node : node.parentElement;
-                    if (!p || (!isBreak && !node.nodeValue) || p.closest('script,style,mark,[aria-hidden="true"],.md2-line-gutter'))
+                    if (!p || (!isBreak && !node.nodeValue) || p.closest('script,style,[aria-hidden="true"],.md2-line-gutter'))
                         return NodeFilter.FILTER_REJECT;
-                    if (!p.getClientRects().length || getComputedStyle(p).visibility === 'hidden') return NodeFilter.FILTER_REJECT;
+                    if (getComputedStyle(p).visibility === 'hidden') return NodeFilter.FILTER_REJECT;
+                    if (!p.getClientRects().length) {
+                        // Closed disclosures omit body layout until opened.
+                        // Other invisible elements still stay out of the snapshot.
+                        var disclosure = closedFindDisclosures(node).at(-1);
+                        if (!disclosure?.getClientRects().length) return NodeFilter.FILTER_REJECT;
+                        for (var el = p; el !== disclosure; el = el.parentElement) {
+                            if (getComputedStyle(el).display === 'none') return NodeFilter.FILTER_REJECT;
+                        }
+                    }
                     return NodeFilter.FILTER_ACCEPT;
                 }
             });
@@ -339,7 +365,7 @@ enum PreviewTextSearch {
             while ((node = walker.nextNode())) {
                 var isBreak = node.nodeType === Node.ELEMENT_NODE;
                 var value = isBreak ? '\n' : node.nodeValue;
-                var block = node.parentElement.closest('p,div,li,pre,h1,h2,h3,h4,h5,h6,td,th,blockquote,section,main');
+                var block = node.parentElement.closest('p,div,li,pre,h1,h2,h3,h4,h5,h6,td,th,blockquote,section,details,summary,main');
                 if (acceptedNodes && block !== lastBlock) text += '\n';
                 if (acceptedNodes >= 20000 || text.length + value.length > 2000000) {
                     return unavailableFind();
@@ -403,10 +429,12 @@ enum PreviewTextSearch {
             if (held && held.key === findKey) {
                 var index = heldFindIndex(held);
                 heldFindNode = null;
+                var keepPosition = index >= 0 && window.__md2ScrollSyncPaused && held.top !== null && reveal !== false;
+                if (keepPosition) openFindDisclosures(findGroups[index]);
                 // A deleted occurrence falls back to its former ordinal without
                 // scrolling away from the reader's independently held viewport.
                 var result = setCurrent(index >= 0 ? index : Math.min(held.index, findGroups.length - 1), false);
-                if (index >= 0 && window.__md2ScrollSyncPaused && held.top !== null && reveal !== false) {
+                if (keepPosition) {
                     var group = findGroups[index];
                     pinReference([{node: group[0].startContainer, top: held.top, measureTop: function () {
                         return firstFindLine(group, document.body)?.top;

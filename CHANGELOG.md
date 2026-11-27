@@ -34,7 +34,9 @@
 
 ### Fixed
 
-- See that autosave is paused in the status bar after choosing **Later**, and reopen the conflict comparison from there.
+- See that autosave is paused in the status bar after choosing **Later**, and reopen the conflict comparison from there. Selection statistics and export interruption messages remain readable in a 720 pt window.
+
+- Find text inside author highlights in the preview. Navigating to a result inside a collapsed disclosure opens it and reveals the match.
 
 - Count each discontiguous source selection separately and show the number of selected ranges in the status bar.
 

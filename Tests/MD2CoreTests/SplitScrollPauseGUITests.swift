@@ -224,6 +224,7 @@ final class SplitScrollPauseGUITests: XCTestCase {
         try host.waitForPage(currentIsSecond, in: web, context: "Find Next selected the second paragraph")
         try toggle(in: host, paused: false)
         let y = try visibleTop(of: second, in: web, host: host)
+        let matchY = try visibleTop(of: highlight, in: web, host: host)
 
         let field = try XCTUnwrap(host.queryField)
         var owner: NSResponder? = field
@@ -237,6 +238,8 @@ final class SplitScrollPauseGUITests: XCTestCase {
         host.spin(until: { bar.rootView.statusText == "2 of 2" })
         XCTAssertEqual(bar.rootView.statusText, "2 of 2")
         XCTAssertEqual(try visibleTop(of: second, in: web, host: host), y, accuracy: 2)
+        let editedMatchY = try visibleTop(of: highlight, in: web, host: host)
+        XCTAssertEqual(editedMatchY, matchY, accuracy: 2)
 
         // The same occurrence changes index when an earlier match is added.
         try insert("New Needle. ", before: "Edited First Needle", in: host)
@@ -245,6 +248,8 @@ final class SplitScrollPauseGUITests: XCTestCase {
         host.spin(until: { bar.rootView.statusText == "3 of 3" })
         XCTAssertEqual(bar.rootView.statusText, "3 of 3")
         XCTAssertEqual(try visibleTop(of: second, in: web, host: host), y, accuracy: 2)
+        let insertedMatchY = try visibleTop(of: highlight, in: web, host: host)
+        XCTAssertEqual(insertedMatchY, matchY, accuracy: 2)
 
         _ = try host.js("window.beforeMermaid = true", web)
         try insert("```mermaid\ngraph LR; A-->B;\n```\n\n", before: "New Needle.", in: host)
@@ -253,6 +258,10 @@ final class SplitScrollPauseGUITests: XCTestCase {
                 && \(PreviewFindRanges.count) === 3 && (\(currentIsSecond))
             """, in: web, context: "the fresh page restores the same current result")
         XCTAssertEqual(try visibleTop(of: second, in: web, host: host), y, accuracy: 2)
+        let reloadedMatchY = try visibleTop(of: highlight, in: web, host: host)
+        XCTAssertEqual(reloadedMatchY, matchY, accuracy: 2)
+        print("Paused preview second Find occurrence in CSS px: before y=\(matchY), edited y=\(editedMatchY), "
+              + "inserted y=\(insertedMatchY), reloaded y=\(reloadedMatchY)")
 
         // A selected result can remain current after a reader scrolls away.
         // A repaint after the next edit must hold what is actually visible.

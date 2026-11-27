@@ -24,6 +24,19 @@ struct DocumentStatusBar<RemoteImages: View>: View {
     @State private var showsInfo = false
 
     var body: some View {
+        VStack(spacing: 0) {
+            if conversionStoppedForSourceChange || canReviewExternalConflict {
+                noticeRow
+                Divider()
+            }
+            documentRow
+        }
+        .font(.caption)
+        .monospacedDigit()
+        .background(.bar)
+    }
+
+    private var documentRow: some View {
         HStack(spacing: 12) {
             if let convertingFormat {
                 ProgressView()
@@ -34,16 +47,6 @@ struct DocumentStatusBar<RemoteImages: View>: View {
                 Button(settings.text(.cancel), action: cancelConversion)
                     .controlSize(.small)
                     .accessibilityIdentifier("cancel-export-conversion")
-                Spacer(minLength: 0)
-            } else if conversionStoppedForSourceChange {
-                Text(settings.text(.alertConversionSourceChanged))
-                    .lineLimit(1)
-                    .help(settings.text(.alertConversionSourceChanged))
-                Button(action: cancelConversion) {
-                    Image(systemName: "xmark")
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel(settings.text(.close))
                 Spacer(minLength: 0)
             } else {
                 if showsEditorPosition {
@@ -74,20 +77,41 @@ struct DocumentStatusBar<RemoteImages: View>: View {
                 .accessibilityIdentifier("document-info")
                 .popover(isPresented: $showsInfo, arrowEdge: .top) { info }
             }
+            remoteImages
+        }
+        .lineLimit(1)
+        .padding(.horizontal, 12)
+        .frame(height: 28)
+    }
+
+    private var noticeRow: some View {
+        HStack(spacing: 12) {
+            if conversionStoppedForSourceChange {
+                Text(settings.text(.alertConversionSourceChanged))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("document-export-interruption")
+                Button(action: cancelConversion) {
+                    Image(systemName: "xmark")
+                        .frame(width: 22, height: 18)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .fixedSize()
+                .help(settings.text(.close))
+                .accessibilityLabel(settings.text(.close))
+                .accessibilityIdentifier("dismiss-export-interruption")
+            }
+            Spacer(minLength: 0)
             if canReviewExternalConflict {
                 Button(settings.text(.reviewExternalConflict), action: reviewExternalConflict)
                     .buttonStyle(.borderless)
                     .fixedSize(horizontal: true, vertical: false)
                     .accessibilityIdentifier("review-external-conflict")
             }
-            remoteImages
         }
-        .lineLimit(1)
-        .font(.caption)
-        .monospacedDigit()
         .padding(.horizontal, 12)
-        .frame(height: 28)
-        .background(.bar)
+        .padding(.vertical, 5)
+        .frame(minHeight: 28)
     }
 
     private var positionLabel: String {

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import WebKit
 import XCTest
@@ -76,17 +77,7 @@ final class DocumentStatusBarGUITests: XCTestCase {
         let format = MarkdownFileFormat(encoding: .utf8, hasBOM: true, lineEnding: .crlf)
         try XCTUnwrap(format.encode(markdown)).write(to: source)
 
-        // Exercise the real cancellable converter and destination transaction.
-        // The substitute executable pauses after staging so the button can be
-        // pressed deterministically, including on hosts without Pandoc.
-        let executable = root.appendingPathComponent("fixture-pandoc")
-        try """
-            #!/bin/sh
-            if [ "$1" = "--version" ]; then echo 'pandoc 3.14'; exit; fi
-            /usr/bin/touch started
-            exec /bin/sleep 30
-            """.write(to: executable, atomically: true, encoding: .utf8)
-        try files.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let executable = try pausedPandocExecutable(in: root)
         let destination = folder.appendingPathComponent("Review.docx")
         let original = Data("Original file".utf8)
         try original.write(to: destination)
@@ -140,7 +131,7 @@ final class DocumentStatusBarGUITests: XCTestCase {
         let progress = try visible("document-export-progress", text: "Exporting DOCX…", in: host)
         let cancel = try find("cancel-export-conversion", in: host)
         let cancelFrame = try frame(cancel)
-        XCTAssertTrue(try frame(documentWindow()).contains(cancelFrame))
+        XCTAssertTrue(try documentWindowFrame(in: host).contains(cancelFrame))
         XCTAssertGreaterThan(cancelFrame.width, 20)
         XCTAssertLessThanOrEqual(progress.maxX, cancelFrame.minX)
         XCTAssertEqual(AXUIElementPerformAction(cancel, kAXPressAction as CFString), .success)
@@ -149,6 +140,189 @@ final class DocumentStatusBarGUITests: XCTestCase {
         XCTAssertNil(store.alert)
         XCTAssertEqual(try Data(contentsOf: destination), original)
         _ = try visible("document-caret-position", text: "Ln 3, Col 7 – Ln 4, Col 7", in: host)
+    }
+
+    @MainActor func testDeferredConflictLeavesTheLongSelectionVisibleAt720Points() throws {
+        if try runInIsolatedNativeProcess(#function, childVariable: "MD2_STATUS_NATIVE_CASE") { return }
+        defer { print("MD2_NATIVE_COMPLETED=\(#function)") }
+        try exerciseNarrowWriteConflict(interruptExport: false)
+    }
+
+    @MainActor func testExportInterruptionLeavesTheReasonAndConflictActionsVisibleAt720Points() throws {
+        if try runInIsolatedNativeProcess(#function, childVariable: "MD2_STATUS_NATIVE_CASE") { return }
+        defer { print("MD2_NATIVE_COMPLETED=\(#function)") }
+        try exerciseNarrowWriteConflict(interruptExport: true)
+    }
+
+    @MainActor private func exerciseNarrowWriteConflict(interruptExport: Bool) throws {
+        let app = NSApplication.shared
+        let previousPolicy = app.activationPolicy()
+        _ = app.setActivationPolicy(.regular)
+        app.finishLaunching()
+        defer { _ = app.setActivationPolicy(previousPolicy) }
+
+        let files = FileManager.default
+        let root = files.temporaryDirectory.appendingPathComponent("StatusConflict-\(UUID())")
+        try files.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? files.removeItem(at: root) }
+        let source = root.appendingPathComponent("Review 📝.md")
+        let words = String(repeating: "word ", count: 28)
+        let markdown = (1...1260).map { "Row \($0) " + words }.joined(separator: "\n")
+            + "\n\n![Remote](http://127.0.0.1:1/unused.png)\n"
+        try markdown.write(to: source, atomically: true, encoding: .utf8)
+        let disk = Data(markdown.replacingOccurrences(of: "Row 1 ", with: "External Row 1 ").utf8)
+
+        let destination = root.appendingPathComponent("Review.docx")
+        let originalDestination = Data("Original export destination".utf8)
+        let executable = try pausedPandocExecutable(in: root)
+        let started = root.appendingPathComponent("started")
+        if interruptExport {
+            try originalDestination.write(to: destination)
+        }
+        let store = DocumentStore(documentConverterFactory: { PandocConverter(locatePandoc: { executable }) },
+                                  pandocAvailabilityProvider: { true }, conversionDestinationPicker: { _, _ in destination },
+                                  autosaveDelay: interruptExport ? 30 : 5)
+        store.open(source)
+        let window = ModeShortcutWindow(contentRect: NSRect(x: 100, y: 100, width: 720, height: 650),
+                                        styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        let host = InteractionTestWindow(store: store, window: window)
+        host.settings.language = .english
+        let contentState = DocumentWindowContentState()
+        contentState.window = window
+        let controller = DocumentWindow(window: window, store: store, settings: host.settings, contentState: contentState,
+                                        onFileBacked: { _ in }, onFileURLChanged: {})
+        defer {
+            store.cancelConversion()
+            if let sheet = window.attachedSheet { window.endSheet(sheet) }
+            host.close()
+            withExtendedLifetime(controller) {}
+        }
+        host.host(ContentView(document: store, settings: host.settings, onOpen: {}, contentState: contentState), width: 720)
+        XCTAssertEqual(window.frame.width, 720, accuracy: 0.5)
+        XCTAssertTrue(window.isVisible)
+        try press("remote-images-allow", in: host)
+        try press("remote-images-confirm", in: host)
+        _ = try find("remote-images-status-menu", text: "Remote Images", in: host)
+
+        host.spin(until: { store.editorSession.textView?.window === window && store.editorJumpAnchor == nil && window.attachedSheet == nil })
+        let editor = try XCTUnwrap(store.editorSession.textView)
+        XCTAssertTrue(window.makeFirstResponder(editor))
+        let draft = "\nLocal draft edit.\n"
+        editor.insertText(draft, replacementRange: NSRange(location: editor.string.utf16.count, length: 0))
+        XCTAssertEqual(store.text, markdown + draft)
+        XCTAssertTrue(store.isDirty)
+        let string = editor.string as NSString
+        let start = string.range(of: "Row 1000 ").location + 123
+        let end = string.range(of: "Row 1120 ").location + 113
+        let selection = NSRange(location: start, length: end - start)
+        XCTAssertEqual(selection, NSRange(location: 148866, length: 17990))
+        editor.setSelectedRange(selection)
+        editor.scrollRangeToVisible(NSRange(location: start, length: 0))
+
+        let positionText = "Ln 1000, Col 124 – Ln 1120, Col 114"
+        let selectionText = "Selection: 3598 / 37803 words · 17869 chars"
+        _ = try find("document-selection-count", text: selectionText, in: host)
+        if interruptExport {
+            store.exportDOCX()
+            host.spin(until: { files.fileExists(atPath: started.path) })
+            XCTAssertTrue(files.fileExists(atPath: started.path), "the converter must have started")
+            let progress = try visible("document-export-progress", text: "Exporting DOCX…", in: host)
+            let cancel = try visibleButton("cancel-export-conversion", text: "Cancel", in: host)
+            XCTAssertLessThanOrEqual(progress.maxX, cancel.minX)
+            try host.capture("status-720-export-progress")
+            try press("cancel-export-conversion", in: host)
+            host.spin(until: { store.convertingFormat == nil })
+            XCTAssertNil(store.convertingFormat)
+            XCTAssertFalse(store.conversionStoppedForSourceChange)
+            XCTAssertEqual(try Data(contentsOf: destination), originalDestination)
+            print("DOCX Cancel cleared progress and kept all \(originalDestination.count) preexisting destination bytes.")
+
+            try files.removeItem(at: started)
+            store.exportDOCX()
+            host.spin(until: { files.fileExists(atPath: started.path) })
+            XCTAssertTrue(files.fileExists(atPath: started.path), "the replacement export must have started")
+            XCTAssertEqual(store.convertingFormat, .docx)
+        }
+
+        try disk.write(to: source, options: .atomic)
+        _ = try find("conflictDiskText-0", in: host)
+        try press("conflictLater", in: host)
+        host.spin(until: { store.canReviewExternalConflict && window.attachedSheet == nil })
+        let conflictText = "Autosave paused · View conflict"
+        _ = try visibleButton("review-external-conflict", text: conflictText, in: host)
+        _ = try visibleButton("remote-images-status-menu", text: "Remote Images", in: host)
+        if interruptExport {
+            XCTAssertNil(store.convertingFormat)
+            XCTAssertTrue(store.conversionStoppedForSourceChange)
+            let reason = "The document changed during export. Try exporting again to use the latest version."
+            let reasonFrame = try visible("document-export-interruption", text: reason, in: host)
+            let closeFrame = try visibleButton("dismiss-export-interruption", text: "Close", in: host)
+            XCTAssertLessThanOrEqual(reasonFrame.maxX, closeFrame.minX)
+            try host.capture("status-720-export-interrupted")
+            try press("dismiss-export-interruption", in: host)
+            host.spin(until: { !store.conversionStoppedForSourceChange })
+            XCTAssertFalse(store.conversionStoppedForSourceChange)
+            XCTAssertEqual(try Data(contentsOf: destination), originalDestination)
+            print("External modification stopped DOCX export. Dismissing the reason kept the conflict and all \(originalDestination.count) destination bytes.")
+        }
+        let positionFrame = try visible("document-caret-position", text: positionText, in: host)
+        let selectionFrame = try visible("document-selection-count", text: selectionText, in: host)
+        XCTAssertLessThanOrEqual(positionFrame.maxX, selectionFrame.minX)
+        XCTAssertEqual(editor.selectedRange(), selection)
+        try host.capture(interruptExport ? "status-720-export-dismissed" : "status-720-deferred-selection")
+        if !interruptExport { host.spin(for: 5.25) }
+        XCTAssertEqual(try Data(contentsOf: source), disk)
+        XCTAssertEqual(store.text, markdown + draft)
+
+        try press("review-external-conflict", in: host)
+        let diskPassage = try find("conflictDiskText-0", in: host)
+        XCTAssertTrue(strings(of: diskPassage).contains { $0.contains("External Row 1 ") })
+        XCTAssertEqual(try Data(contentsOf: source), disk)
+        try press("conflictLater", in: host)
+        host.spin(until: { store.canReviewExternalConflict && window.attachedSheet == nil })
+        XCTAssertEqual(editor.selectedRange(), selection)
+        if !interruptExport {
+            try openRemoteImageDetails(in: host)
+            XCTAssertTrue(store.canReviewExternalConflict)
+        }
+        print("720 pt Write showed \(positionText) and \(selectionText). The paused original retained all \(disk.count) external bytes through conflict review.")
+    }
+
+    @MainActor private func openRemoteImageDetails(in host: InteractionTestWindow) throws {
+        let detailsTitle = host.settings.text(.remoteImagesDetails)
+        // This AX press enters AppKit's menu tracking loop in the test process.
+        // Pick the native menu item from that loop, then verify its real sheet.
+        let tracking = NotificationCenter.default.publisher(for: NSMenu.didBeginTrackingNotification)
+            .sink { note in
+                guard let menu = note.object as? NSMenu else { return }
+                let timer = Timer(timeInterval: 0.05, target: self, selector: #selector(self.selectTrackedMenuItem(_:)),
+                                  userInfo: (menu, detailsTitle), repeats: false)
+                RunLoop.main.add(timer, forMode: .eventTracking)
+            }
+        defer { tracking.cancel() }
+        try press("remote-images-status-menu", in: host)
+        try press("remote-images-details-close", in: host)
+    }
+
+    @MainActor @objc private func selectTrackedMenuItem(_ timer: Timer) {
+        guard let (menu, title) = timer.userInfo as? (NSMenu, String) else { return }
+        let index = menu.indexOfItem(withTitle: title)
+        menu.cancelTracking()
+        if index >= 0 { menu.performActionForItem(at: index) }
+    }
+
+    private func pausedPandocExecutable(in directory: URL) throws -> URL {
+        // Pause after staging inside the real converter's subprocess so the
+        // button can be pressed deterministically on hosts without Pandoc.
+        let executable = directory.appendingPathComponent("fixture-pandoc")
+        try """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then echo 'pandoc 3.14'; exit; fi
+            /usr/bin/touch started
+            exec /bin/sleep 30
+            """.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        return executable
     }
 
     @MainActor func testClickingShortSplitPanesChangesStatusWithoutScrolling() async throws {
@@ -261,10 +435,29 @@ final class DocumentStatusBarGUITests: XCTestCase {
     @MainActor private func visible(_ id: String, text: String, in host: InteractionTestWindow) throws -> NSRect {
         let element = try find(id, text: text, in: host)
         let frame = try frame(element)
-        XCTAssertTrue(try self.frame(documentWindow()).contains(frame), "\(text) outside window: \(frame)")
+        XCTAssertTrue(try documentWindowFrame(in: host).contains(frame), "\(text) outside window: \(frame)")
         let width = (text as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 10)]).width
         XCTAssertGreaterThanOrEqual(frame.width + 2, width, "\(text) truncated")
         return frame
+    }
+
+    @MainActor private func visibleButton(_ id: String, text: String, in host: InteractionTestWindow) throws -> NSRect {
+        let element = try find(id, text: text, in: host)
+        XCTAssertEqual(attribute(kAXEnabledAttribute, of: element) as? Bool, true)
+        let frame = try frame(element)
+        XCTAssertFalse(frame.isEmpty)
+        XCTAssertTrue(try documentWindowFrame(in: host).contains(frame), "\(text) outside window: \(frame)")
+        return frame
+    }
+
+    @MainActor private func press(_ id: String, in host: InteractionTestWindow) throws {
+        try press(find(id, in: host))
+    }
+
+    @MainActor private func press(_ element: AXUIElement) throws {
+        AXUIElementSetMessagingTimeout(element, 1)
+        let status = AXUIElementPerformAction(element, kAXPressAction as CFString)
+        XCTAssertTrue(status == .success || status == .cannotComplete, "pressing \(strings(of: element)): \(status.rawValue)")
     }
 
     private func attribute(_ key: String, of element: AXUIElement) -> CFTypeRef? {
@@ -277,10 +470,11 @@ final class DocumentStatusBarGUITests: XCTestCase {
         [kAXValueAttribute, kAXDescriptionAttribute, kAXTitleAttribute].compactMap { attribute($0, of: element) as? String }
     }
 
-    private func documentWindow() throws -> AXUIElement {
-        let app = AXUIElementCreateApplication(getpid())
-        let windows = attribute(kAXWindowsAttribute, of: app) as? [AXUIElement] ?? []
-        return try XCTUnwrap(windows.first { strings(of: $0).contains("Review 📝.md") })
+    @MainActor private func documentWindowFrame(in host: InteractionTestWindow) throws -> CGRect {
+        let frame = host.window.frame
+        // Accessibility coordinates start at the top of the primary screen.
+        let top = try XCTUnwrap(NSScreen.screens.first).frame.maxY
+        return CGRect(x: frame.minX, y: top - frame.maxY, width: frame.width, height: frame.height)
     }
 
     private func frame(_ element: AXUIElement) throws -> CGRect {
@@ -308,7 +502,8 @@ final class DocumentStatusBarGUITests: XCTestCase {
         }
         var found: AXUIElement?
         host.spin(until: {
-            found = (attribute(kAXWindowsAttribute, of: app) as? [AXUIElement] ?? []).compactMap(search).first
+            let windows = attribute(kAXWindowsAttribute, of: app) as? [AXUIElement] ?? []
+            found = windows.lazy.compactMap(search).first
             return found != nil
         })
         return try XCTUnwrap(found, "\(id) \(text ?? ""), observed \(observed), selection \(String(describing: host.store.editorSession.textView?.selectedRange()))")

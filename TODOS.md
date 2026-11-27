@@ -15,9 +15,9 @@ task. Usage frequency has not been measured.
 
 ### First priorities
 
-If the next iteration has room for two items, start with preview Find and
-editing a paragraph from the preview. Together they cover finding a passage,
-reading its context and correcting it in the source.
+The initial priorities were preview Find and editing a paragraph from the
+preview. Together they cover finding a passage, reading its context and
+correcting it in the source.
 
 - [x] **P1 — Keep preview Find readable and clear of the document.** At a
   window width of 980 pt, opening Find covered the visible section heading
@@ -114,15 +114,118 @@ reading its context and correcting it in the source.
   saving. Once it reports the document saved, read the original file and
   reopen it. Both must show the chosen editor version, `base`.
 
-- [x] **P2 — Give the status bar a hierarchy for reading and editing.** Word
-  count, character count, line count, reading time, zoom, encoding, line
-  endings and path currently share the same visual weight. Emphasize word
-  count and reading time in Read, and caret line/column and selection counts
-  in Write. Put encoding, line endings and the full path in a “Document Info”
-  control. **Verify** in a narrow window with a long path and an active
-  selection. The primary values should remain legible, the full path and
-  format should be retrievable, and conversion progress and Cancel should
-  remain directly accessible during conversion.
+- [x] **P2 — Give the status bar a hierarchy for reading and editing.**
+  Reopened after PR #101. At 720 pt, the deferred-conflict button clips
+  selection information that was fully visible on `8dac595`.
+
+  **Reproduce.** Set the interface to English and open a 720 pt Write window.
+  Use a document with 1,260 lines, each starting with `Row N ` followed by
+  `word ` repeated 28 times. End the saved file with a remote image and allow
+  remote images for this document so the status bar shows “Remote Images”.
+  Append `Local draft edit.` as a new paragraph. Select from line 1000,
+  column 124 to line 1120, column 114, then change the file externally
+  while the editor has unsaved changes. Choose “Later”. On `9f65cb4`,
+  the end position reads “Ln 112…” and the selection
+  count ends at “37803 wor…”, hiding the 17,869 selected characters.
+
+  **Verify** at the same width with “Remote Images” and “Autosave paused ·
+  View conflict” both present. Both endpoints, the selected word count and
+  the character count must be readable together. The conflict button must
+  reopen the comparison. While the conflict is deferred the original must
+  retain its external contents. Check that Read emphasizes word count and
+  reading time, and Document Info exposes the full path of a deeply nested
+  file along with its encoding and line endings.
+
+  Repeat with a DOCX export in progress when the external write occurs.
+  Verify that progress and Cancel are reachable while exporting. After the
+  export stops and the user chooses “Later”, the full reason for stopping
+  must be readable. The user must be able to dismiss the notice and reopen
+  the conflict.
+
+### Follow-ups from the 2026-11-26 recheck
+
+The following cases reproduced on `9f65cb4` and on an earlier revision.
+
+- [ ] **P2 — Hold the visible table row when the header grows with scroll sync paused.**
+  **Reproduce.** Open a two-column table with 150 numbered data rows in Side
+  by Side. Pause scroll sync, scroll the preview until the cell `Record 60`
+  is about 71 CSS px from the preview's top edge. Record the cell's position.
+  In the source, change only the header cell `Key` to
+  `Key<br>Region<br>Office<br>Department<br>Owner`. After all five header
+  lines rendered, `Record 60` moved from 70.95 to 178.45 CSS px (+107.5).
+
+  **Verify** in the native split window. After layout settles, locate the
+  cell by its text. It must still be visible, with its top edge within 2 CSS
+  px of its recorded position. Also rerun the three passing pause cases above
+  for an active Find result, inserted data rows and a reloaded local image.
+
+- [x] **P2 — Find text inside author highlights and respect its place in a sentence.**
+  **Reproduce.** Enable highlight syntax and preview two paragraphs,
+  `左==验收==右` and `普通验收`. Search for `验收`, then for `左右`. The first
+  query finds only the plain occurrence. The second incorrectly selects
+  the characters on either side of the highlighted word.
+
+  **Verify** that `验收` yields two visible matches and Next and Previous
+  visit both. Searching for `左右` must yield zero. Closing Find must leave
+  the author's highlight visible.
+
+- [x] **P2 — Make preview Find results inside a disclosure visible.**
+  **Reproduce.** Preview
+  `<details><summary>Summary</summary>collapsedkeyword</details>`.
+  Leave it collapsed and search for `collapsedkeyword`. Find reports one
+  match while the disclosure stays closed and the match has no visible area.
+
+  **Verify** that every counted current match can be seen. If Find includes
+  collapsed text, navigating to it must expand the disclosure and reveal the
+  highlighted word. If Find searches visible text only, the collapsed
+  fixture must yield zero. With the disclosure open, the same query must
+  yield exactly one visible match in either case.
+
+- [ ] **P2 — Wrap bare hashes and long automatic links in a narrow preview.**
+  **Reproduce.** Use 16 px body text and a 420 CSS px preview. Show
+  `0123456789abcdef` repeated four times as one bare token. In a separate
+  document, append the same token to `https://example.test/` as a bare URL.
+  The page widths measured 601 and 749 CSS px respectively.
+
+  **Verify** both documents at 420 CSS px. Each token must fit by wrapping,
+  with no page-wide horizontal scrolling. Copying the hash or link text must
+  preserve every character, and the link target must match the authored URL.
+  Repeat with the backticked hash, a wide table and a fenced code block to
+  confirm inline wrapping and block-local scrolling still work.
+
+- [ ] **P2 — Locate plain text immediately after an HTML block in the source.**
+  **Reproduce.** With preview line numbers hidden, enter these three source
+  lines with no blank lines between them.
+
+  ```markdown
+  Plain above
+  <div>Mixed HTML</div>
+  Plain after XYZ
+  ```
+
+  Right-click `XYZ` in the preview, then try Cmd-double-click at the same
+  point. WebKit places the trailing text directly under `main`, so the
+  paragraph lookup returns no source location.
+
+  **Verify** each gesture independently in Read and Side by Side. The context
+  menu must offer “Edit This Paragraph in Source”. Both that command and
+  Cmd-double-click must place the caret at the clicked text on line 3 when
+  the column can be mapped reliably, or at the start of line 3 otherwise.
+  Acting on “Mixed HTML” must still locate line 2.
+
+- [ ] **P3 — Explain the conflict-copy limit for a symbolic link before naming the copy.**
+  **Reproduce.** Create `Origin.md` containing `base` and a symbolic link
+  `Alias.md` pointing to it. Open the alias, edit its text to `mine`, then
+  write `theirs` to the target externally before autosave. Choose “Save
+  Editor Copy…” in the conflict sheet. The sheet asks for a name and only
+  rejects the source after confirmation.
+
+  **Verify** that the sheet explains the ordinary-file requirement and the
+  reason this alias is ineligible before asking for a filename. The link
+  must still point to the same target, the target must contain `theirs`, the
+  editor must retain `mine`, and the conflict must remain available for
+  review with no copy created. Repeat via a regular file and verify that the
+  editor copy succeeds. See the [copy policy](Docs/DocumentLifecycle.md#创建副本).
 
 ## Already delivered
 
