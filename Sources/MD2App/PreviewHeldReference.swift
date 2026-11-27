@@ -303,20 +303,54 @@ enum PreviewHeldReference {
         restore();
     }
 
+    function heldViewportLayout() {
+        var root = document.documentElement;
+        return { scrollHeight: root.scrollHeight, viewportWidth: root.clientWidth, viewportHeight: window.innerHeight };
+    }
+
     function captureHeldReference() {
         var blocks = visibleReferences().map(function (block) {
             return { tag: block.tag, key: heldKey(block.node), index: block.index,
                 top: block.top, group: block.group };
         });
-        return { y: window.scrollY, blocks: blocks, find: captureHeldFind(),
-            scrollHeight: document.documentElement.scrollHeight, viewportWidth: window.innerWidth,
-            viewportHeight: window.innerHeight };
+        return { y: window.scrollY, blocks: blocks, find: captureHeldFind(), ...heldViewportLayout() };
     }
     window.__md2CaptureReference = captureHeldReference;
 
     var outgoingReference = null;
     var scrollbarPressed = false;
     var pendingScrollbarDrag = null;
+
+    function bottomClamp(y, layout, height) {
+        return Math.max(0, y - Math.max(0, layout.scrollHeight - height));
+    }
+
+    function resetOutgoingLayout(outgoing, place) {
+        outgoing.y = place.y;
+        outgoing.viewportWidth = place.viewportWidth;
+        outgoing.viewportHeight = place.viewportHeight;
+        outgoing.layout = { scrollHeight: place.scrollHeight, viewportWidth: place.viewportWidth,
+            viewportHeight: place.viewportHeight, clamp: 0 };
+    }
+
+    function publishOutgoingLayout() {
+        var outgoing = outgoingReference;
+        if (!outgoing) { return; }
+        var layout = heldViewportLayout();
+        layout.clamp = outgoing.layout.clamp;
+        if (layout.viewportWidth !== outgoing.viewportWidth) {
+            layout.clamp = 0;
+        } else if (layout.viewportHeight > outgoing.layout.viewportHeight) {
+            // A later image can increase the scroll limit without undoing a
+            // clamp that already happened at this viewport width.
+            var growth = layout.viewportHeight - outgoing.viewportHeight;
+            layout.clamp = Math.max(layout.clamp, Math.min(growth, bottomClamp(outgoing.y, layout, layout.viewportHeight)));
+        }
+        outgoing.layout = layout;
+        window.webkit.messageHandlers.\#(reloadMessageName).postMessage({
+            token: outgoing.token, sequence: ++outgoing.sequence, layout
+        });
+    }
 
     function finishPendingScrollbarDrag() {
         var drag = pendingScrollbarDrag;
@@ -339,17 +373,20 @@ enum PreviewHeldReference {
         // ScrollY may already include the drag even if its scroll event is queued.
         finishPendingScrollbarDrag();
         if (scrollbarPressed && pendingScrollbarDrag) { pendingScrollbarDrag.token = token; }
-        outgoingReference = {token, y: window.scrollY, sequence: 0, userIntent: false};
-        return window.__md2CaptureReference();
+        var place = window.__md2CaptureReference();
+        outgoingReference = {token, sequence: 0, userIntent: false};
+        resetOutgoingLayout(outgoingReference, place);
+        return place;
     };
 
     function publishOutgoingReference() {
         var completedDrag = finishPendingScrollbarDrag();
         var outgoing = outgoingReference, y = window.scrollY;
         if (!outgoing || (!outgoing.userIntent && completedDrag?.token !== outgoing.token) || y === outgoing.y) { return; }
-        outgoing.y = y;
+        var place = captureHeldReference();
+        resetOutgoingLayout(outgoing, place);
         window.webkit.messageHandlers.\#(reloadMessageName).postMessage({
-            token: outgoing.token, sequence: ++outgoing.sequence, place: captureHeldReference()
+            token: outgoing.token, sequence: ++outgoing.sequence, place
         });
     }
 
@@ -360,8 +397,13 @@ enum PreviewHeldReference {
         publishOutgoingReference();
     };
 
-    window.__md2NoteHeldReloadScrollbarDrag = function (token, page) {
+    window.__md2NoteHeldReloadScrollbarDrag = function (token, page, towardBottom) {
         if (!scrollbarPressed || location.href.split('#')[0] !== page) { return; }
+        var root = document.documentElement, height = root.clientHeight, scrollHeight = root.scrollHeight;
+        var y = window.scrollY;
+        // An outward drag at the rendered limit has no scroll left to apply.
+        // An earlier drag can still be waiting for WebKit to update the viewport.
+        if (towardBottom ? y >= scrollHeight - height : y <= 0) { return; }
         if (token !== null) {
             if (outgoingReference?.token !== token) { return; }
             pendingScrollbarDrag = null;
@@ -371,9 +413,8 @@ enum PreviewHeldReference {
         }
         // Native sends this checkpoint before forwarding the drag to WebKit.
         // A pre-capture drag can update the viewport only after the capture.
-        var root = document.documentElement;
-        pendingScrollbarDrag = {token: outgoingReference?.token, y: window.scrollY,
-            width: root.clientWidth, height: root.clientHeight, scrollHeight: root.scrollHeight};
+        pendingScrollbarDrag = {token: outgoingReference?.token, y,
+            width: root.clientWidth, height, scrollHeight};
     };
 
     function clearScrollbarPress() {
@@ -407,20 +448,32 @@ enum PreviewHeldReference {
     }, {capture: true, passive: true});
     window.addEventListener('blur', clearScrollbarPress);
     window.addEventListener('scroll', publishOutgoingReference, {passive: true});
+    window.addEventListener('resize', publishOutgoingLayout, {passive: true});
+    window.addEventListener('load', function (event) {
+        if (event.target instanceof HTMLImageElement) { publishOutgoingLayout(); }
+    }, {capture: true, passive: true});
     window.addEventListener('pagehide', function () {
         publishOutgoingReference();
+        publishOutgoingLayout();
         outgoingReference = null;
         pendingScrollbarDrag = null;
         clearScrollbarPress();
     });
 
-    window.__md2RestoreReference = function (place, viewportRise) {
-        if (viewportRise > 0 && window.innerWidth === place.viewportWidth && window.innerHeight > place.viewportHeight) {
+    window.__md2RestoreReference = function (place, viewportRise, outgoingLayout) {
+        var layout = outgoingLayout?.viewportWidth === undefined ? place : outgoingLayout;
+        var width = document.documentElement.clientWidth;
+        var height = window.innerHeight;
+        var growth = height - place.viewportHeight;
+        if (viewportRise > 0 && width === place.viewportWidth && width === layout.viewportWidth && growth > 0) {
             // Removing a bar above the preview can make WebKit clamp the
             // outgoing scroll at the document bottom. Keep that layout
             // adjustment up to the amount the viewport moved in the window.
-            var maxY = Math.max(0, place.scrollHeight - window.innerHeight);
-            var shift = Math.min(viewportRise, Math.max(0, place.y - maxY));
+            var clamp = layout.clamp ?? 0;
+            if (height > layout.viewportHeight) {
+                clamp = Math.max(clamp, bottomClamp(place.y, layout, height));
+            }
+            var shift = Math.min(viewportRise, growth, clamp);
             if (shift > 0) {
                 for (var block of place.blocks) { block.top += shift; }
                 if (Number.isFinite(place.find?.top)) { place.find.top += shift; }

@@ -1891,6 +1891,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
             var viewportTop: CGFloat?
             var sequence = 0
             var place: [String: Any]?
+            var layoutSequence = 0
+            var layout: [String: Double]?
         }
         private var pendingHeldReload: HeldReload?
         private var heldReloadCapture: UUID?
@@ -2385,7 +2387,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             return window.convertPoint(toScreen: webView.convert(top, to: nil)).y - window.frame.maxY
         }
 
-        fileprivate func noteHeldReloadScrollbarDrag(in webView: WKWebView) {
+        fileprivate func noteHeldReloadScrollbarDrag(in webView: WKWebView, towardBottom: Bool) {
             let reload = pendingHeldReload
             guard resourceContextIsActive, holdsReadingPosition || reload != nil, acceptsFindHost(webView),
                   let page = reload?.page ?? documentLoader.documentPageURL else { return }
@@ -2395,7 +2397,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             }
             let token = reload.map { "'\($0.id.uuidString)'" } ?? "null"
             let url = Self.jsStringLiteral(page.absoluteString)
-            webView.evaluateJavaScript("window.__md2NoteHeldReloadScrollbarDrag?.(\(token), \(url));")
+            webView.evaluateJavaScript("window.__md2NoteHeldReloadScrollbarDrag?.(\(token), \(url), \(towardBottom));")
         }
 
         func userContentController(
@@ -2491,11 +2493,17 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 guard message.world == .page, let webView = message.webView, acceptsFindHost(webView),
                       messageIsFromOutgoingPage(message, in: webView), var reload = pendingHeldReload,
                       let body = message.body as? [String: Any], body["token"] as? String == reload.id.uuidString,
-                      let sequence = body["sequence"] as? Int, sequence > reload.sequence,
-                      let place = body["place"] as? [String: Any] else { return }
-                reload.sequence = sequence
-                reload.place = place
-                reload.viewportTop = Self.viewportTop(in: webView)
+                      let sequence = body["sequence"] as? Int else { return }
+                if let place = body["place"] as? [String: Any], sequence > reload.sequence {
+                    reload.sequence = sequence
+                    reload.place = place
+                    reload.viewportTop = Self.viewportTop(in: webView)
+                } else if let layout = body["layout"] as? [String: Double], sequence > reload.layoutSequence {
+                    reload.layoutSequence = sequence
+                    reload.layout = layout
+                } else {
+                    return
+                }
                 pendingHeldReload = reload
             case MarkdownPreviewView.outlineMarginMessageName:
                 guard isLoaded, message.world == .page, let outlineMarginToken,
@@ -2626,10 +2634,11 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 } else {
                     0.0
                 }
+                let layout = reload.layoutSequence > reload.sequence ? reload.layout ?? [:] : [:]
                 webView.callAsyncJavaScript("""
-                    if (location.href.split('#')[0] === page) { window.__md2RestoreReference?.(place, viewportRise); }
-                    """, arguments: ["place": place, "page": page.absoluteString, "viewportRise": viewportRise], in: nil, in: .page,
-                                            completionHandler: nil)
+                    if (location.href.split('#')[0] === page) { window.__md2RestoreReference?.(place, viewportRise, layout); }
+                    """, arguments: ["place": place, "page": page.absoluteString, "viewportRise": viewportRise, "layout": layout],
+                                            in: nil, in: .page, completionHandler: nil)
             }
             pendingHeldReload = nil
             applyPendingScroll(in: webView, consume: true)
@@ -2828,7 +2837,8 @@ private final class PreviewWebView: WKWebView {
         primaryDragY = y
         // The scrollbar can consume drag events before they reach the DOM.
         if let previousY, y != previousY {
-            (navigationDelegate as? MarkdownPreviewView.Coordinator)?.noteHeldReloadScrollbarDrag(in: self)
+            (navigationDelegate as? MarkdownPreviewView.Coordinator)?
+                .noteHeldReloadScrollbarDrag(in: self, towardBottom: y < previousY)
         }
         super.mouseDragged(with: event)
     }

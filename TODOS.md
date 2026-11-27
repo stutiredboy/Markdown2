@@ -309,6 +309,19 @@ The following cases reproduced on `9f65cb4` and on an earlier revision.
   reload must add at most 2 pt of movement. Use the same Find dismissal with
   no reload as a control. On `9e4879f`, the reload added an 80 pt jump.
 
+  Repeat with a delayed 180 CSS px image below the reading row. Let it
+  finish loading in the old page after capture, then close Find. Verify
+  the old scroll offset stays fixed as the viewport grows, and require the
+  reloaded row's window position to be within 2 pt of closing Find on the
+  same page. On `25cde66`, `Record 144` moved from 552.08 pt in the same-page
+  control to 472.08 pt in the replacement window.
+
+  Also drag the scrollbar thumb to the top, push it another 3 pt upward,
+  and confirm the old page stays at the top. After capture, inject a 191 CSS px
+  programmatic scroll and release the thumb at the same screen point.
+  Require the reloaded `Record 4` to be within 2 CSS px of its position at
+  the top. On `25cde66`, the replacement copied the programmatic offset.
+
 ## Already delivered
 
 The eight reliability/security repairs landed in PR #55. Portable image
