@@ -2986,6 +2986,9 @@ public struct MarkdownRenderer: Sendable {
             max-width: 1280px;
             margin: 0 auto;
             padding: 52px clamp(28px, 4vw, 64px) 80px;
+            /* Emergency wrap points stay out of min-content sizing, so wide
+               table cells still make the table scroll within its own block. */
+            overflow-wrap: break-word;
         }
 
         h1, h2, h3, h4, h5, h6 {
