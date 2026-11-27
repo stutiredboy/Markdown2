@@ -297,6 +297,18 @@ The following cases reproduced on `9f65cb4` and on an earlier revision.
   the old page scrolls for layout. Keep any final movement from a real drag
   that continues after capture and takes effect just after release.
 
+  Also send the last native drag just before capture and release at that
+  endpoint after capture. Check that the old page applies the last movement
+  after capture and that the new page keeps the final row position within
+  2 CSS px. On `9e4879f`, the new page lost 107 CSS px of actual movement.
+
+  Open an empty preview Find bar and hold a settled scrollbar thumb at the
+  document bottom across capture. Press Escape to close Find and release at
+  the same screen point. Use the same visible record and measure its position
+  in the native window after Find closes and after the new SVG settles. The
+  reload must add at most 2 pt of movement. Use the same Find dismissal with
+  no reload as a control. On `9e4879f`, the reload added an 80 pt jump.
+
 ## Already delivered
 
 The eight reliability/security repairs landed in PR #55. Portable image

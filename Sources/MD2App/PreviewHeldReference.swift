@@ -308,21 +308,45 @@ enum PreviewHeldReference {
             return { tag: block.tag, key: heldKey(block.node), index: block.index,
                 top: block.top, group: block.group };
         });
-        return { y: window.scrollY, blocks: blocks, find: captureHeldFind() };
+        return { y: window.scrollY, blocks: blocks, find: captureHeldFind(),
+            scrollHeight: document.documentElement.scrollHeight, viewportWidth: window.innerWidth,
+            viewportHeight: window.innerHeight };
     }
     window.__md2CaptureReference = captureHeldReference;
 
     var outgoingReference = null;
     var scrollbarPressed = false;
+    var pendingScrollbarDrag = null;
+
+    function finishPendingScrollbarDrag() {
+        var drag = pendingScrollbarDrag;
+        if (!drag) { return null; }
+        var root = document.documentElement;
+        if (root.clientWidth !== drag.width || root.clientHeight !== drag.height || root.scrollHeight !== drag.scrollHeight) {
+            pendingScrollbarDrag = null;
+            return null;
+        }
+        if (window.scrollY === drag.y) { return null; }
+        pendingScrollbarDrag = null;
+        // WebKit can coalesce several drag events, including a reversal.
+        // The viewport moves from its last applied position, which can be
+        // behind the previous native pointer position.
+        return drag;
+    }
+
     window.__md2BeginHeldReload = function (token, page) {
         if (location.href.split('#')[0] !== page) { return null; }
+        // ScrollY may already include the drag even if its scroll event is queued.
+        finishPendingScrollbarDrag();
+        if (scrollbarPressed && pendingScrollbarDrag) { pendingScrollbarDrag.token = token; }
         outgoingReference = {token, y: window.scrollY, sequence: 0, userIntent: false};
         return window.__md2CaptureReference();
     };
 
     function publishOutgoingReference() {
+        var completedDrag = finishPendingScrollbarDrag();
         var outgoing = outgoingReference, y = window.scrollY;
-        if (!outgoing?.userIntent || y === outgoing.y) { return; }
+        if (!outgoing || (!outgoing.userIntent && completedDrag?.token !== outgoing.token) || y === outgoing.y) { return; }
         outgoing.y = y;
         window.webkit.messageHandlers.\#(reloadMessageName).postMessage({
             token: outgoing.token, sequence: ++outgoing.sequence, place: captureHeldReference()
@@ -336,15 +360,29 @@ enum PreviewHeldReference {
         publishOutgoingReference();
     };
 
-    window.__md2NoteHeldReloadScrollbarDrag = function (token) {
-        if (outgoingReference?.token !== token || !scrollbarPressed) { return; }
-        outgoingReference.userIntent = true;
-        publishOutgoingReference();
+    window.__md2NoteHeldReloadScrollbarDrag = function (token, page) {
+        if (!scrollbarPressed || location.href.split('#')[0] !== page) { return; }
+        if (token !== null) {
+            if (outgoingReference?.token !== token) { return; }
+            pendingScrollbarDrag = null;
+            outgoingReference.userIntent = true;
+            publishOutgoingReference();
+            return;
+        }
+        // Native sends this checkpoint before forwarding the drag to WebKit.
+        // A pre-capture drag can update the viewport only after the capture.
+        var root = document.documentElement;
+        pendingScrollbarDrag = {token: outgoingReference?.token, y: window.scrollY,
+            width: root.clientWidth, height: root.clientHeight, scrollHeight: root.scrollHeight};
     };
 
-    function clearScrollbarPress() { scrollbarPressed = false; }
+    function clearScrollbarPress() {
+        scrollbarPressed = false;
+        if (!pendingScrollbarDrag?.token) { pendingScrollbarDrag = null; }
+    }
     window.addEventListener('mousedown', function (event) {
         if (!event.isTrusted || event.button !== 0) { return; }
+        pendingScrollbarDrag = null;
         var root = document.documentElement, width = window.innerWidth, x = event.clientX;
         var clientWidth = root.clientWidth;
         // Overlay scrollbars leave no gutter. Their hit can target the page
@@ -357,7 +395,10 @@ enum PreviewHeldReference {
     // WebKit sends a drag to the scrollbar itself. A DOM move instead means
     // that a press in the possible overlay strip belonged to the document.
     window.addEventListener('mousemove', function (event) {
-        if (event.isTrusted) { clearScrollbarPress(); }
+        if (event.isTrusted && scrollbarPressed) {
+            pendingScrollbarDrag = null;
+            clearScrollbarPress();
+        }
     }, {capture: true, passive: true});
     window.addEventListener('mouseup', function (event) {
         // Releasing can follow a drag completed before the capture. A native
@@ -369,10 +410,23 @@ enum PreviewHeldReference {
     window.addEventListener('pagehide', function () {
         publishOutgoingReference();
         outgoingReference = null;
+        pendingScrollbarDrag = null;
         clearScrollbarPress();
     });
 
-    window.__md2RestoreReference = function (place) {
+    window.__md2RestoreReference = function (place, viewportRise) {
+        if (viewportRise > 0 && window.innerWidth === place.viewportWidth && window.innerHeight > place.viewportHeight) {
+            // Removing a bar above the preview can make WebKit clamp the
+            // outgoing scroll at the document bottom. Keep that layout
+            // adjustment up to the amount the viewport moved in the window.
+            var maxY = Math.max(0, place.scrollHeight - window.innerHeight);
+            var shift = Math.min(viewportRise, Math.max(0, place.y - maxY));
+            if (shift > 0) {
+                for (var block of place.blocks) { block.top += shift; }
+                if (Number.isFinite(place.find?.top)) { place.find.top += shift; }
+                place.y -= shift;
+            }
+        }
         pendingHeldFind = place.find || null;
         pinReference(place.blocks, place.y);
     };

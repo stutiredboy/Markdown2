@@ -1888,6 +1888,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             let page: URL
             let window: ObjectIdentifier?
             let resourceContext: UUID?
+            var viewportTop: CGFloat?
             var sequence = 0
             var place: [String: Any]?
         }
@@ -2198,7 +2199,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 let token = UUID()
                 heldReloadCapture = token
                 pendingHeldReload = HeldReload(id: token, page: page, window: webView.window.map(ObjectIdentifier.init),
-                                               resourceContext: remoteResourceContextToken)
+                                               resourceContext: remoteResourceContextToken,
+                                               viewportTop: Self.viewportTop(in: webView))
                 capturePosition(in: webView, includeReference: true) { [weak self, weak webView] position in
                     guard let self, let webView, self.resourceContextIsActive,
                           self.heldReloadCapture == token else { return }
@@ -2374,11 +2376,26 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 && reload.resourceContext == remoteResourceContextToken
         }
 
+        private static func viewportTop(in webView: WKWebView) -> CGFloat? {
+            guard let window = webView.window else { return nil }
+            let bounds = webView.bounds
+            let top = NSPoint(x: bounds.midX, y: webView.isFlipped ? bounds.minY : bounds.maxY)
+            // Measure from the window's top edge so moving the window or
+            // resizing from the bottom does not move the preview within it.
+            return window.convertPoint(toScreen: webView.convert(top, to: nil)).y - window.frame.maxY
+        }
+
         fileprivate func noteHeldReloadScrollbarDrag(in webView: WKWebView) {
-            guard resourceContextIsActive, acceptsFindHost(webView), let reload = pendingHeldReload,
-                  reload.window == webView.window.map(ObjectIdentifier.init),
-                  reload.resourceContext == remoteResourceContextToken else { return }
-            webView.evaluateJavaScript("window.__md2NoteHeldReloadScrollbarDrag?.('\(reload.id.uuidString)');")
+            let reload = pendingHeldReload
+            guard resourceContextIsActive, holdsReadingPosition || reload != nil, acceptsFindHost(webView),
+                  let page = reload?.page ?? documentLoader.documentPageURL else { return }
+            if let reload {
+                guard reload.window == webView.window.map(ObjectIdentifier.init),
+                      reload.resourceContext == remoteResourceContextToken else { return }
+            }
+            let token = reload.map { "'\($0.id.uuidString)'" } ?? "null"
+            let url = Self.jsStringLiteral(page.absoluteString)
+            webView.evaluateJavaScript("window.__md2NoteHeldReloadScrollbarDrag?.(\(token), \(url));")
         }
 
         func userContentController(
@@ -2478,6 +2495,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
                       let place = body["place"] as? [String: Any] else { return }
                 reload.sequence = sequence
                 reload.place = place
+                reload.viewportTop = Self.viewportTop(in: webView)
                 pendingHeldReload = reload
             case MarkdownPreviewView.outlineMarginMessageName:
                 guard isLoaded, message.world == .page, let outlineMarginToken,
@@ -2603,9 +2621,14 @@ struct MarkdownPreviewView: NSViewRepresentable {
             if pendingScroll == nil, pendingEditorFollow == nil, let reload = pendingHeldReload, let place = reload.place,
                let page = documentLoader.documentPageURL, page != reload.page,
                reload.window == webView.window.map(ObjectIdentifier.init), reload.resourceContext == remoteResourceContextToken {
+                let viewportRise = if let oldTop = reload.viewportTop, let newTop = Self.viewportTop(in: webView) {
+                    Double((newTop - oldTop) / webView.pageZoom)
+                } else {
+                    0.0
+                }
                 webView.callAsyncJavaScript("""
-                    if (location.href.split('#')[0] === page) { window.__md2RestoreReference?.(place); }
-                    """, arguments: ["place": place, "page": page.absoluteString], in: nil, in: .page,
+                    if (location.href.split('#')[0] === page) { window.__md2RestoreReference?.(place, viewportRise); }
+                    """, arguments: ["place": place, "page": page.absoluteString, "viewportRise": viewportRise], in: nil, in: .page,
                                             completionHandler: nil)
             }
             pendingHeldReload = nil

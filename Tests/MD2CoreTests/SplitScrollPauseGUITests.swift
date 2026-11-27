@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import WebKit
 import XCTest
@@ -501,13 +502,132 @@ final class SplitScrollPauseGUITests: XCTestCase {
         try exercisePausedReloadScrollbarDrag(.holdStillAfterCapture)
     }
 
+    @MainActor func testPausedReloadKeepsScrollbarMotionSubmittedJustBeforeCapture() throws {
+        try exercisePausedReloadScrollbarDrag(.sendLastDragOnRender)
+    }
+
+    @MainActor func testPausedReloadKeepsTheWindowPositionWhenFindClosesAtTheBottom() throws {
+        let host = InteractionTestWindow()
+        defer { host.close() }
+        let links = (0..<3500).map { "[Design note \($0)](review-\($0).md)" }.joined(separator: " ")
+        let rows = (1...150).map { "| Record \($0) | Value \($0) |" }.joined(separator: "\n")
+        host.store.text = "# audit-title\n\n" + links + "\n\n| Key | Value |\n|---|---|\n" + rows + "\n\nClosing note.\n"
+        let web = try mountDocument(in: host, settings: host.settings, marker: "Record 150",
+                                    ready: "document.querySelectorAll('tbody tr').length === 150 && document.querySelectorAll('main a').length === 3500",
+                                    size: NSSize(width: 1046, height: 650))
+        try toggle(in: host, paused: false)
+
+        let closedHeight = try XCTUnwrap(try host.js("innerHeight", web) as? Double)
+        let find = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: host.window.windowNumber, context: nil,
+            characters: "f", charactersIgnoringModifiers: "f", isARepeat: false, keyCode: 3))
+        XCTAssertTrue(web.performKeyEquivalent(with: find))
+        host.spin(until: { host.queryField != nil })
+        XCTAssertNotNil(host.queryField, "the native empty preview Find bar must be open")
+        try host.waitForPage("innerHeight < \(closedHeight) - 70", in: web, context: "Find reduced the preview height")
+        _ = try host.js("window.initialPage = true; scrollTo(0, document.documentElement.scrollHeight - innerHeight - 190); true", web)
+        try host.waitForPage("Math.abs(document.documentElement.scrollHeight - innerHeight - scrollY - 190) < 2",
+                             in: web, context: "the scrollbar is near the bottom before its native drag")
+
+        let record = "Record 144"
+        let trace = try observePausedTableScroll(in: web, host: host, includeScrollbarEvents: true, record: record)
+        defer { web.configuration.userContentController.removeScriptMessageHandler(forName: PausedTableScrollTrace.name) }
+        let dimensions = try XCTUnwrap(try host.js("""
+            ({ height: innerHeight, width: innerWidth, documentHeight: document.documentElement.scrollHeight, scrollY })
+            """, web) as? [String: Double])
+        let height = try XCTUnwrap(dimensions["height"])
+        let width = try XCTUnwrap(dimensions["width"])
+        let documentHeight = try XCTUnwrap(dimensions["documentHeight"])
+        let scrollY = try XCTUnwrap(dimensions["scrollY"])
+        let thumb = max(30, height * height / documentHeight)
+        let thumbY = ((height - thumb) * scrollY / (documentHeight - height) + thumb / 2).rounded()
+        func windowPoint(x: Double, y: Double) -> NSPoint {
+            web.convert(NSPoint(x: x, y: web.isFlipped ? y : web.bounds.height - y), to: nil)
+        }
+        let pressPoint = windowPoint(x: width - 4, y: thumbY)
+        let heldPoint = windowPoint(x: width - 4, y: height - 2)
+        let editor = try XCTUnwrap(host.store.editorSession.textView)
+        let caret = NSRange(location: editor.string.utf16.count, length: 0)
+        XCTAssertTrue(host.window.makeFirstResponder(editor))
+        editor.setSelectedRange(caret)
+        editor.scrollRangeToVisible(caret)
+
+        var pressed = false
+        defer {
+            if pressed { _ = try? sendScrollbarMouse(.leftMouseUp, at: heldPoint, in: web, host: host) }
+        }
+        var down = false
+        var reachedBottom = false
+        var captured: (geometry: PausedTableScrollTrace.Event, windowY: CGFloat)?
+        var outgoing: (geometry: PausedTableScrollTrace.Event, windowY: CGFloat)?
+        var oldPageRelease = false
+        var dragScreen: NSPoint?
+        var releaseScreen: NSPoint?
+        trace.onEvent = { event in
+            switch event.kind {
+            case "mousedown" where event.trusted:
+                down = true
+            case "scroll" where captured == nil && event.trusted:
+                reachedBottom = abs(documentHeight - height - event.scrollY) < 2
+            case "capture" where captured == nil:
+                XCTAssertTrue(pressed && reachedBottom)
+                XCTAssertNotNil(host.queryField)
+                captured = (event, windowPoint(x: 20, y: event.y).y)
+                let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: host.window.windowNumber, context: nil,
+                    characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+                XCTAssertTrue(web.performKeyEquivalent(with: escape), "the native preview must handle Escape")
+            case "resize", "scroll":
+                guard captured != nil, pressed, event.viewportHeight > height + 70 else { return }
+                releaseScreen = try self.sendScrollbarMouse(.leftMouseUp, at: heldPoint, in: web, host: host)
+                pressed = false
+            case "mouseup" where event.trusted && captured != nil:
+                oldPageRelease = true
+            case "pagehide" where event.trusted:
+                outgoing = (event, windowPoint(x: 20, y: event.y).y)
+            default:
+                break
+            }
+        }
+
+        try sendScrollbarMouse(.leftMouseDown, at: pressPoint, in: web, host: host)
+        pressed = true
+        host.spin(until: { down })
+        XCTAssertTrue(down, "the old page must receive the native thumb press")
+        dragScreen = try sendScrollbarMouse(.leftMouseDragged, at: heldPoint, in: web, host: host)
+        host.spin(until: { reachedBottom })
+        XCTAssertTrue(reachedBottom, "the native drag must reach the old document bottom before capture")
+        editor.insertText("\n```mermaid\ngraph LR; A-->B;\n```\n", replacementRange: caret)
+        try waitForReplacementTablePreview(in: web, host: host)
+        XCTAssertNil(trace.inputError)
+        XCTAssertTrue(oldPageRelease, "the old page must receive the trusted release after Find closes")
+        XCTAssertNil(host.queryField, "Escape must close the native Find bar")
+        let oldCapture = try XCTUnwrap(captured)
+        let oldExit = try XCTUnwrap(outgoing)
+        let lastDragScreen = try XCTUnwrap(dragScreen)
+        let mouseUpScreen = try XCTUnwrap(releaseScreen)
+        XCTAssertEqual(lastDragScreen, mouseUpScreen, "the thumb must release at the same physical point")
+        XCTAssertTrue(oldCapture.geometry.visible && oldExit.geometry.visible)
+        let viewportGrowth = oldExit.geometry.viewportHeight - oldCapture.geometry.viewportHeight
+        XCTAssertGreaterThan(viewportGrowth, 70)
+        XCTAssertEqual(oldExit.geometry.y - oldCapture.geometry.y, viewportGrowth, accuracy: 2)
+        XCTAssertEqual(oldExit.windowY, oldCapture.windowY, accuracy: 2, "closing Find alone must leave the row fixed in the window")
+        let finalY = try visibleTop(of: tableCell(named: record), in: web, host: host)
+        let finalWindowY = windowPoint(x: 20, y: finalY).y
+        print("Paused Find close \(record): capture CSS=\(oldCapture.geometry.y), pagehide CSS=\(oldExit.geometry.y), final CSS=\(finalY), "
+              + "viewport growth=\(viewportGrowth), capture window y=\(oldCapture.windowY), pagehide window y=\(oldExit.windowY), "
+              + "final window y=\(finalWindowY), same drag and release=\(mouseUpScreen)")
+        XCTAssertEqual(finalWindowY, oldExit.windowY, accuracy: 2, "the reload must preserve the last window reading position")
+    }
+
     private enum ScrollbarReloadGesture {
-        case pressBeforeCapture, continueAfterCapture, holdStillAfterCapture
+        case pressBeforeCapture, continueAfterCapture, holdStillAfterCapture, sendLastDragOnRender
     }
 
     @MainActor private func exercisePausedReloadScrollbarDrag(_ gesture: ScrollbarReloadGesture) throws {
         let moveBeforeCapture = gesture != .pressBeforeCapture
         let stationaryRelease = gesture == .holdStillAfterCapture
+        let queuedLastDrag = gesture == .sendLastDragOnRender
         let host = InteractionTestWindow()
         defer { host.close() }
         let (web, initialY) = try pausedTableFixture(in: host, linkCount: 3500)
@@ -529,18 +649,7 @@ final class SplitScrollPauseGUITests: XCTestCase {
         @discardableResult func sendMouse(_ type: NSEvent.EventType, y: Double) throws -> NSPoint {
             // Dispatch to the native WebKit scrollbar in this window only.
             let point = NSPoint(x: width - 4, y: web.isFlipped ? y : web.bounds.height - y)
-            let location = web.convert(point, to: nil)
-            let screen = host.window.convertPoint(toScreen: location)
-            let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: location,
-                modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: host.window.windowNumber,
-                context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1))
-            switch type {
-            case .leftMouseDown: web.mouseDown(with: event)
-            case .leftMouseDragged: web.mouseDragged(with: event)
-            case .leftMouseUp: web.mouseUp(with: event)
-            default: XCTFail("Unexpected scrollbar input \(type)")
-            }
-            return screen
+            return try sendScrollbarMouse(type, at: web.convert(point, to: nil), in: web, host: host)
         }
 
         // Prepare the source caret before grabbing the thumb so the native
@@ -568,6 +677,7 @@ final class SplitScrollPauseGUITests: XCTestCase {
         var outgoing: PausedTableScrollTrace.Event?
         var lastDragScreenPoint: NSPoint?
         var releaseScreenPoint: NSPoint?
+        var lastDragSentBeforeCapture = false
         trace.onEvent = { event in
             switch event.kind {
             case "mousedown" where event.trusted && down == nil:
@@ -588,8 +698,12 @@ final class SplitScrollPauseGUITests: XCTestCase {
                     // is held at the last pre-capture native position.
                     web.evaluateJavaScript("window.scrollBy(0, -191); true")
                 } else {
-                    try sendMouse(.leftMouseDragged, y: releaseThumbY)
-                    try sendMouse(.leftMouseUp, y: releaseThumbY)
+                    if queuedLastDrag {
+                        XCTAssertTrue(lastDragSentBeforeCapture, "the last native drag must be queued before capture")
+                    } else {
+                        try sendMouse(.leftMouseDragged, y: releaseThumbY)
+                    }
+                    releaseScreenPoint = try sendMouse(.leftMouseUp, y: releaseThumbY)
                     pressed = false
                 }
             case "mouseup" where event.trusted && captured != nil:
@@ -616,6 +730,14 @@ final class SplitScrollPauseGUITests: XCTestCase {
             expectedCaptureY = firstMove.y
         }
 
+        let lastDragOnRender: AnyCancellable? = queuedLastDrag ? host.store.$rendered.dropFirst().sink { rendered in
+            guard rendered.body.contains("diagram-mermaid"), !lastDragSentBeforeCapture else { return }
+            XCTAssertNil(captured, "the final native drag must be sent before the old geometry is captured")
+            lastDragSentBeforeCapture = true
+            do { lastDragScreenPoint = try sendMouse(.leftMouseDragged, y: releaseThumbY) }
+            catch { XCTFail("Could not send the last pre-capture drag: \(error)") }
+        } : nil
+        defer { lastDragOnRender?.cancel() }
         editor.insertText(mermaid, replacementRange: caret)
         XCTAssertTrue(editor.string == expected, "only the first Mermaid fence should be inserted")
         try waitForReplacementTablePreview(in: web, host: host)
@@ -637,12 +759,33 @@ final class SplitScrollPauseGUITests: XCTestCase {
             XCTAssertEqual(dragPoint, releasePoint, "the thumb must be released at its last physical drag position")
             print("Paused scrollbar stationary release: last drag screen point=\(dragPoint), release screen point=\(releasePoint)")
         }
+        if queuedLastDrag {
+            let dragPoint = try XCTUnwrap(lastDragScreenPoint)
+            let releasePoint = try XCTUnwrap(releaseScreenPoint)
+            XCTAssertEqual(dragPoint, releasePoint, "the only input after capture is release at the drag endpoint")
+            print("Paused scrollbar pre-capture drag: drag endpoint=\(dragPoint), release screen point=\(releasePoint)")
+        }
         let finalY = try visibleTop(of: tableCell(named: "Record 60"), in: web, host: host)
         let expectedY = stationaryRelease ? capture.y : pagehide.y
         print("Paused scrollbar drag, CSS px: initial=\(initialY), capture=\(capture.y), "
               + "old pagehide=\(pagehide.y), expected=\(expectedY), final=\(finalY), delta=\(finalY - expectedY), "
               + "pre-capture movement=\(moveBeforeCapture), stationary release=\(stationaryRelease)")
         XCTAssertEqual(finalY, expectedY, accuracy: 2, "the new page must keep Record 60 at the last dragged position")
+    }
+
+    @discardableResult @MainActor private func sendScrollbarMouse(_ type: NSEvent.EventType, at location: NSPoint,
+                                                                   in web: WKWebView, host: InteractionTestWindow) throws -> NSPoint {
+        let screen = host.window.convertPoint(toScreen: location)
+        let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: location,
+            modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: host.window.windowNumber,
+            context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1))
+        switch type {
+        case .leftMouseDown: web.mouseDown(with: event)
+        case .leftMouseDragged: web.mouseDragged(with: event)
+        case .leftMouseUp: web.mouseUp(with: event)
+        default: XCTFail("Unexpected scrollbar input \(type)")
+        }
+        return screen
     }
 
     @MainActor func testPausedReloadWithoutAUserWheelKeepsTheCapturedPosition() throws {
@@ -788,17 +931,17 @@ final class SplitScrollPauseGUITests: XCTestCase {
     }
 
     @MainActor private func observePausedTableScroll(in web: WKWebView, host: InteractionTestWindow,
-                                                     includeScrollbarEvents: Bool = false) throws -> PausedTableScrollTrace {
+                                                     includeScrollbarEvents: Bool = false, record: String = "Record 60") throws -> PausedTableScrollTrace {
         let trace = PausedTableScrollTrace()
         web.configuration.userContentController.add(trace, name: PausedTableScrollTrace.name)
         _ = try host.js("""
             (() => {
                 function report(kind, event) {
                     if (!window.initialPage) return;
-                    const rect = (\(tableCell(named: "Record 60")))?.getBoundingClientRect();
+                    const rect = (\(tableCell(named: record)))?.getBoundingClientRect();
                     if (!rect) return;
                     window.webkit.messageHandlers.\(PausedTableScrollTrace.name).postMessage({
-                        kind, y: rect.top, scrollY, trusted: event?.isTrusted ?? false,
+                        kind, y: rect.top, scrollY, viewportHeight: innerHeight, trusted: event?.isTrusted ?? false,
                         visible: rect.height > 0 && rect.bottom > 0 && rect.top < innerHeight,
                         deltaY: event?.deltaY ?? 0, headerBreaks: document.querySelectorAll('thead th br').length
                     });
@@ -812,7 +955,7 @@ final class SplitScrollPauseGUITests: XCTestCase {
                 window.addEventListener('wheel', event => report('wheel', event), {passive: true});
                 window.addEventListener('scroll', event => report('scroll', event), {passive: true});
                 if (\(includeScrollbarEvents)) {
-                    for (const kind of ['mousedown', 'mouseup', 'pagehide']) {
+                    for (const kind of ['mousedown', 'mouseup', 'resize', 'pagehide']) {
                         window.addEventListener(kind, event => report(kind, event), {capture: true, passive: true});
                     }
                 }
@@ -1153,6 +1296,7 @@ final class SplitScrollPauseGUITests: XCTestCase {
         let kind: String
         let y: Double
         let scrollY: Double
+        let viewportHeight: Double
         let visible: Bool
         let trusted: Bool
         let deltaY: Double
@@ -1161,11 +1305,13 @@ final class SplitScrollPauseGUITests: XCTestCase {
         init?(_ body: Any) {
             guard let data = body as? [String: Any], let kind = data["kind"] as? String,
                   let y = data["y"] as? Double, let scrollY = data["scrollY"] as? Double,
+                  let viewportHeight = data["viewportHeight"] as? Double,
                   let visible = data["visible"] as? Bool, let trusted = data["trusted"] as? Bool,
                   let deltaY = data["deltaY"] as? Double, let headerBreaks = data["headerBreaks"] as? Int else { return nil }
             self.kind = kind
             self.y = y
             self.scrollY = scrollY
+            self.viewportHeight = viewportHeight
             self.visible = visible
             self.trusted = trusted
             self.deltaY = deltaY
