@@ -316,20 +316,35 @@ final class PreviewTableResizeGUITests: XCTestCase {
         host.settings.newDocumentMode = .read
         host.store.text = Self.table
         host.host(ContentView(document: host.store, settings: host.settings, onOpen: {}), width: 980)
-        var web = try XCTUnwrap(host.descendants(WKWebView.self).first)
+        let web = try XCTUnwrap(host.descendants(WKWebView.self).first)
         try host.waitForPage("!!document.querySelector('main thead th')", in: web, context: "Read table")
         try dragColumn(1, by: 90, in: web, host: host)
         let widths = try headerWidths(in: web, host: host)
+        let saved = host.store.previewTableColumnWidths.entries
 
         for mode in [EditorMode.split, .read] {
             host.store.requestMode(mode)
+            let split = mode == .split
             let editorIsHosted = { host.descendants(NSTextView.self).contains { $0 === host.store.editorSession.textView } }
-            host.spin(until: { editorIsHosted() == (mode == .split) })
-            XCTAssertEqual(editorIsHosted(), mode == .split)
-            web = try XCTUnwrap(host.descendants(WKWebView.self).first)
-            try host.waitForPage("!!document.querySelector('main table.md2-col-resized')", in: web,
+            var activePreview: WKWebView?
+            host.spin(until: {
+                guard editorIsHosted() == split else { return false }
+                // SwiftUI may still list the retired view after the editor
+                // pane has switched. Its DOM remains readable after teardown.
+                activePreview = host.descendants(WKWebView.self).first { candidate in
+                    guard candidate.window === host.window, !candidate.isHiddenOrHasHiddenAncestor,
+                          let coordinator = candidate.navigationDelegate as? MarkdownPreviewView.Coordinator else { return false }
+                    return coordinator.resourceContextIsActive && coordinator.liveUpdate == split
+                        && coordinator.isLoaded && !candidate.isLoading
+                }
+                return activePreview != nil
+            })
+            let preview = try XCTUnwrap(activePreview,
+                "active, loaded \(mode) preview after mode switch (editor hosted: \(editorIsHosted()))")
+            try host.waitForPage("document.querySelector('main table.md2-col-resized th:nth-child(2)')?.textContent === 'Second column'", in: preview,
                                  context: "restored table in \(mode)")
-            XCTAssertEqual(try headerWidths(in: web, host: host), widths)
+            XCTAssertEqual(try headerWidths(in: preview, host: host), widths)
+            XCTAssertEqual(host.store.previewTableColumnWidths.entries, saved)
         }
     }
 
