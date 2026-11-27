@@ -36,6 +36,8 @@
 
 - See that autosave is paused in the status bar after choosing **Later**, and reopen the conflict comparison from there. Selection statistics and export interruption messages remain readable in a 720 pt window.
 
+- Explain why a symbolic link is ineligible before asking for a filename when saving an editor copy from the conflict sheet.
+
 - Find text inside author highlights in the preview. Navigating to a result inside a collapsed disclosure opens it and reveals the match.
 
 - Wrap long plain-text tokens and automatic links in narrow previews. Wide tables and fenced code scroll within their own blocks.

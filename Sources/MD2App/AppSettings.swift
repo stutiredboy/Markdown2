@@ -497,6 +497,7 @@ enum L10nKey: String, CaseIterable, Sendable {
     case externalChangeConflictTitle
     case externalChangeConflictMessage
     case conflictEditorVersion, conflictDiskVersion, conflictSaveEditorCopy, conflictConfirmCopy, conflictCopyLocation
+    case conflictCopySymbolicLink
     case reviewExternalConflict
     case conflictLoading, conflictUnavailable, conflictUndecodable, conflictMatchingText, conflictReviewAgain, conflictRefresh
     case conflictCoarse, conflictOneLine, conflictLineRange, conflictNoPassage, conflictBlankLine
@@ -855,6 +856,7 @@ enum L10n {
         .conflictSaveEditorCopy: "Save Editor Copy…",
         .conflictConfirmCopy: "Save Copy",
         .conflictCopyLocation: "Create a new file in %@",
+        .conflictCopySymbolicLink: "Creating an editor copy requires an existing local regular file. “%@” is a symbolic link.",
         .reviewExternalConflict: "Autosave paused · View conflict",
         .conflictLoading: "Comparing versions…",
         .conflictUnavailable: "The disk file could not be verified. Check its location and permissions, then refresh the comparison.",
@@ -1293,6 +1295,7 @@ enum L10n {
         .conflictSaveEditorCopy: "将编辑稿另存为副本…",
         .conflictConfirmCopy: "保存副本",
         .conflictCopyLocation: "在 %@ 中创建新文件",
+        .conflictCopySymbolicLink: "将编辑稿另存为副本需要已存在的本地普通文件。“%@”是符号链接。",
         .reviewExternalConflict: "自动保存已暂停 · 查看冲突",
         .conflictLoading: "正在比较两个版本…",
         .conflictUnavailable: "无法确认磁盘文件。请检查文件位置和访问权限，然后刷新比较。",

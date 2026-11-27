@@ -63,6 +63,89 @@ final class ConflictComparisonGUITests: XCTestCase {
     }
 
     @MainActor
+    func testSymlinkConflictCopyExplainsTheLimitBeforeAskingForAName() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
+                          "Set MD2_RUN_GUI_TESTS=1 to exercise the native conflict sheet.")
+        let files = FileManager.default
+        let directory = files.temporaryDirectory.appendingPathComponent("ConflictSymlink-\(UUID())")
+        try files.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? files.removeItem(at: directory) }
+        let origin = directory.appendingPathComponent("Origin.md")
+        let alias = directory.appendingPathComponent("Alias.md")
+        let externalBytes = Data("theirs".utf8)
+        try Data("base".utf8).write(to: origin)
+        try files.createSymbolicLink(at: alias, withDestinationURL: origin)
+
+        let app = try await FolderTestApplication.launch(in: directory, arguments: [alias.path], language: .english)
+        defer { app.close() }
+        let window = try app.documentWindow(alias)
+        XCTAssertTrue(app.title(window).hasPrefix(alias.lastPathComponent))
+        let editor = try app.editor(in: window)
+        let originalEntries = Set(try files.contentsOfDirectory(atPath: directory.path))
+        try app.replaceEditorText("mine", in: editor)
+        try externalBytes.write(to: origin, options: .atomic)
+
+        func find(_ id: String) -> AXUIElement? {
+            app.windows.lazy.compactMap { app.descendant($0) { app.identifier($0) == id } }.first
+        }
+        func enabled(_ id: String) throws -> AXUIElement {
+            try app.waitFor("enabled \(id)") {
+                guard let element = find(id), app.attribute(kAXEnabledAttribute, of: element) as? Bool == true else { return nil }
+                return element
+            }
+        }
+        func verifyComparison() throws {
+            for (identifier, text) in [("conflictEditorText-0", "mine"), ("conflictDiskText-0", "theirs")] {
+                _ = try app.waitFor("the comparison displays \(text)") {
+                    guard let passage = find(identifier) else { return nil }
+                    return app.descendant(passage) { app.labels($0).contains(text) }
+                }
+            }
+        }
+
+        try verifyComparison()
+        try app.press(enabled("conflictSaveEditorCopy"))
+        let outcome = try app.waitFor("the copy explanation or filename field") {
+            find("conflictStatus") ?? find("conflictCopyFilename")
+        }
+        let filename = find("conflictCopyFilename")
+        let explanation = app.identifier(outcome) == "conflictStatus" ? app.labels(outcome).joined(separator: " ") : ""
+        XCTAssertNil(filename, "the first press must explain the limitation before requesting a name")
+        XCTAssertNil(find("conflictConfirmCopy"))
+        XCTAssertTrue(explanation.localizedCaseInsensitiveContains("regular file"), explanation)
+        XCTAssertTrue(explanation.localizedCaseInsensitiveContains("symbolic link"), explanation)
+        XCTAssertTrue(explanation.contains(alias.lastPathComponent), explanation)
+        XCTAssertFalse(try app.frame(of: outcome).isEmpty)
+        print("Symlink conflict copy first press in \(app.title(window)): filename=\(filename.flatMap(app.value) ?? "absent"), "
+              + "notice=\(explanation.isEmpty ? "absent" : explanation)")
+
+        // Autosave must remain paused even after its normal five-second deadline.
+        try await Task.sleep(for: .seconds(5.25))
+        let target = try files.destinationOfSymbolicLink(atPath: alias.path)
+        let disk = try Data(contentsOf: origin)
+        let aliasBytes = try Data(contentsOf: alias)
+        let currentEntries = Set(try files.contentsOfDirectory(atPath: directory.path))
+        XCTAssertEqual(target, origin.path)
+        XCTAssertEqual(disk, externalBytes)
+        XCTAssertEqual(aliasBytes, externalBytes)
+        XCTAssertEqual(app.value(editor), "mine")
+        XCTAssertEqual(currentEntries, originalEntries)
+        XCTAssertNil(find("openCreatedCopy"))
+        print("Symlink conflict copy: Alias.md points to \(URL(fileURLWithPath: target).lastPathComponent), "
+              + "disk=\(String(decoding: disk, as: UTF8.self)), editor=\(app.value(editor) ?? "missing"), "
+              + "new source folder entries=\(currentEntries.subtracting(originalEntries).sorted())")
+
+        try verifyComparison()
+        guard filename == nil else { return }
+        try app.press(enabled("conflictLater"))
+        _ = try app.waitFor("the comparison sheet to close after Later") { find("conflictLater") == nil ? window : nil }
+        try app.press(enabled("review-external-conflict"))
+        try verifyComparison()
+        XCTAssertEqual(try Data(contentsOf: origin), externalBytes)
+        print("Symlink conflict copy: View conflict reopened the comparison with editor mine and disk theirs.")
+    }
+
+    @MainActor
     func testCompareBothPassagesSaveEditorCopyAndReloadOriginal() async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["MD2_RUN_GUI_TESTS"] == "1",
                           "Set MD2_RUN_GUI_TESTS=1 to exercise the native conflict sheet.")
@@ -124,9 +207,13 @@ final class ConflictComparisonGUITests: XCTestCase {
         XCTAssertEqual(app.value(filename), copy.lastPathComponent)
         try pressEnabled("conflictConfirmCopy")
         _ = try control("openCreatedCopy")
-        XCTAssertEqual(try Data(contentsOf: original), bom + Data(theirs.utf8))
-        XCTAssertEqual(try Data(contentsOf: copy), bom + Data(mine.utf8))
+        let originalBytes = try Data(contentsOf: original)
+        let copyBytes = try Data(contentsOf: copy)
+        XCTAssertEqual(originalBytes, bom + Data(theirs.utf8))
+        XCTAssertEqual(copyBytes, bom + Data(mine.utf8))
         XCTAssertEqual(app.value(editor), mine)
+        print("Regular-file conflict copy: \(copy.lastPathComponent) matched all \(copyBytes.count) editor bytes, "
+              + "and the original retained all \(originalBytes.count) external bytes.")
         let status = try control("review-external-conflict")
         XCTAssertTrue(app.labels(status).contains("Autosave paused · View conflict"))
         try pressEnabled("dismissCopyNotice")

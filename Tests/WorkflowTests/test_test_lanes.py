@@ -20,11 +20,12 @@ SCALING = "InlineRenderingPerformanceTests"
 BLOCK = "BlockRenderingPerformanceTests"
 REPLACEMENT = "LiteralReplacementPerformanceTests"
 WATCHER = "DispatchSourceFileWatcherTests"
+PASTE_ACCOUNTING = "MarkdownPasteResidualRegressionTests.largePrefixWithManyNodesUsesIncrementalOutputAccounting"
 
 
 def default_command():
     command = ["swift", "test"]
-    for test in (RENDER, SCALING, EXPORT, BLOCK, REPLACEMENT, WATCHER):
+    for test in (RENDER, SCALING, EXPORT, BLOCK, REPLACEMENT, WATCHER, PASTE_ACCOUNTING):
         command.extend(["--skip", test])
     return command
 
@@ -91,7 +92,7 @@ def validate_lanes(workflow):
 
     gates = [(default_index, default)]
     isolated = {}
-    for test in (RENDER, SCALING, EXPORT, BLOCK, REPLACEMENT, WATCHER):
+    for test in (RENDER, SCALING, EXPORT, BLOCK, REPLACEMENT, WATCHER, PASTE_ACCOUNTING):
         isolated[test] = unique_step(
             lambda step: ["swift", "test", "--filter", test] in step.commands,
             f"isolated {test}",
@@ -107,8 +108,9 @@ def validate_lanes(workflow):
         raise AssertionError("Heartbeats must run sequentially with failure propagation")
     if isolated[SCALING][1].commands != [["swift", "test", "--filter", SCALING]]:
         raise AssertionError("Inline scaling must run its exact isolated filter")
-    if isolated[WATCHER][1].commands != [["swift", "test", "--filter", WATCHER]]:
-        raise AssertionError("File watcher callbacks must run their exact isolated filter")
+    for test in (WATCHER, PASTE_ACCOUNTING):
+        if isolated[test][1].commands != [["swift", "test", "--filter", test]]:
+            raise AssertionError(f"{test} must run its exact isolated filter")
     if isolated[BLOCK][0] != isolated[REPLACEMENT][0] or isolated[BLOCK][1].commands != [
         ["set", "-euo", "pipefail"],
         ["swift", "test", "--filter", BLOCK],
@@ -161,7 +163,8 @@ def validate_local_lanes(script):
             if not nesting or nesting.pop() != first:
                 raise AssertionError("Unexpected local script control layout")
     expected = [default_command()] + [
-        ["swift", "test", "--filter", test] for test in (SCALING, BLOCK, REPLACEMENT, RENDER, EXPORT, WATCHER)
+        ["swift", "test", "--filter", test]
+        for test in (SCALING, BLOCK, REPLACEMENT, RENDER, EXPORT, WATCHER, PASTE_ACCOUNTING)
     ]
     if [tokens for _, tokens in commands] != expected:
         raise AssertionError("Local exclusions must have exact executable isolated gates")
@@ -204,11 +207,13 @@ class TestLaneTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_local_lanes(self.local.replace(command, "", 1))
 
-    def test_watcher_gate_or_exclusion_cannot_be_omitted(self):
-        self.reject(self.workflow.replace(f" --skip '{WATCHER}'", "", 1))
-        self.reject(self.workflow.replace(f"        run: swift test --filter '{WATCHER}'\n", "", 1))
-        with self.assertRaises(AssertionError):
-            validate_local_lanes(self.local.replace(f"swift test --filter '{WATCHER}'\n", "", 1))
+    def test_single_command_gate_or_exclusion_cannot_be_omitted(self):
+        for test in (WATCHER, PASTE_ACCOUNTING):
+            with self.subTest(test=test):
+                self.reject(self.workflow.replace(f" --skip '{test}'", "", 1))
+                self.reject(self.workflow.replace(f"        run: swift test --filter '{test}'\n", "", 1))
+                with self.assertRaises(AssertionError):
+                    validate_local_lanes(self.local.replace(f"swift test --filter '{test}'\n", "", 1))
 
     def test_block_gate_cannot_be_conditional_or_tolerate_failure(self):
         for field in ("continue-on-error: true", "if: false", "if : false"):

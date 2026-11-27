@@ -49,6 +49,7 @@ private struct ExternalConflictView: View {
             comparisonPane
             if let message {
                 Text(verbatim: message).font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("conflictStatus")
             }
             if copyName != nil {
@@ -150,12 +151,8 @@ private struct ExternalConflictView: View {
                 .keyboardShortcut(.cancelAction)
                 .accessibilityIdentifier("conflictLater")
             Spacer()
-            Button(settings.text(.conflictSaveEditorCopy)) {
-                guard let url = store.fileURL else { return }
-                copyName = DocumentCopyFlow.suggestedName(for: url, text: settings.text)
-                namingCopy = true
-            }
-            .accessibilityIdentifier("conflictSaveEditorCopy")
+            Button(settings.text(.conflictSaveEditorCopy)) { beginCopyNaming() }
+                .accessibilityIdentifier("conflictSaveEditorCopy")
             Button(settings.text(.reloadFromDisk)) { resolve(reload: true) }
                 .disabled(difference == nil)
                 .accessibilityIdentifier("conflictReload")
@@ -228,6 +225,30 @@ private struct ExternalConflictView: View {
                 refresh()
             }
             busy = false
+        }
+    }
+
+    private func beginCopyNaming() {
+        guard !busy, let url = store.fileURL, let request = store.externalConflictRequest else { return }
+        let documentID = store.documentIdentity
+        busy = true
+        Task {
+            defer { busy = false }
+            let eligibility = await Task.detached(priority: .userInitiated) {
+                DocumentCopyWriter.sourceEligibility(at: url)
+            }.value
+            guard store.hasExternalConflict, store.externalConflictRequest == request,
+                  store.documentIdentity == documentID, store.fileURL == url else { return }
+            switch eligibility {
+            case .regular:
+                message = nil
+                copyName = DocumentCopyFlow.suggestedName(for: url, text: settings.text)
+                namingCopy = true
+            case .symbolicLink:
+                message = String(format: settings.text(.conflictCopySymbolicLink), url.lastPathComponent)
+            case .unavailable:
+                message = settings.text(.copySourceUnavailable)
+            }
         }
     }
 

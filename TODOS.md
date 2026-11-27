@@ -213,7 +213,7 @@ The following cases reproduced on `9f65cb4` and on an earlier revision.
   the column can be mapped reliably, or at the start of line 3 otherwise.
   Acting on “Mixed HTML” must still locate line 2.
 
-- [ ] **P3 — Explain the conflict-copy limit for a symbolic link before naming the copy.**
+- [x] **P3 — Explain the conflict-copy limit for a symbolic link before naming the copy.**
   **Reproduce.** Create `Origin.md` containing `base` and a symbolic link
   `Alias.md` pointing to it. Open the alias, edit its text to `mine`, then
   write `theirs` to the target externally before autosave. Choose “Save
