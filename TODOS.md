@@ -146,7 +146,7 @@ correcting it in the source.
 
 The following cases reproduced on `9f65cb4` and on an earlier revision.
 
-- [ ] **P2 — Hold the visible table row when the header grows with scroll sync paused.**
+- [x] **P2 — Hold the visible table row when the header grows with scroll sync paused.**
   **Reproduce.** Open a two-column table with 150 numbered data rows in Side
   by Side. Pause scroll sync, scroll the preview until the cell `Record 60`
   is about 71 CSS px from the preview's top edge. Record the cell's position.

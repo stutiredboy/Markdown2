@@ -46,7 +46,7 @@
 
 - Keep the document marked as unsaved after **Keep My Version** until the chosen editor version is saved to the original file.
 
-- Keep the current Find result, the visible table row or list item, and the visible part of a local image in place when editing with synchronized scrolling paused.
+- Keep the current Find result, visible list item and visible part of a local image in place when editing with synchronized scrolling paused. The visible table row stays in place when inserting rows or growing the header.
 
 - Give the preview Find bar its own space in Read and Side by Side. Matches keep the original line breaks, use contrasting text in both appearances and outline the current result.
 

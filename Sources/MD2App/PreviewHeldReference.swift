@@ -7,7 +7,7 @@ enum PreviewHeldReference {
     // for a long header or a data URL. Stream all UTF-16 units through two
     // independent 32-bit hashes. A separator outside the UTF-16 range keeps
     // adjacent cells distinct (["a", "bc"] versus ["ab", "c"]).
-    function heldKey(node) {
+    function heldKey(node, sampleTableBody = false) {
         var first = 2166136261, second = 5381, length = 0;
         function unit(value) {
             first = Math.imul(first ^ value, 16777619);
@@ -42,16 +42,21 @@ enum PreviewHeldReference {
         } else if (node.tagName === 'TABLE') {
             field(node.id);
             if (node.caption) { ownText(node.caption); }
-            if (node.tHead) { for (var row of node.tHead.rows) { cells(row); } }
+            if (sampleTableBody) {
+                // Corroborate the visible rows without scanning the entire table.
+                var firstBody = node.tHead?.rows.length || 0, lastBody = node.rows.length - 1;
+                if (firstBody <= lastBody) { cells(node.rows[firstBody]); }
+                if (firstBody < lastBody) { cells(node.rows[lastBody]); }
+            } else if (node.tHead) { for (var row of node.tHead.rows) { cells(row); } }
         } else if (node.tagName === 'OL' || node.tagName === 'UL') { field(node.id); }
         else if (node.tagName === 'TR') { cells(node); }
         else { ownText(node); }
         return length + ':' + (first >>> 0) + ':' + (second >>> 0);
     }
 
-    // A row/item matches within its own container. A table header or caption
-    // distinguishes unrelated tables, and order breaks ties between similarly
-    // named containers or repeated identical rows/images.
+    // A row/item matches within its own container. A table's source span
+    // and visible rows can identify it after an in-place header edit. Its
+    // header or caption also helps identify it after a move or insertion.
     function visibleReferences() {
         var main = document.querySelector('main'), blocks = [];
         if (!main) { return blocks; }
@@ -182,6 +187,24 @@ enum PreviewHeldReference {
             }
             return best;
         }
+        function rowAtUnchangedTableLocation(table, block, neighbors) {
+            // A live swap detaches the old row with its owner still attached
+            // to it. Across page loads there is no old DOM to corroborate.
+            var original = block.node?.closest('table');
+            if (!original?.hasAttribute('data-md2-source-line') || !table) { return null; }
+            var headerRows = original.tHead?.rows.length || 0;
+            if (block.index < headerRows || table.rows.length !== block.group.count ||
+                (table.tHead?.rows.length || 0) !== headerRows ||
+                table.getAttribute('data-md2-source-line') !== original.getAttribute('data-md2-source-line') ||
+                table.getAttribute('data-md2-source-end-line') !== original.getAttribute('data-md2-source-end-line') ||
+                heldKey(table, true) !== heldKey(original, true)) { return null; }
+            var rows = table.rows;
+            if (keyOf(rows[block.index]) !== block.key) { return null; }
+            // Verify the visible body row sequence. An old header may match a
+            // different table even though this is the one the reader held.
+            return neighbors.every(peer => peer.index < headerRows || keyOf(rows[peer.index]) === peer.key)
+                ? rows[block.index] : null;
+        }
         var useNode = node => node;
         for (var block of blocks) {
             if (block.node?.isConnected) { return block; }
@@ -192,10 +215,16 @@ enum PreviewHeldReference {
                 // that actually contains the record the reader was looking at.
                 var neighbors = blocks.filter(peer => peer !== block && peer.group &&
                     peer.group.tag === block.group.tag && peer.group.index === block.group.index);
-                found = matching(collection(block.group.tag), block.group, group => {
-                    var items = group.tagName === 'TABLE' ? group.rows : group.children;
-                    return matching(items, block, useNode, block.index + items.length - block.group.count, neighbors);
-                });
+                var groups = collection(block.group.tag);
+                if (block.group.tag === 'TABLE') {
+                    found = rowAtUnchangedTableLocation(groups[block.group.index], block, neighbors);
+                }
+                if (!found) {
+                    found = matching(groups, block.group, group => {
+                        var items = group.tagName === 'TABLE' ? group.rows : group.children;
+                        return matching(items, block, useNode, block.index + items.length - block.group.count, neighbors);
+                    });
+                }
             } else {
                 found = matching(block.tag === 'IMG' ? collection('img') : main.children, block, useNode);
             }
