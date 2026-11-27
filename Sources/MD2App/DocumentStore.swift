@@ -217,9 +217,13 @@ final class DocumentStore: ObservableObject {
     /// A source line for the editor to select, sent by a preview gutter click;
     /// the editor clears it once applied.
     @Published var editorLineSelection: LineSelectionRequest?
+    let previewTableColumnWidths = PreviewTableColumnWidths()
     @Published private(set) var documentIdentity = UUID() {
         didSet {
-            if oldValue != documentIdentity { editorSession.invalidatePasteContext() }
+            if oldValue != documentIdentity {
+                editorSession.invalidatePasteContext()
+                previewTableColumnWidths.removeAll()
+            }
         }
     }
     /// True while the backing file has changed on disk under unsaved edits and
@@ -2438,6 +2442,7 @@ final class DocumentStore: ObservableObject {
             }
         }
         isClosed = true
+        previewTableColumnWidths.removeAll()
         resetRemoteImageChoices()
         remoteImageFileReference = nil
         replaceRemoteResourceContext()

@@ -145,6 +145,45 @@ final class InteractionTestWindow {
         }
     }
 
+    /// WebKit receives the native events at the CSS viewport coordinates.
+    func drag(from start: NSPoint, to end: NSPoint, in web: WKWebView) throws {
+        try moveMouse(to: start, in: web)
+        web.mouseDown(with: try previewMouseEvent(.leftMouseDown, at: start, in: web))
+        for step in 1...6 {
+            let fraction = CGFloat(step) / 6
+            let point = NSPoint(x: start.x + (end.x - start.x) * fraction,
+                                y: start.y + (end.y - start.y) * fraction)
+            try dragMouse(to: point, in: web)
+            spin(for: 0.025)
+        }
+        web.mouseUp(with: try previewMouseEvent(.leftMouseUp, at: end, in: web))
+    }
+
+    func moveMouse(to point: NSPoint, in web: WKWebView) throws {
+        web.mouseMoved(with: try previewMouseEvent(.mouseMoved, at: point, in: web))
+    }
+
+    func dragMouse(to point: NSPoint, in web: WKWebView) throws {
+        web.mouseDragged(with: try previewMouseEvent(.leftMouseDragged, at: point, in: web))
+    }
+
+    func click(at point: NSPoint, count: Int = 1, modifiers: NSEvent.ModifierFlags = [], in web: WKWebView) throws {
+        for click in 1...count {
+            web.mouseDown(with: try previewMouseEvent(.leftMouseDown, at: point, in: web, count: click, modifiers: modifiers))
+            web.mouseUp(with: try previewMouseEvent(.leftMouseUp, at: point, in: web, count: click, modifiers: modifiers))
+        }
+    }
+
+    private func previewMouseEvent(_ type: NSEvent.EventType, at point: NSPoint, in web: WKWebView,
+                                   count: Int = 1, modifiers: NSEvent.ModifierFlags = []) throws -> NSEvent {
+        let y = web.isFlipped ? point.y : web.bounds.height - point.y
+        let location = web.convert(NSPoint(x: point.x, y: y), to: nil)
+        return try XCTUnwrap(NSEvent.mouseEvent(with: type, location: location, modifierFlags: modifiers,
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+            context: nil, eventNumber: 0, clickCount: type == .mouseMoved ? 0 : count,
+            pressure: type == .leftMouseDown || type == .leftMouseDragged ? 1 : 0))
+    }
+
     func targetRect(_ range: NSRange, in editor: NSTextView) -> NSRect {
         guard let layout = editor.layoutManager, let container = editor.textContainer else { return .zero }
         var rect = layout.boundingRect(forGlyphRange: layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil), in: container)

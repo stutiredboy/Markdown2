@@ -4,6 +4,8 @@
 
 ### Added
 
+- Drag column boundaries in a preview table header to adjust widths, and double-click a boundary to restore automatic sizing.
+
 - Pause synchronized scrolling in a Side by Side window to keep a table in view while writing. Resume from either pane to align the other with it.
 
 - Compare the editor and disk versions side by side when another app changes a document with unsaved edits. Save the editor draft as a separate copy, keep it in the original, or reload the disk version. Autosave waits for your decision.
