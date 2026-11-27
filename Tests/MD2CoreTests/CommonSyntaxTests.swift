@@ -60,6 +60,23 @@ struct CommonSyntaxTests {
     private let renderer = MarkdownRenderer()
     private let enabled = RenderConfig(inlineFeatures: .init(highlight: true, superscript: true, subscriptEnabled: true))
 
+    @Test func sourceBreaksAfterRawHTMLRequireAccountingForEveryAuthoredLine() {
+        let ordinary = renderer.render("Plain above\n<div>Mixed HTML</div>\nPlain after XYZ").body
+        #expect(ordinary.contains(#"<div data-md2-source-line="2">Mixed HTML</div><br data-md2-source-next-line="3">Plain after XYZ"#))
+
+        let consumed = renderer.render("""
+            Plain above
+            <div>Mixed HTML</div>
+            ![photo](assets/photo.png){width=20
+            height=30}
+            Plain after XYZ
+            """).body
+        #expect(consumed.contains(#"<div data-md2-source-line="2">Mixed HTML</div><br>"#))
+        #expect(consumed.contains(#"<img src="assets/photo.png" alt="photo" width="20" height="30">"#))
+        #expect(consumed.contains("<br>Plain after XYZ"))
+        #expect(!consumed.contains("data-md2-source-next-line"))
+    }
+
     @Test func referenceFormsNormalizationAndFirstDefinition() {
         let body = renderer.render("""
         [full][  FOO   bar ] [Foo bar][] [foo bar] [ẞ] [unknown]

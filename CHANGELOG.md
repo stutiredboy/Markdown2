@@ -40,7 +40,7 @@
 
 - Count each discontiguous source selection separately and show the number of selected ranges in the status bar.
 
-- Open the corresponding source line when Command-double-clicking an HTML block in Preview or choosing **Edit This Paragraph in Source** from its context menu.
+- Open the corresponding source line when Command-double-clicking an HTML block or the plain text immediately after it in Preview, or choosing **Edit This Paragraph in Source** from its context menu.
 
 - Keep every preview Find result visible when navigating between an actual-size Mermaid diagram and the document text.
 

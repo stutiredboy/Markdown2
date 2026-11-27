@@ -1570,13 +1570,18 @@ public struct MarkdownRenderer: Sendable {
     /// otherwise dismantle them before math ever saw them.
     private func inlineHTML(_ markdown: String, context: InlineContext? = nil, paragraphStartLine: Int? = nil) -> String {
         let protector = InlineProtector()
+        var hasRawBlockHTML = false
 
         let pipeline: [(String) -> String] = [
             { protectVerbatimSpans($0, protector: protector) },
             { protectBackslashEscapes($0, protector: protector) },
             { protectHTMLEntities($0, protector: protector) },
             { protectAutolinks($0, protector: protector) },
-            { protectRawHTML($0, protector: protector, paragraphStartLine: paragraphStartLine) },
+            {
+                let result = protectRawHTML($0, protector: protector, paragraphStartLine: paragraphStartLine)
+                hasRawBlockHTML = result.hasRawBlockHTML
+                return result.text
+            },
             { applyFootnoteReferences($0, protector: protector, footnotes: context?.footnotes) },
             { applyCitations($0, protector: protector, citations: context?.citations) },
             { applyCrossReferences($0, protector: protector, crossReferences: context?.crossReferences) },
@@ -1586,12 +1591,43 @@ public struct MarkdownRenderer: Sendable {
             { renderReferenceLinks($0, context: context, protector: protector) },
             { protectBareAutolinks($0, protector: protector) },
             { renderOptionalInline($0, features: context?.config.inlineFeatures ?? .init()) },
-            { renderEmphasis($0) },
-            { $0.replacingOccurrences(of: "\n", with: "<br>") }
+            { renderEmphasis($0) }
         ]
 
         let transformed = pipeline.reduce(markdown) { text, pass in pass(text) }
-        return protector.restore(in: transformed)
+        let withBreaks = if hasRawBlockHTML, let paragraphStartLine {
+            sourceMappedBreaks(transformed, source: markdown, startLine: paragraphStartLine, protector: protector)
+        } else {
+            transformed.replacingOccurrences(of: "\n", with: "<br>")
+        }
+        return protector.restore(in: withBreaks)
+    }
+
+    /// WebKit may close the paragraph before an authored block tag. The next
+    /// source line stays on its rendered break even if the following text is
+    /// no longer inside the paragraph. Protected code/math can hide newlines.
+    private func sourceMappedBreaks(_ text: String, source: String, startLine: Int, protector: InlineProtector) -> String {
+        let newline = UInt8(ascii: "\n")
+        var line = startLine
+        var result = ""
+        result.reserveCapacity(text.utf8.count)
+        var start = text.startIndex
+        while let end = text[start...].firstIndex(of: "\n") {
+            let run = String(text[start..<end])
+            let authored = protector.source(in: run)
+            line += authored.utf8.count(where: { $0 == newline }) + 1
+            result += "\(run)<br data-md2-source-next-line=\"\(line)\">"
+            start = text.index(after: end)
+        }
+        let trailing = String(text[start...])
+        let trailingBreaks = protector.source(in: trailing).utf8.count(where: { $0 == newline })
+        // Some constructs, such as image resize attributes, discard source.
+        // Preserve the layout without attaching an unproven source target.
+        guard line - startLine + trailingBreaks == source.utf8.count(where: { $0 == newline }) else {
+            return text.replacingOccurrences(of: "\n", with: "<br>")
+        }
+        result += trailing
+        return result
     }
 
     /// Inline code spans `` `...` `` and inline math `$...$` / `\(...\)`, claimed
@@ -1681,16 +1717,19 @@ public struct MarkdownRenderer: Sendable {
 
     /// Formatting HTML is rebuilt with inert attributes before it is protected.
     /// Everything outside this tag allowlist is escaped as visible source.
-    private func protectRawHTML(_ text: String, protector: InlineProtector, paragraphStartLine: Int?) -> String {
+    private func protectRawHTML(_ text: String, protector: InlineProtector,
+                                paragraphStartLine: Int?) -> (text: String, hasRawBlockHTML: Bool) {
         var line = paragraphStartLine
         var previousTag = text.startIndex
         var blockLines: [Int: Int] = [:]
-        return replaceMatches(
+        var hasRawBlockHTML = false
+        let protected = replaceMatches(
             in: text,
             pattern: #"</?(?:(details|div|summary)|abbr|b|br|cite|code|del|em|i|img|kbd|mark|small|span|strong|sub|sup|u)(?:\s+[^<>]*)?/?>"#,
             prepare: { match, source in
-                guard let currentLine = line, match.range(at: 1).location != NSNotFound,
-                      let range = Range(match.range, in: source), !source[range].hasPrefix("</") else { return }
+                guard let currentLine = line, match.range(at: 1).location != NSNotFound else { return }
+                hasRawBlockHTML = true
+                guard let range = Range(match.range, in: source), !source[range].hasPrefix("</") else { return }
                 // Earlier inline passes may have folded source breaks inside a
                 // code or math token. Count the authored breaks between tags.
                 let prefix = protector.source(in: String(source[previousTag..<range.lowerBound]))
@@ -1709,6 +1748,7 @@ public struct MarkdownRenderer: Sendable {
             }
             return protector.protect(sanitized, source: escapeHTML(tag))
         }
+        return (protected, hasRawBlockHTML)
     }
 
     /// Footnote references `[^id]`. Runs after code/HTML protection so footnote
