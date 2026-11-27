@@ -148,16 +148,30 @@ The following cases reproduced on `9f65cb4` and on an earlier revision.
 
 - [x] **P2 — Hold the visible table row when the header grows with scroll sync paused.**
   **Reproduce.** Open a two-column table with 150 numbered data rows in Side
-  by Side. Pause scroll sync, scroll the preview until the cell `Record 60`
-  is about 71 CSS px from the preview's top edge. Record the cell's position.
-  In the source, change only the header cell `Key` to
-  `Key<br>Region<br>Office<br>Department<br>Owner`. After all five header
-  lines rendered, `Record 60` moved from 70.95 to 178.45 CSS px (+107.5).
+  by Side. Use the toolbar to pause scroll sync. Scroll the preview until the
+  first cell of `Record 60` is about 71 CSS px from the preview's top edge.
+  Record its `getBoundingClientRect().top` as `y0`. Start each of these
+  scenarios from the same `| Key | Value |` header and reading position.
 
-  **Verify** in the native split window. After layout settles, locate the
-  cell by its text. It must still be visible, with its top edge within 2 CSS
-  px of its recorded position. Also rerun the three passing pause cases above
-  for an active Find result, inserted data rows and a reloaded local image.
+  1. In the source, replace `Key` in one edit with
+     `Key<br>Region<br>Office<br>Department<br>Owner`.
+  2. Append each of the four `<br>` lines in a separate source edit. Wait for
+     each new header line to render and measure before appending the next one.
+  3. Apply the five-line header in one edit and restore `Key` in the next edit.
+     Repeat six times, letting the layout settle and measuring after each edit.
+
+  At `1f88d99` on a 2× display, the one-edit case moved the cell by +0.50 CSS
+  px. The four separate edits ended at +3.50 CSS px, and the sixth restoration
+  ended at +6.00 CSS px relative to `y0`.
+
+  **Verify** in the native split window. After each edit settles, locate
+  `Record 60` by its cell text. It must still be visible and its top edge must
+  be within 2 CSS px of that scenario's initial `y0`, including after the sixth
+  restoration. While still paused, scroll the preview to a different record,
+  record its top edge and edit the header again. The new record must stay
+  visible within 2 CSS px of its own recorded position. Rerun the paused Find,
+  table row and list item insertion, and Mermaid image reload cases, along
+  with resuming sync and window isolation.
 
 - [x] **P2 — Find text inside author highlights and respect its place in a sentence.**
   **Reproduce.** Enable highlight syntax and preview two paragraphs,

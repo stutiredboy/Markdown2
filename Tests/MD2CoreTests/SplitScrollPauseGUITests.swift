@@ -321,6 +321,139 @@ final class SplitScrollPauseGUITests: XCTestCase {
         XCTAssertEqual(after, before, accuracy: 2, "the same visible record must stay in place when the header grows")
     }
 
+    @MainActor func testPausedPreviewKeepsRecord60AcrossFourSeparateHeaderEdits() throws {
+        let host = InteractionTestWindow()
+        defer { host.close() }
+        let (web, y0) = try pausedTableFixture(in: host)
+        let record = "Record 60"
+        print("Paused table B \(record) y0=\(y0) CSS px")
+        var header = "Key"
+        for (index, field) in ["Region", "Office", "Department", "Owner"].enumerated() {
+            let suffix = "<br>\(field)"
+            try editPausedTableHeader(header, replacement: suffix, append: true, in: web, host: host)
+            header += suffix
+            try expectHeldTableCell(record, at: y0, step: "B step \(index + 1) +\(field)", in: web, host: host)
+        }
+    }
+
+    @MainActor func testPausedPreviewKeepsRecord60AcrossSixHeaderGrowthAndRestoreCycles() throws {
+        let host = InteractionTestWindow()
+        defer { host.close() }
+        let (web, y0) = try pausedTableFixture(in: host)
+        let record = "Record 60"
+        let tallHeader = "Key<br>Region<br>Office<br>Department<br>Owner"
+        print("Paused table C \(record) y0=\(y0) CSS px")
+        for cycle in 1...6 {
+            try editPausedTableHeader("Key", replacement: tallHeader, in: web, host: host)
+            try expectHeldTableCell(record, at: y0, step: "C cycle \(cycle) grow", in: web, host: host)
+            try editPausedTableHeader(tallHeader, replacement: "Key", in: web, host: host)
+            try expectHeldTableCell(record, at: y0, step: "C cycle \(cycle) restore", in: web, host: host)
+        }
+    }
+
+    @MainActor func testPausedPreviewUsesTheNewVisibleRecordAfterUserScrolls() throws {
+        let host = InteractionTestWindow()
+        defer { host.close() }
+        let (web, y0) = try pausedTableFixture(in: host)
+        let tallHeader = "Key<br>Region<br>Office<br>Department<br>Owner"
+        print("Paused table user scroll Record 60 y0=\(y0) CSS px")
+        try editPausedTableHeader("Key", replacement: tallHeader, in: web, host: host)
+        try expectHeldTableCell("Record 60", at: y0, step: "before user scroll", in: web, host: host)
+
+        let nearbyRecord = tableCell(named: "Record 58")
+        let nearbyY0 = try visibleTop(of: nearbyRecord, in: web, host: host)
+        let originalScroll = try XCTUnwrap(try host.js("scrollY", web) as? Double)
+        _ = try host.js("""
+            window.nativeWheelSeen = false;
+            window.addEventListener('wheel', event => { window.nativeWheelSeen ||= event.isTrusted; });
+            true;
+            """, web)
+        // Keep the old held area in view. Its visibility alone must not let
+        // the next edit restore the pre-scroll position.
+        let targetY = try XCTUnwrap(try host.js("(\(tableCell(named: "Record 55"))).getBoundingClientRect().top", web) as? Double)
+        web.scrollWheel(with: try nativeWheelEvent(by: Int32((70 - targetY).rounded()), in: web, host: host))
+        try host.waitForPage("window.nativeWheelSeen && scrollY < \(originalScroll) - 150",
+                             in: web, context: "a trusted preview wheel event moved to an earlier group of rows")
+        host.spin(for: 0.4)
+        let newRecord = try XCTUnwrap(try host.js("""
+            Array.from(document.querySelectorAll('tbody tr'), row => row.cells[0])
+                .find(cell => cell.getBoundingClientRect().top >= 70 && cell.getBoundingClientRect().bottom < innerHeight)
+                ?.textContent
+            """, web) as? String)
+        let recordNumber = try XCTUnwrap(Int(newRecord.dropFirst("Record ".count)))
+        XCTAssertLessThan(recordNumber, 60)
+        let shiftedRecord60 = try visibleTop(of: tableCell(named: "Record 60"), in: web, host: host)
+        let shiftedRecord58 = try visibleTop(of: nearbyRecord, in: web, host: host)
+        XCTAssertGreaterThan(shiftedRecord60 - y0, 150)
+        XCTAssertGreaterThan(shiftedRecord58 - nearbyY0, 150)
+        let newY0 = try visibleTop(of: tableCell(named: newRecord), in: web, host: host)
+        print("Paused table user scroll \(newRecord) new y0=\(newY0), Record 58 y=\(shiftedRecord58), Record 60 y=\(shiftedRecord60) CSS px")
+        try editPausedTableHeader(tallHeader, replacement: "Key", in: web, host: host)
+        try expectHeldTableCell(newRecord, at: newY0, step: "after user scroll and next edit", in: web, host: host)
+        try expectHeldTableCell("Record 60", at: shiftedRecord60, step: "after user scroll and next edit", in: web, host: host)
+    }
+
+    @MainActor private func pausedTableFixture(in host: InteractionTestWindow) throws -> (WKWebView, Double) {
+        let rows = (1...150).map { "| Record \($0) | Value \($0) |" }.joined(separator: "\n")
+        host.store.text = "# audit-title\n\n| Key | Value |\n|---|---|\n" + rows + "\n\nClosing note.\n"
+        let web = try mountDocument(in: host, settings: host.settings, marker: "Record 150",
+                                    ready: "document.querySelectorAll('tbody tr').length === 150",
+                                    size: NSSize(width: 1046, height: 650))
+        try toggle(in: host, paused: false)
+        let record = tableCell(named: "Record 60")
+        _ = try positionReference(record, at: 70, in: web, host: host)
+        host.spin(for: 0.3)
+        let y0 = try visibleTop(of: record, in: web, host: host)
+        XCTAssertEqual(y0, 71, accuracy: 2)
+        return (web, y0)
+    }
+
+    @MainActor private func editPausedTableHeader(_ header: String, replacement: String, append: Bool = false,
+                                                in web: WKWebView, host: InteractionTestWindow) throws {
+        let editor = try XCTUnwrap(host.store.editorSession.textView)
+        let source = editor.string as NSString
+        let line = source.range(of: "| \(header) | Value |")
+        let start = try XCTUnwrap(line.location == NSNotFound ? nil : line.location) + 2
+        let cell = NSRange(location: start, length: header.utf16.count)
+        let edit = append ? NSRange(location: NSMaxRange(cell), length: 0) : cell
+        let expected = source.replacingCharacters(in: edit, with: replacement)
+        XCTAssertTrue(host.window.makeFirstResponder(editor))
+        editor.setSelectedRange(edit)
+        editor.scrollRangeToVisible(edit)
+        editor.insertText(replacement, replacementRange: edit)
+        XCTAssertEqual(editor.string, expected)
+        let lines = (append ? header + replacement : replacement).components(separatedBy: "<br>")
+        try host.waitForPage("""
+            document.querySelector('thead th')?.textContent === '\(lines.joined())'
+                && document.querySelectorAll('thead th br').length === \(lines.count - 1)
+                && document.querySelectorAll('tbody tr').length === 150
+            """, in: web, context: "the edited header and all data rows rendered")
+        host.spin(for: 0.65)
+    }
+
+    private func tableCell(named record: String) -> String {
+        "Array.from(document.querySelectorAll('tbody td')).find(cell => cell.textContent === '\(record)')"
+    }
+
+    @MainActor private func expectHeldTableCell(_ record: String, at y0: Double, step: String, in web: WKWebView,
+                                               host: InteractionTestWindow, file: StaticString = #filePath,
+                                               line: UInt = #line) throws {
+        let geometry = try host.js("""
+            (() => {
+                const rect = (\(tableCell(named: record)))?.getBoundingClientRect();
+                return { viewport: innerHeight, y: rect?.top ?? null,
+                    visible: !!rect && rect.height > 0 && rect.bottom > 0 && rect.top < innerHeight };
+            })()
+            """, web) as? [String: Any]
+        let y = (geometry?["y"] as? NSNumber)?.doubleValue
+        let visible = geometry?["visible"] as? Bool == true
+        let viewport = (geometry?["viewport"] as? NSNumber)?.doubleValue
+        let position = y.map { "y=\($0) delta=\($0 - y0)" } ?? "y=missing"
+        print("Paused table \(step) \(record) y0=\(y0) \(position) viewport=\(viewport ?? 0) visible=\(visible) CSS px")
+        XCTAssertTrue(visible, "\(step): \(record) must be visible", file: file, line: line)
+        if let y { XCTAssertEqual(y, y0, accuracy: 2, "\(step): \(record) drift from y0", file: file, line: line) }
+    }
+
     @MainActor func testPausedPreviewKeepsRecord60WhenTwentyTableRowsAreInserted() throws {
         let host = InteractionTestWindow()
         defer { host.close() }
@@ -546,21 +679,24 @@ final class SplitScrollPauseGUITests: XCTestCase {
     @MainActor private func scrollEditor(by delta: Int32, in host: InteractionTestWindow, editor: NSTextView) throws {
         let scroll = try XCTUnwrap(editor.enclosingScrollView)
         let origin = scroll.contentView.bounds.minY
+        // Target the mounted scroll view directly: an in-process CGEvent does
+        // not carry an NSWindow target, even when its screen coordinates match.
+        scroll.scrollWheel(with: try nativeWheelEvent(by: delta, in: scroll, host: host))
+        host.spin(until: { abs(scroll.contentView.bounds.minY - origin) > 30 }, timeout: 2)
+    }
+
+    @MainActor private func nativeWheelEvent(by delta: Int32, in view: NSView, host: InteractionTestWindow) throws -> NSEvent {
         let event = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
                                           wheel1: delta, wheel2: 0, wheel3: 0))
         // Dequeue the wheel through NSApplication so the bounds observer sees
         // NSApp.currentEvent, the same user-scroll signal as in the app.
-        let center = NSPoint(x: scroll.bounds.midX, y: scroll.bounds.midY)
-        let point = host.window.convertPoint(toScreen: scroll.convert(center, to: nil))
+        let center = NSPoint(x: view.bounds.midX, y: view.bounds.midY)
+        let point = host.window.convertPoint(toScreen: view.convert(center, to: nil))
         event.location = CGPoint(x: point.x, y: try XCTUnwrap(NSScreen.screens.first).frame.maxY - point.y)
         event.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(host.window.windowNumber))
         let wheel = try XCTUnwrap(NSEvent(cgEvent: event))
         NSApp.postEvent(wheel, atStart: true)
-        let next = try XCTUnwrap(NSApp.nextEvent(matching: .scrollWheel, until: Date().addingTimeInterval(2),
-                                                inMode: .default, dequeue: true))
-        // Target the mounted scroll view directly: an in-process CGEvent does
-        // not carry an NSWindow target, even when its screen coordinates match.
-        scroll.scrollWheel(with: next)
-        host.spin(until: { abs(scroll.contentView.bounds.minY - origin) > 30 }, timeout: 2)
+        return try XCTUnwrap(NSApp.nextEvent(matching: .scrollWheel, until: Date().addingTimeInterval(2),
+                                            inMode: .default, dequeue: true))
     }
 }

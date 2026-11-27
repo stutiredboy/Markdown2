@@ -60,6 +60,7 @@ enum PreviewHeldReference {
     function visibleReferences() {
         var main = document.querySelector('main'), blocks = [];
         if (!main) { return blocks; }
+        var retained = currentPinnedReference();
         var locations = new Map();
         function location(node) {
             if (!locations.has(node.tagName)) {
@@ -108,6 +109,17 @@ enum PreviewHeldReference {
             if (rect.top >= window.innerHeight) { break; }
             visit(node, rect, i, null);
             remember(node, rect.top, i, null);
+        }
+        // WebKit may round each scroll by a fraction of a CSS pixel. Keep
+        // aiming at the original top while the same reading reference survives.
+        // The other visible blocks keep freshly measured positions for fallback.
+        if (retained) {
+            var index = blocks.findIndex(block => block.node === retained.node);
+            if (index >= 0) {
+                var block = blocks.splice(index, 1)[0];
+                block.top = retained.top;
+                blocks.unshift(block);
+            }
         }
         return blocks;
     }
@@ -233,9 +245,18 @@ enum PreviewHeldReference {
         return null;
     }
 
-    var referenceObserver;
+    var referenceObserver, pinnedReference = null;
     function releaseReference() {
         if (referenceObserver) { referenceObserver.disconnect(); referenceObserver = null; }
+        pinnedReference = null;
+    }
+    function currentPinnedReference() {
+        if (pinnedReference && (!pinnedReference.node.isConnected ||
+            Math.abs(window.scrollY - pinnedReference.expectedY) > 1)) {
+            // A scrollbar movement may not deliver a page input gesture.
+            releaseReference();
+        }
+        return pinnedReference;
     }
     window.__md2ChangeScrollSync = function (paused) {
         window.__md2ScrollSyncPaused = paused;
@@ -256,21 +277,19 @@ enum PreviewHeldReference {
         // replaces that paragraph. Keep the next surviving block.
         var block = resolveHeldReference(blocks);
         if (!block) { window.scrollTo(window.scrollX, y); return; }
-        var node = block.node, top = block.top;
-        var expectedY = window.scrollY;
+        var node = block.node;
+        var reference = {node: node, top: block.top, expectedY: window.scrollY};
+        pinnedReference = reference;
         function restore() {
-            if (!node.isConnected || Math.abs(window.scrollY - expectedY) > 1) {
-                releaseReference();
-                return;
-            }
+            if (pinnedReference !== reference || !currentPinnedReference()) { return; }
             var currentTop = block.measureTop ? block.measureTop() : node.getBoundingClientRect().top;
             if (!Number.isFinite(currentTop)) {
                 releaseReference();
                 return;
             }
-            var delta = currentTop - top;
+            var delta = currentTop - reference.top;
             if (Math.abs(delta) > 0.5) { window.scrollBy(0, delta); }
-            expectedY = window.scrollY;
+            reference.expectedY = window.scrollY;
         }
         // Earlier diagrams and images can finish long after the body
         // swap. A user gesture or explicit navigation releases the pin.
