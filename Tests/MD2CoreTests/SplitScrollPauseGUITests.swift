@@ -938,10 +938,17 @@ final class SplitScrollPauseGUITests: XCTestCase {
         _ = try XCTUnwrap(release, "the trusted mouse release must reach the old page after capture")
         let pagehide = try XCTUnwrap(outgoing, "the last old-page geometry must come from pagehide")
         XCTAssertTrue(capture.visible && pagehide.visible)
-        XCTAssertEqual(capture.y, expectedCaptureY, accuracy: 2)
+        let finalDragStart = queuedLastDrag ? try XCTUnwrap(intermediate) : capture
+        if queuedLastDrag {
+            // WebKit can apply the queued motion on either side of capture.
+            XCTAssertGreaterThanOrEqual(capture.y, finalDragStart.y - 2)
+            XCTAssertLessThanOrEqual(capture.y, pagehide.y + 2)
+        } else {
+            XCTAssertEqual(capture.y, expectedCaptureY, accuracy: 2)
+        }
         let minimumMovement = moveBeforeCapture ? 70.0 : 150.0
-        XCTAssertGreaterThan(capture.scrollY - pagehide.scrollY, minimumMovement)
-        XCTAssertGreaterThan(pagehide.y - capture.y, minimumMovement)
+        XCTAssertGreaterThan(finalDragStart.scrollY - pagehide.scrollY, minimumMovement)
+        XCTAssertGreaterThan(pagehide.y - finalDragStart.y, minimumMovement)
         if stationaryRelease {
             let passive = try XCTUnwrap(passiveScroll, "the old page must receive the passive scroll before release")
             let dragPoint = try XCTUnwrap(lastDragScreenPoint)
