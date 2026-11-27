@@ -30,6 +30,27 @@ broken-image messages and line numbers.
 Counting is debounced, runs off the main actor, and discards stale results.
 Clearing the selection or switching modes returns to document statistics.
 
+## Table column widths
+
+In Read or the preview pane of Side by Side, move the pointer to the right edge
+of a header cell. When the resize cursor and accent line appear, drag to change
+that column's width. Columns range from 40 to 2000 pixels. If the table is wider
+than the preview, scroll horizontally inside the table. Narrow columns can clip
+cell contents. Double-click a header boundary to restore automatic sizing for
+the whole table.
+
+The preview keeps widths in memory for the open document across mode changes,
+live edits, and preview reloads. Changing the header text or column count can
+invalidate saved widths. Closing the document, switching files in the folder
+preview, or quitting clears the widths. The Markdown source, HTML and PDF
+exports, and printed pages keep their original layout.
+
+Resizing supports regular tables with up to 64 columns and a single header
+row. The table can also have a caption and one table body. Merged cells are
+unsupported. If the body has rows, its first row must have as many cells as
+the header. Later rows can have fewer cells. A document can keep custom
+widths for up to 256 tables at a time.
+
 ## Synchronized scrolling
 
 In Side by Side, choose **Pause Synchronized Scrolling** in the window toolbar

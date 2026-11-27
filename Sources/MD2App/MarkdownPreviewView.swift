@@ -101,6 +101,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
     /// Read-only preview controls for the snapshot that produced this page.
     var formulaEditing: FormulaEditing? = nil
     var onEditFormula: (_ line: Int, _ revision: Int, _ window: NSWindow) -> Void = { _, _, _ in }
+    var tableColumnWidths: PreviewTableColumnWidths? = nil
     @Binding var jumpHeadingID: String?
     var animatesHeadingJump = false
     /// Fraction (0...1) to scroll to after load when no heading anchor applies.
@@ -220,9 +221,12 @@ struct MarkdownPreviewView: NSViewRepresentable {
         controller.add(handler, contentWorld: .defaultClient, name: revealSourceLineMessageName)
         controller.add(handler, contentWorld: .defaultClient, name: editFormulaMessageName)
         controller.add(handler, contentWorld: .defaultClient, name: openLinkMessageName)
+        controller.add(handler, contentWorld: .defaultClient, name: PreviewTableResize.messageName)
         controller.addUserScript(WKUserScript(source: interactionScript,
             injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: .defaultClient))
         controller.addUserScript(WKUserScript(source: formulaControlsScript,
+            injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: .defaultClient))
+        controller.addUserScript(WKUserScript(source: PreviewTableResize.script,
             injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: .defaultClient))
     }
 
@@ -1317,6 +1321,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         context.coordinator.onRevealSourceLine = onRevealSourceLine
         context.coordinator.onEditFormula = onEditFormula
         context.coordinator.formulaEditing = formulaEditing
+        context.coordinator.tableColumnWidths = tableColumnWidths
         context.coordinator.onOpenMarkdownLink = onOpenMarkdownLink
         context.coordinator.onMissingLocalLink = onMissingLocalLink
         context.coordinator.onOpenWithSystem = onOpenWithSystem
@@ -1815,6 +1820,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
         var onRevealSourceLine: (_ line: Int) -> Void = { _ in }
         var onEditFormula: (_ line: Int, _ revision: Int, _ window: NSWindow) -> Void = { _, _, _ in }
         var formulaEditing: FormulaEditing?
+        var tableColumnWidths: PreviewTableColumnWidths?
         /// A new token retires messages queued by any earlier page/configuration,
         /// even when two source revisions produce identical rendered HTML.
         private var formulaPage: (config: FormulaEditing, token: String)?
@@ -2083,6 +2089,20 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 true;
                 """, in: nil, in: .defaultClient)
             if isLoaded { restoreFormulaFocus(in: webView) }
+        }
+
+        func configureTableColumnWidths(in webView: WKWebView) {
+            guard let pageURL = documentLoader.documentPageURL,
+                  let tableColumnWidths, !tableColumnWidths.entries.isEmpty else { return }
+            let payload = tableColumnWidths.javaScriptLiteral()
+            // The commit can precede the document-end script.
+            webView.evaluateJavaScript("""
+                if (location.href.split('#')[0] === \(Self.jsStringLiteral(pageURL.absoluteString))) {
+                    window.__md2TableColumnWidthsConfig = \(payload);
+                    window.__md2SetTableColumnWidths?.(window.__md2TableColumnWidthsConfig);
+                }
+                true;
+                """, in: nil, in: .defaultClient)
         }
 
         private func restoreFormulaFocus(in webView: WKWebView) {
@@ -2406,6 +2426,11 @@ struct MarkdownPreviewView: NSViewRepresentable {
         ) {
             guard resourceContextIsActive, message.frameInfo.isMainFrame else { return }
             switch message.name {
+            case PreviewTableResize.messageName:
+                guard message.world == .defaultClient, let webView = message.webView, acceptsFindHost(webView),
+                      messageIsFromCurrentPage(message),
+                      let update = PreviewTableResize.parse(message.body) else { return }
+                tableColumnWidths?.apply(update)
             case MarkdownPreviewView.viewportReadyMessageName:
                 guard liveUpdate, !isAwaitingCommit, documentLoader.currentNavigation != nil,
                       message.world == .defaultClient, messageIsFromCurrentPage(message),
@@ -2661,6 +2686,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
             pageRevision = nil
             labelPage(in: webView)
             configureFormulaControls(in: webView)
+            configureTableColumnWidths(in: webView)
         }
 
         private func applyPendingScroll(in webView: WKWebView, consume: Bool = true, animatingHeading: Bool = false) {

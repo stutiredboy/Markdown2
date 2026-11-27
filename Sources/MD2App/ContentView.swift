@@ -1398,6 +1398,7 @@ struct ContentView: View {
                     onEditFormula: { line, revision, window in
                         editPreviewFormula(line: line, revision: revision, window: window)
                     },
+                    tableColumnWidths: document.previewTableColumnWidths,
                     jumpHeadingID: $document.jumpHeadingID,
                     animatesHeadingJump: document.animatesPreviewHeadingJump,
                     jumpFraction: $document.jumpFraction,
