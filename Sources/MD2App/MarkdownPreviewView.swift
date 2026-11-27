@@ -2374,6 +2374,13 @@ struct MarkdownPreviewView: NSViewRepresentable {
                 && reload.resourceContext == remoteResourceContextToken
         }
 
+        fileprivate func noteHeldReloadScrollbarDrag(in webView: WKWebView) {
+            guard resourceContextIsActive, acceptsFindHost(webView), let reload = pendingHeldReload,
+                  reload.window == webView.window.map(ObjectIdentifier.init),
+                  reload.resourceContext == remoteResourceContextToken else { return }
+            webView.evaluateJavaScript("window.__md2NoteHeldReloadScrollbarDrag?.('\(reload.id.uuidString)');")
+        }
+
         func userContentController(
             _ userContentController: WKUserContentController,
             didReceive message: WKScriptMessage
@@ -2737,6 +2744,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
 private final class PreviewWebView: WKWebView {
     let contextMenuAdapter = PreviewContextMenuAdapter()
     private var contextMenuInput = PreviewContextMenuInput()
+    private var primaryDragY: CGFloat?
 
     fileprivate func invalidateContextMenu() {
         contextMenuInput.invalidate()
@@ -2744,7 +2752,10 @@ private final class PreviewWebView: WKWebView {
     }
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
-        if newWindow !== window { invalidateContextMenu() }
+        if newWindow !== window {
+            primaryDragY = nil
+            invalidateContextMenu()
+        }
         super.viewWillMove(toWindow: newWindow)
     }
 
@@ -2763,7 +2774,13 @@ private final class PreviewWebView: WKWebView {
         // A Control-left gesture is a context click; an ordinary click clears
         // a prior suppressed context event before normal WebKit processing.
         recordContextMenuInput(event)
+        primaryDragY = event.locationInWindow.y
         super.mouseDown(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        primaryDragY = nil
+        super.mouseUp(with: event)
     }
 
     override func keyDown(with event: NSEvent) {
@@ -2783,6 +2800,13 @@ private final class PreviewWebView: WKWebView {
 
     override func mouseDragged(with event: NSEvent) {
         contextMenuInput.invalidate()
+        let previousY = primaryDragY
+        let y = event.locationInWindow.y
+        primaryDragY = y
+        // The scrollbar can consume drag events before they reach the DOM.
+        if let previousY, y != previousY {
+            (navigationDelegate as? MarkdownPreviewView.Coordinator)?.noteHeldReloadScrollbarDrag(in: self)
+        }
         super.mouseDragged(with: event)
     }
 

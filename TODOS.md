@@ -263,6 +263,13 @@ The following cases reproduced on `9f65cb4` and on an earlier revision.
   70.95 to 329.95 CSS px on the old page, then returned to 70.95 CSS px
   after the new page drew the diagram.
 
+  Repeat with a native scrollbar drag that starts before the old page captures
+  its position. In one run, press the thumb before capture and wait until
+  after capture to drag it. In another, drag partway before capture and then
+  continue the same drag. Release after the final movement. On `0c9cc2e`,
+  `Record 60` reached 327.95 CSS px before the old page exited and returned
+  to the respective capture positions of 70.95 and 220.95 CSS px.
+
   **Verify** in a native window. Require a trusted wheel and an actual scroll
   in the old page after capture. Once the replacement page and SVG settle,
   locate the same visible record by its text. Its top edge must be within
@@ -274,6 +281,11 @@ The following cases reproduced on `9f65cb4` and on an earlier revision.
   gesture must keep the post-scroll position on the same page. For Find, queue
   Previous after the old page captures the second match and require the new
   page to show the first match, `1 of 2`.
+
+  For both scrollbar drags, verify the thumb is held at capture and that the
+  old page scrolls after capture. Measure the visible record by text when the
+  old page exits. After the new SVG and layout settle, the same visible
+  record must be within 2 CSS px of that final old-page position.
 
 ## Already delivered
 

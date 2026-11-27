@@ -1,8 +1,10 @@
+import AppKit
+
 /// Tracks visible rendered content across a split preview edit or a new engine page.
 enum PreviewHeldReference {
     static let reloadMessageName = "heldReferenceReload"
 
-    static let script = #"""
+    @MainActor static let script = #"""
     // Source line numbers change on insertion. A container top also cannot
     // describe a reader's place inside a large, newly rebuilt table or list.
     // The WebKit bridge carries only a fixed-size content fingerprint, even
@@ -311,6 +313,7 @@ enum PreviewHeldReference {
     window.__md2CaptureReference = captureHeldReference;
 
     var outgoingReference = null;
+    var scrollbarPressY = null;
     window.__md2BeginHeldReload = function (token, page) {
         if (location.href.split('#')[0] !== page) { return null; }
         outgoingReference = {token, y: window.scrollY, sequence: 0, userIntent: false};
@@ -332,10 +335,42 @@ enum PreviewHeldReference {
         // WebKit can apply the wheel movement before delivering the DOM input.
         publishOutgoingReference();
     };
+
+    window.__md2NoteHeldReloadScrollbarDrag = function (token) {
+        if (outgoingReference?.token !== token || scrollbarPressY === null) { return; }
+        outgoingReference.userIntent = true;
+        publishOutgoingReference();
+    };
+
+    function clearScrollbarPress() { scrollbarPressY = null; }
+    window.addEventListener('mousedown', function (event) {
+        if (!event.isTrusted || event.button !== 0) { return; }
+        var root = document.documentElement, width = window.innerWidth, x = event.clientX;
+        var clientWidth = root.clientWidth;
+        // Overlay scrollbars leave no gutter. Their hit can target the page
+        // background underneath, but should never depend on a press in prose.
+        var onScrollbar = clientWidth < width ? x >= clientWidth :
+            x >= width - \#(NSScroller.scrollerWidth(for: .regular, scrollerStyle: .overlay)) &&
+            (event.target === root || event.target === document.body || event.target === document.querySelector('main'));
+        scrollbarPressY = onScrollbar && x < width && root.scrollHeight > root.clientHeight ? event.clientY : null;
+    }, {capture: true, passive: true});
+    // WebKit sends a drag to the scrollbar itself. A DOM move instead means
+    // that a press in the possible overlay strip belonged to the document.
+    window.addEventListener('mousemove', function (event) {
+        if (event.isTrusted) { clearScrollbarPress(); }
+    }, {capture: true, passive: true});
+    window.addEventListener('mouseup', function (event) {
+        if (!event.isTrusted || event.button !== 0 || scrollbarPressY === null) { return; }
+        // The last scrollbar delta can reach scrollY after the release event.
+        if (event.clientY !== scrollbarPressY) { window.__md2NoteHeldReloadScroll(event); }
+        clearScrollbarPress();
+    }, {capture: true, passive: true});
+    window.addEventListener('blur', clearScrollbarPress);
     window.addEventListener('scroll', publishOutgoingReference, {passive: true});
     window.addEventListener('pagehide', function () {
         publishOutgoingReference();
         outgoingReference = null;
+        clearScrollbarPress();
     });
 
     window.__md2RestoreReference = function (place) {

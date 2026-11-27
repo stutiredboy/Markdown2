@@ -489,6 +489,122 @@ final class SplitScrollPauseGUITests: XCTestCase {
         try exercisePausedReloadWheels([260], mermaidAboveTable: true)
     }
 
+    @MainActor func testPausedReloadKeepsScrollbarDragPressedBeforeCapture() throws {
+        try exercisePausedReloadScrollbarDrag(moveBeforeCapture: false)
+    }
+
+    @MainActor func testPausedReloadKeepsContinuingScrollbarDragAcrossCapture() throws {
+        try exercisePausedReloadScrollbarDrag(moveBeforeCapture: true)
+    }
+
+    @MainActor private func exercisePausedReloadScrollbarDrag(moveBeforeCapture: Bool) throws {
+        let host = InteractionTestWindow()
+        defer { host.close() }
+        let (web, initialY) = try pausedTableFixture(in: host, linkCount: 3500)
+        let dimensions = try XCTUnwrap(try host.js("""
+            ({ height: innerHeight, width: innerWidth, documentHeight: document.documentElement.scrollHeight, scrollY })
+            """, web) as? [String: Double])
+        let height = try XCTUnwrap(dimensions["height"])
+        let width = try XCTUnwrap(dimensions["width"])
+        let documentHeight = try XCTUnwrap(dimensions["documentHeight"])
+        let scrollY = try XCTUnwrap(dimensions["scrollY"])
+        XCTAssertGreaterThan(documentHeight, height)
+        let thumb = max(30, height * height / documentHeight)
+        let track = height - thumb
+        let thumbY = (track * scrollY / (documentHeight - height) + thumb / 2).rounded()
+        let dragDistance = max(3, (220 * track / (documentHeight - height)).rounded())
+
+        func sendMouse(_ type: NSEvent.EventType, y: Double) throws {
+            // Dispatch to the native WebKit scrollbar in this window only.
+            let point = NSPoint(x: width - 4, y: web.isFlipped ? y : web.bounds.height - y)
+            let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: web.convert(point, to: nil),
+                modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: host.window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1))
+            switch type {
+            case .leftMouseDown: web.mouseDown(with: event)
+            case .leftMouseDragged: web.mouseDragged(with: event)
+            case .leftMouseUp: web.mouseUp(with: event)
+            default: XCTFail("Unexpected scrollbar input \(type)")
+            }
+        }
+
+        // Prepare the source caret before grabbing the thumb so the native
+        // editor can insert the fence without a focus change during the drag.
+        let editor = try XCTUnwrap(host.store.editorSession.textView)
+        let source = editor.string as NSString
+        let notes = source.range(of: "\n\n[Design note 0]")
+        let insertion = try XCTUnwrap(notes.location == NSNotFound ? nil : notes.location)
+        let caret = NSRange(location: insertion, length: 0)
+        let mermaid = "\n\n```mermaid\ngraph LR; A-->B;\n```"
+        let expected = source.replacingCharacters(in: caret, with: mermaid)
+        XCTAssertTrue(host.window.makeFirstResponder(editor))
+        editor.setSelectedRange(caret)
+        editor.scrollRangeToVisible(caret)
+
+        let trace = try observePausedTableScroll(in: web, host: host, includeScrollbarEvents: true)
+        defer { web.configuration.userContentController.removeScriptMessageHandler(forName: PausedTableScrollTrace.name) }
+        var pressed = false
+        defer { if pressed { try? sendMouse(.leftMouseUp, y: thumbY - dragDistance) } }
+        var down: PausedTableScrollTrace.Event?
+        var intermediate: PausedTableScrollTrace.Event?
+        var captured: PausedTableScrollTrace.Event?
+        var release: PausedTableScrollTrace.Event?
+        var outgoing: PausedTableScrollTrace.Event?
+        trace.onEvent = { event in
+            switch event.kind {
+            case "mousedown" where event.trusted && down == nil:
+                down = event
+            case "scroll" where event.trusted && down != nil && captured == nil && initialY + 80 < event.y:
+                if intermediate == nil { intermediate = event }
+            case "capture" where captured == nil:
+                XCTAssertNotNil(down, "the native thumb press must precede capture")
+                XCTAssertTrue(pressed, "the mouse button must still be held at capture")
+                captured = event
+                try sendMouse(.leftMouseDragged, y: thumbY - dragDistance)
+                try sendMouse(.leftMouseUp, y: thumbY - dragDistance)
+                pressed = false
+            case "mouseup" where event.trusted && captured != nil:
+                release = event
+            case "pagehide" where event.trusted:
+                outgoing = event
+            default:
+                break
+            }
+        }
+
+        try sendMouse(.leftMouseDown, y: thumbY)
+        pressed = true
+        host.spin(until: { down != nil })
+        let mouseDown = try XCTUnwrap(down, "the scrollbar must receive the trusted native thumb press")
+        XCTAssertEqual(mouseDown.y, initialY, accuracy: 2)
+        var expectedCaptureY = initialY
+        if moveBeforeCapture {
+            try sendMouse(.leftMouseDragged, y: thumbY - (dragDistance / 2).rounded())
+            host.spin(until: { intermediate != nil })
+            let firstMove = try XCTUnwrap(intermediate, "the held scrollbar must visibly scroll before capture")
+            XCTAssertTrue(firstMove.visible)
+            XCTAssertGreaterThan(mouseDown.scrollY - firstMove.scrollY, 80)
+            expectedCaptureY = firstMove.y
+        }
+
+        editor.insertText(mermaid, replacementRange: caret)
+        XCTAssertTrue(editor.string == expected, "only the first Mermaid fence should be inserted")
+        try waitForReplacementTablePreview(in: web, host: host)
+        XCTAssertNil(trace.inputError)
+        let capture = try XCTUnwrap(captured)
+        _ = try XCTUnwrap(release, "the trusted mouse release must reach the old page after capture")
+        let pagehide = try XCTUnwrap(outgoing, "the last old-page geometry must come from pagehide")
+        XCTAssertTrue(capture.visible && pagehide.visible)
+        XCTAssertEqual(capture.y, expectedCaptureY, accuracy: 2)
+        let minimumMovement = moveBeforeCapture ? 70.0 : 150.0
+        XCTAssertGreaterThan(capture.scrollY - pagehide.scrollY, minimumMovement)
+        XCTAssertGreaterThan(pagehide.y - capture.y, minimumMovement)
+        let finalY = try visibleTop(of: tableCell(named: "Record 60"), in: web, host: host)
+        print("Paused scrollbar drag, CSS px: initial=\(initialY), capture=\(capture.y), "
+              + "old pagehide=\(pagehide.y), final=\(finalY), delta=\(finalY - pagehide.y), pre-capture movement=\(moveBeforeCapture)")
+        XCTAssertEqual(finalY, pagehide.y, accuracy: 2, "the new page must keep Record 60 at the last dragged position")
+    }
+
     @MainActor func testPausedReloadWithoutAUserWheelKeepsTheCapturedPosition() throws {
         let host = InteractionTestWindow()
         defer { host.close() }
@@ -631,7 +747,8 @@ final class SplitScrollPauseGUITests: XCTestCase {
         }
     }
 
-    @MainActor private func observePausedTableScroll(in web: WKWebView, host: InteractionTestWindow) throws -> PausedTableScrollTrace {
+    @MainActor private func observePausedTableScroll(in web: WKWebView, host: InteractionTestWindow,
+                                                     includeScrollbarEvents: Bool = false) throws -> PausedTableScrollTrace {
         let trace = PausedTableScrollTrace()
         web.configuration.userContentController.add(trace, name: PausedTableScrollTrace.name)
         _ = try host.js("""
@@ -654,6 +771,11 @@ final class SplitScrollPauseGUITests: XCTestCase {
                 };
                 window.addEventListener('wheel', event => report('wheel', event), {passive: true});
                 window.addEventListener('scroll', event => report('scroll', event), {passive: true});
+                if (\(includeScrollbarEvents)) {
+                    for (const kind of ['mousedown', 'mouseup', 'pagehide']) {
+                        window.addEventListener(kind, event => report(kind, event), {capture: true, passive: true});
+                    }
+                }
                 return true;
             })()
             """, web)
