@@ -270,6 +270,12 @@ The following cases reproduced on `9f65cb4` and on an earlier revision.
   `Record 60` reached 327.95 CSS px before the old page exited and returned
   to the respective capture positions of 70.95 and 220.95 CSS px.
 
+  Also finish dragging before capture and hold the thumb still. After
+  capture, release at the same screen point after a scripted scroll or
+  after increasing window height downwards near the document bottom.
+  At `7038a22`, the replacement used the passive scroll position,
+  losing 191 and 177 CSS px from the last user-selected position.
+
   **Verify** in a native window. Require a trusted wheel and an actual scroll
   in the old page after capture. Once the replacement page and SVG settle,
   locate the same visible record by its text. Its top edge must be within
@@ -286,6 +292,10 @@ The following cases reproduced on `9f65cb4` and on an earlier revision.
   old page scrolls after capture. Measure the visible record by text when the
   old page exits. After the new SVG and layout settle, the same visible
   record must be within 2 CSS px of that final old-page position.
+  If the last user drag finished before capture and the thumb stays still
+  through release, preserve the captured position within 2 CSS px even if
+  the old page scrolls for layout. Keep any final movement from a real drag
+  that continues after capture and takes effect just after release.
 
 ## Already delivered
 

@@ -313,7 +313,7 @@ enum PreviewHeldReference {
     window.__md2CaptureReference = captureHeldReference;
 
     var outgoingReference = null;
-    var scrollbarPressY = null;
+    var scrollbarPressed = false;
     window.__md2BeginHeldReload = function (token, page) {
         if (location.href.split('#')[0] !== page) { return null; }
         outgoingReference = {token, y: window.scrollY, sequence: 0, userIntent: false};
@@ -337,12 +337,12 @@ enum PreviewHeldReference {
     };
 
     window.__md2NoteHeldReloadScrollbarDrag = function (token) {
-        if (outgoingReference?.token !== token || scrollbarPressY === null) { return; }
+        if (outgoingReference?.token !== token || !scrollbarPressed) { return; }
         outgoingReference.userIntent = true;
         publishOutgoingReference();
     };
 
-    function clearScrollbarPress() { scrollbarPressY = null; }
+    function clearScrollbarPress() { scrollbarPressed = false; }
     window.addEventListener('mousedown', function (event) {
         if (!event.isTrusted || event.button !== 0) { return; }
         var root = document.documentElement, width = window.innerWidth, x = event.clientX;
@@ -352,7 +352,7 @@ enum PreviewHeldReference {
         var onScrollbar = clientWidth < width ? x >= clientWidth :
             x >= width - \#(NSScroller.scrollerWidth(for: .regular, scrollerStyle: .overlay)) &&
             (event.target === root || event.target === document.body || event.target === document.querySelector('main'));
-        scrollbarPressY = onScrollbar && x < width && root.scrollHeight > root.clientHeight ? event.clientY : null;
+        scrollbarPressed = onScrollbar && x < width && root.scrollHeight > root.clientHeight;
     }, {capture: true, passive: true});
     // WebKit sends a drag to the scrollbar itself. A DOM move instead means
     // that a press in the possible overlay strip belonged to the document.
@@ -360,10 +360,9 @@ enum PreviewHeldReference {
         if (event.isTrusted) { clearScrollbarPress(); }
     }, {capture: true, passive: true});
     window.addEventListener('mouseup', function (event) {
-        if (!event.isTrusted || event.button !== 0 || scrollbarPressY === null) { return; }
-        // The last scrollbar delta can reach scrollY after the release event.
-        if (event.clientY !== scrollbarPressY) { window.__md2NoteHeldReloadScroll(event); }
-        clearScrollbarPress();
+        // Releasing can follow a drag completed before the capture. A native
+        // drag during this reload already armed any movement that arrives late.
+        if (event.isTrusted && event.button === 0) { clearScrollbarPress(); }
     }, {capture: true, passive: true});
     window.addEventListener('blur', clearScrollbarPress);
     window.addEventListener('scroll', publishOutgoingReference, {passive: true});

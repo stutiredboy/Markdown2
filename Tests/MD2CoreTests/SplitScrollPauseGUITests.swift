@@ -490,14 +490,24 @@ final class SplitScrollPauseGUITests: XCTestCase {
     }
 
     @MainActor func testPausedReloadKeepsScrollbarDragPressedBeforeCapture() throws {
-        try exercisePausedReloadScrollbarDrag(moveBeforeCapture: false)
+        try exercisePausedReloadScrollbarDrag(.pressBeforeCapture)
     }
 
     @MainActor func testPausedReloadKeepsContinuingScrollbarDragAcrossCapture() throws {
-        try exercisePausedReloadScrollbarDrag(moveBeforeCapture: true)
+        try exercisePausedReloadScrollbarDrag(.continueAfterCapture)
     }
 
-    @MainActor private func exercisePausedReloadScrollbarDrag(moveBeforeCapture: Bool) throws {
+    @MainActor func testPausedReloadKeepsCapturedPositionWhenDraggedThumbStopsBeforeCapture() throws {
+        try exercisePausedReloadScrollbarDrag(.holdStillAfterCapture)
+    }
+
+    private enum ScrollbarReloadGesture {
+        case pressBeforeCapture, continueAfterCapture, holdStillAfterCapture
+    }
+
+    @MainActor private func exercisePausedReloadScrollbarDrag(_ gesture: ScrollbarReloadGesture) throws {
+        let moveBeforeCapture = gesture != .pressBeforeCapture
+        let stationaryRelease = gesture == .holdStillAfterCapture
         let host = InteractionTestWindow()
         defer { host.close() }
         let (web, initialY) = try pausedTableFixture(in: host, linkCount: 3500)
@@ -513,11 +523,15 @@ final class SplitScrollPauseGUITests: XCTestCase {
         let track = height - thumb
         let thumbY = (track * scrollY / (documentHeight - height) + thumb / 2).rounded()
         let dragDistance = max(3, (220 * track / (documentHeight - height)).rounded())
+        let intermediateThumbY = thumbY - (dragDistance / 2).rounded()
+        let releaseThumbY = stationaryRelease ? intermediateThumbY : thumbY - dragDistance
 
-        func sendMouse(_ type: NSEvent.EventType, y: Double) throws {
+        @discardableResult func sendMouse(_ type: NSEvent.EventType, y: Double) throws -> NSPoint {
             // Dispatch to the native WebKit scrollbar in this window only.
             let point = NSPoint(x: width - 4, y: web.isFlipped ? y : web.bounds.height - y)
-            let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: web.convert(point, to: nil),
+            let location = web.convert(point, to: nil)
+            let screen = host.window.convertPoint(toScreen: location)
+            let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: location,
                 modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: host.window.windowNumber,
                 context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1))
             switch type {
@@ -526,6 +540,7 @@ final class SplitScrollPauseGUITests: XCTestCase {
             case .leftMouseUp: web.mouseUp(with: event)
             default: XCTFail("Unexpected scrollbar input \(type)")
             }
+            return screen
         }
 
         // Prepare the source caret before grabbing the thumb so the native
@@ -544,25 +559,39 @@ final class SplitScrollPauseGUITests: XCTestCase {
         let trace = try observePausedTableScroll(in: web, host: host, includeScrollbarEvents: true)
         defer { web.configuration.userContentController.removeScriptMessageHandler(forName: PausedTableScrollTrace.name) }
         var pressed = false
-        defer { if pressed { try? sendMouse(.leftMouseUp, y: thumbY - dragDistance) } }
+        defer { if pressed { _ = try? sendMouse(.leftMouseUp, y: releaseThumbY) } }
         var down: PausedTableScrollTrace.Event?
         var intermediate: PausedTableScrollTrace.Event?
         var captured: PausedTableScrollTrace.Event?
+        var passiveScroll: PausedTableScrollTrace.Event?
         var release: PausedTableScrollTrace.Event?
         var outgoing: PausedTableScrollTrace.Event?
+        var lastDragScreenPoint: NSPoint?
+        var releaseScreenPoint: NSPoint?
         trace.onEvent = { event in
             switch event.kind {
             case "mousedown" where event.trusted && down == nil:
                 down = event
             case "scroll" where event.trusted && down != nil && captured == nil && initialY + 80 < event.y:
                 if intermediate == nil { intermediate = event }
+            case "scroll" where stationaryRelease && event.trusted && pressed:
+                guard let captured, captured.scrollY - event.scrollY > 150 else { return }
+                passiveScroll = event
+                releaseScreenPoint = try sendMouse(.leftMouseUp, y: releaseThumbY)
+                pressed = false
             case "capture" where captured == nil:
                 XCTAssertNotNil(down, "the native thumb press must precede capture")
                 XCTAssertTrue(pressed, "the mouse button must still be held at capture")
                 captured = event
-                try sendMouse(.leftMouseDragged, y: thumbY - dragDistance)
-                try sendMouse(.leftMouseUp, y: thumbY - dragDistance)
-                pressed = false
+                if stationaryRelease {
+                    // Isolate passive movement after capture while the thumb
+                    // is held at the last pre-capture native position.
+                    web.evaluateJavaScript("window.scrollBy(0, -191); true")
+                } else {
+                    try sendMouse(.leftMouseDragged, y: releaseThumbY)
+                    try sendMouse(.leftMouseUp, y: releaseThumbY)
+                    pressed = false
+                }
             case "mouseup" where event.trusted && captured != nil:
                 release = event
             case "pagehide" where event.trusted:
@@ -579,7 +608,7 @@ final class SplitScrollPauseGUITests: XCTestCase {
         XCTAssertEqual(mouseDown.y, initialY, accuracy: 2)
         var expectedCaptureY = initialY
         if moveBeforeCapture {
-            try sendMouse(.leftMouseDragged, y: thumbY - (dragDistance / 2).rounded())
+            lastDragScreenPoint = try sendMouse(.leftMouseDragged, y: intermediateThumbY)
             host.spin(until: { intermediate != nil })
             let firstMove = try XCTUnwrap(intermediate, "the held scrollbar must visibly scroll before capture")
             XCTAssertTrue(firstMove.visible)
@@ -599,10 +628,21 @@ final class SplitScrollPauseGUITests: XCTestCase {
         let minimumMovement = moveBeforeCapture ? 70.0 : 150.0
         XCTAssertGreaterThan(capture.scrollY - pagehide.scrollY, minimumMovement)
         XCTAssertGreaterThan(pagehide.y - capture.y, minimumMovement)
+        if stationaryRelease {
+            let passive = try XCTUnwrap(passiveScroll, "the old page must receive the passive scroll before release")
+            let dragPoint = try XCTUnwrap(lastDragScreenPoint)
+            let releasePoint = try XCTUnwrap(releaseScreenPoint)
+            XCTAssertEqual(capture.scrollY - passive.scrollY, 191, accuracy: 2)
+            XCTAssertEqual(passive.y, pagehide.y, accuracy: 2)
+            XCTAssertEqual(dragPoint, releasePoint, "the thumb must be released at its last physical drag position")
+            print("Paused scrollbar stationary release: last drag screen point=\(dragPoint), release screen point=\(releasePoint)")
+        }
         let finalY = try visibleTop(of: tableCell(named: "Record 60"), in: web, host: host)
+        let expectedY = stationaryRelease ? capture.y : pagehide.y
         print("Paused scrollbar drag, CSS px: initial=\(initialY), capture=\(capture.y), "
-              + "old pagehide=\(pagehide.y), final=\(finalY), delta=\(finalY - pagehide.y), pre-capture movement=\(moveBeforeCapture)")
-        XCTAssertEqual(finalY, pagehide.y, accuracy: 2, "the new page must keep Record 60 at the last dragged position")
+              + "old pagehide=\(pagehide.y), expected=\(expectedY), final=\(finalY), delta=\(finalY - expectedY), "
+              + "pre-capture movement=\(moveBeforeCapture), stationary release=\(stationaryRelease)")
+        XCTAssertEqual(finalY, expectedY, accuracy: 2, "the new page must keep Record 60 at the last dragged position")
     }
 
     @MainActor func testPausedReloadWithoutAUserWheelKeepsTheCapturedPosition() throws {
