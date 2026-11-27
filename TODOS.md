@@ -148,16 +148,40 @@ The following cases reproduced on `9f65cb4` and on an earlier revision.
 
 - [x] **P2 — Hold the visible table row when the header grows with scroll sync paused.**
   **Reproduce.** Open a two-column table with 150 numbered data rows in Side
-  by Side. Pause scroll sync, scroll the preview until the cell `Record 60`
-  is about 71 CSS px from the preview's top edge. Record the cell's position.
-  In the source, change only the header cell `Key` to
-  `Key<br>Region<br>Office<br>Department<br>Owner`. After all five header
-  lines rendered, `Record 60` moved from 70.95 to 178.45 CSS px (+107.5).
+  by Side. Use the toolbar to pause scroll sync. Scroll the preview until the
+  first cell of `Record 60` is about 71 CSS px from the preview's top edge.
+  Record its `getBoundingClientRect().top` as `y0`. Start each of these
+  scenarios from the same `| Key | Value |` header and reading position.
 
-  **Verify** in the native split window. After layout settles, locate the
-  cell by its text. It must still be visible, with its top edge within 2 CSS
-  px of its recorded position. Also rerun the three passing pause cases above
-  for an active Find result, inserted data rows and a reloaded local image.
+  1. In the source, replace `Key` in one edit with
+     `Key<br>Region<br>Office<br>Department<br>Owner`.
+  2. Append each of the four `<br>` lines in a separate source edit. Wait for
+     each new header line to render and measure before appending the next one.
+  3. Apply the five-line header in one edit and restore `Key` in the next edit.
+     Repeat six times, letting the layout settle and measuring after each edit.
+  4. Put `Needle Spot` in the second column of `Record 35` and `Record 60`.
+     Search in the preview, advance to the second match, pause scroll sync,
+     and leave Find open. Record the top of the cell labeled `Record 60` and
+     the top of its highlighted text. Repeat the four separate header edits
+     from scenario 2.
+
+  At `1f88d99` on a 2× display, the one-edit case moved the cell by +0.50 CSS
+  px. The four separate edits ended at +3.50 CSS px, and the sixth restoration
+  ended at +6.00 CSS px relative to `y0`.
+  With Find active at `dbd5ff6`, both the cell and the highlighted text moved
+  by +0.875, +1.750, +2.625 and +3.500 CSS px.
+
+  **Verify** in the native split window. After each edit settles, locate
+  `Record 60` by its cell text. It must still be visible and its top edge must
+  be within 2 CSS px of that scenario's initial `y0`, including after the sixth
+  restoration. In the Find scenario, require two matches and keep the second
+  current and visible. After every edit, both the cell and its highlight must
+  be within 2 CSS px of their respective positions before the first edit.
+  While still paused, scroll the preview to a different record,
+  record its top edge and edit the header again. The new record must stay
+  visible within 2 CSS px of its own recorded position. Rerun the paused Find,
+  table row and list item insertion, and Mermaid image reload cases, along
+  with resuming sync and window isolation.
 
 - [x] **P2 — Find text inside author highlights and respect its place in a sentence.**
   **Reproduce.** Enable highlight syntax and preview two paragraphs,
@@ -226,6 +250,77 @@ The following cases reproduced on `9f65cb4` and on an earlier revision.
   editor must retain `mine`, and the conflict must remain available for
   review with no copy created. Repeat via a regular file and verify that the
   editor copy succeeds. See the [copy policy](Docs/DocumentLifecycle.md#创建副本).
+
+### Follow-up from the 2026-11-27 recheck
+
+- [x] **P2 — Keep the latest reading position during a full preview reload.**
+  **Reproduce.** In Side by Side with scroll sync paused, hold `Record 60`
+  about 71 CSS px from the top of the preview. Use a 150-row table followed
+  by `Closing note.` and 3,500 existing links to relative paths. Insert
+  the document's first Mermaid block after `Closing note.`. In the old
+  page's capture callback, send a native pixel wheel event and confirm it
+  reached the old page and moved it. On `b4f6d87`, `Record 60` moved from
+  70.95 to 329.95 CSS px on the old page, then returned to 70.95 CSS px
+  after the new page drew the diagram.
+
+  Repeat with a native scrollbar drag that starts before the old page captures
+  its position. In one run, press the thumb before capture and wait until
+  after capture to drag it. In another, drag partway before capture and then
+  continue the same drag. Release after the final movement. On `0c9cc2e`,
+  `Record 60` reached 327.95 CSS px before the old page exited and returned
+  to the respective capture positions of 70.95 and 220.95 CSS px.
+
+  Also finish dragging before capture and hold the thumb still. After
+  capture, release at the same screen point after a scripted scroll or
+  after increasing window height downwards near the document bottom.
+  At `7038a22`, the replacement used the passive scroll position,
+  losing 191 and 177 CSS px from the last user-selected position.
+
+  **Verify** in a native window. Require a trusted wheel and an actual scroll
+  in the old page after capture. Once the replacement page and SVG settle,
+  locate the same visible record by its text. Its top edge must be within
+  2 CSS px of the position after the wheel. Repeat with two effective wheel
+  events and use the position after the second. Also insert the first diagram
+  above the table and keep the same record in place as the page height above
+  it changes. A full reload without scrolling must keep the original position.
+  For a live edit that adds four lines to the table header, the same wheel
+  gesture must keep the post-scroll position on the same page. For Find, queue
+  Previous after the old page captures the second match and require the new
+  page to show the first match, `1 of 2`.
+
+  For both scrollbar drags, verify the thumb is held at capture and that the
+  old page scrolls after capture. Measure the visible record by text when the
+  old page exits. After the new SVG and layout settle, the same visible
+  record must be within 2 CSS px of that final old-page position.
+  If the last user drag finished before capture and the thumb stays still
+  through release, preserve the captured position within 2 CSS px even if
+  the old page scrolls for layout. Keep any final movement from a real drag
+  that continues after capture and takes effect just after release.
+
+  Also send the last native drag just before capture and release at that
+  endpoint after capture. Check that the old page applies the last movement
+  after capture and that the new page keeps the final row position within
+  2 CSS px. On `9e4879f`, the new page lost 107 CSS px of actual movement.
+
+  Open an empty preview Find bar and hold a settled scrollbar thumb at the
+  document bottom across capture. Press Escape to close Find and release at
+  the same screen point. Use the same visible record and measure its position
+  in the native window after Find closes and after the new SVG settles. The
+  reload must add at most 2 pt of movement. Use the same Find dismissal with
+  no reload as a control. On `9e4879f`, the reload added an 80 pt jump.
+
+  Repeat with a delayed 180 CSS px image below the reading row. Let it
+  finish loading in the old page after capture, then close Find. Verify
+  the old scroll offset stays fixed as the viewport grows, and require the
+  reloaded row's window position to be within 2 pt of closing Find on the
+  same page. On `25cde66`, `Record 144` moved from 552.08 pt in the same-page
+  control to 472.08 pt in the replacement window.
+
+  Also drag the scrollbar thumb to the top, push it another 3 pt upward,
+  and confirm the old page stays at the top. After capture, inject a 191 CSS px
+  programmatic scroll and release the thumb at the same screen point.
+  Require the reloaded `Record 4` to be within 2 CSS px of its position at
+  the top. On `25cde66`, the replacement copied the programmatic offset.
 
 ## Already delivered
 

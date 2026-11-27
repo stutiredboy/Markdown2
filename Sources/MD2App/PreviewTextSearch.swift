@@ -171,6 +171,7 @@ enum PreviewTextSearch {
             updateFindOutline();
         }
         function clearFind() {
+            if (pinnedReference?.findGroup) releaseReference();
             CSS.highlights.delete('md2-find-current');
             CSS.highlights.delete('md2-find');
             if (outlineFrame) cancelAnimationFrame(outlineFrame);
@@ -191,9 +192,16 @@ enum PreviewTextSearch {
             var visible = !closedFindDisclosures(first.startContainer).length && !document.querySelector(openDiagramSelector) &&
                 line && line.bottom > clip.top && line.top < clip.bottom &&
                 line.right > clip.left && line.left < clip.right;
+            var top = null;
+            if (visible) {
+                var reference = currentPinnedReference();
+                // A scroll can round the painted line's position. Carry the
+                // requested position only for this exact still-held match.
+                top = reference?.findGroup === group ? reference.top : line.top;
+            }
             return {key: findKey, index: findCurrent, nodeOffset: first.startOffset,
                 before: findText.slice(Math.max(0, group.start - 64), group.start),
-                after: findText.slice(group.end, group.end + 64), top: visible ? line.top : null};
+                after: findText.slice(group.end, group.end + 64), top: top};
         }
         window.__md2FindClear = function (forPausedEdit) {
             // An empty query or zero results ends Find's temporary hold on an
@@ -436,7 +444,7 @@ enum PreviewTextSearch {
                 var result = setCurrent(index >= 0 ? index : Math.min(held.index, findGroups.length - 1), false);
                 if (keepPosition) {
                     var group = findGroups[index];
-                    pinReference([{node: group[0].startContainer, top: held.top, measureTop: function () {
+                    pinReference([{node: group[0].startContainer, top: held.top, findGroup: group, measureTop: function () {
                         return firstFindLine(group, document.body)?.top;
                     }}], window.scrollY);
                 }

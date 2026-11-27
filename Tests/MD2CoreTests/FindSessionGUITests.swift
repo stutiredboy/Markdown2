@@ -331,6 +331,7 @@ final class FindSessionGUITests: XCTestCase {
 /// so its timing is independent of CPU/WebKit speed on a CI runner.
 final class HeldPreviewImageServer: @unchecked Sendable {
     private let listener: NWListener
+    private let image: Data
     private let lock = NSLock()
     private var boundPort: UInt16?
     private var connections: [NWConnection] = []
@@ -340,7 +341,8 @@ final class HeldPreviewImageServer: @unchecked Sendable {
     var port: UInt16? { lock.withLock { boundPort } }
     var hasRequest: Bool { lock.withLock { !waiting.isEmpty } }
 
-    init() throws {
+    init(image: Data? = nil) throws {
+        self.image = image ?? Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")!
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: .any)
         listener = try NWListener(using: parameters)
@@ -364,7 +366,7 @@ final class HeldPreviewImageServer: @unchecked Sendable {
                     self.waiting.append(connection)
                     return self.released
                 }
-                if respond { Self.respond(to: connection) }
+                if respond { self.respond(to: connection) }
             }
         }
         listener.start(queue: .global())
@@ -372,14 +374,13 @@ final class HeldPreviewImageServer: @unchecked Sendable {
 
     func release() {
         let waiting = lock.withLock { released = true; return stopped ? [] : self.waiting }
-        waiting.forEach(Self.respond)
+        waiting.forEach(respond)
     }
     func stop() {
         listener.cancel()
         lock.withLock { stopped = true; return connections }.forEach { $0.cancel() }
     }
-    private static func respond(to connection: NWConnection) {
-        let image = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")!
+    private func respond(to connection: NWConnection) {
         var response = Data("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: \(image.count)\r\nConnection: close\r\n\r\n".utf8)
         response.append(image)
         connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })

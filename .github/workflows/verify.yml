@@ -146,7 +146,8 @@ jobs:
     # runners log in a user session with a window server, so AppKit windows
     # and WebKit render here as they do on a developer's Mac.
     runs-on: macos-15
-    timeout-minutes: 30
+    # The job includes the native build and Pandoc setup before the full suite.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
