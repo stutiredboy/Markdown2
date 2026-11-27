@@ -278,7 +278,7 @@ enum PreviewHeldReference {
         var block = resolveHeldReference(blocks);
         if (!block) { window.scrollTo(window.scrollX, y); return; }
         var node = block.node;
-        var reference = {node: node, top: block.top, expectedY: window.scrollY};
+        var reference = {node: node, top: block.top, expectedY: window.scrollY, findGroup: block.findGroup};
         pinnedReference = reference;
         function restore() {
             if (pinnedReference !== reference || !currentPinnedReference()) { return; }

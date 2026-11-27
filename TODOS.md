@@ -159,15 +159,25 @@ The following cases reproduced on `9f65cb4` and on an earlier revision.
      each new header line to render and measure before appending the next one.
   3. Apply the five-line header in one edit and restore `Key` in the next edit.
      Repeat six times, letting the layout settle and measuring after each edit.
+  4. Put `Needle Spot` in the second column of `Record 35` and `Record 60`.
+     Search in the preview, advance to the second match, pause scroll sync,
+     and leave Find open. Record the top of the cell labeled `Record 60` and
+     the top of its highlighted text. Repeat the four separate header edits
+     from scenario 2.
 
   At `1f88d99` on a 2× display, the one-edit case moved the cell by +0.50 CSS
   px. The four separate edits ended at +3.50 CSS px, and the sixth restoration
   ended at +6.00 CSS px relative to `y0`.
+  With Find active at `dbd5ff6`, both the cell and the highlighted text moved
+  by +0.875, +1.750, +2.625 and +3.500 CSS px.
 
   **Verify** in the native split window. After each edit settles, locate
   `Record 60` by its cell text. It must still be visible and its top edge must
   be within 2 CSS px of that scenario's initial `y0`, including after the sixth
-  restoration. While still paused, scroll the preview to a different record,
+  restoration. In the Find scenario, require two matches and keep the second
+  current and visible. After every edit, both the cell and its highlight must
+  be within 2 CSS px of their respective positions before the first edit.
+  While still paused, scroll the preview to a different record,
   record its top edge and edit the header again. The new record must stay
   visible within 2 CSS px of its own recorded position. Rerun the paused Find,
   table row and list item insertion, and Mermaid image reload cases, along
@@ -240,6 +250,25 @@ The following cases reproduced on `9f65cb4` and on an earlier revision.
   editor must retain `mine`, and the conflict must remain available for
   review with no copy created. Repeat via a regular file and verify that the
   editor copy succeeds. See the [copy policy](Docs/DocumentLifecycle.md#创建副本).
+
+### Follow-up from the 2026-11-27 recheck
+
+- [ ] **P2 — Keep the latest reading position during a full preview reload.**
+  **Reproduce.** In Side by Side with scroll sync paused, hold `Record 60`
+  near the top of the preview in a document with a 150-row table and a long
+  list of links below it. Add the document's first Mermaid block after the
+  table's closing paragraph. Use the native wheel to scroll the old preview
+  after it captures its reading position and before the new page replaces it.
+  In the foreground probe on `1f88d99` and `dbd5ff6`, `Record 60`
+  moved from 70.95 to 329.95 CSS px on the old page, then returned to 70.95
+  CSS px after the new page drew the diagram.
+
+  **Verify** with a native window. Confirm that the wheel event changes the
+  position after the old-page capture. Once the new page and diagram settle,
+  locate the same visible record by its text and compare its top edge with
+  the position after the wheel event. The difference must be at most 2 CSS
+  px. Also verify a full reload without scrolling keeps the original position
+  and a live update with the same wheel gesture keeps the new position.
 
 ## Already delivered
 

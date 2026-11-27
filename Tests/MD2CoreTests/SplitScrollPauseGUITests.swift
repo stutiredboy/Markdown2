@@ -282,6 +282,90 @@ final class SplitScrollPauseGUITests: XCTestCase {
         _ = try visibleTop(of: highlight, in: web, host: host)
     }
 
+    @MainActor func testPausedPreviewKeepsTheSecondTableFindMatchAcrossFourHeaderEdits() throws {
+        let host = InteractionTestWindow()
+        defer { host.close() }
+        let query = "Needle Spot"
+        let rows = (1...150).map { row in
+            let value = [35, 60].contains(row) ? query : "Value \(row)"
+            return "| Record \(row) | \(value) |"
+        }.joined(separator: "\n")
+        host.store.text = "# audit-title\n\n| Key | Value |\n|---|---|\n" + rows
+        let web = try mountDocument(in: host, settings: host.settings, marker: "Record 150",
+                                    ready: "document.querySelectorAll('tbody tr').length === 150")
+        let find = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                                                timestamp: ProcessInfo.processInfo.systemUptime,
+                                                windowNumber: host.window.windowNumber, context: nil, characters: "f",
+                                                charactersIgnoringModifiers: "f", isARepeat: false, keyCode: 3))
+        XCTAssertTrue(web.performKeyEquivalent(with: find))
+        host.spin(until: { host.queryField != nil })
+        try host.enterQuery(query)
+        try host.waitForPage("""
+            \(PreviewFindRanges.count) === 2 && \(PreviewFindRanges.currentIndex) === 0
+                && \(PreviewFindRanges.all)[0]?.startContainer.parentElement.closest('tr')?.cells[0].textContent === 'Record 35'
+            """, in: web, context: "the first table match is current")
+        host.store.requestFind(.next)
+        let current = "CSS.highlights.get('md2-find-current')?.values().next().value"
+        try host.waitForPage("""
+            \(PreviewFindRanges.currentIndex) === 1
+                && (\(current))?.startContainer.parentElement.closest('tr')?.cells[0].textContent === 'Record 60'
+            """, in: web, context: "Find Next selected Record 60")
+        try toggle(in: host, paused: false)
+        let field = try XCTUnwrap(host.queryField)
+        var owner: NSResponder? = field
+        while let responder = owner, !(responder is NativeFindPaneOwner) { owner = responder.nextResponder }
+        let bar = try XCTUnwrap(owner as? NativeFindBarController<PreviewFindBar>)
+        host.spin(until: { bar.rootView.statusText == "2 of 2" })
+        host.spin(for: 0.35)
+
+        func measure(_ stage: String, file: StaticString = #filePath, line: UInt = #line) throws -> (cellY: Double?, matchY: Double?) {
+            let result = try host.js("""
+                (() => {
+                    const hit = \(current);
+                    const match = hit?.getBoundingClientRect();
+                    const owner = hit?.startContainer.parentElement.closest('tr');
+                    const cell = (\(tableCell(named: "Record 60")))?.getBoundingClientRect();
+                    const visible = bounds => !!bounds && bounds.height > 0 && bounds.bottom > 0 && bounds.top < innerHeight;
+                    return {
+                        count: \(PreviewFindRanges.count), index: \(PreviewFindRanges.currentIndex),
+                        text: hit?.toString() ?? '', record: owner?.cells[0].textContent ?? '', viewport: innerHeight,
+                        cellY: cell?.top ?? null, cellVisible: visible(cell), matchY: match?.top ?? null,
+                        matchVisible: visible(match) && match.width > 0 && owner?.contains(document.elementFromPoint(
+                            match.left + match.width / 2, match.top + match.height / 2)) === true
+                    };
+                })()
+                """, web) as? [String: Any]
+            let cellY = (result?["cellY"] as? NSNumber)?.doubleValue
+            let matchY = (result?["matchY"] as? NSNumber)?.doubleValue
+            print("Paused table Find \(stage), CSS px: \(result ?? [:]), native status=\(bar.rootView.statusText)")
+            XCTAssertEqual(bar.rootView.statusText, "2 of 2", stage, file: file, line: line)
+            XCTAssertEqual(result?["count"] as? Int, 2, stage, file: file, line: line)
+            XCTAssertEqual(result?["index"] as? Int, 1, stage, file: file, line: line)
+            XCTAssertEqual(result?["record"] as? String, "Record 60", stage, file: file, line: line)
+            XCTAssertEqual(result?["text"] as? String, query, stage, file: file, line: line)
+            XCTAssertEqual(result?["cellVisible"] as? Bool, true, stage, file: file, line: line)
+            XCTAssertEqual(result?["matchVisible"] as? Bool, true, stage, file: file, line: line)
+            return (cellY, matchY)
+        }
+
+        let initial = try measure("initial y0")
+        let cellY0 = try XCTUnwrap(initial.cellY)
+        let matchY0 = try XCTUnwrap(initial.matchY)
+        var header = "Key"
+        for field in ["Region", "Office", "Department", "Owner"] {
+            let suffix = "<br>\(field)"
+            try editPausedTableHeader(header, replacement: suffix, append: true, in: web, host: host)
+            header += suffix
+            let current = try measure("after adding \(field)")
+            if let cellY = current.cellY {
+                XCTAssertEqual(cellY, cellY0, accuracy: 2, "Record 60 cell drift after adding \(field)")
+            }
+            if let matchY = current.matchY {
+                XCTAssertEqual(matchY, matchY0, accuracy: 2, "current Find highlight drift after adding \(field)")
+            }
+        }
+    }
+
     @MainActor func testPausedPreviewKeepsRecord60WhenTableHeaderGrows() throws {
         let host = InteractionTestWindow()
         defer { host.close() }
